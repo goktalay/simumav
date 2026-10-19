@@ -58,6 +58,10 @@ async def _guvenlik(request: Request, call_next):
         resp.headers.setdefault(k, v)
     if request.url.path.startswith('/api/'):
         resp.headers.setdefault('Cache-Control', 'no-store')
+    else:
+        # Statik dosyalar: Cloudflare kenarı .js/.css'i 4 saat tutuyordu → yeni yayın sonrası tarayıcılar eski betiği alıyordu.
+        # no-cache: her istekte ETag ile yeniden doğrulama (304), kenar önbelleği kalıcı tutmaz.
+        resp.headers.setdefault('Cache-Control', 'no-cache')
     return resp
 
 
