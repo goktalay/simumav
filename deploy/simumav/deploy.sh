@@ -82,9 +82,9 @@ fi
 ONCEKI_V=$(cat "$APP/VERSION" 2>/dev/null | tr -d '[:space:]' || true)
 if [ -f "$APP/VERSION" ]; then
   rm -rf "$PREV"; mkdir -p "$PREV"
-  rsync -a --delete --exclude .venv --exclude .env "$APP/" "$PREV/"
+  rsync -ac --delete --exclude .venv --exclude .env "$APP/" "$PREV/"
 fi
-rsync -a --delete --exclude .venv --exclude .env "$NEW/" "$APP/"
+rsync -ac --delete --exclude .venv --exclude .env "$NEW/" "$APP/"   # -c: paket mtime sabit (2020), boyut aynıysa rsync atlardı
 chown -R root:root "$APP"
 chmod -R u+rwX,go+rX,go-w "$APP"; chmod 755 "$APP/run-simumav.sh" "$APP/deploy/simumav/deploy.sh" 2>/dev/null || true
 [ -f "$ENV_FILE" ] && chown root:hepgo "$ENV_FILE" && chmod 640 "$ENV_FILE"
@@ -108,7 +108,7 @@ fi
 # ---- geri dönüş ----------------------------------------------------------------------
 log "sağlık denetimi başarısız; journal:"; journalctl -u "$SERVICE" -n 30 --no-pager >>"$LOG" 2>&1 || true
 if [ -d "$PREV" ] && [ -f "$PREV/VERSION" ]; then
-  rsync -a --delete --exclude .venv --exclude .env "$PREV/" "$APP/"
+  rsync -ac --delete --exclude .venv --exclude .env "$PREV/" "$APP/"
   chown -R root:root "$APP"
   systemctl restart "$SERVICE" || true
   if saglik; then log "GERİ DÖNÜLDÜ: $ONCEKI_V tekrar yayında ($V başarısız)"; else log "GERİ DÖNÜŞ DE BAŞARISIZ: servis ayakta değil, elle müdahale gerekir"; fi

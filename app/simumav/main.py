@@ -26,7 +26,7 @@ log = logging.getLogger('simumav')
 # yüklemede eval ister, aksi hâlde Cesium hiç açılmaz (HEPGO app.main CSP'si ile aynı); 'wasm-unsafe-eval': 3DTilesRenderer/draco WebAssembly. Google Maps JS + 3B karolar (googleapis/gstatic/ggpht), Cesium (replay3d.js cdn.jsdelivr.net v1.145 sabit + ion/arcgis),
 # arazi/uydu (arcgisonline, amazonaws terrarium), hesap servisi (mastertool.download), kendi WS'si.
 CSP = ("default-src 'self'; "
-       "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com https://cdn.jsdelivr.net https://*.cesium.com; "
+       "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://static.cloudflareinsights.com https://maps.googleapis.com https://maps.gstatic.com https://cdn.jsdelivr.net https://*.cesium.com; "
        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
        "connect-src 'self' https://mastertool.download https://maps.googleapis.com https://*.googleapis.com https://*.gstatic.com https://*.ggpht.com "
        "https://tile.googleapis.com https://cdn.jsdelivr.net https://*.cesium.com https://*.arcgisonline.com https://*.amazonaws.com "
