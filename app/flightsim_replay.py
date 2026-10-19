@@ -347,7 +347,7 @@ def _tlog_ayristir(path, hz):
     # düşer → akış okuyucu mavlogfile (robust_parsing: BAD_DATA atlanır).
     log = mavutil.mavlogfile(str(path), robust_parsing=True)
     T = _Toplayici(hz)
-    sysid, vtype = None, None
+    sysid = None
     while True:
         m = log.recv_match(type=TLOG_TIPLERI)
         if m is None:
@@ -365,7 +365,7 @@ def _tlog_ayristir(path, hz):
             if m.type in (6, 18) or m.autopilot == 8:   # GCS / yer bileşeni / geçersiz otopilot
                 continue
             if sysid is None:
-                sysid, vtype = src, m.type
+                sysid = src
                 T.vehicle = {1: 'ArduPlane', 2: 'ArduCopter', 10: 'ArduRover', 12: 'ArduSub', 4: 'ArduHeli', 20: 'ArduPlane', 21: 'ArduPlane',
                              22: 'ArduPlane'}.get(m.type, 'MAVLink')
             if src != sysid:
