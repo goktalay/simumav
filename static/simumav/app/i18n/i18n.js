@@ -1,4 +1,7 @@
 // Çok dilli metinler: i18n/<lang>.json; t(anahtar, değişkenler); Arapça RTL. Dil değişince 'sm:lang' olayı yayılır.
+// Dil seçimi tanıtım sitesiyle ortak saf kural (/js/lang.js): ?lang > bu cihazdaki seçim (sm:lang) > [hesap ayarı app.js'de] > navigator.languages > en.
+import { detectLang as pick } from '/js/lang.js';
+
 export const LANGS = [
   { code: 'tr', name: 'Türkçe', native: 'Türkçe' },
   { code: 'en', name: 'English', native: 'English' },
@@ -19,18 +22,19 @@ async function load(code) {
   return p;
 }
 
-export function detectLang() {
-  const saved = localStorage.getItem('sm:lang');
-  if (saved && LANGS.some(l => l.code === saved)) return saved;
-  const nav = (navigator.language || 'tr').slice(0, 2).toLowerCase();
-  return LANGS.some(l => l.code === nav) ? nav : 'en';
+/** stored: hesap ayarı (settings.lang) — localStorage'da seçim yoksa onun yerine kullanılır. */
+export function detectLang({ stored = null } = {}) {
+  let saved = null; try { saved = localStorage.getItem('sm:lang'); } catch { /* özel mod */ }
+  return pick(null, { stored: saved || stored });
 }
+export function hasDeviceLang() { try { return !!localStorage.getItem('sm:lang'); } catch { return false; } }
 
-export async function setLang(code, { silent = false } = {}) {
+/** remember=false: açılıştaki otomatik seçim (tarayıcı/hesap dili) bu cihaza YAZILMAZ; yalnız kullanıcının Ayarlar'daki seçimi kalır. */
+export async function setLang(code, { silent = false, remember = true } = {}) {
   if (!LANGS.some(l => l.code === code)) code = 'en';
   const [d, fb] = await Promise.all([load(code), code === 'tr' ? load('tr') : load('tr').catch(() => ({}))]);
   dict = d; fallbackDict = fb; current = code;
-  localStorage.setItem('sm:lang', code);
+  if (remember) { try { localStorage.setItem('sm:lang', code); } catch { /* özel mod */ } }
   document.documentElement.lang = code;
   document.documentElement.dir = RTL.has(code) ? 'rtl' : 'ltr';
   if (!silent) window.dispatchEvent(new CustomEvent('sm:lang', { detail: code }));

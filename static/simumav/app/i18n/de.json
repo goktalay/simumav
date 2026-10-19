@@ -207,5 +207,15 @@
   "menu.live_real": "Echtes Gelände · TR TEST Kalecik",
   "menu.live_proc": "Prozedurales Gelände",
   "menu.live_loading": "Szene wird vorbereitet",
-  "common.loading_scene": "Szene wird geladen"
+  "common.loading_scene": "Szene wird geladen",
+  "cookie.title": "Analyse-Cookies",
+  "cookie.text": "Zur Verbesserung der Website erheben wir mit Google Analytics anonyme Nutzungsstatistiken (IP anonymisiert, keine Werbung). Sie werden nur mit deiner Zustimmung geladen; du kannst deine Wahl jederzeit ändern.",
+  "cookie.more": "Datenschutzerklärung",
+  "cookie.necessary": "Notwendige Cookies (Sitzung, Sprache, Design) — immer aktiv",
+  "cookie.analytics": "Analyse-Cookies (Google Analytics, anonym)",
+  "cookie.settings": "Einstellungen",
+  "cookie.reject": "Ablehnen",
+  "cookie.accept": "Akzeptieren",
+  "cookie.save": "Speichern",
+  "cookie.manage": "Cookie-Einstellungen ändern"
 }

@@ -35,10 +35,44 @@ export function buildReportText(sum, tr) {
   if (M) out.push(`${tr('Görev')}: ${M.count} WP (${tr(SOURCE[M.source] || M.source || '—')}) · ${tr('bitiş noktası')} ${ll(M.end)}`);
   if (C) out.push(`${tr('ÇARPIŞMA')}: ${ll(C)} · ${f1(C.speed)} m/s · ${tr(REASON[C.reason] || C.reason || '—')}`);
   if (D) out.push(`${tr('Sapma')}: ${f1(D.dist_m)} m ${tr('yatay')}, ${f1(D.dz_m)} m ${tr('dikey')}${D.in_circle ? ` · ${tr('İniş dairesi içinde')}` : ''}`);
+  const pw = powerLines(sum, tr);   // §23
+  if (pw) out.push(`${tr('Güç ve yakıt')}: ${pw}`);
   const sn = safetyText(sum, tr);
   if (sn) out.push(`${tr('Güvenlik notu')}: ${sn}`);
   return out.join('\n');
 }
+
+// ---------- §23 güç ve yakıt (rapor metni + bölüm) ----------
+export function powerLines(sum, tr) {
+  const P = sum.power; if (!P || (!P.fuel && !P.elec)) return '';
+  const parts = [];
+  if (P.fuel) parts.push(`${tr('yakıt')} ${f2(P.fuel.used_l)} L / ${f2(P.fuel.start_l)} L${P.fuel.km_per_l != null ? ` · ${tr('ölçülen')} ${f1(P.fuel.km_per_l)} km/L` : ''}${P.fuel.empty_t != null ? ` · ${tr('YAKIT BİTTİ')}` : ''}`);
+  if (P.elec) parts.push(`${tr('batarya')} ${f1(P.elec.wh_used)} Wh / ${f0(P.elec.wh_cap)} Wh${P.elec.w_avg != null ? ` · ${tr('ortalama')} ${f1(P.elec.w_avg)} W` : ''}${P.elec.empty_t != null ? ` · ${tr('BATARYA BİTTİ')}` : ''}`);
+  if (P.settings?.max_speed_ms) parts.push(`${tr('azami hız')} ${f0(P.settings.max_speed_ms)} m/s (${tr('en yüksek')} ${f1(P.max_speed_seen)} m/s)`);
+  if (P.speedup?.max > 1) parts.push(`${tr('simülasyon hızı en çok')} ${P.speedup.max}×`);
+  return parts.join(' · ');
+}
+const f2 = v => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toFixed(2));
+export function powerSection(sum, tr) {
+  const P = sum.power; if (!P || (!P.fuel && !P.elec)) return null;
+  const kv = (k, v, cls = '') => h('div', { class: `fs-rp-kv ${cls}` }, h('span', null, k), h('b', null, v));
+  const S = P.settings || {}, F = P.fuel, E = P.elec;
+  const tile = (label, value, unit, cls = '') => h('div', { class: `fs-rp-tile ${cls}` }, h('b', null, value, unit ? h('i', null, unit) : null), h('span', null, label));
+  const tiles = h('div', { class: 'fs-rp-tiles fs-rp-pw-tiles' },
+    tile(tr('Mesafe'), km(P.dist_m)),
+    F ? tile(tr('Harcanan yakıt'), f2(F.used_l), 'L', F.empty_t != null ? 'red' : '') : null,
+    F ? tile(tr('Ölçülen tüketim'), F.km_per_l != null ? f1(F.km_per_l) : '—', 'km/L') : null,
+    E ? tile(tr('Batarya'), f1(E.wh_used), 'Wh', E.empty_t != null ? 'red' : '') : null,
+    E ? tile(tr('Ortalama güç'), E.w_avg != null ? f1(E.w_avg) : '—', 'W') : null);
+  return h('div', { class: 'fs-rp-sec fs-rp-power' }, h('h4', null, '⚡ ', tr('Güç ve yakıt')), tiles,
+    S.max_speed_ms ? kv(tr('Azami hız'), `${f0(S.max_speed_ms)} m/s (${f0(S.max_speed_ms * 3.6)} km/h) · ${tr('en yüksek yer hızı')} ${f1(P.max_speed_seen)} m/s`) : null,
+    F ? kv(tr('Yakıt'), `${f2(F.start_l)} L → ${f2(F.left_l)} L (%${f0(F.pct)}) · ${tr('ayar')} ${f1(S.fuel_km_per_l)} km/L` + (F.km_per_l != null ? ` · ${tr('ölçülen')} ${f1(F.km_per_l)} km/L → ${tr('dron kaydına yazıldı')}` : ` · ${tr('ölçüm için yeterli mesafe/yakıt yok')}`), F.empty_t != null ? 'red' : '') : null,
+    F?.empty_t != null ? kv(tr('Yakıt bitti'), `${tr('simülasyon zamanı')} ${clock2(F.empty_t)} — ${tr('uçuş sürdü (yalnız uyarı)')}`, 'red') : null,
+    E ? kv(tr('Elektronik batarya'), `${E.cells}S · ${f0(E.mah)} mAh · ${f0(E.wh_cap)} Wh → ${tr('kalan')} ${f1(E.wh_left)} Wh (%${f0(E.pct)}) · ${tr('ayar')} ${f0(E.w_set)} W` + (E.w_avg != null ? ` · ${tr('ölçülen')} ${f1(E.w_avg)} W → ${tr('dron kaydına yazıldı')}` : ''), E.empty_t != null ? 'red' : '') : null,
+    E?.empty_t != null ? kv(tr('Batarya bitti'), `${tr('simülasyon zamanı')} ${clock2(E.empty_t)} — ${tr('uçuş sürdü (yalnız uyarı)')}`, 'red') : null,
+    P.speedup?.max > 1 ? kv(tr('Simülasyon hızı'), `${tr('en çok')} ${P.speedup.max}× · ${P.speedup.changes} ${tr('değişim')} · ${tr('süreler simülasyon zamanıdır')}`) : null);
+}
+const clock2 = s => { s = Math.max(0, Math.floor(Number(s) || 0)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
 
 // ---------- 2B mini harita ----------
 export function drawMiniMap(canvas, sum, tr) {
@@ -159,6 +193,7 @@ export function reportBody(sum, tr, { canWrite = false, be = null } = {}) {
       C ? h('span', { class: 'badge red' }, tr('ÇARPIŞMA')) : h('span', { class: 'badge green' }, tr('Çarpışma yok'))),
     tiles,
     h('div', { class: 'fs-rp-cols' }, h('div', null, basic, mission), h('div', { class: 'fs-rp-mapwrap' }, canvas, legend, dev)),
+    powerSection(sum, tr),   // §23
     crash, safety);
   requestAnimationFrame(() => { try { drawMiniMap(canvas, sum, tr); } catch { /* harita hatası raporu bozmasın */ } });
   return body;

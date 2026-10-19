@@ -92,7 +92,7 @@
   "legal.privacy.title": "Politique de confidentialité",
   "legal.privacy.p1": "SIMUMAV s'authentifie via le service de comptes Master Tool (mastertool.download). Ton mot de passe ne quitte jamais ton navigateur en clair ; seule une empreinte dérivée est envoyée au serveur.",
   "legal.privacy.p2": "Données conservées : ton e-mail, ton nom d'affichage, tes préférences de langue et de thème, et ton contenu de jeu (hangar, équipage, parcours, missions et enregistrements de vol). Les enregistrements de vol ne sont visibles que par toi et conservés sur le serveur dans la limite d'un quota par utilisateur.",
-  "legal.privacy.p3": "Cookies : uniquement un cookie de session (HttpOnly, Secure) et la préférence de langue/thème. Aucun cookie publicitaire ni de suivi. Les cartes et tuiles 3D sont chargées depuis les services Google et Cesium, dont les politiques de confidentialité s'appliquent.",
+  "legal.privacy.p3": "Cookies : un cookie de session (HttpOnly, Secure), ta préférence de langue/thème et — uniquement avec ton consentement — les cookies Google Analytics (voir ci-dessous). Nous n’utilisons aucun cookie publicitaire. Les cartes et tuiles 3D sont chargées depuis les services Google et Cesium, soumis à leurs propres politiques de confidentialité.",
   "legal.privacy.p4": "Tu peux supprimer ton compte depuis mastertool.download › Mon compte ; tes données de jeu sont supprimées avec lui. Questions : destek@mastertool.download",
   "legal.kvkk.title": "Information sur la protection des données (KVKK)",
   "legal.kvkk.p1": "En vertu de la loi turque n° 6698 sur la protection des données personnelles, le responsable du traitement est Master Tool. Les données personnelles (e-mail, nom, adresse IP, journaux de session) sont traitées pour fournir le service, sécuriser ton compte et respecter les obligations légales.",
@@ -104,5 +104,17 @@
   "legal.terms.p2": "Ton compte est personnel et ne peut être partagé. Un vol simultané par utilisateur, 45 minutes par vol et des quotas de stockage s'appliquent. Les comptes abusant du service (requêtes automatisées, recherche de failles, tentatives de connexion au vol d'autrui) sont suspendus.",
   "legal.terms.p3": "La liaison Mission Planner est limitée à ton propre vol et à la première IP connectée. Les services tiers (Google, Cesium, ArduPilot) sont soumis à leurs propres licences et conditions.",
   "legal.terms.p4": "Le service est fourni « en l'état » ; aucune responsabilité n'est acceptée pour les interruptions, pertes de données ou dommages indirects. Les conditions peuvent être modifiées avec préavis.",
-  "legal.terms.p5": "Les litiges relèvent du droit de la République de Türkiye et des tribunaux d'Ankara."
+  "legal.terms.p5": "Les litiges relèvent du droit de la République de Türkiye et des tribunaux d'Ankara.",
+  "cookie.title": "Cookies d’analyse",
+  "cookie.text": "Pour améliorer le site, nous collectons des statistiques d’usage anonymes avec Google Analytics (IP anonymisée, pas de publicité). Ils ne sont chargés qu’avec ton accord ; tu peux changer d’avis à tout moment.",
+  "cookie.more": "Politique de confidentialité",
+  "cookie.necessary": "Cookies essentiels (session, langue, thème) — toujours actifs",
+  "cookie.analytics": "Cookies d’analyse (Google Analytics, anonymes)",
+  "cookie.settings": "Paramètres",
+  "cookie.reject": "Refuser",
+  "cookie.accept": "Accepter",
+  "cookie.save": "Enregistrer",
+  "cookie.manage": "Modifier les préférences de cookies",
+  "legal.privacy.ga.t": "Google Analytics",
+  "legal.privacy.p5": "Uniquement avec ton consentement, nous collectons des statistiques d’usage anonymes via Google Analytics 4 (Google Ireland Ltd.) : pages vues, langue, type d’appareil et événements de jeu (début/fin de vol, inscription, connexion). Ton adresse IP est anonymisée, les signaux publicitaires et la personnalisation sont désactivés, aucun e-mail ni nom n’est transmis. Le consentement est appliqué via Consent Mode v2 ; si tu refuses, aucun script Google n’est chargé. Tu peux modifier ton choix via le lien « Modifier les préférences de cookies » en bas de cette page. Politique de confidentialité de Google : policies.google.com/privacy"
 }

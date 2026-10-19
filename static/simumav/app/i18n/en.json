@@ -207,5 +207,15 @@
   "menu.live_real": "Real terrain · TR TEST Kalecik",
   "menu.live_proc": "Procedural terrain",
   "menu.live_loading": "Preparing scene",
-  "common.loading_scene": "Loading scene"
+  "common.loading_scene": "Loading scene",
+  "cookie.title": "Analytics cookies",
+  "cookie.text": "We collect anonymous usage statistics with Google Analytics to improve the site (IP anonymised, no ads). It loads only if you agree; you can change your choice at any time.",
+  "cookie.more": "Privacy policy",
+  "cookie.necessary": "Essential cookies (session, language, theme) — always on",
+  "cookie.analytics": "Analytics cookies (Google Analytics, anonymous)",
+  "cookie.settings": "Settings",
+  "cookie.reject": "Decline",
+  "cookie.accept": "Accept",
+  "cookie.save": "Save",
+  "cookie.manage": "Change cookie preferences"
 }

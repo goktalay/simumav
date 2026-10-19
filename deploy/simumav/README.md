@@ -67,6 +67,7 @@ bash deploy.sh /opt/hepgo/sshmaster/data/releases/sv/<v>/simumav-<v>.tar.gz
 | `GOOGLE_MAPS_API_KEY` | referrer listesine `simumav.com` eklenir |
 | `HEPGO_SITL_DIR` | `/opt/hepgo/sitl/bin` (arducopter/arduplane ikilileri) |
 | `SIMUMAV_ALLOWED_ORIGINS` | ek CSRF kökenleri (isteğe bağlı) |
+| `SIMUMAV_GA_ID` | Google Analytics 4 ölçüm kimliği (`G-8946D4RPGK`, akış "Mavlink Simulasyon"); `/api/meta.ga_id` ile ön yüze gider; boş → GA ve çerez bandı kapalı |
 
 `SIMUMAV_DEV_LOGIN` PROD'da ASLA 1 yapılmaz. Hesap servisi tarafı: `SIMUMAV_MT_SHARED_SECRET`, `SIMUMAV_RELEASE_KEY`.
 

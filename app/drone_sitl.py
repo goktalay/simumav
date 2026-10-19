@@ -83,30 +83,45 @@ _indir_kilit = threading.Lock()
 # fizik ilgili kanalın PWM'ini 1500 ekseninde yansıtır → gerçek uçağın SERVOn_REVERSED=1 kaydı SITL'e aynen yazılır ve uçak düzgün uçar.
 # Resmi firmware.ardupilot.org ikilisi bu parametreyi tanımaz → `sanal_montaj_destegi` False → drone_params nötr (0) yoluna düşer.
 SANAL_MONTAJ_IMZA = b'\x00SRV_REV\x00'   # AP_Param tablo adı (null sonlu); resmi 4.7.2 ikilisinde geçmez (ölçüldü)
+# HEPGO yaması 0002 (tools/sitl/0002-sim-pln-thr-mul.patch): SIM_PLN_THR_MUL — plane modeli itki çarpanı (azami hız; flightsim_power)
+HIZ_OLCEGI_IMZA = b'\x00PLN_THR_MUL\x00'
 _yetenek_cache = {}
 
 
-def sanal_montaj_destegi(tip):
-    """İkili SIM_SRV_REV (sanal servo montajı) parametresini tanıyor mu? İkili dosyasında parametre adı aranır (ELF .rodata; 7 MB, ~10 ms;
-    yol+mtime+boyut ile önbellek). İkili yoksa (ilk kullanımda indirilecek resmi sürüm) False."""
+def _imza_destegi(tip, imza):
+    """İkili verilen AP_Param adını tanıyor mu? İkili dosyasında null sonlu ad aranır (ELF .rodata; 7 MB, ~10 ms; yol+mtime+boyut ile
+    önbellek). İkili yoksa (ilk kullanımda indirilecek resmi sürüm) False."""
     yol = ikili_yolu(tip)
     try:
         st = yol.stat()
     except OSError:
         return False
-    anahtar = (str(yol), st.st_mtime_ns, st.st_size)
+    anahtar = (str(yol), st.st_mtime_ns, st.st_size, imza)
     with _indir_kilit:
         if anahtar in _yetenek_cache:
             return _yetenek_cache[anahtar]
     try:
         with open(yol, 'rb') as f:
-            destek = SANAL_MONTAJ_IMZA in f.read()
+            destek = imza in f.read()
     except OSError:
         destek = False
     with _indir_kilit:
-        _yetenek_cache.clear()
+        for k in [k for k in _yetenek_cache if k[0] == str(yol) and (k[1], k[2]) != (st.st_mtime_ns, st.st_size)]:
+            _yetenek_cache.pop(k, None)   # aynı yolun eski sürüm girdileri
         _yetenek_cache[anahtar] = destek
     return destek
+
+
+def sanal_montaj_destegi(tip):
+    """İkili SIM_SRV_REV (sanal servo montajı) parametresini tanıyor mu?"""
+    return _imza_destegi(tip, SANAL_MONTAJ_IMZA)
+
+
+def hiz_olcegi_destegi(tip):
+    """İkili SIM_PLN_THR_MUL (plane itki çarpanı; azami hız §23) parametresini tanıyor mu? Yalnız uçak tiplerinde anlamlı."""
+    if tip not in ('sabit_kanat', 'vtol'):
+        return False
+    return _imza_destegi(tip, HIZ_OLCEGI_IMZA)
 
 
 def indir(tip, konsol=None):

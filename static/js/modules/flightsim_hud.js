@@ -285,7 +285,7 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
     text(`FOV ${fov.toFixed(0)}°`, rx, ry0 + 36 * S, { align: 'right', px: F * 0.9 });
 
     // --- sol alt: mod · ARM/SAFE · G · gaz · batarya · GPS (Mission Planner kutusunun üstünde) ---
-    const lx = 22 * S, lh = 17 * S, ly0 = bottomLimit - lay.mp - 14 * S - lh * (ctx.launch ? 7 : 6);   // sol alttaki kutunun (MP / kayıt bilgisi) üstünde
+    const lx = 22 * S, lh = 17 * S, ly0 = bottomLimit - lay.mp - 14 * S - lh * ((ctx.launch ? 7 : 6) + (t.fuel ? 1 : 0));   // sol alttaki kutunun (MP / kayıt bilgisi) üstünde; §23 yakıt satırı varsa bir satır daha
     let ly = ly0;
     text(t.mode || '—', lx, ly, { px: F * 1.2, bold: true }); ly += lh * 1.25;
     text(armed ? 'ARM' : 'SAFE', lx, ly, { px: F * 1.05, bold: true, color: armed ? C : '#cfd6cc' }); ly += lh;
@@ -294,8 +294,15 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
     const thr = clamp(num(t.throttle, 0), 0, 100);
     text(`THR ${thr.toFixed(0).padStart(3, ' ')}%`, lx, ly, { px: F * 0.95 });
     g.beginPath(); g.rect(lx + 78 * S, ly - 5 * S, 70 * S, 10 * S); stroke(C, 1); g.fillStyle = C; g.fillRect(lx + 78 * S, ly - 5 * S, 70 * S * thr / 100, 10 * S); ly += lh;
-    const bp = num(t.batt_pct, null), bv = num(t.batt_v, null);
-    text(`BAT ${bv != null ? bv.toFixed(1) + 'V' : '—'} ${bp != null ? bp.toFixed(0) + '%' : ''}`, lx, ly, { px: F * 0.95, color: bp != null && bp < 25 ? RED : C }); ly += lh;
+    // §23: elektronik batarya (tele.elec) varsa pil satırı ondan (V kestirimi, %, kalan dk); yakıt satırı (L, %, menzil) altında
+    const el_ = t.elec || null;
+    const bp = el_ ? num(el_.pct, null) : num(t.batt_pct, null), bv = el_ ? num(el_.v, null) : num(t.batt_v, null);
+    const batLow = el_ ? (el_.empty || (bp != null && bp < 25)) : (bp != null && bp < 25);
+    text(`BAT ${bv != null ? bv.toFixed(1) + 'V' : '—'} ${bp != null ? bp.toFixed(0) + '%' : ''}${el_ && el_.min_left != null ? ` ${Math.round(el_.min_left)}min` : ''}`, lx, ly, { px: F * 0.95, color: batLow ? RED : C }); ly += lh;
+    if (t.fuel) {
+      const f = t.fuel, km = num(f.range_km, 0), fuelLow = f.empty || num(f.pct, 100) < 20;
+      text(`FUEL ${num(f.l, 0).toFixed(2)}L ${Math.round(num(f.pct, 0))}% ${km >= 10 ? Math.round(km) + 'km' : km.toFixed(1) + 'km'}`, lx, ly, { px: F * 0.95, color: fuelLow ? RED : C }); ly += lh;
+    }
     // GPS fix türü (MAVLink GPS_FIX_TYPE): 6 RTK Fixed (SITL u-blox arka ucu zaten RTK bildirir, §13), 5 RTK Float, 4 DGPS, 3 3D, 2 2D
     const fix = t.gps_fix >= 6 ? 'RTK' : t.gps_fix === 5 ? 'RTK FLT' : t.gps_fix === 4 ? 'DGPS' : t.gps_fix === 3 ? '3D' : t.gps_fix === 2 ? '2D' : '--';
     text(`GPS ${fix} ${t.sats != null ? t.sats + ' SAT' : ''}`, lx, ly, { px: F * 0.95 }); ly += lh;
@@ -319,7 +326,8 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
     const warns = [];
     if (ctx.collision) warns.push(tr('ÇARPIŞMA'));
     if (!ctx.replay && armed && (!Array.isArray(t.rc) || !t.rc.length || t.rc.every(v => !v))) warns.push(tr('RC YOK'));
-    if (bp != null && bp < 25) warns.push(tr('BATARYA'));
+    if (el_?.empty) warns.push(tr('BATARYA BİTTİ')); else if (bp != null && bp < 25) warns.push(tr('BATARYA'));
+    if (t.fuel?.empty) warns.push(tr('YAKIT BİTTİ')); else if (t.fuel && num(t.fuel.pct, 100) < 20) warns.push(tr('DÜŞÜK YAKIT'));
     if (!ctx.replay && gcsSeen && t.gcs_connected === false) warns.push(tr('GCS KESİLDİ'));
     if (low) warns.push(tr('ALÇAK'));
     if (warns.length) {

@@ -213,6 +213,8 @@ p { margin: 0; }
 .legal h1 { font-size: clamp(1.8rem, 4vw, 2.6rem); margin-bottom: .5rem; }
 .legal p { margin-top: 1rem; color: var(--ink); }
 .legal .lead { margin-top: .4rem; }
+.legal .legal-h2 { font-size: 1.2rem; margin-top: 1.6rem; color: var(--cyan); }
+.legal .legal-links { margin-top: 2rem; color: var(--muted); } .legal .legal-links a { color: var(--muted); } .legal .legal-links a:hover { color: var(--cyan); }
 
 /* ---------- RTL ---------- */
 [dir="rtl"] .nav-links { margin-inline-start: auto; }

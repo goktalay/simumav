@@ -15,7 +15,7 @@
 //       homeArrow, createFpvPrefs (localStorage fs.fpv.analog / fs.fpv.pip / fs.fpv.nose / fs.fpv.fov / fs.osd.on).
 
 export const LS = { analog: 'fs.fpv.analog', pip: 'fs.fpv.pip', nose: 'fs.fpv.nose', fov: 'fs.fpv.fov', osd: 'fs.osd.on', cam: 'fs.cam' };
-export const LOW_BATT_PCT = 25, LOW_ALT_M = 10, LOW_RSSI = 30;
+export const LOW_BATT_PCT = 25, LOW_ALT_M = 10, LOW_RSSI = 30, LOW_FUEL_PCT = 20;
 export const CELL = { min: 3.5, max: 4.2, nominal: 3.8 };   // LiPo hücre gerilimleri (yüzde kestirimi)
 const DEG = Math.PI / 180;
 const WHITE = '#f4f6f8', DIM = 'rgba(244,246,248,.6)', RED = '#ff4a4a';
@@ -56,13 +56,28 @@ export function battPct(v, pct) {
   return clamp((Number(v) / cells - CELL.min) / (CELL.max - CELL.min) * 100, 0, 100);
 }
 // Uyarılar (anahtar listesi; çizimde tr()): crash, lowbatt, lowalt, rssi
-export function osdWarnings({ armed = false, agl = null, gs = 0, batt = null, collision = false, rssi = null } = {}) {
+export function osdWarnings({ armed = false, agl = null, gs = 0, batt = null, collision = false, rssi = null, fuel = null, elec = null } = {}) {
   const w = [];
   if (collision) w.push('crash');
-  if (batt != null && batt < LOW_BATT_PCT) w.push('lowbatt');
+  // §23: elektronik batarya (tele.elec) varsa pil uyarısı ondan; yakıt (tele.fuel) biterse/azalırsa ayrı uyarılar
+  if (elec) { if (elec.empty || elec.wh <= 0) w.push('elecempty'); else if (elec.pct != null && elec.pct < LOW_BATT_PCT) w.push('lowbatt'); }
+  else if (batt != null && batt < LOW_BATT_PCT) w.push('lowbatt');
+  if (fuel) { if (fuel.empty || fuel.l <= 0) w.push('fuelempty'); else if (fuel.pct != null && fuel.pct < LOW_FUEL_PCT) w.push('lowfuel'); }
   if (armed && agl != null && agl < LOW_ALT_M && num(gs, 0) > 3) w.push('lowalt');
   if (rssi != null && rssi < LOW_RSSI) w.push('rssi');
   return w;
+}
+// §23 OSD pil alanı: elektronik batarya varsa (V kestirimi, %, hücre, kalan dk) o; yoksa SITL pili (gerilim + yüzde kestirimi)
+export function osdBattery(t) {
+  if (t?.elec) return { v: num(t.elec.v, null), pct: num(t.elec.pct, null), cells: num(t.elec.cells, null) || null, min: t.elec.min_left != null ? num(t.elec.min_left, null) : null, elec: true, empty: !!t.elec.empty };
+  const v = num(t?.batt_v, null);
+  return { v, pct: battPct(t?.batt_v, t?.batt_pct), cells: cellCount(v), min: null, elec: false, empty: false };
+}
+// §23 OSD yakıt satırı metni: "FUEL 4.14L 83% 103km" (yakıt yoksa null)
+export function osdFuelText(f) {
+  if (!f) return null;
+  const km = num(f.range_km, 0);
+  return `FUEL ${num(f.l, 0).toFixed(2)}L ${Math.round(num(f.pct, 0))}% ${km >= 10 ? `${Math.round(km)}km` : `${km.toFixed(1)}km`}`;
 }
 // Analog parazit yoğunluğu 0…1: RSSI varsa (60 %'den aşağı doğrusal artar), yoksa eve uzaklıkla (3 km'de 0,6)
 export function analogNoise(rssi, distM) {
@@ -192,7 +207,7 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = 
     const gs = num(t.groundspeed, Math.hypot(vn, ve));
     const agl = num(t.alt_rel, num(t.alt_msl, null));
     const armed = !!t.armed;
-    const bp = battPct(t.batt_v, t.batt_pct), bv = num(t.batt_v, null);
+    const bat = osdBattery(t), bp = bat.pct, bv = bat.v;   // §23: elektronik batarya varsa o
     const rssi = num(t.rssi, null);
     const hv = homeVector(t.lat, t.lon, t.home);
     const rcOn = !!ctx.rcOn || stage.classList.contains('rc-on');
@@ -268,14 +283,21 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = 
 
     // --- alt sol: pil (Mission Planner / kayıt bilgisi kutusunun üstünde) ---
     const by = bottom - 10 * S, ly = bottom - 10 * S - (rcOn ? 0 : lay.mp);
-    const lowB = bp != null && bp < LOW_BATT_PCT;
-    text(bv != null && bv > 0 ? `${bv.toFixed(1)}V` : '--.-V', m, ly, { px: F * 1.3, bold: true, base: 'bottom', color: lowB && blink() ? RED : WHITE });
+    const lowB = bat.empty || (bp != null && bp < LOW_BATT_PCT);
+    const fuelTxt = osdFuelText(t.fuel);
+    const fy = fuelTxt ? ly - 42 * S : ly;   // yakıt satırı varsa pil bloğu bir satır yukarı (yakıt en altta)
+    text(bv != null && bv > 0 ? `${bv.toFixed(1)}V` : '--.-V', m, fy, { px: F * 1.3, bold: true, base: 'bottom', color: lowB && blink() ? RED : WHITE });
     if (bp != null) {
-      text(`${bp.toFixed(0)}%`, m + 86 * S, ly, { px: F * 1.1, base: 'bottom', color: lowB ? RED : WHITE });
-      g.beginPath(); g.rect(m, ly - 32 * S, 70 * S, 6 * S); stroke(WHITE, 1); g.fillStyle = lowB ? RED : WHITE; g.fillRect(m, ly - 32 * S, 70 * S * bp / 100, 6 * S);
+      text(`${bp.toFixed(0)}%`, m + 86 * S, fy, { px: F * 1.1, base: 'bottom', color: lowB ? RED : WHITE });
+      g.beginPath(); g.rect(m, fy - 32 * S, 70 * S, 6 * S); stroke(WHITE, 1); g.fillStyle = lowB ? RED : WHITE; g.fillRect(m, fy - 32 * S, 70 * S * bp / 100, 6 * S);
     }
-    const cells = cellCount(bv);
-    if (cells) text(`${cells}S`, m + 140 * S, ly, { px: F * 0.9, base: 'bottom', color: DIM });
+    if (bat.cells) text(`${bat.cells}S`, m + 140 * S, fy, { px: F * 0.9, base: 'bottom', color: DIM });
+    if (bat.elec && bat.min != null) text(`${Math.round(bat.min)}min`, m + 176 * S, fy, { px: F * 0.9, base: 'bottom', color: DIM });   // §23 kalan süre (elektronik)
+    if (fuelTxt) {   // §23 yakıt: litre · % · kalan menzil + çubuk
+      const lowF = t.fuel.empty || num(t.fuel.pct, 100) < LOW_FUEL_PCT;
+      text(fuelTxt, m, ly, { px: F * 1.05, bold: true, base: 'bottom', color: lowF && blink() ? RED : WHITE });
+      g.beginPath(); g.rect(m, ly - 26 * S, 70 * S, 5 * S); stroke(WHITE, 1); g.fillStyle = lowF ? RED : WHITE; g.fillRect(m, ly - 26 * S, 70 * S * clamp(num(t.fuel.pct, 0), 0, 100) / 100, 5 * S);
+    }
 
     // --- alt orta: RSSI · SAT · konum ---
     const rs = rssi != null ? `RSSI ${rssi.toFixed(0)}%` : 'RSSI --';
@@ -294,10 +316,10 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = 
     }
 
     // --- uyarılar (merkezin altında, kırmızı yanıp söner) ---
-    const warns = osdWarnings({ armed, agl, gs, batt: bp, collision: !!ctx.collision, rssi });
+    const warns = osdWarnings({ armed, agl, gs, batt: bp, collision: !!ctx.collision, rssi, fuel: t.fuel || null, elec: t.elec || null });
     if (warns.length) {
       const on = blink(450);
-      const labels = { crash: tr('ÇARPIŞMA'), lowbatt: tr('DÜŞÜK PİL'), lowalt: tr('ALÇAK'), rssi: tr('RSSI DÜŞÜK') };
+      const labels = { crash: tr('ÇARPIŞMA'), lowbatt: tr('DÜŞÜK PİL'), lowalt: tr('ALÇAK'), rssi: tr('RSSI DÜŞÜK'), lowfuel: tr('DÜŞÜK YAKIT'), fuelempty: tr('YAKIT BİTTİ'), elecempty: tr('BATARYA BİTTİ') };
       let wy = cy + 60 * S;
       for (const w of warns) { text(labels[w] || w, cx, wy, { align: 'center', px: F * 1.35, bold: true, color: on ? RED : 'rgba(255,74,74,.45)' }); wy += 24 * S; }
     }

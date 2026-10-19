@@ -161,6 +161,8 @@ export function showFlightReport(MReport, sum, gates, { pilot, drone, track } = 
 // ======================================================================
 export async function openSession(view, start, picked, ctx = {}) {
   const go = ctx.go || (hash => { location.hash = hash; });
+  const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
+  const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
   const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport } = await loadSim();
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
@@ -466,6 +468,7 @@ export async function openSession(view, start, picked, ctx = {}) {
       if (gateLayer) body.gates = gateLayer.body();
       const r = await net.post(`/api/fly/${encodeURIComponent(fid)}/stop`, body);
       const sum = r?.flight?.summary || r?.summary || null;   // POST stop → {ok, flight:{…, summary:{session, flight, mission, crash, gates}}}
+      gaTrack('flight_end', { drone_type: drone?.type || 'unknown', duration_s: Math.round((Date.now() - tOpen) / 1000), world_mode: track?.world_mode || 'unknown', gates: body.gates ? 1 : 0 });
       await showFlightReport(MReport, sum || {}, body.gates || r?.gates || null, { pilot, drone, track });
       if (document.fullscreenElement) await document.exitFullscreen?.().catch(() => {});
       toast('Uçuş kaydedildi');

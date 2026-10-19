@@ -49,7 +49,8 @@ HARIC_ONEKLER = ('STAT_', 'LOG_', 'SIM_WIND_', 'SIM_GPS1_', 'TKOFF_', 'MAV1_', '
 HARIC_ADLAR = frozenset({'MIS_TOTAL', 'FENCE_TOTAL', 'RALLY_TOTAL', 'FORMAT_VERSION', 'SYSID_THISMAV', 'MAV_SYSID', 'SIM_SPEEDUP', 'SIM_RC_FAIL',
                          'FS_THR_ENABLE', 'THR_FAILSAFE', 'RC_OVERRIDE_TIME', 'SERVO3_MIN', 'SERVO3_TRIM', 'TKOFF_THR_MINACC',
                          'BARO1_GND_PRESS', 'BARO2_GND_PRESS', 'BARO3_GND_PRESS', 'GND_ABS_PRESS', 'ARSPD_OFFSET', 'ARSPD2_OFFSET',
-                         'SIM_SRV_REV'})   # SIM_SRV_REV: sanal montaj maskesi, kayıtlı SERVOn_REVERSED'den üretilir (kalıcı kayda girmez)
+                         'SIM_SRV_REV',    # sanal montaj maskesi, kayıtlı SERVOn_REVERSED'den üretilir (kalıcı kayda girmez)
+                         'SIM_PLN_THR_MUL'})   # §23 azami hız itki çarpanı: oturumun `power.max_speed_ms` alanından üretilir (dron kaydı: drone_sitl_options)
 TABAN_TAM_ORAN = 0.9      # param_count'un bu oranı görülünce "ilk tam param listesi" alınmış sayılır (niyetsiz fark kaydı bundan sonra)
 # Ön ek hariç olsa da KAYDEDİLEN adlar: flap yüzdeleri dron yapılandırmasıdır (flightsim.FLAP_PARAMLARI oturum başlangıcı; kullanıcı değiştirirse kalıcı)
 HARIC_DEGIL = frozenset({'TKOFF_FLAP_PCNT', 'LAND_FLAP_PERCNT'})
@@ -307,6 +308,72 @@ def ice_aktar(drone_id, text, user_id=None, conn=None):
         if own:
             c.close()
     return {'imported': len(gecerli), 'skipped': atlanan[:50], 'skipped_count': len(atlanan), 'count': toplam}
+
+
+# ---------------- dron simülasyon seçenekleri (tablo drone_sitl_options; §23 güç ve yakıt) ----------------
+# key: max_speed_ms · fuel_l · fuel_km_per_l_last · elec_cells · elec_mah · elec_w_last (değerler metin; sayı olarak okunur).
+# Oturum sonunda ölçülen km/L ve ortalama W (`*_last`) yazılır → sonraki sihirbazda önerilir; kullanıcı PUT ile tüm alanları değiştirebilir.
+SECENEK_ANAHTARLARI = ('max_speed_ms', 'fuel_l', 'fuel_km_per_l_last', 'elec_cells', 'elec_mah', 'elec_w_last')
+
+
+def secenekleri_oku(drone_id, conn=None):
+    """Dronun simülasyon seçenekleri: {key: float} (yalnız SECENEK_ANAHTARLARI; sayıya çevrilemeyen atlanır) + `updated_at` (en son)."""
+    sql = 'SELECT key, value, updated_at FROM drone_sitl_options WHERE drone_id = ?'
+    if conn is not None:
+        rows = db.rows(conn.execute(sql, (int(drone_id),)))
+    else:
+        with db.connect() as c:
+            rows = db.rows(c.execute(sql, (int(drone_id),)))
+    out, son = {}, None
+    for r in rows:
+        if r['key'] not in SECENEK_ANAHTARLARI:
+            continue
+        try:
+            out[r['key']] = float(r['value'])
+        except (TypeError, ValueError):
+            continue
+        son = max(son or '', r['updated_at'] or '')
+    if 'elec_cells' in out:
+        out['elec_cells'] = int(round(out['elec_cells']))
+    if son:
+        out['updated_at'] = son
+    return out
+
+
+def secenek_yaz(drone_id, degerler, user_id=None, conn=None):
+    """Seçenekleri yazar (UPSERT; None → satır silinir). Bilinmeyen anahtar yok sayılır. Dönüş: yazılan anahtar sayısı."""
+    own = conn is None
+    c = conn or db.connect()
+    n = 0
+    try:
+        for k, v in (degerler or {}).items():
+            if k not in SECENEK_ANAHTARLARI:
+                continue
+            if v is None:
+                c.execute('DELETE FROM drone_sitl_options WHERE drone_id = ? AND key = ?', (int(drone_id), k))
+                n += 1
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            c.execute('''INSERT INTO drone_sitl_options (drone_id, key, value, updated_at, updated_by) VALUES (?,?,?,?,?)
+                         ON CONFLICT(drone_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by''',
+                      (int(drone_id), k, repr(fv) if fv != int(fv) else str(int(fv)), db.now(), user_id))
+            n += 1
+        if own:
+            c.commit()
+    finally:
+        if own:
+            c.close()
+    return n
+
+
+def guc_onerisi(drone_id, conn=None):
+    """Dron kaydından sihirbaz/`power` önerisi (flightsim_power.ALANLAR adlarıyla): kayıtlı değerler; yoksa boş sözlük."""
+    s = secenekleri_oku(drone_id, conn)
+    esleme = {'max_speed_ms': 'max_speed_ms', 'fuel_l': 'fuel_l', 'fuel_km_per_l_last': 'fuel_km_per_l', 'elec_cells': 'elec_cells', 'elec_mah': 'elec_mah', 'elec_w_last': 'elec_w'}
+    return {alan: s[k] for k, alan in esleme.items() if k in s}
 
 
 def parm_satirlari(rows, sanal_montaj=True, tip=None):

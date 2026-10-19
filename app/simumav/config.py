@@ -7,6 +7,7 @@ Yalıtım (§7 "tam yalıtım"): HEPGO çekirdek modülleri (`app.flightsim*`, `
 HEPGO ERP veritabanına/dosyalarına HİÇBİR erişim olmaz. `app.main` hiçbir yerde içe aktarılmaz.
 """
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -93,6 +94,10 @@ SITE_ORIGINS = ('https://simumav.com', 'https://www.simumav.com')
 _extra = [o.strip().rstrip('/') for o in os.environ.get('SIMUMAV_ALLOWED_ORIGINS', '').split(',') if o.strip()]
 ALLOWED_ORIGINS = frozenset([*SITE_ORIGINS, *_extra] + (['http://127.0.0.1:8600', 'http://localhost:8600'] if DEV_LOGIN else []))
 LANGS = ('tr', 'en', 'de', 'fr', 'es', 'ru', 'ar')
+# Google Analytics 4 ölçüm kimliği (akış "Mavlink Simulasyon" → G-8946D4RPGK). Boş → GA yüklenmez, çerez bandı çıkmaz. PROD .env'e eklenir.
+GA_ID = os.environ.get('SIMUMAV_GA_ID', '').strip()
+if GA_ID and not re.fullmatch(r'G-[A-Z0-9]{6,14}', GA_ID):
+    GA_ID = ''
 # Kotalar (§7)
 QUOTA = {'drones': 20, 'pilots': 20, 'tracks': 20, 'missions': 50, 'flights': 100, 'disk_bytes': 1024 ** 3}
 RATE = {'session': (10, 60), 'write': (60, 60), 'read': (300, 60), 'ws': (100, 1)}   # (adet, pencere sn)

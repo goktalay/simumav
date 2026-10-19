@@ -31,6 +31,7 @@
 //   opts.mp = { addr: 'host:port', port, copy(addr) } → MISSION PLANNER bölümü + yüzen kutu; null/yok → MP yok (kayıt kipi)
 import { api } from '../api.js';
 import { confirmDialog, field, h, modal, toast, toastError, t as tr } from '../ui.js';
+import { createSpeedPill, elecText, fuelText, minText, rangeText } from './flightsim_power.js';   // §23: yakıt/batarya karoları + Sim grubunda hız seçici
 
 const KEY_ON = 'fs.ops.on', KEY_COL = 'fs.panel.col', KEY_FOLD = 'fs.panel.fold', KEY_MIN = 'fs.panel.min';
 const DEG = Math.PI / 180;
@@ -60,6 +61,7 @@ const ICO = {
   alt: svg('<path d="M8 4v16M8 4 5 7M8 4l3 3M16 20V4M16 20l-3-3M16 20l3-3"/>'),
   spd: svg('<path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4-6"/><circle cx="12" cy="16" r="1.6"/><path d="M4 16h2M18 16h2"/>'),
   bat: svg('<rect x="2.5" y="8" width="16" height="8" rx="1.6"/><path d="M21 11v2"/><rect class="fill" x="4.5" y="10" width="12" height="4" fill="currentColor" stroke="none"/>'),
+  fuel: svg('<path d="M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M4 21h12"/><path d="M7 7h6v4H7z"/><path d="M15 9h2a2 2 0 0 1 2 2v5a1.5 1.5 0 0 0 3 0V9l-2-2"/>'),
   gps: svg('<path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 7a13 13 0 0 1 13 13"/><path d="M4 20l5-5"/><circle cx="10" cy="14" r="1.6"/>'),
   lock: svg('<rect x="5" y="11" width="14" height="9" rx="1.6"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'),
   unlock: svg('<rect x="5" y="11" width="14" height="9" rx="1.6"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/>'),
@@ -83,7 +85,7 @@ const ICO = {
 };
 
 export function createOpsPanel(stage, opts = {}) {
-  const { sid, session = {}, type = 'multirotor', modes = [], launch = null, canWrite = false, hub = true, cmdSim = null, onToggle = null, onReset = null, mp = null } = opts;
+  const { sid, session = {}, type = 'multirotor', modes = [], launch = null, canWrite = false, hub = true, cmdSim = null, onToggle = null, onReset = null, mp = null, speed = null } = opts;
   const getSim = opts.getSim || (() => null);
   const bridgeId = session.hub?.bridge_id ?? null;
   let on = (localStorage.getItem(KEY_ON) ?? '1') !== '0';
@@ -144,9 +146,13 @@ export function createOpsPanel(stage, opts = {}) {
     mode: tile('mode', 'MOD', 'mode', { click: el => modeMenu(el), title: tr('Uçuş modu seç') }),
     type: tile('type', 'TİP', 'fan'),
     cmd: tile('cmd', 'KOMUT', 'takeoff', { click: () => (launchBtnText() === 'İniş' ? land() : takeoffDialog()), title: tr('Kalkış / iniş') }),
+    fuel: tile('fuel', 'YAKIT', 'fuel', { title: tr('Yakıt: kalan litre, yüzde, kalan menzil (§23)') }),   // §23: yalnız tele.fuel varsa görünür
   };
+  T.fuel.hidden = true;
   T.type.v.textContent = tr(TYPE_NAME[type] || type); T.type.sub.textContent = session.sitl || session.mode === 'replay' ? (session.mode === 'replay' ? tr('Kayıt') : 'SITL') : '';
-  const tilesBolum = bolum('tiles', 'TELEMETRİ', h('div', { class: 'fs-pn-tiles' }, T.alt, T.spd, T.bat, T.gps, T.arm, T.mode, T.type, T.cmd));
+  const tilesBolum = bolum('tiles', 'TELEMETRİ', h('div', { class: 'fs-pn-tiles' }, T.alt, T.spd, T.bat, T.gps, T.arm, T.mode, T.type, T.cmd, T.fuel));
+  // §23 simülasyon hızı (Sim grubu): 1×/2×/4×/8× → cmd speed (SIM_SPEEDUP); seçili düğme tele.speedup ile eşitlenir
+  const speedPill = speed ? createSpeedPill({ h, tr, onPick: f => speed.onPick?.(f), cls: 'fs-pn-speed-pill' }) : null;
 
   // --- İŞLEMLER (.dk-islem-izgara 3 sütun; .dk-islem-grup grup başlıkları; .dk-islem-hucre: ikon + metin) ---
   const hucre = (label, icon, fn, cls = '') => h('button', { class: `fs-pn-hucre ${cls}`, type: 'button', onclick: fn }, ico(icon, 'fs-pn-hucre-ico'), h('span', { class: 'fs-pn-hucre-metin' }, label));
@@ -169,6 +175,7 @@ export function createOpsPanel(stage, opts = {}) {
     h('div', { class: 'fs-pn-tam' }, routeInfo),
     grup('Sim'),
     hucre('↺ Sıfırla', 'reset', () => { onReset ? onReset() : cmdSim?.('reset'); }, 'fs-pn-free'), hucre('Yerleşimi sıfırla', 'layout', () => resetLayout(), 'fs-pn-free'),
+    speedPill ? h('div', { class: 'fs-pn-tam fs-pn-speed' }, h('span', { class: 'fs-pn-not' }, tr('Simülasyon hızı')), speedPill.el) : null,
     h('div', { class: 'fs-pn-tam fs-pn-not fs-pn-perm' }, ''));
   const opsBolum = bolum('ops', 'İŞLEMLER', opsBody);
 
@@ -352,6 +359,7 @@ export function createOpsPanel(stage, opts = {}) {
     const ok = canCmd();
     root.querySelectorAll('.fs-pn-ops-body button:not(.fs-pn-free), .fs-pn-ops-body select, .fs-pn-ops-body input').forEach(b => { b.disabled = !ok; });
     root.querySelectorAll('.fs-pn-ops-body .fs-pn-free').forEach(b => { b.disabled = !canWrite; });
+    speedPill?.setEnabled(canWrite && state === 'HAZIR');   // §23: hız seçici sim komutudur (hub gerekmez)
     for (const k of ['arm', 'mode', 'cmd']) T[k].classList.toggle('off', !ok);
     hazirBtn.classList.toggle('off', !ok);
     const perm = root.querySelector('.fs-pn-perm');
@@ -388,10 +396,22 @@ export function createOpsPanel(stage, opts = {}) {
     B.arm.textContent = armed ? 'ARMED' : 'DISARMED'; B.arm.className = `fs-pn-rozet ${armed ? 'kotu' : 'yok'}`;
     T.alt.v.textContent = `${f1(t.alt_rel)} m`; T.alt.sub.textContent = `MSL ${f0(t.alt_msl)} m`;
     T.spd.v.textContent = `${f1(t.groundspeed)} m/s`; T.spd.sub.textContent = t.groundspeed != null ? `${(Number(t.groundspeed) * 3.6).toFixed(1)} km/h` : '';   // GÖKTUNGU: m/s + km/h (hava hızı PFD'de IAS)
-    const bv = num(t.batt_v), bp = num(t.batt_pct);
-    T.bat.v.textContent = bp != null ? `${f0(bp)}%` : '—'; T.bat.sub.textContent = bv != null && bv > 0 ? `${bv.toFixed(2)} V` : '';
-    T.bat.classList.toggle('warn', bp != null && bp < 25); T.bat.classList.toggle('iyi', bp != null && bp >= 25);
+    // §23: elektronik batarya (tele.elec) varsa BATARYA karosu ondan (%, kestirilen V, kalan süre); yoksa SITL pili
+    const el_ = t.elec || null;
+    const bv = el_ ? num(el_.v) : num(t.batt_v), bp = el_ ? num(el_.pct) : num(t.batt_pct);
+    T.bat.v.textContent = bp != null ? `${f0(bp)}%` : '—';
+    T.bat.sub.textContent = el_ ? `${bv != null ? `${bv.toFixed(1)} V` : ''}${el_.min_left != null ? ` · ${minText(el_.min_left)}` : ''}${el_.cells ? ` · ${el_.cells}S` : ''}` : (bv != null && bv > 0 ? `${bv.toFixed(2)} V` : '');
+    T.bat.title = el_ ? `${tr('Elektronik batarya')} · ${elecText(el_)} · ${f1(el_.w)} W` : '';
+    T.bat.classList.toggle('kotu', !!el_?.empty); T.bat.classList.toggle('warn', !el_?.empty && bp != null && bp < 25); T.bat.classList.toggle('iyi', !el_?.empty && bp != null && bp >= 25);
     const fill = T.bat.i.querySelector('.fill'); if (fill) fill.setAttribute('width', String(bp != null ? Math.max(0, Math.min(12, 12 * bp / 100)) : 0));
+    const fu = t.fuel || null;   // §23 yakıt karosu
+    T.fuel.hidden = !fu;
+    if (fu) {
+      T.fuel.v.textContent = `${num(fu.l, 0).toFixed(2)} L`; T.fuel.sub.textContent = `%${f0(fu.pct)} · ${rangeText(fu.range_km)}`;
+      T.fuel.title = `${fuelText(fu)} · ${tr('menzil')} ${rangeText(fu.range_km)} · ${(num(fu.lpm, 0) * 60).toFixed(2)} L/sa`;
+      T.fuel.classList.toggle('kotu', !!fu.empty); T.fuel.classList.toggle('warn', !fu.empty && num(fu.pct, 100) < 20); T.fuel.classList.toggle('iyi', !fu.empty && num(fu.pct, 0) >= 20);
+    }
+    if (speedPill && t.speedup != null) speedPill.set(t.speedup);
     T.gps.v.textContent = `${gpsText(t.gps_fix)} · ${f0(t.sats)}`; T.gps.sub.textContent = tr('{n} uydu', { n: f0(t.sats) }) + (gcs ? ' · MP' : '');   // MP: Mission Planner (UDP) bağlı
     T.gps.className = `fs-pn-tile ${t.gps_fix >= 3 ? 'iyi' : t.gps_fix === 2 ? 'warn' : 'kotu'}`;
     T.arm.v.textContent = armed ? 'ARMED' : 'DISARM'; T.arm.classList.toggle('iyi', armed); T.arm.sub.textContent = hubState.prearm?.length && !armed ? tr('PreArm uyarısı') : armed ? tr('uçuşta') : tr('hazır');

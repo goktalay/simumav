@@ -25,6 +25,7 @@ import { createOpsPanel } from './flightsim_panel.js';
 import { acquireDisplayStream, createRecorder, enterFullscreen, exitFullscreen, pendingCard, recOptionsBox, recPrefs, stashStream, takeStashedStream } from './flightsim_record.js';   // §17: ekran kaydı (Başlat→Bitir) → Şirketten Haberler / sakla; kayıt seçenekleri kutusu; otomatik tam ekran   // §14: YERLİ harekât paneli (iframe yok) — kartlar 3B'nin üstünde yüzer; hub soketi + komutlar panelde
 import { showReport } from './flightsim_report.js';   // §18: Bitir'de özet rapor modalı (çarpışma/sapma kırmızı, mini harita); kayıt tablosundan "Rapor"
 import { runsTable, runsQuery } from './flightsim_runs.js';   // §21: Simülasyon Kayıtları tablosu (filtre/sıralama/sayfalama; Oynat/Rapor/Video/.bin; MASTER: parametre/script)
+import { createPowerSection, createPowerSim, createSpeedPill, elecText, fuelText, rangeText } from './flightsim_power.js';   // §23: güç ve yakıt (sihirbaz bölümü, göstergeler, kayıtta istemci modeli, hız kapsülü)
 
 const API = '/api/drone/sim';
 // §8 ön hazırlık: sihirbazın hazırlık kartında indirilen kayıt kareleri oturum ekranına devredilir (aynı belge; be.replay yeniden çekilmez)
@@ -303,7 +304,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const picker = modelPicker({ getType: activeType, canWrite, mock, getSim: () => preview, onSelect: m => preview?.setType(activeType(), m) });
   const modelBox = h('div', { class: 'fs-model-step' }, h('p', { class: 'small muted' }, 'Dron tipi için görsel gövde: dahili modeller her zaman vardır; sistemdeki STEP/GLB/OBJ dosyaları ya da yüklediğiniz model seçilince tarayıcıda GLB\'ye dönüştürülür.'), picker.el);
   const refreshModels = () => picker.refresh(activeType()).then(m => { if (m) preview?.setType(activeType(), m); });
-  const drawTypes = () => clear(typeCards, types.map(t => h('button', { type: 'button', class: `fs-type ${S.type === t.key ? 'on' : ''}`, onclick: () => { S.type = t.key; drawTypes(); drawLaunch(); refreshModels(); } },
+  const drawTypes = () => clear(typeCards, types.map(t => h('button', { type: 'button', class: `fs-type ${S.type === t.key ? 'on' : ''}`, onclick: () => { S.type = t.key; drawTypes(); drawLaunch(); refreshModels(); powerSec?.refresh(); } },
     h('span', { class: 'fs-type-ico', html: TYPE_ICON[t.icon] || TYPE_ICON.quad }),
     h('b', null, t.name), h('span', { class: 'small muted' }, t.desc || ''))));
   drawTypes();
@@ -370,7 +371,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     : h('div', { class: 'small muted fs-nocenter' }, 'Kayıtlı merkez yok. Önce ', h('a', { href: '#/drone/routes' }, 'Rotalar › Merkezler'), ' bölümünden bir merkez ekleyin.'));
   drawCenters();
   // ---------- 2b. dron kaydı (isteğe bağlı; §14): harekât panelinde telemetri bu dronun koduyla/adıyla akar; yoksa "Simülatör #N" ----------
-  const droneSel = h('select', { class: 'input fs-drone-sel', onchange: () => { S.drone = droneSel.value ? Number(droneSel.value) : null; } }, h('option', { value: '' }, 'Yok — "Simülatör #N" sanal dronu'));
+  const droneSel = h('select', { class: 'input fs-drone-sel', onchange: () => { S.drone = droneSel.value ? Number(droneSel.value) : null; powerSec?.refresh(); } }, h('option', { value: '' }, 'Yok — "Simülatör #N" sanal dronu'));
   const droneBox = h('div', { class: 'fs-drone-step' },
     h('p', { class: 'small muted' }, 'Dron Envanteri\'nden bir kayıt seçilirse harekât panelinde dron o adla görünür; seçilmezse oturuma özel "Simülatör #N" sanal dronu kullanılır. Simülatör her durumda SITL\'dir; kayıt yalnız kimliktir.'),
     h('label', { class: 'fs-drone-row' }, h('span', { class: 'small muted' }, 'Dron kaydı'), droneSel));
@@ -506,6 +507,9 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   sliders.building_count.inp.addEventListener('input', () => { bcTouched = true; });
   applyMode();
 
+  // ---------- 3a. güç ve yakıt (§23): azami hız · yakıt L + km/L · batarya S/mAh/W — varsayılanlar dron kaydından (son ölçümler), yoksa tip varsayılanı ----------
+  const powerSec = createPowerSection({ h, tr, api, getType: activeType, getDroneId: () => S.drone, mock });
+  powerSec.refresh();
   // ---------- 3b. kayıt seçenekleri (§17/§19): ☐ ekran kaydı (video) › ☐ Şirketten Haberler'de paylaş · ☐ uçuş logu (.bin; yalnız canlı) ----------
   const recOpts = recOptionsBox(tr, { getMode: () => S.mode });
 
@@ -604,7 +608,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
       const model = modelBody(picker.selectionFor(activeType()), mock);
       s = S.mode === 'replay'
         ? await be.create({ mode: 'replay', log_id: S.log, world: { ...S.world }, model })
-        : await be.create({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model, drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin } });
+        : await be.create({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model, drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values() });   // §23 güç ve yakıt
     } catch (err) {
       const msg = { 400: S.mode === 'replay' ? 'Log açılamadı; analizi tamamlanmış bir .bin/.tlog seçin' : 'Geçersiz ayar; dünya değerlerini ve merkezi kontrol edin', 409: 'Oturum sınırı doldu; açık bir oturumu bitirin', 503: 'SITL hazır değil (ikili ya da boş port yok)' }[err?.status];
       toast(msg || err.message, 'err');
@@ -636,6 +640,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
       ? (rp ? tr('Kayıt sunucuda bir kez ayrıştırılır ve önbelleğe alınır; SITL ve Mission Planner köprüsü açılmaz.') : tr('En çok {n} eşzamanlı oturum · oturum süresi {m} dk', { n: limits.max_sessions ?? '—', m: limits.max_minutes ?? '—' }))
       : 'Oturum açmak için Dron Yönetimi yazma izni gerekir; açık oturumları izleyebilirsiniz.');
     (rp ? stepLog : stepType).append(launchBox, modelBox);   // kalkış yöntemi + model bölümü: canlı kipte tip kartlarının, kayıt kipinde log listesinin altında
+    powerSec.el.hidden = rp;   // §23: kayıtta ayarlar kaydın canlı oturumundan gelir (session.power)
     recOpts.sync();   // .bin seçeneği yalnız canlı SITL'de
     drawLaunch();
     if (rp && S.logs === null) loadLogs().then(refreshModels); else refreshModels();
@@ -644,6 +649,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const body = h('div', { class: 'fs-wizard' },
     h('div', { class: 'fs-mode-row' }, h('span', { class: 'small muted' }, 'Kip'), modeSeg),
     stepType, stepCenter, stepLog, stepWorld,
+    powerSec.el,                    // §23 güç ve yakıt
     canWrite ? recOpts.el : null,   // §17/§19 kayıt seçenekleri (Başlat'ın üstünde)
     h('div', { class: 'fs-start-row' }, startNote));
   // Pencere: başlık "Yeni Simülasyon Başlat", kaydırılabilir gövde, altbilgi "İptal et" + "Başlat" (primary). Kapanış: önizleme serbest, sayfa yenilenir.
@@ -708,12 +714,16 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // (ui.js goBack; klavye Escape ile aynı: tam ekranda Escape'i tarayıcı yakalar ve çıkar, tam ekran dışında Escape → geri; aşağıda onKeyBack)
   const backBtn = h('a', { class: 'fs-back', href: be.href(), title: tr('Geri (Esc)'), 'aria-label': tr('Geri'),
     onclick: e => { e.preventDefault(); goBack(be.href()); } }, h('span', { class: 'fs-back-ico', 'aria-hidden': 'true' }, '←'), h('span', { class: 'fs-back-txt' }, 'Geri'));
+  // §23 simülasyon hızı kapsülü (üst çubuk; panelde aynı seçici): cmd speed {factor} → SITL SIM_SPEEDUP; seçili düğme tele.speedup ile eşitlenir
+  const speedPill = createSpeedPill({ h, tr, onPick: f => { if (!canWrite) { toast(tr('Simülasyon hızı için yazma izni gerekir'), 'err'); return; } cmd('speed', { factor: f }); } });
+  if (!canWrite) speedPill.setEnabled(false);
   const nav = h('div', { class: 'fs-nav' },
     backBtn,
     h('b', null, 'Uçuş Simülatörü'), h('span', { class: 'fs-nav-sub' }, `${TYPE_NAME[type] || type} · ${(replay ? session.replay?.file_name : session.center?.name) || '—'}`), stateBadge, wsBadge,
     replay ? h('span', { class: 'badge purple', title: 'Kayıttan oynatma: yüklü uçuş logu aynen oynatılır; kontrol yok' }, 'Kayıt') : null,
     launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, launchLabel(launch, tr)) : null,
     mock ? h('span', { class: 'badge purple' }, 'Sahte veri') : null,
+    replay ? null : speedPill.el,   // §23 simülasyon hızı 1×/2×/4×/8× (SIM_SPEEDUP); yazma izni yoksa yalnız gösterir
     h('button', { class: 'fs-nav-btn fs-full-btn', type: 'button', title: 'Tam ekran', onclick: () => { (document.fullscreenElement ? document.exitFullscreen?.() : document.documentElement.requestFullscreen?.())?.then(() => onFullChange()).catch(() => {}); } }, '⛶'));
   // Tam ekran BELGEYE (document.documentElement) uygulanır, sahneye değil: ui.js modal()/toast() ve açılır menüler body'ye eklenir; sahne
   // (.fs-stage) tam ekran öğesi olsaydı bunlar tam ekran öğesinin dışında kalır ve GÖRÜNMEZDİ (kullanıcı: "tam ekrandayken mesaj pencereleri
@@ -733,7 +743,11 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // HUD (sağ): sabit satırlar, değerler textContent ile güncellenir (DOM yeniden kurulmaz)
   const val = cls => h('b', { class: `fs-v ${cls || ''}` }, '—');
   const V = { mode: h('span', { class: 'badge blue fs-mode' }, '—'), arm: h('span', { class: 'badge gray fs-arm' }, 'DISARMED'),
-    agl: val(), msl: val(), air: val(), gnd: val(), climb: val(), hdg: val(), gps: val(), batt: val(), thr: val(), wind: val() };
+    agl: val(), msl: val(), air: val(), gnd: val(), climb: val(), hdg: val(), gps: val(), batt: val(), fuel: val(), thr: val(), wind: val() };
+  // §23: güç ve yakıt — canlıda sunucunun tele.fuel/tele.elec'i; kayıt ve sahte kipte istemci modeli (session.power ayarlarıyla karelerden)
+  const powerSet = session.power || null;
+  const clientPower = (replay || mock) && powerSet ? createPowerSim(powerSet) : null;
+  let powerWarned = { fuel: false, elec: false };
   const row = (label, el, unit) => h('div', { class: 'fs-row' }, h('span', null, label), h('span', { class: 'fs-rv' }, el, unit ? h('i', null, unit) : null));
   const rcBars = Array.from({ length: 8 }, (_, i) => h('div', { class: 'fs-rc', title: tr('Kanal {n}', { n: i + 1 }) }, h('i'), h('small', null, String(i + 1))));
   const thrBar = h('div', { class: 'fs-thr' }, h('i'));
@@ -744,6 +758,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     row('AGL', V.agl, 'm'), row('MSL', V.msl, 'm'),
     row('Hava hızı', V.air, 'm/s'), row('Yer hızı', V.gnd, 'm/s'), row('Dikey hız', V.climb, 'm/s'),
     row('Yön', V.hdg, '°'), row('GPS', V.gps), row('Batarya', V.batt),
+    h('div', { class: 'fs-row fs-row-fuel', hidden: true }, h('span', null, 'Yakıt'), h('span', { class: 'fs-rv' }, V.fuel)),   // §23: tele.fuel varsa görünür
     h('div', { class: 'fs-row' }, h('span', null, 'Gaz'), h('span', { class: 'fs-rv' }, V.thr, h('i', null, '%'))), thrBar,
     h('div', { class: 'fs-row fs-row-rc' }, h('span', null, 'RC'), h('div', { class: 'fs-rcs' }, rcBars)),
     h('div', { class: 'fs-row' }, h('span', null, 'Rüzgâr'), h('span', { class: 'fs-rv' }, windArrow, V.wind, h('i', null, 'm/s'))),
@@ -840,7 +855,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const attrib = world.mode === 'real' || g3dMode ? h('div', { class: `fs-attrib ${g3dMode ? 'fs-attrib-g3d' : ''}` }, g3dMode ? h('img', { class: 'fs-g3d-logo', src: G3D_LOGO, alt: 'Google' }) : null, attribTxt) : null;
   stage.append(mount, msg, crash, hud, ...(mp ? [mp] : []), events, sticks, bar, nav, ended);
   if (attrib) stage.append(attrib);
-  ops = createOpsPanel(stage, { sid, session, type, modes, launch, canWrite, hub: !replay && !mock, mp: mpOpts, getSim: () => sim, cmdSim: (name, params) => cmd(name, params), onReset: () => reset(), onToggle: on => opsBtn.classList.toggle('primary', on) });
+  ops = createOpsPanel(stage, { sid, session, type, modes, launch, canWrite, hub: !replay && !mock, mp: mpOpts, getSim: () => sim, cmdSim: (name, params) => cmd(name, params), onReset: () => reset(), onToggle: on => opsBtn.classList.toggle('primary', on),
+    speed: replay ? null : { onPick: f => cmd('speed', { factor: f }) } });   // §23: panel "Sim" grubunda hız seçici
   opsBtn.classList.toggle('primary', ops.enabled);
   const audio = createEngineAudio(stage, { type, launch, replay, tr, getSim: () => sim, getCrashed: () => !crash.hidden, getSpeed: () => player?.speed() ?? 1 });   // §16: düğmeyi alt çubuğa kendisi ekler; kamera/kalkış aşaması/çarpışma getter'lardan
   // §17 ekran kaydı: rozet üst şeride, anahtar alt çubuğa; 3B hazır olunca başlar (Başlat'ta alınan ekran paylaşımı akışı varsa o, yoksa 3B+HUD tuvali)
@@ -1008,10 +1024,20 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       rcBars[i].classList.toggle('vr', !!loc && i < 5);
     }
   };
+  // §23: kayıt/sahte kipte yakıt-batarya istemci modelinden (kare zamanı: kayıt t, sahte ts); canlıda sunucudan gelir. Bitince kırmızı olay (bir kez)
+  const applyClientPower = t => {
+    if (!clientPower) return;
+    const tsec = replay ? t.t : (t.ts != null ? Number(t.ts) : performance.now() / 1000);
+    const done = clientPower.step(t, tsec);
+    Object.assign(t, clientPower.state());
+    for (const k of done) { if (powerWarned[k]) continue; powerWarned[k] = true; addEvent(tr(k === 'fuel' ? 'YAKIT BİTTİ — simülasyon sürüyor' : 'ELEKTRONİK BATARYA BİTTİ — simülasyon sürüyor'), 'error', replay ? tsec : null); }
+  };
   const updateHud = t => {
+    applyClientPower(t);
     last = t;
     sim?.setTelemetry(t);
     milHud?.update(t); osd?.update(t); audio.update(t); ops?.update(t);
+    if (t.speedup != null) speedPill.set(t.speedup);
     const now = performance.now();
     if (now - hudAt < 80) return;
     hudAt = now;
@@ -1024,8 +1050,16 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     V.climb.textContent = (climb != null && climb > 0.05 ? '+' : '') + f1(climb);
     V.hdg.textContent = f0(t.heading != null ? t.heading : (t.yaw != null ? ((t.yaw * 180 / Math.PI) + 360) % 360 : null)).padStart(3, '0');
     V.gps.textContent = `${t.gps_fix >= 6 ? 'RTK' : t.gps_fix === 5 ? 'RTK FLT' : t.gps_fix === 4 ? 'DGPS' : t.gps_fix === 3 ? '3D' : t.gps_fix === 2 ? '2D' : tr('Yok')} · ${f0(t.sats)} ${tr('uydu')}`;
-    V.batt.textContent = `${t.batt_v != null && Number(t.batt_v) > 0 ? Number(t.batt_v).toFixed(2) : '—'} V · %${f0(t.batt_pct)}`;   // SITL'de batarya izleme kapalıysa 0 V gelir
-    V.batt.classList.toggle('warn', t.batt_pct != null && t.batt_pct < 25);
+    if (t.elec) {   // §23 elektronik batarya (SITL SIM_BATT değil): %, kestirilen gerilim, kalan süre
+      V.batt.textContent = elecText(t.elec);
+      V.batt.classList.toggle('warn', t.elec.pct < 25 && !t.elec.empty); V.batt.classList.toggle('err', !!t.elec.empty);
+    } else {
+      V.batt.textContent = `${t.batt_v != null && Number(t.batt_v) > 0 ? Number(t.batt_v).toFixed(2) : '—'} V · %${f0(t.batt_pct)}`;   // SITL'de batarya izleme kapalıysa 0 V gelir
+      V.batt.classList.toggle('warn', t.batt_pct != null && t.batt_pct < 25);
+    }
+    const fuelRow = hud.querySelector('.fs-row-fuel');
+    if (fuelRow) fuelRow.hidden = !t.fuel;
+    if (t.fuel) { V.fuel.textContent = `${fuelText(t.fuel)} · ${rangeText(t.fuel.range_km)}`; V.fuel.classList.toggle('warn', t.fuel.pct < 20 && !t.fuel.empty); V.fuel.classList.toggle('err', !!t.fuel.empty); }
     V.thr.textContent = f0(t.throttle);
     thrBar.firstChild.style.width = `${Math.max(0, Math.min(100, Number(t.throttle) || 0))}%`;
     drawRcBars(t.rc);
@@ -1070,7 +1104,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       onFrame: t => { updateHud(t); applyReplayLaunch(t.t); },
       onEvent: (e, t) => addEvent(e.text, e.sev, t),
       onClear: () => clear(events),
-      onSeek: t => { sim?.snapCamera(); applyReplayLaunch(t, true); },   // atlama: takip kamerası dronun yanına ışınlanır (yayla yüzlerce metre kovalamaz); düzenek aşaması anında
+      onSeek: t => { sim?.snapCamera(); applyReplayLaunch(t, true); if (clientPower) { clientPower.rebuild(data, t); powerWarned = { fuel: false, elec: false }; } },   // atlama: takip kamerası dronun yanına ışınlanır (yayla yüzlerce metre kovalamaz); düzenek aşaması anında; §23 yakıt/batarya baştan o ana entegre
       onTime: (t, dur, playing) => {
         seek.value = String(Math.round(1000 * (dur ? t / dur : 0)));
         timeLbl.textContent = `${clock(t)} / ${clock(dur)}`;
@@ -1184,7 +1218,10 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       }
       if (m.t === 'mission_cur') { sim?.setMissionCurrent(m.seq); return; }   // §18: aktif bacak (MISSION_CURRENT)
       if (m.t === 'crash') return showCrash(m.reason, m.speed);   // §18: sunucunun kesin çarpışma kaydı (SITL fizik teması / 3B bina-su / teyitli arazi)
-      if (m.t === 'warn') return addEvent(tr('Otopilot çarpışma tespiti (ArduPlane yazılımsal) — çarpışma kaydı değil: {t}', { t: m.text || '' }), 'warning');   // §18: sarı uyarı, bant yok
+      if (m.t === 'warn') {
+        if (m.kind === 'fuel_empty' || m.kind === 'elec_empty') { toast(m.text || tr('Güç kaynağı bitti'), 'err'); return; }   // §23: kırmızı olay satırı sunucu `event`inden gelir; ek olarak toast
+        return addEvent(tr('Otopilot çarpışma tespiti (ArduPlane yazılımsal) — çarpışma kaydı değil: {t}', { t: m.text || '' }), 'warning');   // §18: sarı uyarı, bant yok
+      }
       if (m.t === 'event') return addEvent(m.text, m.severity, replay ? (player?.time() ?? null) : null, 'STATUS');
       if (m.t === 'launch') return onLaunch(m);
       if (m.t === 'state') {
@@ -1417,12 +1454,13 @@ function mockBackend(ctx) {
   let centersP = null;
   const centers = () => (centersP ??= api.get('/api/drone/centers').then(r => (Array.isArray(r) && r.length ? r.map(c => ({ id: c.id, name: c.name, lat: c.lat, lon: c.lon, alt: c.alt ?? 0, location_name: c.location_name })) : SAMPLE_CENTERS)).catch(() => SAMPLE_CENTERS));
   const mockModel = (type, model) => (model && typeof model === 'object' ? model : { id: model || ({ multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli' }[type] || 'builtin:caymaz'), source: 'builtin', type, ready: true });
-  const mk = async (type, centerId, world, model) => {
+  const mk = async (type, centerId, world, model, power = null) => {
     const cs = await centers();
     const center = cs.find(c => String(c.id) === String(centerId)) || cs[0];
     const id = `mock-${++MOCK.seq}`;
     const mdl = mockModel(type, model);
     const s = { id, type, model: mdl, airframe: isPlane(type) ? ({ 'builtin:caymaz': 'caymaz', 'builtin:delta': 'delta' }[mdl.id] || null) : null, center, world: { ...WORLD_DEFAULTS, ...(world || {}) }, state: 'HAZIR', udp_port: 14550 + MOCK.seq - 1, host: location.hostname,
+      power: { ...(isPlane(type) ? { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25 } : { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25 }), elec_cells: 4, elec_mah: 10000, elec_w: 30, ...(power || {}) },   // §23 (sahte kip: göstergeler istemci modelinden)
       launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: type === 'sabit_kanat' ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null },
       created_at: new Date().toISOString(), owner: { id: ctx.user?.id, name: ctx.user?.full_name || ctx.user?.username || '—' }, gcs: { connected: false, addr: null, since: null }, sitl: { pid: 0, port: 0, error: null } };
     s.flight = new MockFlight(s);
@@ -1468,7 +1506,7 @@ function mockBackend(ctx) {
     create: async body => {
       if ([...MOCK.sessions.values()].filter(s => s.state !== 'KAPANDI').length >= 2) throw Object.assign(new Error('Oturum sınırı'), { status: 409 });
       if (body.mode === 'replay') { const s = await mkReplay(body.log_id, body.world, body.model); MOCK.sessions.delete(s.id); s.id = `${s.id}r`; MOCK.sessions.set(s.id, s); return pub(s); }
-      return pub(await mk(body.type, body.center_id, body.world, body.model || body.airframe));
+      return pub(await mk(body.type, body.center_id, body.world, body.model || body.airframe, body.power));
     },
     end: async id => { const s = MOCK.sessions.get(id); if (s) { s.state = 'KAPANDI'; s.flight?.end('Kullanıcı bitirdi'); MOCK.sessions.delete(id); } return { ok: true }; },
     cmd: async (id, name, params) => { const s = MOCK.sessions.get(id); if (!s) throw Object.assign(new Error('Oturum yok'), { status: 404 }); if (s.mode === 'replay') { if (name !== 'reset') throw Object.assign(new Error('Kayıtta komut yok'), { status: 400 }); return { ok: true }; } s.flight.cmd(name, params || {}); return { ok: true }; },
@@ -1549,7 +1587,7 @@ class MockFlight {
     handlers.status?.('open');
     handlers.message?.({ t: 'hello', session: pubSession });
     // Gerçek zamana göre adım: yavaş çizimde (yazılım WebGL) zamanlayıcı seyrekleşse de uçuş gerçek hızda ilerler (en çok 0.25 sn/adım)
-    if (!this.timer) { this.lastTick = performance.now(); this.timer = setInterval(() => { const now = performance.now(); const dt = Math.min(0.25, (now - this.lastTick) / 1000); this.lastTick = now; this.step(dt); }, 50); }
+    if (!this.timer) { this.lastTick = performance.now(); this.timer = setInterval(() => { const now = performance.now(); const dt = Math.min(0.25, (now - this.lastTick) / 1000); this.lastTick = now; this.step(dt * (this.speedup || 1)); }, 50); }
     return { send: obj => { if (obj?.t === 'cmd') this.cmd(obj.name, obj.params || {}); if (obj?.t === 'rc') this.rc = Array.isArray(obj.ch) && obj.ch.some(Boolean) ? obj.ch : null; }, close: () => { this.handlers.delete(handlers); if (!this.handlers.size) { clearInterval(this.timer); this.timer = 0; } } };
   }
   emit(m) { this.handlers.forEach(hh => hh.message?.(m)); }
@@ -1573,6 +1611,7 @@ class MockFlight {
     else if (name === 'reset') { this.reset(); this.emit({ t: 'state', state: 'BASLIYOR' }); this.event('SITL yeniden başlatıldı', 'warning'); setTimeout(() => this.emit({ t: 'state', state: 'HAZIR' }), 800); }
     else if (name === 'crash') { S.armed = false; S.phase = 'crashed'; S.auto = false; S.thr = 0; S.vx = S.vy = S.vz = 0; this.event('Crash: Disarming', 'critical'); }
     else if (name === 'set_home') this.event('Home set');
+    else if (name === 'speed') { this.speedup = Number(p.factor) || 1; this.event(`Simülasyon hızı ${this.speedup}× (sahte)`); }   // §23: adım dt × speedup
   }
   step(dt) {
     const S = this.st, w = this.s.world, g = 9.81;
@@ -1642,6 +1681,7 @@ class MockFlight {
     const rc = this.rc || [1500 + 500 * Math.sin(S.roll * 2), 1500 - 500 * Math.sin(S.pitch * 2), 1000 + S.thr * 10, 1500, 1800, 1000, 1000, 1500].map(v => Math.round(Math.max(1000, Math.min(2000, v))));
     this.emit({ t: 'tele', ts: Date.now(), lat, lon, alt_msl: (Number(c.alt) || 0) + S.z, alt_rel: S.z, roll: S.roll, pitch: S.pitch, yaw: S.yaw, vn: S.vy, ve: S.vx, vd: -S.vz,
       airspeed: air, groundspeed: gs, heading: ((S.yaw * 180 / Math.PI) + 360) % 360, climb: S.vz, mode: S.mode, armed: S.armed, gps_fix: 3, sats: 14,
-      batt_v: S.batt_v, batt_pct: S.batt_pct, throttle: S.thr, rc, home: { lat: c.lat, lon: c.lon, alt: c.alt }, gcs_connected: this.s.gcs.connected, gcs_addr: this.s.gcs.addr });
+      batt_v: S.batt_v, batt_pct: S.batt_pct, throttle: S.thr, rc, home: { lat: c.lat, lon: c.lon, alt: c.alt }, gcs_connected: this.s.gcs.connected, gcs_addr: this.s.gcs.addr,
+      speedup: this.speedup || 1, tbm: Math.round(S.t * 1000) });   // §23: sahte kipte yakıt/batarya istemci modelinden (ts gerçek zaman; speedup adımı hızlandırır)
   }
 }

@@ -14,7 +14,7 @@ export async function mount(root, ctx) {
   ctx.setBack(t('common.menu'));
   const S = ctx.state.settings, user = ctx.state.user || {};
   let saveT = 0;
-  const save = patch => { Object.assign(S, patch); sfx.configure({ sound: S.sound !== false, volume: S.volume ?? 0.8 }); clearTimeout(saveT); saveT = setTimeout(async () => { try { await api.put('/api/settings', { lang: S.lang || lang(), theme: S.theme, sound: !!S.sound, analog_fpv: !!S.analog_fpv, volume: Number(S.volume ?? 0.8) }); } catch (e) { toastErr(e); } }, 300); };
+  const save = patch => { Object.assign(S, patch); sfx.configure({ sound: S.sound !== false, volume: S.volume ?? 0.8 }); clearTimeout(saveT); saveT = setTimeout(async () => { try { await api.put('/api/settings', { ...(S.lang ? { lang: S.lang } : {}), theme: S.theme, sound: !!S.sound, analog_fpv: !!S.analog_fpv, volume: Number(S.volume ?? 0.8) }); } catch (e) { toastErr(e); } }, 300); };
   // Cihaza bağlı tercihler (sunucuya gitmez): motor sesi (varsayılan KAPALI), arka plan uçuş sahnesi (varsayılan AÇIK)
   const engineOn = () => localStorage.getItem('sm:engine') === '1';
   const bgOn = () => localStorage.getItem('sm:bgfx') !== '0';

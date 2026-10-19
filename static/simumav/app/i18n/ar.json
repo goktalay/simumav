@@ -207,5 +207,15 @@
   "menu.live_real": "تضاريس حقيقية · TR TEST Kalecik",
   "menu.live_proc": "تضاريس إجرائية",
   "menu.live_loading": "جارٍ تجهيز المشهد",
-  "common.loading_scene": "جارٍ تحميل المشهد"
+  "common.loading_scene": "جارٍ تحميل المشهد",
+  "cookie.title": "ملفات تعريف الارتباط التحليلية",
+  "cookie.text": "لتحسين الموقع نجمع إحصاءات استخدام مجهولة عبر Google Analytics (عنوان IP مجهول، بلا إعلانات). تُحمَّل فقط بموافقتك، ويمكنك تغيير اختيارك في أي وقت.",
+  "cookie.more": "سياسة الخصوصية",
+  "cookie.necessary": "ملفات ضرورية (الجلسة، اللغة، المظهر) — مفعّلة دائمًا",
+  "cookie.analytics": "ملفات تحليلية (Google Analytics، مجهولة)",
+  "cookie.settings": "الإعدادات",
+  "cookie.reject": "رفض",
+  "cookie.accept": "موافقة",
+  "cookie.save": "حفظ",
+  "cookie.manage": "تغيير تفضيلات ملفات تعريف الارتباط"
 }

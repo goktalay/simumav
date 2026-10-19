@@ -550,6 +550,16 @@ class ReplaySession:
                        'aircraft': log.get('aircraft'), 'pilot': log.get('pilot'), 'modes': None}
         self._fs = flightsim
         self.model = flightsim._model_eski(self.type, None)   # görsel model (§12): router kütüphaneden seçileni atar; yoksa tipin dahili modeli
+        # §23: kaydın canlı oturumundaki güç/yakıt ayarları (drone_sim_runs.power → settings; bin_log_id = bu log) → ön yüz göstergeleri
+        # aynı modeli (flightsim_power.js) karelerden hesaplar. Kayıt bu simülatörden değilse (dış .bin) None → gösterge yok.
+        self.power = None
+        try:
+            with db.connect() as conn:
+                r = db.row(conn.execute('SELECT power FROM drone_sim_runs WHERE bin_log_id = ? AND power IS NOT NULL ORDER BY id DESC LIMIT 1', (int(log['id']),)))
+            if r and r.get('power'):
+                self.power = (json.loads(r['power']) or {}).get('settings') or None
+        except Exception:   # noqa: BLE001
+            self.power = None
 
     # ---- dışa görünüm ----
     def to_dict(self, host=None):
@@ -557,7 +567,8 @@ class ReplaySession:
                 'center': dict(self.center), 'world': dict(self.world), 'state': self.state, 'launch': {**self.launch, 'phase': None},
                 'udp_port': None, 'host': host or self._fs.PUBLIC_HOST or None, 'created_at': self.created_at, 'owner': dict(self.owner),
                 'client': dict(self.client) if self.client else None,
-                'gcs': {'connected': False, 'addr': None, 'since': None}, 'sitl': dict(self.sitl), 'replay': dict(self.replay)}
+                'gcs': {'connected': False, 'addr': None, 'since': None}, 'sitl': dict(self.sitl), 'replay': dict(self.replay),
+                'power': dict(self.power) if self.power else None}
 
     def _yay(self, obj):
         txt = json.dumps(obj, ensure_ascii=False)

@@ -1,23 +1,18 @@
-// SIMUMAV tanıtım sitesi: i18n, sahne geçişleri (IntersectionObserver), parallax, açılış 3B, kayıt/giriş.
+// SIMUMAV tanıtım sitesi: i18n (tarayıcı dili; lang.js), sahne geçişleri (IntersectionObserver), parallax, açılış 3B, kayıt/giriş, GA4 + çerez rızası (analytics.js).
 import { initAuth } from './auth.js';
+import { LANGS, RTL, detectLang } from './lang.js';
+import { initAnalytics } from './analytics.js';
 
-const LANGS = ['tr', 'en', 'de', 'fr', 'es', 'ru', 'ar'];
-const RTL = new Set(['ar']);
+const LANG_KEY = 'simumav.lang';
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const base = document.body.dataset.base || '';   // yasal sayfalar: '../'
 let dict = {};
 const t = k => dict[k] ?? k;
+let analytics = null;
 
-function pickLang() {
-  const q = new URLSearchParams(location.search).get('lang');
-  if (q && LANGS.includes(q)) return q;
-  try { const s = localStorage.getItem('simumav.lang'); if (s && LANGS.includes(s)) return s; } catch (e) { /* özel mod */ }
-  const nav = (navigator.languages || [navigator.language || 'tr']).map(l => l.slice(0, 2).toLowerCase());
-  return nav.find(l => LANGS.includes(l)) || 'tr';
-}
-
-async function setLang(lang) {
-  try { dict = await (await fetch(`${base}i18n/${lang}.json`, { cache: 'force-cache' })).json(); } catch (e) { if (lang !== 'tr') return setLang('tr'); return; }
+async function setLang(lang, { remember = true } = {}) {
+  if (!LANGS.includes(lang)) lang = 'en';
+  try { dict = await (await fetch(`${base}i18n/${lang}.json`, { cache: 'force-cache' })).json(); } catch (e) { if (lang !== 'en') return setLang('en', { remember }); return; }
   document.documentElement.lang = lang;
   document.documentElement.dir = RTL.has(lang) ? 'rtl' : 'ltr';
   document.querySelectorAll('[data-i18n]').forEach(el => { const v = dict[el.dataset.i18n]; if (v != null) el.textContent = v; });
@@ -25,7 +20,7 @@ async function setLang(lang) {
     el.dataset.i18nAttr.split(';').forEach(pair => { const [attr, key] = pair.split(':'); if (dict[key] != null) el.setAttribute(attr, dict[key]); });
   });
   const sel = document.getElementById('lang'); if (sel) sel.value = lang;
-  try { localStorage.setItem('simumav.lang', lang); } catch (e) { /* yok say */ }
+  if (remember) { try { localStorage.setItem(LANG_KEY, lang); } catch (e) { /* yok say */ } }
   document.dispatchEvent(new CustomEvent('simumav:lang', { detail: lang }));
 }
 
@@ -79,11 +74,19 @@ async function initHero() {
 }
 
 async function main() {
-  await setLang(pickLang());
+  // İlk açılış: ?lang > kayıtlı seçim > tarayıcı dilleri > en. Yalnız tarayıcıdan gelen dil KAYDEDİLMEZ (kullanıcı tarayıcı dilini değiştirirse site de değişir);
+  // ?lang (reklam bağlantısı) ve seçiciden seçim kaydedilir.
+  const q = new URLSearchParams(location.search).get('lang');
+  let stored = null; try { stored = localStorage.getItem(LANG_KEY); } catch (e) { /* özel mod */ }
+  const lang = detectLang(LANG_KEY);
+  await setLang(lang, { remember: !!(q || stored) });
   document.getElementById('lang')?.addEventListener('change', e => setLang(e.target.value));
   const y = document.getElementById('year'); if (y) y.textContent = String(new Date().getFullYear());
   initReveal(); initScenes(); initParallax();
-  initAuth({ t });
+  const auth = initAuth({ t, onEvent: (name, params) => analytics?.track(name, params) });
   initHero();
+  analytics = await initAnalytics({ t, i18nAttr: true, privacyHref: `${base}legal/gizlilik.html` });
+  window.__smAnalytics = analytics;   // Playwright doğrulaması
+  return auth;
 }
 main();

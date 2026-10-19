@@ -39,7 +39,7 @@ async function call(url, body, headers = {}) {
   return data || {};
 }
 
-export function initAuth({ t }) {
+export function initAuth({ t, onEvent = () => {} }) {   // onEvent(ad, params): analitik olayları (signup/login; kişisel veri yok)
   const root = document.getElementById('auth');
   if (!root) return null;
   const msg = root.querySelector('#auth-msg'), title = root.querySelector('#auth-title');
@@ -89,6 +89,7 @@ export function initAuth({ t }) {
   async function openSession(body) {
     const r = await fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin' });
     if (!r.ok) throw new ApiError('session', r.status);
+    if (!body.dev_user) try { onEvent('login', { method: 'mastertool', transport_type: 'beacon' }); } catch (e) { /* analitik yok */ }
     location.href = '/app';
   }
 
@@ -127,6 +128,7 @@ export function initAuth({ t }) {
       const auth_hash = await computeAuthHash(password, pre.kdf);
       await call(await acct('/auth/register'), { email, name, auth_hash, brand: m.mt_app });
       lastEmail = email; verifyView(email);
+      try { onEvent('signup', { method: 'mastertool' }); } catch (e2) { /* analitik yok */ }
     } catch (err) {
       if (err.retry) return wait(f, err.retry);
       say('err', errText(err));

@@ -20,7 +20,7 @@ import math
 import os
 import time
 
-from . import db, drone_params, drone_sitl, flightsim_hub, flightsim_mission
+from . import db, drone_params, drone_sitl, flightsim_hub, flightsim_mission, flightsim_power
 
 SITL_ENABLED = os.environ.get('HEPGO_SITL', '1') != '0'
 UDP_BASE = int(os.environ.get('SIM_UDP_BASE', '14550'))
@@ -54,7 +54,7 @@ RC_PARAMLAR = (('SIM_RC_FAIL', 0), ('FS_THR_ENABLE', 0), ('THR_FAILSAFE', 0), ('
 
 TIP_ADLARI = {'multirotor': 'Multikopter', 'hexarotor': 'Hexakopter', 'helikopter': 'Helikopter', 'sabit_kanat': 'Sabit Kanat', 'vtol': 'VTOL'}
 PLANE_TIPLERI = ('sabit_kanat', 'vtol')
-KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc')
+KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}
 
 # Sabit kanat kalkış yöntemi (§13): wheels (tekerlekli pist koşusu) · ramp (pnömatik fırlatma rampası; açı 10–30°) · vehicle (pickup üstünden bırakma; hız 40–110 km/h)
 LAUNCH_DEFAULTS = {'method': 'wheels', 'angle_deg': 15, 'release_kmh': 70}
@@ -302,6 +302,7 @@ class SahteKinematik:
         self.ruzgar = float(ruzgar_ms or 0)
         self.launch = dict(launch or LAUNCH_DEFAULTS)   # sabit kanat kalkış yöntemi (§13): yer koşusu / rampa / araç taklidi
         self.heading = math.radians(float(heading or 0))   # pist yönü (kalkış koşusu bu yönde)
+        self.speedup = 1.0   # §23 simülasyon hızı: adım dt × speedup (SITL SIM_SPEEDUP karşılığı; sure_ms de hızlı akar)
         self.sifirla()
 
     def sifirla(self):
@@ -362,6 +363,7 @@ class SahteKinematik:
                 self.throttle = max(0.0, min(100.0, (self.rc[2] - 1000) / 10.0))
 
     def adim(self, dt):
+        dt = dt * float(self.speedup or 1.0)
         self.sure_ms += dt * 1000.0
         r0, p0, y0 = self.roll, self.pitch, self.yaw
         self._adim(dt)
@@ -485,10 +487,17 @@ class _UdpProto(asyncio.DatagramProtocol):
 # Oturum
 # ======================================================================
 class SimSession:
-    def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None):
+    def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None):
         self.id = int(sid)
         self.kimlik = KIMLIK_TABANI + self.id
         self.type, self.center, self.world, self.owner = tip, center, world, owner
+        # §23 güç ve yakıt: doğrulanmış `power` (azami hız, yakıt L / km/L, batarya hücre/mAh/W) → GucDurumu (her telemetri karesinde entegre;
+        # tele.fuel / tele.elec / tele.speedup); SIM_PLN_THR_MUL desteği ikili taramasından (drone_sitl.hiz_olcegi_destegi)
+        self.power = flightsim_power.dogrula(power, tip) if not isinstance(power, dict) or set(power) != set(flightsim_power.ALANLAR) else dict(power)
+        self.guc = flightsim_power.GucDurumu(self.power)
+        self.hiz_olcegi = drone_sitl.hiz_olcegi_destegi(tip)   # ikili SIM_PLN_THR_MUL tanıyor mu (sahte kipte False)
+        self.thr_mul_sitl = None                                # SITL'den gözlenen SIM_PLN_THR_MUL (PARAM_VALUE)
+        self.speedup_istek = 1.0                                # son `speed` komutu (reset sonrası yeniden yazılır)
         # §19 kayıt seçenekleri: rec.bin → SITL DataFlash .BIN açık (yalnız armed süre), kapanışta uçuş loglarına kaydedilir (flightsim_bin)
         self.rec = {'bin': bool((rec or {}).get('bin'))}
         self.bin_sonuc = None            # kapanışta {log_id, file_name, size} | {error} | None
@@ -593,7 +602,11 @@ class SimSession:
                            # montaj parametreleri (SERVOn_REVERSED; §20.1): sanal montaj desteği, SIM_SRV_REV maskesi (yazılan / SITL'de gözlenen), nötrlenen adlar
                            'virtual_mount': bool(self.montaj['virtual_mount']), 'srv_rev_mask': int(self.montaj['mask']), 'srv_rev_sitl': self.srv_rev_sitl,
                            'mount_neutral': list(self.montaj['neutral']), 'mount_reversed': list(self.montaj['reversed']), 'motor_skipped': list(self.montaj.get('motor_skipped') or [])},
-                'terrain': {**self.arazi, 'report': dict(self.arazi['report']) if self.arazi['report'] else None}}   # §18 arazi sunumu sayaçları + son TERRAIN_REPORT
+                'terrain': {**self.arazi, 'report': dict(self.arazi['report']) if self.arazi['report'] else None},   # §18 arazi sunumu sayaçları + son TERRAIN_REPORT
+                # §23 güç ve yakıt: ayarlar + anlık durum + azami hız uygulaması (itki ölçeği destek/gözlenen çarpan) + simülasyon hızı
+                'power': dict(self.power), 'power_state': self.guc.tele_alanlari(), 'speedup': self.guc.speedup,
+                'speed_scale': {'supported': bool(self.hiz_olcegi), 'thr_mul': flightsim_power.thr_mul_icin(self.power['max_speed_ms']) if self.power.get('max_speed_ms') else None,
+                                'thr_mul_sitl': self.thr_mul_sitl, 'stock_ms': round(flightsim_power.plane_tam_gaz_hizi(), 1)}}
 
     # ---- §14: bekleyici kuyrukları (MavKomut) ----
     @contextlib.contextmanager
@@ -788,6 +801,16 @@ class SimSession:
                 self.srv_rev_sitl = int(round(float(m.param_value)))
             except (TypeError, ValueError):
                 pass
+        elif ad == flightsim_power.SIM_SPEEDUP:   # §23: simülasyon hızı SITL'in bildirdiği değer (tele.speedup; yakıt/batarya istatistiği)
+            try:
+                self.guc.hiz_ayarla(float(m.param_value))
+            except (TypeError, ValueError):
+                pass
+        elif ad == flightsim_power.SIM_PLN_THR_MUL:
+            try:
+                self.thr_mul_sitl = round(float(m.param_value), 4)
+            except (TypeError, ValueError):
+                pass
         if ad.startswith('SERVO') and ad.endswith('_FUNCTION') and ad[5:-9].isdigit() and 1 <= int(ad[5:-9]) <= 8:
             try:
                 self.tele['servo_fn'][int(ad[5:-9]) - 1] = int(round(float(m.param_value)))
@@ -965,6 +988,9 @@ class SimSession:
         if self.type == 'sabit_kanat':   # kalkış yöntemi + yerde kayma düzeltmesi parametreleri (§13)
             self._param_set(launch_parametreleri(self.launch))
             self._param_set(self.flap_parametreleri())   # otomatik flaplar (kayıtlı değeri olanlar atlanır: kullanıcı yapılandırması)
+        self._hiz_yaz()   # §23 azami hız (uçak): AIRSPEED_MAX/CRUISE, THR_MAX + SIM_PLN_THR_MUL (yamalı ikili)
+        if self.speedup_istek != 1.0:   # reset sonrası yeni SITL: seçili simülasyon hızı korunur
+            self._param_set(((flightsim_power.SIM_SPEEDUP, self.speedup_istek),))
         if self.arazi['serve']:   # §18: arazi veritabanı açık, 100 m ızgara; istekler sim_terrain'den yanıtlanır
             self._param_set(TERRAIN_PARAMLARI)
             self._olay('Arazi verisi: SITL\'in arazi istekleri gerçek yükseklik verisinden (terrarium z13) yanıtlanıyor — fizik gerçek topoğrafyayı görür', 6)
@@ -1016,6 +1042,32 @@ class SimSession:
         sonraki, self._arazi_sonraki = self._arazi_sonraki, None
         if sonraki is not None and self._tcp_w is not None:
             self._arazi_baslat(sonraki)
+
+    def hiz_parametreleri(self):
+        """§23 azami hız: `power.max_speed_ms` → flightsim_power.hiz_parametreleri (kayıtlı AIRSPEED oranı; itki çarpanı yalnız yamalı ikilide).
+        Uçak tiplerinde max_speed yoksa da SIM_PLN_THR_MUL 1 yazılır (eeprom'da önceki oturumdan kalan çarpan silinsin)."""
+        if self.type not in PLANE_TIPLERI:
+            return []
+        out = flightsim_power.hiz_parametreleri(self.power.get('max_speed_ms'), self.kayitli_params, self.hiz_olcegi)
+        if self.hiz_olcegi and not any(a == flightsim_power.SIM_PLN_THR_MUL for a, _ in out):
+            out.append((flightsim_power.SIM_PLN_THR_MUL, 1.0))
+        return out
+
+    def _hiz_yaz(self):
+        p = self.hiz_parametreleri()
+        if not p:
+            return
+        if self.param_izleyici is not None:   # oturum ayarı: yankılar kalıcı kayda girmez (kullanıcı sonra MP'den değiştirirse kaydedilir)
+            self.param_izleyici.yukleme_isaretle([a for a, _ in p])
+        self._param_set(p)
+        v = self.power.get('max_speed_ms')
+        if v:
+            mul = next((d for a, d in p if a == flightsim_power.SIM_PLN_THR_MUL), None)
+            cruise = next((d for a, d in p if a == 'AIRSPEED_CRUISE'), None)
+            if mul is not None:
+                self._olay(f'Azami hız {v:g} m/s: AIRSPEED_MAX {v:g}, AIRSPEED_CRUISE {cruise:g}, THR_MAX 100, SITL itki çarpanı SIM_PLN_THR_MUL {mul:g} (stok tam gaz ≈ {flightsim_power.plane_tam_gaz_hizi():.0f} m/s)', 6)
+            else:
+                self._olay(f'Azami hız {v:g} m/s: {flightsim_power.HIZ_DESTEK_YOK} (stok fizik tam gazda ≈ {flightsim_power.plane_tam_gaz_hizi():.0f} m/s verir)', 4)
 
     def flap_parametreleri(self):
         """FLAP_PARAMLARI'ndan dronun kalıcı kaydında olmayanlar (kayıtlı SERVOn_FUNCTION / *_FLAP_* kullanıcı kararıdır, ezilmez)."""
@@ -1124,6 +1176,7 @@ class SimSession:
         """`tele` yayını: gerçek SITL'de her ATTITUDE'da (ATTITUDE akmıyorsa GLOBAL_POSITION_INT'te); kapı SITL zamanıyla (TELE_TBM_KAPI ms) —
         TCP parçasında birlikte gelen ardışık kareler düşmez, 66 Hz akış ~50 Hz'e iner. Sahte kipte adım başına (zorla).
         `ts` sunucu alım zamanı (Unix sn), `tbm` SITL time_boot_ms (sahte: oturum ms)."""
+        self._guc_adim(tbm)   # §23: izleyici olmasa da yakıt/batarya simülasyon zamanıyla entegre edilir
         if not self.viewers:
             return
         now = time.time()
@@ -1131,12 +1184,30 @@ class SimSession:
             if tbm is not None:
                 if tbm - self._tele_tbm < TELE_TBM_KAPI:
                     return
+                if self.guc.speedup > 1.0 and now - self._tele_son < TELE_MIN_ARALIK * 0.9:
+                    return   # hızlandırılmış simülasyon: SITL saati hızlı akar; WS yayını gerçek zamanda 50 Hz tavanında kalır
             elif now - self._tele_son < TELE_MIN_ARALIK * 0.9:
                 return
         self._tele_tbm = tbm if tbm is not None else self.tele.get('tbm', 0)
         self._tele_son = now
-        self._yay({'t': 'tele', 'ts': round(now, 3), **self.tele, 'gcs_connected': self.gcs_addr is not None,
+        self._yay({'t': 'tele', 'ts': round(now, 3), **self.tele, **self.guc.tele_alanlari(), 'gcs_connected': self.gcs_addr is not None,
                    'gcs_addr': f'{self.gcs_addr[0]}:{self.gcs_addr[1]}' if self.gcs_addr else None})
+
+    def _guc_adim(self, tbm):
+        """Yakıt/batarya adımı (flightsim_power.GucDurumu): SITL time_boot_ms farkıyla (speedup'ta hızlı akar). Biten kaynak → kırmızı olay +
+        WS `warn` (kind fuel_empty | elec_empty); uçuş sürer (kullanıcı kararı: yalnız uyarı)."""
+        t = tbm if tbm is not None else self.tele.get('tbm')
+        try:
+            biten = self.guc.adim(self.tele, t)
+        except Exception:   # noqa: BLE001 — gösterge hatası telemetriyi bozmasın
+            return
+        for k in biten:
+            if k == 'fuel':
+                metin = f'YAKIT BİTTİ — {self.guc.fuel_l0:g} L tükendi ({self.guc.dist_m / 1000:.1f} km); motor gerçek uçakta dururdu, simülasyon sürüyor'
+            else:
+                metin = f'ELEKTRONİK BATARYA BİTTİ — {self.guc.wh_cap:.0f} Wh tükendi ({self.guc.time_s / 60:.0f} dk); gerçek uçakta kumanda/telemetri kesilirdi, simülasyon sürüyor'
+            self._olay(metin, 2)
+            self._yay({'t': 'warn', 'kind': f'{k}_empty', 'text': metin, 'ts': time.time()})
 
     def _gcs_heartbeat(self):
         self._gonder(self.mav.heartbeat_encode(6, 8, 0, 0, 0))   # MAV_TYPE_GCS, MAV_AUTOPILOT_INVALID
@@ -1169,11 +1240,27 @@ class SimSession:
             if mode not in _modlar(self.vtype if self.vtype is not None else _varsayilan_vtype(self.type)):
                 raise SimHata('invalid', f'Bilinmeyen uçuş modu: {mode or "-"}')
             p = {'mode': mode}
+        elif name == 'speed':
+            f = p.get('factor')
+            if isinstance(f, bool) or not isinstance(f, (int, float)) or float(f) not in [float(x) for x in flightsim_power.SPEEDUPS]:
+                raise SimHata('invalid', f"speed.factor {' | '.join(str(x) for x in flightsim_power.SPEEDUPS)} olmalı")
+            p = {'factor': float(f)}
         if name == 'reset':
             await self.reset()
             return {'ok': True}
         if self.state != 'HAZIR':
             raise SimHata('invalid', 'Oturum hazır değil')
+        if name == 'speed':   # §23 simülasyon hızı: SITL SIM_SPEEDUP canlı (PARAM_SET); telemetri/kayıt/.bin SITL zamanıyla, video gerçek zaman
+            self.speedup_istek = p['factor']
+            if self.sahte is not None:
+                self.sahte.speedup = p['factor']
+                self.guc.hiz_ayarla(p['factor'])
+            else:
+                if not self._heartbeat_alindi:
+                    raise SimHata('invalid', 'SITL henüz kalp atışı göndermedi')
+                self._param_set(((flightsim_power.SIM_SPEEDUP, p['factor']),))
+            self._olay(f'Simülasyon hızı {p["factor"]:g}× (SITL zamanı; yakıt/batarya ve .bin kaydı simülasyon zamanıyla, video gerçek zamanda; Mission Planner da hızlı görür)', 6)
+            return {'ok': True, 'factor': p['factor']}
         if name == 'takeoff' and self.type == 'sabit_kanat' and (self.sahte is not None or self._heartbeat_alindi):
             self._kalkis_baslat(p['alt'])   # yönteme göre dizi (§13): armed → launch → released olayları
             return {'ok': True}
@@ -1383,6 +1470,7 @@ class SimSession:
         if self._launch_task is not None and not self._launch_task.done():
             self._launch_task.cancel()
         self.launch_phase = None
+        self.guc.sifirla_zaman()   # §23: yeni SITL saati sıfırdan; yakıt/batarya seviyeleri korunur (tank/batarya değişmez)
         if self.sahte is not None:
             self.sahte.sifirla()
             if self.yonetici.sahte_tcp_port and self._tcp_w is None:
@@ -1562,6 +1650,10 @@ class SimSession:
         if self.run_sonuc:
             self._olay(f'Simülasyon kaydedildi: #{self.run_sonuc["id"]} · {self.run_sonuc["params_count"]} parametre'
                        + (f' · {self.run_sonuc["scripts_count"]} script' if self.run_sonuc.get('scripts_count') else ''), 6)
+            dp = self.run_sonuc.get('drone_power') or {}
+            if dp:   # §23: ölçümler dron kaydına yazıldı
+                parca = [f"tüketim {dp['fuel_km_per_l_last']:g} km/L" if 'fuel_km_per_l_last' in dp else None, f"ortalama {dp['elec_w_last']:g} W" if 'elec_w_last' in dp else None]
+                self._olay('Dron kaydına yazıldı (sonraki simülasyonda önerilir): ' + ' · '.join(p for p in parca if p), 6)
 
     async def _temizle(self):
         if self.state == 'KAPANDI':
@@ -1620,15 +1712,24 @@ class SimManager:
     def acik_sayisi(self):
         return len([s for s in self.sessions.values() if s.state != 'KAPANDI'])
 
-    async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None):
+    async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None):
         """Yeni oturum: doğrulama (400) → limit (409) → SITL ikilisi (503) → UDP port (503, oturum içinde HATA) → görev.
         `model`: flightsim_models.coz ile çözülmüş kütüphane nesnesi (router); yoksa `airframe` ile dahili model.
         `drone` (§14, isteğe bağlı): Dron Envanteri kaydı {id, code, name, model} — harekât panelinde telemetri bu adla akar.
-        `rec` (§19, isteğe bağlı): {bin: bool} — SITL DataFlash .BIN kaydı; kapanışta Uçuş Logları'na."""
+        `rec` (§19, isteğe bağlı): {bin: bool} — SITL DataFlash .BIN kaydı; kapanışta Uçuş Logları'na.
+        `power` (§23, isteğe bağlı): {max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w} — eksikler dron kaydı önerisi → tip varsayılanı."""
         if rec is not None and not isinstance(rec, dict):
             raise SimHata('invalid', 'rec nesne olmalı')
         if tip not in drone_sitl.TIP_ESLEME:
             raise SimHata('invalid', 'Geçersiz dron tipi')
+        try:
+            oneri = drone_params.guc_onerisi(drone['id']) if drone and drone.get('id') else None
+        except Exception:   # noqa: BLE001 — öneri okunamazsa varsayılanlar
+            oneri = None
+        try:
+            power = flightsim_power.dogrula(power, tip, oneri)
+        except ValueError as e:
+            raise SimHata('invalid', str(e))
         airframe = airframe_dogrula(tip, airframe)
         if not center or center.get('lat') is None or center.get('lon') is None:
             raise SimHata('invalid', 'Merkez bulunamadı')
@@ -1663,7 +1764,7 @@ class SimManager:
         sid = self._next
         self._next += 1
         s = SimSession(sid, tip, {'id': center.get('id'), 'name': center.get('name'), 'lat': float(center['lat']), 'lon': float(center['lon']),
-                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec)
+                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power)
         s.alt_not = alt_not
         self.sessions[sid] = s
         s.task = asyncio.get_running_loop().create_task(s.run())

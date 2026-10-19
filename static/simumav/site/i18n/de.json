@@ -92,7 +92,7 @@
   "legal.privacy.title": "Datenschutzerklärung",
   "legal.privacy.p1": "SIMUMAV authentifiziert über den Master-Tool-Kontodienst (mastertool.download). Dein Passwort verlässt den Browser nie im Klartext; an den Server wird nur ein abgeleiteter Hash gesendet.",
   "legal.privacy.p2": "Gespeicherte Daten: E-Mail, Anzeigename, Sprach- und Design-Einstellungen sowie deine Spielinhalte (Hangar, Crew, Strecken, Missionen und Flugaufzeichnungen). Flugaufzeichnungen sind nur für dich sichtbar und werden mit einem Kontingent pro Nutzer gespeichert.",
-  "legal.privacy.p3": "Cookies: nur ein Sitzungscookie (HttpOnly, Secure) und die Sprach-/Design-Einstellung. Keine Werbe- oder Tracking-Cookies. Karten und 3D-Kacheln werden von Google und Cesium geladen; deren Datenschutzrichtlinien gelten.",
+  "legal.privacy.p3": "Cookies: ein Sitzungscookie (HttpOnly, Secure), deine Sprach-/Design-Einstellung und — nur mit deiner Zustimmung — Google-Analytics-Cookies (siehe unten). Werbe-Cookies verwenden wir nicht. Karten und 3D-Kacheln werden von Google- und Cesium-Diensten geladen, für die deren eigene Datenschutzerklärungen gelten.",
   "legal.privacy.p4": "Du kannst dein Konto unter mastertool.download › Mein Konto löschen; deine Spieldaten werden mitgelöscht. Fragen: destek@mastertool.download",
   "legal.kvkk.title": "Datenschutzhinweis (KVKK)",
   "legal.kvkk.p1": "Nach dem türkischen Datenschutzgesetz Nr. 6698 ist Master Tool der Verantwortliche. Personenbezogene Daten (E-Mail, Name, IP-Adresse, Sitzungsprotokolle) werden zur Bereitstellung des Dienstes, zur Kontosicherheit und zur Erfüllung gesetzlicher Pflichten verarbeitet.",
@@ -104,5 +104,17 @@
   "legal.terms.p2": "Dein Konto ist persönlich und darf nicht geteilt werden. Es gelten ein gleichzeitiger Flug pro Nutzer, 45 Minuten pro Flug und Speicherkontingente. Konten, die den Dienst missbrauchen (automatisierte Anfragen, Schwachstellensuche, Verbindungsversuche zu fremden Flügen), werden gesperrt.",
   "legal.terms.p3": "Die Mission-Planner-Verbindung ist auf deinen eigenen Flug und die zuerst verbundene IP beschränkt. Dienste Dritter (Google, Cesium, ArduPilot) unterliegen ihren eigenen Lizenzen und Bedingungen.",
   "legal.terms.p4": "Der Dienst wird „wie besehen“ bereitgestellt; für Ausfälle, Datenverlust oder Folgeschäden wird keine Haftung übernommen. Die Bedingungen können mit vorheriger Ankündigung geändert werden.",
-  "legal.terms.p5": "Für Streitigkeiten gelten das Recht der Republik Türkei und die Gerichte in Ankara."
+  "legal.terms.p5": "Für Streitigkeiten gelten das Recht der Republik Türkei und die Gerichte in Ankara.",
+  "cookie.title": "Analyse-Cookies",
+  "cookie.text": "Zur Verbesserung der Website erheben wir mit Google Analytics anonyme Nutzungsstatistiken (IP anonymisiert, keine Werbung). Sie werden nur mit deiner Zustimmung geladen; du kannst deine Wahl jederzeit ändern.",
+  "cookie.more": "Datenschutzerklärung",
+  "cookie.necessary": "Notwendige Cookies (Sitzung, Sprache, Design) — immer aktiv",
+  "cookie.analytics": "Analyse-Cookies (Google Analytics, anonym)",
+  "cookie.settings": "Einstellungen",
+  "cookie.reject": "Ablehnen",
+  "cookie.accept": "Akzeptieren",
+  "cookie.save": "Speichern",
+  "cookie.manage": "Cookie-Einstellungen ändern",
+  "legal.privacy.ga.t": "Google Analytics",
+  "legal.privacy.p5": "Nur mit deiner Einwilligung erheben wir mit Google Analytics 4 (Google Ireland Ltd.) anonyme Nutzungsstatistiken: Seitenaufrufe, Sprache, Gerätetyp und Spielereignisse (Flugstart/-ende, Registrierung, Anmeldung). Deine IP-Adresse wird anonymisiert, Werbesignale und Personalisierung sind deaktiviert, E-Mail oder Name werden nicht übertragen. Die Einwilligung wird über Consent Mode v2 durchgesetzt; lehnst du ab, wird kein Google-Skript geladen. Deine Wahl kannst du über den Link „Cookie-Einstellungen ändern“ am Ende dieser Seite anpassen. Datenschutzerklärung von Google: policies.google.com/privacy"
 }

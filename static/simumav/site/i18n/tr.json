@@ -92,7 +92,7 @@
   "legal.privacy.title": "Gizlilik Politikası",
   "legal.privacy.p1": "SIMUMAV, Master Tool hesap servisi (mastertool.download) üzerinden kimlik doğrular. Şifren tarayıcından hiçbir zaman düz metin olarak çıkmaz; sunucuya yalnız türetilmiş bir özet gönderilir.",
   "legal.privacy.p2": "Sakladığımız veriler: e-posta adresin, görünen adın, dil ve tema tercihlerin, oyun içeriğin (hangar, mürettebat, parkur, görev ve uçuş kayıtların). Uçuş kayıtları yalnız sana görünür; sunucuda kullanıcı başına kota ile saklanır.",
-  "legal.privacy.p3": "Çerezler: yalnız oturum çerezi (HttpOnly, Secure) ve dil/tema tercihi. Reklam ya da izleme çerezi kullanmıyoruz. Harita ve 3B karolar Google ve Cesium servislerinden yüklenir; bu servislerin kendi gizlilik politikaları geçerlidir.",
+  "legal.privacy.p3": "Çerezler: oturum çerezi (HttpOnly, Secure), dil/tema tercihin ve — yalnız onayınla — Google Analytics analitik çerezleri (aşağıda). Reklam çerezi kullanmıyoruz. Harita ve 3B karolar Google ve Cesium servislerinden yüklenir; bu servislerin kendi gizlilik politikaları geçerlidir.",
   "legal.privacy.p4": "Hesabını mastertool.download › Hesabım sayfasından silebilirsin; oyun verilerin de bununla birlikte silinir. Sorular için: destek@mastertool.download",
   "legal.kvkk.title": "KVKK Aydınlatma Metni",
   "legal.kvkk.p1": "6698 sayılı Kişisel Verilerin Korunması Kanunu uyarınca veri sorumlusu Master Tool'dur. Kişisel verilerin (e-posta, ad, IP adresi, oturum kayıtları) hizmetin sunulması, hesabının güvenliği ve yasal yükümlülüklerin yerine getirilmesi amacıyla işlenir.",
@@ -104,5 +104,17 @@
   "legal.terms.p2": "Hesabın kişiseldir; paylaşılamaz. Kullanıcı başına eşzamanlı bir uçuş, uçuş başına 45 dakika ve depolama kotaları uygulanır. Servisi kötüye kullanan (otomatik istek, güvenlik açığı arama, başkasının uçuşuna bağlanmaya çalışma) hesaplar askıya alınır.",
   "legal.terms.p3": "Mission Planner bağlantısı yalnız kendi uçuşun için ve ilk bağlanan IP ile sınırlıdır. Üçüncü taraf servisler (Google, Cesium, ArduPilot) kendi lisans ve koşullarına tabidir.",
   "legal.terms.p4": "Servis \"olduğu gibi\" sunulur; kesinti, veri kaybı ya da dolaylı zararlardan sorumluluk kabul edilmez. Koşullar önceden duyurularak değiştirilebilir.",
-  "legal.terms.p5": "Uyuşmazlıklarda Türkiye Cumhuriyeti hukuku ve Ankara mahkemeleri yetkilidir."
+  "legal.terms.p5": "Uyuşmazlıklarda Türkiye Cumhuriyeti hukuku ve Ankara mahkemeleri yetkilidir.",
+  "cookie.title": "Analitik çerezleri",
+  "cookie.text": "Siteyi geliştirmek için Google Analytics ile anonim kullanım istatistikleri topluyoruz (IP anonim, reklam yok). Yalnız onay verirsen yüklenir; tercihini istediğin zaman değiştirebilirsin.",
+  "cookie.more": "Gizlilik politikası",
+  "cookie.necessary": "Zorunlu çerezler (oturum, dil, tema) — her zaman açık",
+  "cookie.analytics": "Analitik çerezleri (Google Analytics, anonim)",
+  "cookie.settings": "Ayarlar",
+  "cookie.reject": "Reddet",
+  "cookie.accept": "Kabul et",
+  "cookie.save": "Kaydet",
+  "cookie.manage": "Çerez tercihlerini değiştir",
+  "legal.privacy.ga.t": "Google Analytics",
+  "legal.privacy.p5": "Yalnız onay verdiğinde Google Analytics 4 (Google Ireland Ltd.) ile anonim kullanım istatistikleri toplarız: sayfa görüntüleme, dil, cihaz türü, oyun içi olaylar (uçuş başlat/bitir, kayıt, giriş). IP adresin anonimleştirilir, reklam sinyalleri ve kişiselleştirme kapalıdır, e-posta ya da ad gönderilmez. Rıza Consent Mode v2 ile uygulanır; reddedersen hiçbir Google betiği yüklenmez. Tercihini bu sayfanın altındaki \"Çerez tercihlerini değiştir\" bağlantısından güncelleyebilirsin. Google'ın gizlilik politikası: policies.google.com/privacy"
 }

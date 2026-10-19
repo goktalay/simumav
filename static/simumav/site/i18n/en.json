@@ -92,7 +92,7 @@
   "legal.privacy.title": "Privacy Policy",
   "legal.privacy.p1": "SIMUMAV authenticates through the Master Tool account service (mastertool.download). Your password never leaves your browser in plain text; only a derived hash is sent to the server.",
   "legal.privacy.p2": "Data we store: your email, display name, language and theme preferences and your game content (hangar, crew, tracks, missions and flight records). Flight records are visible only to you and kept on the server within a per-user quota.",
-  "legal.privacy.p3": "Cookies: only a session cookie (HttpOnly, Secure) and your language/theme preference. We use no advertising or tracking cookies. Maps and 3D tiles are loaded from Google and Cesium services, whose own privacy policies apply.",
+  "legal.privacy.p3": "Cookies: a session cookie (HttpOnly, Secure), your language/theme preference and — only with your consent — Google Analytics cookies (see below). We use no advertising cookies. Maps and 3D tiles are loaded from Google and Cesium services, whose own privacy policies apply.",
   "legal.privacy.p4": "You can delete your account from mastertool.download › My account; your game data is deleted with it. Questions: destek@mastertool.download",
   "legal.kvkk.title": "Data Protection Notice (KVKK)",
   "legal.kvkk.p1": "Under Turkish Personal Data Protection Law No. 6698 the data controller is Master Tool. Personal data (email, name, IP address, session records) is processed to provide the service, secure your account and meet legal obligations.",
@@ -104,5 +104,17 @@
   "legal.terms.p2": "Your account is personal and may not be shared. One concurrent flight per user, 45 minutes per flight and storage quotas apply. Accounts that abuse the service (automated requests, vulnerability probing, attempts to connect to someone else's flight) are suspended.",
   "legal.terms.p3": "The Mission Planner link is limited to your own flight and to the first connecting IP. Third-party services (Google, Cesium, ArduPilot) are subject to their own licences and terms.",
   "legal.terms.p4": "The service is provided \"as is\"; no liability is accepted for outages, data loss or indirect damages. The terms may change with prior notice.",
-  "legal.terms.p5": "Disputes are governed by the laws of the Republic of Türkiye and the courts of Ankara."
+  "legal.terms.p5": "Disputes are governed by the laws of the Republic of Türkiye and the courts of Ankara.",
+  "cookie.title": "Analytics cookies",
+  "cookie.text": "We collect anonymous usage statistics with Google Analytics to improve the site (IP anonymised, no ads). It loads only if you agree; you can change your choice at any time.",
+  "cookie.more": "Privacy policy",
+  "cookie.necessary": "Essential cookies (session, language, theme) — always on",
+  "cookie.analytics": "Analytics cookies (Google Analytics, anonymous)",
+  "cookie.settings": "Settings",
+  "cookie.reject": "Decline",
+  "cookie.accept": "Accept",
+  "cookie.save": "Save",
+  "cookie.manage": "Change cookie preferences",
+  "legal.privacy.ga.t": "Google Analytics",
+  "legal.privacy.p5": "Only with your consent we collect anonymous usage statistics with Google Analytics 4 (Google Ireland Ltd.): page views, language, device type and in-game events (flight start/end, sign-up, sign-in). Your IP address is anonymised, advertising signals and personalisation are disabled and no email or name is sent. Consent is enforced with Consent Mode v2; if you decline, no Google script is loaded at all. You can update your choice via the \"Change cookie preferences\" link at the bottom of this page. Google's privacy policy: policies.google.com/privacy"
 }

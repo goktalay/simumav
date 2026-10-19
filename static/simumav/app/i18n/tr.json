@@ -207,5 +207,15 @@
   "menu.live_real": "Gerçek arazi · TR TEST Kalecik",
   "menu.live_proc": "Prosedürel arazi",
   "menu.live_loading": "Sahne hazırlanıyor",
-  "common.loading_scene": "Sahne yükleniyor"
+  "common.loading_scene": "Sahne yükleniyor",
+  "cookie.title": "Analitik çerezleri",
+  "cookie.text": "Siteyi geliştirmek için Google Analytics ile anonim kullanım istatistikleri topluyoruz (IP anonim, reklam yok). Yalnız onay verirsen yüklenir; tercihini istediğin zaman değiştirebilirsin.",
+  "cookie.more": "Gizlilik politikası",
+  "cookie.necessary": "Zorunlu çerezler (oturum, dil, tema) — her zaman açık",
+  "cookie.analytics": "Analitik çerezleri (Google Analytics, anonim)",
+  "cookie.settings": "Ayarlar",
+  "cookie.reject": "Reddet",
+  "cookie.accept": "Kabul et",
+  "cookie.save": "Kaydet",
+  "cookie.manage": "Çerez tercihlerini değiştir"
 }

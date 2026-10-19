@@ -16,7 +16,7 @@ import time
 D = tempfile.mkdtemp(prefix='simumav-test-')
 os.environ.update(SIMUMAV_DATA_DIR=D, SIMUMAV_DEV_LOGIN='1', HEPGO_SITL='0', SIMUMAV_UDP_BASE='24750', SIMUMAV_MAX_FLIGHTS='2', SIMUMAV_MP_PORT_BASE='25600',
                   SIMUMAV_MP_PORT_COUNT='40', SIMUMAV_SECURE_COOKIE='0', SIMUMAV_ENV_FILE=os.path.join(D, 'yok.env'), SIMUMAV_MP_IDLE_S='4',
-                  SIMUMAV_MT_INTERNAL='http://127.0.0.1:1', GOOGLE_MAPS_API_KEY='')
+                  SIMUMAV_MT_INTERNAL='http://127.0.0.1:1', GOOGLE_MAPS_API_KEY='', SIMUMAV_GA_ID='G-8946D4RPGK')
 for k in [k for k in sys.modules if k == 'app' or k.startswith('app.')]:   # temiz başlangıç: çekirdek shim ile yüklenmeli
     del sys.modules[k]
 
@@ -95,6 +95,17 @@ def main():
         assert r.status_code == 200 and r.json()['maps_key'] is None and r.json()['authenticated'] is False
         assert 'frame-ancestors' in r.headers['content-security-policy'] and r.headers['x-content-type-options'] == 'nosniff'
         assert "'unsafe-inline'" not in r.headers['content-security-policy'].split('script-src')[1].split(';')[0]
+        # GA4: meta.ga_id (SIMUMAV_GA_ID) + CSP alanları (gtag.js script-src; collect beacon'ları connect-src); analytics.js harici dosya, HTML'de gtag yok
+        assert r.json()['ga_id'] == 'G-8946D4RPGK'
+        _csp = r.headers['content-security-policy']
+        _scr = _csp.split('script-src')[1].split(';')[0]; _con = _csp.split('connect-src')[1].split(';')[0]
+        assert 'https://www.googletagmanager.com' in _scr and 'google-analytics.com' not in _scr
+        for _h in ('https://www.google-analytics.com', 'https://analytics.google.com', 'https://*.google-analytics.com', 'https://www.googletagmanager.com'):
+            assert _h in _con, _h
+        assert 'https:' in _csp.split('img-src')[1].split(';')[0]
+        _an = c.get('/js/analytics.js'); assert _an.status_code == 200 and 'googletagmanager.com/gtag/js' in _an.text and "'simumav.consent'" in _an.text
+        assert c.get('/js/lang.js').status_code == 200 and c.get('/css/consent.css').status_code == 200
+        assert 'googletagmanager' not in c.get('/').text and 'googletagmanager' not in c.get('/app/').text   # gtag yalnız rızayla, JS'ten yüklenir
         # statik yönlendirmeler
         assert c.get('/sim/api.js').status_code == 200 and 'export const api' in c.get('/api.js').text and c.get('/static/js/api.js').status_code == 200
         assert c.get('/sim/flightsim.js').status_code == 200 and 'yerine' in c.get('/ui.js').text[:300] and c.get('/sim/ui.js').status_code == 200 and c.get('/main.js').status_code == 404
@@ -128,9 +139,12 @@ def main():
         assert c.post('/api/crew', json={'name': 'x', 'character': 'p02'}, headers={'Sec-Fetch-Site': 'same-origin'}).status_code == 201
         assert c.get('/api/crew').status_code == 200
 
-        # ---- settings
+        # ---- settings: dil seçilmedikçe None (kabuk tarayıcı dilini uygular); tema PUT'u dili "seçilmiş" yapmaz; dil PUT'u → lang_chosen
+        assert c.get('/api/settings').json()['lang'] is None
+        assert c.put('/api/settings', json={'theme': 'dark'}, headers=H).json()['lang'] is None
         st = c.put('/api/settings', json={'lang': 'en', 'theme': 'light', 'sound': False}, headers=H).json()
         assert st['lang'] == 'en' and st['theme'] == 'light' and st['sound'] is False
+        assert c.get('/api/settings').json()['lang'] == 'en'
         assert c.put('/api/settings', json={'lang': 'xx'}, headers=H).status_code == 422
         assert c.get('/api/session').json()['user']['lang'] == 'en'
 

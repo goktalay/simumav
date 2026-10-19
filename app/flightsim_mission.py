@@ -419,6 +419,8 @@ class GorevIzleyici:
             'mission': {'source': self.source, 'count': len(pts), 'completed': completed, 'end': dict(self.end) if self.end else None, 'points': pts,
                         'current': self.mission_seq, 'total': self.mission_total} if pts else None,
             'crash': crash, 'crash_count': len(self.crashes), 'autopilot_detect_count': len(self.warnings), 'deviation': sapma, 'safety': safety, 'track': iz,
+            # §23 güç ve yakıt: ayarlar + harcanan yakıt / ölçülen km/L + batarya Wh / ortalama W + simülasyon hızı (GucDurumu.ozet; kayıttan oynatmada yok)
+            'power': s.guc.ozet() if getattr(s, 'guc', None) is not None else None,
         }
         out['safety_note'] = guvenlik_notu(out)
         return out
@@ -546,6 +548,19 @@ def rapor_metni(d):
         sat.append(f"ÇARPIŞMA: {cr.get('lat')}, {cr.get('lon')} · {cr.get('speed')} m/s · {SEBEP_ADLARI.get(cr.get('reason'), cr.get('reason'))}")
     if dev:
         sat.append(f"Sapma: {dev.get('dist_m')} m yatay, {dev.get('dz_m')} m dikey" + (' · iniş dairesi içinde' if dev.get('in_circle') else ''))
+    pw = d.get('power') or {}
+    if pw.get('fuel') or pw.get('elec'):   # §23
+        parca = []
+        f, e = pw.get('fuel') or {}, pw.get('elec') or {}
+        if f:
+            parca.append(f"yakıt {f.get('used_l')} L / {f.get('start_l')} L" + (f" · ölçülen {f.get('km_per_l')} km/L" if f.get('km_per_l') else '') + (' · YAKIT BİTTİ' if f.get('empty_t') is not None else ''))
+        if e:
+            parca.append(f"batarya {e.get('wh_used')} Wh / {e.get('wh_cap')} Wh" + (f" · ortalama {e.get('w_avg')} W" if e.get('w_avg') else '') + (' · BATARYA BİTTİ' if e.get('empty_t') is not None else ''))
+        if (pw.get('settings') or {}).get('max_speed_ms'):
+            parca.append(f"azami hız {pw['settings']['max_speed_ms']:g} m/s (en yüksek {pw.get('max_speed_seen')} m/s)")
+        if (pw.get('speedup') or {}).get('max', 1) > 1:
+            parca.append(f"simülasyon hızı en çok {pw['speedup']['max']:g}×")
+        sat.append('Güç ve yakıt: ' + ' · '.join(parca))
     if d.get('safety_note'):
         sat.append(f"Güvenlik notu: {d['safety_note']}")
     return '\n'.join(sat)

@@ -237,6 +237,7 @@ async function renderWizard(view, ctx) {
     toast(tr('Uçuş başladı · MP tcp:{h}:{p}', { h: s.mp?.host || location.hostname, p: s.mp?.port ?? '—' }));
     preview?.dispose(); preview = null; destroyed = true;
     runLeave();
+    ctx.track?.('flight_start', { drone_type: W.drone()?.type || 'unknown', launch: payload.launch?.method || payload.launch || 'wheels', world_mode: W.track()?.world_mode || 'unknown', mission: W.mission() ? 1 : 0 });
     await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.state.launch, record: W.state.record }, { ...ctx, meta: data.meta });
   };
   onLeave(() => { destroyed = true; preview?.dispose(); preview = null; });

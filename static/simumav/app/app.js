@@ -4,7 +4,8 @@ import * as api from './core/api.js';
 import { h, clear } from './core/dom.js';
 
 installGlCounter();   // teşhis: window.__smGl() → canlı WebGL bağlam sayısı (three.js/Cesium yüklenmeden önce kurulmalı)
-import { setLang, detectLang, t } from './i18n/i18n.js';
+import { setLang, detectLang, hasDeviceLang, t } from './i18n/i18n.js';
+import { initAnalytics } from '/js/analytics.js';   // GA4 + çerez rızası (tanıtım sitesiyle aynı modül ve aynı rıza anahtarı)
 import { sweep } from './ui/transition.js';
 import { toast, toastErr } from './ui/components.js';
 import * as sfx from './ui/sfx.js';
@@ -23,6 +24,8 @@ export const ROUTES = {
 const ORDER = ['menu', 'hangar', 'crew', 'tracks', 'missions', 'fly', 'ops', 'settings'];
 
 const state = { user: null, pilotsCount: 0, settings: { lang: null, theme: 'auto', sound: true, analog_fpv: true }, meta: null, current: null, unmount: null };
+let analytics = null;
+const track = (name, params) => { try { analytics?.track(name, params); } catch { /* analitik yok */ } };
 const view = document.getElementById('view');
 const chip = document.getElementById('chip'), gear = document.getElementById('gear'), back = document.getElementById('back');
 
@@ -72,6 +75,7 @@ const ctx = {
   refreshSession: async () => { await loadSession(); renderChip(); },
   applyTheme,
   setLang: async code => { await setLang(code); renderChip(); await route(true); },
+  track,   // GA4 özel olayları (flight_start/flight_end …); rıza yoksa sessizce yok sayılır
 };
 
 function parse() {
@@ -87,6 +91,7 @@ async function route(force = false) {
   const dir = ORDER.indexOf(name) < ORDER.indexOf((state.current || 'menu').split('/')[0]) ? 'back' : 'fwd';
   const prev = state.current; state.current = `${name}/${param}`;
   document.body.dataset.screen = name;
+  try { analytics?.pageView(`/app/#/${name}${param ? '/' + param : ''}`); } catch { /* analitik yok */ }   // hash rotası → GA4 page_view (page_path)
   let mod;
   try { mod = await ROUTES[name](); } catch (e) {
     console.error(e);
@@ -117,13 +122,17 @@ async function route(force = false) {
 // ---------- Başlat ----------
 async function boot() {
   applyTheme(localStorage.getItem('sm:theme') || null);
-  await setLang(detectLang(), { silent: true });
+  await setLang(detectLang(), { silent: true, remember: false });
   const ok = await loadSession();
   if (!ok) return;
-  // Öncelik: bu cihazda seçilmiş tema/dil (localStorage) → sunucudaki ayar → otomatik
+  // Öncelik: bu cihazda seçilmiş tema/dil (localStorage) → sunucudaki ayar (settings.lang) → tarayıcı dili (navigator.languages) → en
   if (!localStorage.getItem('sm:theme') && state.settings.theme) applyTheme(state.settings.theme);
-  if (state.settings.lang && !localStorage.getItem('sm:lang')) await setLang(state.settings.lang, { silent: true });
+  if (state.settings.lang && !hasDeviceLang()) await setLang(detectLang({ stored: state.settings.lang }), { silent: true, remember: false });
   renderChip();
+  try {
+    analytics = await initAnalytics({ gaId: state.meta?.ga_id || '', t, spa: true, privacyHref: '/legal/gizlilik.html' });
+    window.__smAnalytics = analytics;
+  } catch (e) { console.warn('analitik başlatılamadı', e); }
   gear.addEventListener('click', () => { sfx.select(); ctx.go('settings'); });
   chip.addEventListener('click', () => { sfx.select(); ctx.go('crew'); });
   back.addEventListener('pointerenter', () => sfx.hover()); gear.addEventListener('pointerenter', () => sfx.hover()); chip.addEventListener('pointerenter', () => sfx.hover());

@@ -117,7 +117,14 @@ def _oturum_alanlari(s):
         sure = None
     bin_sonuc = getattr(s, 'bin_sonuc', None) or {}
     video = getattr(s, 'video', None) or {}
+    # §23 güç ve yakıt özeti (canlı oturum: GucDurumu; kayıttan oynatma: yalnız ayarlar, sonuç yok)
+    guc = getattr(s, 'guc', None)
+    pw = guc.ozet() if guc is not None else ({'settings': dict(s.power)} if getattr(s, 'power', None) else None)
+    f, e = (pw or {}).get('fuel') or {}, (pw or {}).get('elec') or {}
     return {
+        'power': json.dumps(pw, ensure_ascii=False, default=str) if pw else None,
+        'fuel_used_l': f.get('used_l'), 'fuel_km_per_l': f.get('km_per_l'), 'elec_wh': e.get('wh_used'), 'elec_w_avg': e.get('w_avg'),
+        'speedup_max': ((pw or {}).get('speedup') or {}).get('max'),
         'session_id': int(s.id), 'session_kimlik': getattr(s, 'kimlik', None) if mode == 'sitl' else None,
         'owner_id': owner.get('id'), 'owner_name': owner.get('name'),
         'drone_id': drone.get('id'), 'drone_code': drone.get('code') or drone.get('name'),
@@ -169,7 +176,19 @@ def kaydet(s):
     with db.connect() as conn:
         conn.execute('UPDATE drone_sim_runs SET params_path = ?, params_count = ?, scripts_path = ?, scripts_count = ? WHERE id = ?', (pp, pc, sp, sc, rid))
         conn.commit()
-    return {'id': rid, 'params_count': pc, 'scripts_count': sc}
+    out = {'id': rid, 'params_count': pc, 'scripts_count': sc}
+    # §23: ölçülen km/L ve ortalama W dron kaydına (drone_sitl_options *_last) → sonraki sihirbazda önerilir
+    guc = getattr(s, 'guc', None)
+    if guc is not None and a.get('drone_id'):
+        from . import drone_params, flightsim_power
+        yaz = flightsim_power.drona_yazilacaklar(guc.ozet())
+        if yaz:
+            try:
+                drone_params.secenek_yaz(a['drone_id'], yaz, a.get('owner_id'))
+                out['drone_power'] = yaz
+            except Exception:   # noqa: BLE001 — öneri yazımı kaydı düşürmesin
+                pass
+    return out
 
 
 def video_bagla(sid, rec_id, post_id=None, path=None, conn=None):
@@ -205,7 +224,7 @@ _SELECT = '''SELECT r.*, l.status AS bin_status, l.file_name AS bin_file_name, s
 
 def _satir(r, user):
     r = dict(r)
-    for k in ('world', 'launch'):
+    for k in ('world', 'launch', 'power'):
         try:
             r[k] = json.loads(r[k]) if r.get(k) else None
         except ValueError:

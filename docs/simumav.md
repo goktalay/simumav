@@ -254,6 +254,26 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
 - Ayarlar: tema (koyu/açık/otomatik), dil (tr, en, de, fr, es, ru, ar), ses, FPV analog efekt, hesap bilgisi, çıkış.
 - Dil dosyaları `static/simumav/app/i18n/<lang>.json`; tanıtım sitesi de aynı dilleri destekler.
 
+### 5.1 Dil seçimi (tarayıcı dili; Google Ads dünya geneli) — `static/simumav/site/js/lang.js` (saf, site + kabuk + node testi ortak)
+- Kural: `?lang=xx` (reklam bağlantıları; her şeyi ezer, kaydedilir) > kayıtlı seçim (site `localStorage simumav.lang`; kabuk `sm:lang` → yoksa hesap ayarı
+  `settings.lang`) > `navigator.languages` SIRASIYLA ilk desteklenen (tr en de fr es ru ar; "de-DE"→de) > **İngilizce**. Tarayıcıdan gelen dil
+  localStorage'a YAZILMAZ (kullanıcı tarayıcı dilini değiştirirse site de değişir); seçiciden seçim yazılır ve tarayıcıyı ezer.
+- `<html lang>`/`dir` (ar → rtl), `<title>`/`meta description`/og dile göre (`data-i18n`); hreflang: 7 × `?lang=xx` + `x-default` → `/`. Yasal sayfalar aynı kural.
+- Sunucu: `/api/settings.lang` yalnız kullanıcı Ayarlar'da dil seçtiyse döner (`settings.lang_chosen`), aksi hâlde `null` (users.lang DEFAULT 'tr' tarayıcıyı ezmez);
+  kabuk `settings/index.js` dili yalnız dil düğmesinde gönderir. Sunucu tarafı Accept-Language ile HTML üretimi yapılmaz (statik; JS seçer).
+
+### 5.2 Google Analytics 4 + çerez rızası — `static/simumav/site/js/analytics.js` (+ `css/consent.css`; kabuk `/js/analytics.js` ile aynı modül)
+- Ölçüm kimliği `/api/meta.ga_id` ← env `SIMUMAV_GA_ID` (akış "Mavlink Simulasyon" → `G-8946D4RPGK`); boş → gtag yüklenmez, bant çıkmaz.
+- Rıza `localStorage simumav.consent` ∈ {granted, denied}; yoksa alt bant (Kabul / Reddet / Ayarlar → zorunlu [kilitli] + analitik onay kutusu, Kaydet).
+  **gtag.js yalnız `granted` iken** `https://www.googletagmanager.com/gtag/js?id=…` ile dinamik yüklenir; Consent Mode v2: `consent default analytics_storage/ad_* denied`
+  → `update analytics_storage granted` → `config {anonymize_ip:true, allow_google_signals:false, allow_ad_personalization_signals:false}`. Reddet → hiç yüklenmez;
+  sonradan reddedilirse `consent update denied` + `_ga*` çerezleri silinir. Yasal sayfalarda ve her yerde `[data-consent="manage"]` → ayarlar bandı.
+  Gizlilik metni `legal.privacy.p5` (7 dil) + p3 güncel. Bant metinleri `cookie.*` anahtarları (site ve kabuk JSON'larında).
+- Kabuk: `config send_page_view:false`; hash rotası değişiminde `page_view {page_path:'/app/#/<rota>'}`; olaylar `flight_start {drone_type, launch, world_mode, mission}`,
+  `flight_end {drone_type, duration_s, world_mode, gates}`; site `signup`/`login {method:'mastertool'}` — kişisel veri yok. `window.__smAnalytics` (Playwright).
+- Testler: `node tests/test_simumav_site.mjs` (pickLang kuralı, hreflang, analytics harici/consent sırası, 7 dil anahtarları), `tests.test_simumav` (meta ga_id, CSP, settings.lang None),
+  `tests/simumav_lang_shots.py` (Playwright; uvicorn subprocess 8611; de-DE→de, ja-JP→en, ?lang=ar RTL, bant, Kabul→gtag isteği, Reddet→istek yok, kabuk page_view; /tmp/simumav-lang/).
+
 ## 7. Güvenlik (BAĞLAYICI — sistem tüm dünyaya açık olacak, kötü niyetli kullanıcı varsayılır)
 
 - **Tam yalıtım:** ayrı süreç, ayrı DATA_DIR, ayrı DB. HEPGO ERP veritabanına/dosyalarına HİÇBİR erişim yok; `app.main`,
@@ -275,9 +295,10 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
   okuma 300/dk, WS mesaj 100/sn; aşımda 429. Hesap servisindeki login/register oran sınırı korunur.
 - **MP TCP:** rastgele port (aralıktan), ilk bağlanan IP kilidi, aynı anda tek bağlantı, 60 sn bağlanılmazsa kapanır, uçuş
   bitince kapanır; MAVLink akışı yalnız o uçuşun SITL'ine. Portlar güvenlik duvarında yalnız aralık olarak açık.
-- **Başlıklar/CSP:** `default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://maps.googleapis.com https://cdn.jsdelivr.net https://*.cesium.com
-  ('unsafe-eval': Cesium 1.145 CDN paketindeki Knockout `(0,eval)("this")` yüklemede eval ister — HEPGO CSP'si ile aynı; inline script yine yok); connect-src 'self'
-  https://mastertool.download https://maps.googleapis.com https://*.googleapis.com https://*.cesium.com https://*.arcgisonline.com
+- **Başlıklar/CSP:** `default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://www.googletagmanager.com https://maps.googleapis.com https://cdn.jsdelivr.net https://*.cesium.com
+  ('unsafe-eval': Cesium 1.145 CDN paketindeki Knockout `(0,eval)("this")` yüklemede eval ister — HEPGO CSP'si ile aynı; inline script yine yok; googletagmanager: GA4 gtag.js,
+  yalnız çerez rızasıyla §5.2); connect-src 'self' https://mastertool.download https://www.google-analytics.com https://analytics.google.com https://*.google-analytics.com
+  https://www.googletagmanager.com https://maps.googleapis.com https://*.googleapis.com https://*.cesium.com https://*.arcgisonline.com
   https://*.amazonaws.com wss://simumav.com; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'`,
   `X-Content-Type-Options`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`. Inline script yok.
 - **Günlük/denetim:** oturum açma/kapama, uçuş başlat/durdur, kota/oran aşımı, reddedilen parametre/plan → `audit` tablosu

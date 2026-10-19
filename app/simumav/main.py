@@ -25,10 +25,12 @@ log = logging.getLogger('simumav')
 # CSP (§7): inline script yok; 'unsafe-eval' ZORUNLU: Cesium 1.145 CDN paketi (replay3d.js / görev harita katmanı) içindeki Knockout `(0,eval)("this")`
 # yüklemede eval ister, aksi hâlde Cesium hiç açılmaz (HEPGO app.main CSP'si ile aynı); 'wasm-unsafe-eval': 3DTilesRenderer/draco WebAssembly. Google Maps JS + 3B karolar (googleapis/gstatic/ggpht), Cesium (replay3d.js cdn.jsdelivr.net v1.145 sabit + ion/arcgis),
 # arazi/uydu (arcgisonline, amazonaws terrarium), hesap servisi (mastertool.download), kendi WS'si.
+# Google Analytics 4 (analytics.js; yalnız çerez rızasıyla yüklenir): script-src googletagmanager; connect-src google-analytics/analytics.google/googletagmanager (collect beacon'ları, bölgesel *.google-analytics.com).
 CSP = ("default-src 'self'; "
-       "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://static.cloudflareinsights.com https://maps.googleapis.com https://maps.gstatic.com https://cdn.jsdelivr.net https://*.cesium.com; "
+       "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://static.cloudflareinsights.com https://www.googletagmanager.com https://maps.googleapis.com https://maps.gstatic.com https://cdn.jsdelivr.net https://*.cesium.com; "
        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-       "connect-src 'self' blob: https://mastertool.download https://maps.googleapis.com https://*.googleapis.com https://*.gstatic.com https://*.ggpht.com "
+       "connect-src 'self' blob: https://mastertool.download https://www.google-analytics.com https://analytics.google.com https://*.google-analytics.com https://www.googletagmanager.com "
+       "https://maps.googleapis.com https://*.googleapis.com https://*.gstatic.com https://*.ggpht.com "
        "https://tile.googleapis.com https://cdn.jsdelivr.net https://*.cesium.com https://*.arcgisonline.com https://*.amazonaws.com "
        "wss://simumav.com wss://www.simumav.com ws://127.0.0.1:8600 ws://localhost:8600; "
        "img-src 'self' data: blob: https:; media-src 'self' blob: data:; font-src 'self' data:; worker-src 'self' blob: https://cdn.jsdelivr.net; "

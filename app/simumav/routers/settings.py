@@ -25,7 +25,8 @@ class SettingsIn(BaseModel):
 
 def _out(u):
     s = db.j(u.get('settings'))
-    return {'lang': u['lang'], 'theme': u['theme'], 'sound': bool(s.get('sound', True)), 'analog_fpv': bool(s.get('analog_fpv', True)),
+    # lang: yalnız kullanıcı Ayarlar'da seçtiyse (settings.lang_chosen); seçmediyse None → kabuk tarayıcı dili kuralını uygular (users.lang DEFAULT 'tr' tarayıcıyı ezmesin)
+    return {'lang': u['lang'] if s.get('lang_chosen') else None, 'theme': u['theme'], 'sound': bool(s.get('sound', True)), 'analog_fpv': bool(s.get('analog_fpv', True)),
             'music': bool(s.get('music', True)), 'volume': float(s.get('volume', 0.8)), 'reduced_motion': bool(s.get('reduced_motion', False)),
             'units': s.get('units', 'metric'), 'langs': list(config.LANGS), 'themes': list(THEMES)}
 
@@ -48,6 +49,8 @@ def put_settings(body: SettingsIn, user=User):
         v = getattr(body, k)
         if v is not None:
             s[k] = v
+    if body.lang is not None:
+        s['lang_chosen'] = True
     with db.connect() as conn:
         conn.execute('UPDATE users SET lang = ?, theme = ?, settings = ?, updated_at = ? WHERE id = ?',
                      (body.lang or user['lang'], body.theme or user['theme'], json.dumps(s), db.now(), user['id']))
