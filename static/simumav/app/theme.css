@@ -98,6 +98,48 @@ img, svg, canvas { display: block; }
 }
 .gear { right: 20px; }
 .gear:hover { transform: rotate(60deg); box-shadow: 0 0 24px var(--glow); }
+/* Yaşam simidi: "Sorun bildir" — dişlinin solunda (RTL'de sağında) */
+.help { position: fixed; top: 18px; right: 74px; z-index: 5; display: inline-flex; align-items: center; padding: 10px; border-radius: 999px; background: var(--glass); border: 1px solid var(--card-border); color: var(--fg); backdrop-filter: blur(14px); transition: transform .4s var(--ease), box-shadow .25s; }
+.help:hover { transform: rotate(-30deg) scale(1.06); box-shadow: 0 0 24px var(--glow); color: var(--accent); }
+[dir="rtl"] .help { right: auto; left: 74px; }
+/* Destek: sorun bildir modalı + Taleplerim */
+.sup-form { display: flex; flex-direction: column; gap: 12px; text-align: start; }
+.sup-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--fg-dim); font-weight: 600; letter-spacing: .03em; }
+.sup-form textarea.input { min-height: 120px; resize: vertical; }
+.sup-count { align-self: flex-end; font-size: 11px; color: var(--fg-dim); }
+.sup-cats { display: flex; flex-wrap: wrap; gap: 6px; }
+.sup-cats button { padding: 7px 12px; border-radius: 999px; border: 1px solid var(--card-border); background: var(--bg-2); color: var(--fg-dim); font-size: 12px; font-weight: 700; transition: .2s; }
+.sup-cats button.on { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; border-color: transparent; box-shadow: 0 6px 18px var(--glow); }
+.sup-shot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.sup-shot img { width: 120px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg-3); }
+.sup-shot small { color: var(--fg-dim); font-size: 12px; }
+.sup-ctx { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; }
+.sup-ctx > .switch { flex: 0 0 auto; }
+.sup-ctx > div { flex: 1; min-width: 0; }
+.sup-filecard { padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+.sup-ctx pre { margin: 6px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--bg-3); border: 1px solid var(--card-border); font-size: 11px; color: var(--fg-dim); white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto; }
+.sup-done { text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.sup-done .code { font-family: var(--font-display); font-size: 34px; letter-spacing: .14em; color: var(--accent); }
+.sup-list { width: min(760px, 100%); margin: 0 auto; padding: 0 20px 100px; display: flex; flex-direction: column; gap: 12px; }
+.sup-row { display: flex; align-items: center; gap: 14px; padding: 16px 20px; cursor: pointer; text-align: start; }
+.sup-row .code { font-family: var(--font-display); letter-spacing: .1em; color: var(--accent); min-width: 72px; }
+.sup-row .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.sup-row .grow b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sup-row small { color: var(--fg-dim); font-size: 12px; }
+.sup-row.unread .code::after { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-3); margin-inline-start: 6px; box-shadow: 0 0 10px var(--accent-3); }
+.badge.open { color: var(--accent); border-color: var(--accent); }
+.badge.wait { color: var(--warn); border-color: var(--warn); }
+.badge.closed { color: var(--fg-dim); }
+.sup-thread { display: flex; flex-direction: column; gap: 10px; }
+.sup-msg { padding: 12px 16px; border-radius: 12px; border: 1px solid var(--card-border); background: var(--card); max-width: 86%; align-self: flex-start; white-space: pre-wrap; word-break: break-word; }
+.sup-msg.me { align-self: flex-end; background: var(--bg-3); border-color: var(--accent); }
+.sup-msg.system { align-self: center; font-size: 12px; color: var(--fg-dim); background: transparent; border-style: dashed; }
+.sup-msg small { display: block; margin-top: 6px; color: var(--fg-dim); font-size: 11px; }
+.sup-reply { display: flex; gap: 10px; align-items: flex-end; }
+.sup-reply textarea.input { flex: 1; min-height: 64px; resize: vertical; }
+.sup-files { display: flex; gap: 10px; flex-wrap: wrap; }
+.sup-files a img { width: 140px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid var(--card-border); }
+@media (max-width: 480px) { .help { right: 64px; top: 14px; padding: 8px; } .sup-row { flex-wrap: wrap; } }
 .back { left: 20px; padding-inline-end: 18px; font-weight: 600; letter-spacing: .04em; font-size: 14px; }
 .back:hover { background: var(--card-hover); box-shadow: 0 0 24px var(--glow); }
 [dir="rtl"] .gear { right: auto; left: 20px; }

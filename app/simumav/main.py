@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config  # noqa: F401 — ilk: çekirdek yollarını yönlendirir
 from . import bridge, db
-from .routers import crew, fly, hangar, meta, missions, ops, session, settings, tracks
+from .routers import crew, fly, hangar, meta, missions, ops, session, settings, support, tracks
 
 log = logging.getLogger('simumav')
 # CSP (§7): inline script yok; 'unsafe-eval' ZORUNLU: Cesium 1.145 CDN paketi (replay3d.js / görev harita katmanı) içindeki Knockout `(0,eval)("this")`
@@ -86,7 +86,8 @@ async def _genel(request, e):
     return JSONResponse({'detail': {'error': 'server_error', 'message': 'Sunucu hatası; lütfen tekrar deneyin'}}, status_code=500, headers=HEADERS)
 
 
-for r in (session.router, settings.router, hangar.router, crew.router, tracks.router, missions.router, fly.router, fly.compat, ops.router, meta.router, fly.ws_router):
+for r in (session.router, settings.router, hangar.router, crew.router, tracks.router, missions.router, fly.router, fly.compat, ops.router, support.router, meta.router,
+          fly.ws_router):
     app.include_router(r)
 
 

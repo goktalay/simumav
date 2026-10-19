@@ -20,14 +20,15 @@ export const ROUTES = {
   fly: () => import('./fly/index.js'),
   ops: () => import('./ops/index.js'),
   settings: () => import('./settings/index.js'),
+  support: () => import('./support/index.js'),
 };
-const ORDER = ['menu', 'hangar', 'crew', 'tracks', 'missions', 'fly', 'ops', 'settings'];
+const ORDER = ['menu', 'hangar', 'crew', 'tracks', 'missions', 'fly', 'ops', 'settings', 'support'];
 
 const state = { user: null, pilotsCount: 0, settings: { lang: null, theme: 'auto', sound: true, analog_fpv: true }, meta: null, current: null, unmount: null };
 let analytics = null;
 const track = (name, params) => { try { analytics?.track(name, params); } catch { /* analitik yok */ } };
 const view = document.getElementById('view');
-const chip = document.getElementById('chip'), gear = document.getElementById('gear'), back = document.getElementById('back');
+const chip = document.getElementById('chip'), gear = document.getElementById('gear'), back = document.getElementById('back'), help = document.getElementById('help');
 
 // ---------- Tema ----------
 const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -57,7 +58,8 @@ async function loadSession() {
 }
 function renderChip() {
   if (!state.user) return;
-  chip.hidden = false; gear.hidden = false;
+  chip.hidden = false; gear.hidden = false; help.hidden = false;
+  help.setAttribute('aria-label', t('support.help')); help.title = t('support.help');
   document.getElementById('chip-name').textContent = state.user.display_name || state.user.email || '—';
   document.getElementById('chip-sub').textContent = t('shell.pilots', { n: state.pilotsCount });
   const av = document.getElementById('chip-avatar');
@@ -103,7 +105,7 @@ async function route(force = false) {
     try { await state.unmount?.(); } catch (e) { console.error(e); }
     state.unmount = null; view.className = ''; view.scrollTop = 0;
     clear(view);
-    back.hidden = true; chip.hidden = name === 'fly'; gear.hidden = name === 'fly' || name === 'settings';
+    back.hidden = true; chip.hidden = name === 'fly'; gear.hidden = name === 'fly' || name === 'settings'; help.hidden = name === 'fly';
     try {
       let r;
       if (typeof mod.mount === 'function') r = await mod.mount(view, { ...ctx, param });
@@ -134,6 +136,8 @@ async function boot() {
     window.__smAnalytics = analytics;
   } catch (e) { console.warn('analitik başlatılamadı', e); }
   gear.addEventListener('click', () => { sfx.select(); ctx.go('settings'); });
+  help.addEventListener('click', async () => { try { (await ROUTES.support()).openReportModal(ctx); } catch (e) { toastErr(e); } });   // yaşam simidi: Sorun bildir (§9)
+  help.addEventListener('pointerenter', () => sfx.hover());
   chip.addEventListener('click', () => { sfx.select(); ctx.go('crew'); });
   back.addEventListener('pointerenter', () => sfx.hover()); gear.addEventListener('pointerenter', () => sfx.hover()); chip.addEventListener('pointerenter', () => sfx.hover());
   window.addEventListener('hashchange', () => route());

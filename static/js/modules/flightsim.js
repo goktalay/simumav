@@ -25,7 +25,7 @@ import { createOpsPanel } from './flightsim_panel.js';
 import { acquireDisplayStream, createRecorder, enterFullscreen, exitFullscreen, pendingCard, recOptionsBox, recPrefs, stashStream, takeStashedStream } from './flightsim_record.js';   // §17: ekran kaydı (Başlat→Bitir) → Şirketten Haberler / sakla; kayıt seçenekleri kutusu; otomatik tam ekran   // §14: YERLİ harekât paneli (iframe yok) — kartlar 3B'nin üstünde yüzer; hub soketi + komutlar panelde
 import { showReport } from './flightsim_report.js';   // §18: Bitir'de özet rapor modalı (çarpışma/sapma kırmızı, mini harita); kayıt tablosundan "Rapor"
 import { runsTable, runsQuery } from './flightsim_runs.js';   // §21: Simülasyon Kayıtları tablosu (filtre/sıralama/sayfalama; Oynat/Rapor/Video/.bin; MASTER: parametre/script)
-import { createPowerSection, createPowerSim, createSpeedPill, elecText, fuelText, rangeText } from './flightsim_power.js';   // §23: güç ve yakıt (sihirbaz bölümü, göstergeler, kayıtta istemci modeli, hız kapsülü)
+import { createPowerGauges, createPowerSection, createPowerSim, createSpeedPill, elecText, fuelText, rangeText } from './flightsim_power.js';   // §23: güç ve yakıt (sihirbaz bölümü, göstergeler, güç paneli kadranları §23.6, kayıtta istemci modeli, hız kapsülü)
 
 const API = '/api/drone/sim';
 // §8 ön hazırlık: sihirbazın hazırlık kartında indirilen kayıt kareleri oturum ekranına devredilir (aynı belge; be.replay yeniden çekilmez)
@@ -853,7 +853,10 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const g3dMode = world.mode === 'google3d';
   const attribTxt = h('span', null, g3dMode ? 'Google' : ATTRIBUTION);
   const attrib = world.mode === 'real' || g3dMode ? h('div', { class: `fs-attrib ${g3dMode ? 'fs-attrib-g3d' : ''}` }, g3dMode ? h('img', { class: 'fs-g3d-logo', src: G3D_LOGO, alt: 'Google' }) : null, attribTxt) : null;
-  stage.append(mount, msg, crash, hud, ...(mp ? [mp] : []), events, sticks, bar, nav, ended);
+  // §23.6 güç paneli: sağ altta iki SVG kadran (YAKIT · BATARYA), her kamera kipinde ve panelden bağımsız; FPV OSD / gimbal HUD açıkken onlar çizer (CSS gizler).
+  // Ayrıntı kutusu kayıt/sahte kipte istemci modelinin özetinden (mesafe, harcanan, ölçülen), canlıda kendi mesafe toplayıcısından.
+  const gauges = createPowerGauges(stage, { h, tr, getSettings: () => session.power || null, getSummary: () => clientPower?.summary() || null });
+  stage.append(mount, msg, crash, hud, ...(mp ? [mp] : []), events, sticks, gauges.el, bar, nav, ended);
   if (attrib) stage.append(attrib);
   ops = createOpsPanel(stage, { sid, session, type, modes, launch, canWrite, hub: !replay && !mock, mp: mpOpts, getSim: () => sim, cmdSim: (name, params) => cmd(name, params), onReset: () => reset(), onToggle: on => opsBtn.classList.toggle('primary', on),
     speed: replay ? null : { onPick: f => cmd('speed', { factor: f }) } });   // §23: panel "Sim" grubunda hız seçici
@@ -1027,7 +1030,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // §23: kayıt/sahte kipte yakıt-batarya istemci modelinden (kare zamanı: kayıt t, sahte ts); canlıda sunucudan gelir. Bitince kırmızı olay (bir kez)
   const applyClientPower = t => {
     if (!clientPower) return;
-    const tsec = replay ? t.t : (t.ts != null ? Number(t.ts) : performance.now() / 1000);
+    const tsec = replay ? t.t : (t.ts != null ? Number(t.ts) / (Number(t.ts) > 1e10 ? 1000 : 1) : performance.now() / 1000);   // sahte kip ts = Date.now() (ms) → sn (dt > 5 sn sanılıp atlanmasın)
     const done = clientPower.step(t, tsec);
     Object.assign(t, clientPower.state());
     for (const k of done) { if (powerWarned[k]) continue; powerWarned[k] = true; addEvent(tr(k === 'fuel' ? 'YAKIT BİTTİ — simülasyon sürüyor' : 'ELEKTRONİK BATARYA BİTTİ — simülasyon sürüyor'), 'error', replay ? tsec : null); }
@@ -1036,7 +1039,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     applyClientPower(t);
     last = t;
     sim?.setTelemetry(t);
-    milHud?.update(t); osd?.update(t); audio.update(t); ops?.update(t);
+    milHud?.update(t); osd?.update(t); audio.update(t); ops?.update(t); gauges.update(t);   // §23.6 kadranlar (≤ 10 Hz kendi içinde)
     if (t.speedup != null) speedPill.set(t.speedup);
     const now = performance.now();
     if (now - hudAt < 80) return;
@@ -1104,7 +1107,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       onFrame: t => { updateHud(t); applyReplayLaunch(t.t); },
       onEvent: (e, t) => addEvent(e.text, e.sev, t),
       onClear: () => clear(events),
-      onSeek: t => { sim?.snapCamera(); applyReplayLaunch(t, true); if (clientPower) { clientPower.rebuild(data, t); powerWarned = { fuel: false, elec: false }; } },   // atlama: takip kamerası dronun yanına ışınlanır (yayla yüzlerce metre kovalamaz); düzenek aşaması anında; §23 yakıt/batarya baştan o ana entegre
+      onSeek: t => { sim?.snapCamera(); applyReplayLaunch(t, true); gauges.reset(); if (clientPower) { clientPower.rebuild(data, t); powerWarned = { fuel: false, elec: false }; } },   // atlama: takip kamerası dronun yanına ışınlanır (yayla yüzlerce metre kovalamaz); düzenek aşaması anında; §23 yakıt/batarya baştan o ana entegre
       onTime: (t, dur, playing) => {
         seek.value = String(Math.round(1000 * (dur ? t / dur : 0)));
         timeLbl.textContent = `${clock(t)} / ${clock(dur)}`;
@@ -1270,7 +1273,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     socket?.close();
     milHud?.dispose(); osd?.dispose();
     if (rec) { rec.abandon(); rec.dispose(); }   // §17: Bitir'siz çıkış → kayıt durur, parçalar akıtılır, sunucuda yarım kayıt (24 sa)
-    audio.dispose(); ops?.dispose();
+    audio.dispose(); ops?.dispose(); gauges.dispose();
     sim?.dispose();
     if (window.__fsSim === sim) delete window.__fsSim;
     view.classList.remove('ops-view');
@@ -1478,6 +1481,7 @@ function mockBackend(ctx) {
       launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: log.type === 'sabit_kanat' ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null },
       state: 'HAZIR', udp_port: null, host: location.hostname, created_at: new Date().toISOString(), owner: { id: ctx.user?.id, name: ctx.user?.full_name || ctx.user?.username || '—' },
       gcs: { connected: false, addr: null, since: null }, sitl: { pid: null, port: null, error: null },
+      power: { ...(isPlane(log.type) ? { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25 } : { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25 }), elec_cells: 4, elec_mah: 10000, elec_w: 30 },   // §23.6: sahte kayıtta da kadranlar (gerçekte kaydın canlı oturum ayarları)
       replay: { log_id: log.id, file_name: log.file_name, size: log.size, progress: 100, frames: data.n, duration_s: data.duration_s, home: data.home, hz: data.hz, takeoff_t: data.takeoff_t, start_utc: data.start_utc, vehicle: data.vehicle, modes: data.modes } };
     s.data = data;
     MOCK.sessions.set(id, s);

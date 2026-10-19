@@ -179,6 +179,12 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
 - `GET /api/ops[?limit&offset]` → `{flights:[… + track{…,preview_png}, drone{…,preview}, pilot, mission, has_bin, has_replay], total, stats}`;
   `GET /api/ops/{id}` (+ `summary`, `replay_ready`, `replay_possible`); `GET /api/ops/{id}/replay` (gzip JSON; ilk çağrıda .bin alt süreçte ayrıştırılır;
   404 `no_bin`, 422 `replay_failed`); `GET /api/ops/{id}/bin`; `GET /api/ops/{id}/params` (Mission Planner .param); `DELETE /api/ops/{id}` (süren uçuş 409).
+- **Destek (§9)** `GET /api/support` → `{tickets:[{id, code, subject, status acik|yanit_bekliyor|cozuldu|kapali, category, unread, created_at, updated_at}], categories}`
+  (Merkez'den çekilir; yalnız `app='sv'`); `POST /api/support {category flight|account|hangar|track|mp|perf|other, subject ≤120, body ≤4000, screenshot? (data:image/png|jpeg;base64 ≤ 3 MB → 413 `too_large`,
+  PNG/JPEG imzası zorunlu → 422), attach_name?, include_context (vars. true), context?{ua, lang, screen, gl, flight_id, route}}` → 201 `{id, code, attachment{name,size,url}|null}`;
+  oran 5/sa/kullanıcı → 429 `rate_limited`; `GET /api/support/{id}` → + `messages[{id, author_kind company|support|system, author_name, body, created_at}]`, `files[{name,mime,size,url}]`;
+  `POST /api/support/{id}/reply {body ≤4000}` (30/sa) → ayrıntı; `GET /api/support/att/{token}` oturumsuz ek (32 bayt rastgele token; inline, nosniff, sandbox CSP).
+  Hesap servisi/gizli yoksa 503 `support_unavailable`.
 - `GET /api/meta` (oturumsuz 200) → `{version, mt_url, mt_app, lang_list, dev_login, limits{max_flights, flight_minutes, drones, pilots, tracks, missions,
   flights, disk_bytes}, sitl, google3d, types, launches, mission_kinds, weather, time_of_day, world_modes, mp{proto,port_range,host}, active_flights,
   authenticated, maps_key (yalnız oturumlu; aksi null)}`. `GET /healthz`.
@@ -413,3 +419,35 @@ oran 10/dk/IP; hata halinde sürüm klasörü silinir. Parçalı uç (`/part`) v
   yanıtı `{ok, flight:{summary}}` → rapor `flight.summary`'den. Google Maps yükleyici `callback=` ile (loading=async'te onload erken). Hız göstergesi yüzen MP
   kutusunun üstüne; FPV/gimbal'da gizli; halka OSD kutusu FPV/gimbal'da yön şeridinin altında. Geliştirici oturumunda çıkış hesap servisine gitmez.
   SwiftShader'da 3B sahne karesi ~10–15 sn sürdüğünden "bırakma +0,5/1/2 sn" kareleri zaman damgasıyla değil aşama (elde/kol ileri/bırakma) ile alınır.
+
+## 9. Destek — "Sorun bildir" ve Taleplerim (merkezi ticket erişimi)
+
+- **İletim yolu (seçim ve gerekçe):** SIMUMAV talep TUTMAZ. `app/simumav/routers/support.py` talebi **hesap servisinin mevcut Master Tool destek
+  köprüsüne** iletir: `POST/GET /api/sv/tickets[/{id}[/messages]]` — sunucu-sunucu, `X-Simumav-Secret` (= `SIMUMAV_MT_SHARED_SECRET`) + `user_id`
+  (`profil_yaz` / `profile_put` kalıbı; `sshm/main.py _ticket_user`). Hesap servisi e-postayı oturumdaki kullanıcıdan alır ve Merkez'in zaten var olan
+  `/api/federation/mastertool/tickets*` ucuna (`X-Central-Secret`) geçirir; Merkez talep ekranına `slug=mastertool`, kanal `mastertool`, **etiket SIMUMAV**,
+  firma adı `Mastertool · SIMUMAV` olarak düşer (`sshmaster_admin.TICKET_APPS['sv']`). Merkez'in firma federasyonu (`support_router.fed`, firma slug +
+  fedauth) SIMUMAV'ı "firma" olarak kaydetmeyi gerektirdiğinden seçilmedi; yeni paylaşılan gizli / yeni Merkez ucu / webhook yok. Sunucu yolunda hesap
+  servisinin IP oranı uygulanmaz (tek iç IP); SIMUMAV kendi sınırını uygular (talep 5/sa/kullanıcı, yanıt 30/sa; reddedilen denemeler de sayılır).
+- **Merkez'den yanıt → Taleplerim:** çekme modeli — liste/ayrıntı her açılışta hesap servisi üzerinden Merkez'den okunur (`unread` = Merkez `company_unread`,
+  ayrıntı açılınca sıfırlanır). Merkez destek yanıtı yazınca mevcut `notify_reply` → hesap servisi `/api/mt/internal/ticket-reply` → kullanıcıya e-posta;
+  `app='sv'` ise bağlantı `https://simumav.com/app/#/support/<id>` (Hesabım › Destek'te de görünür).
+- **Gövde:** kullanıcının açıklaması + sunucunun ürettiği bağlam bloğu (`--- SIMUMAV bağlamı ---`: kategori, sürüm, hesap kimliği/e-posta; onay kutusu açıksa
+  uçuş satırı `#id · başlangıç · sonuç · süre · dron/parkur/pilot/görev` (yalnız kullanıcının kendi uçuşu), tarayıcı UA, dil/ekran, GPU, ekran rotası; ek varsa
+  `Ek: ad (KB) URL`). Başlık öneki `[Kategori]`; Merkez kategorisi teknik (other → diger).
+- **Ekler:** Merkez mastertool köprüsü JSON'dur (dosya taşımaz); ekran görüntüsü/dosya SIMUMAV'da `SIMUMAV_DATA_DIR/files/support/<uid>/<token>.<png|jpg>`
+  (`support_files` tablosu) saklanır, Merkez gövdesine `SIMUMAV_PUBLIC_URL/api/support/att/<token>` yazılır (32 bayt rastgele token, oturumsuz, inline, nosniff +
+  `sandbox` CSP; Merkez personeli tıklar). Gönderim başarısızsa ek silinir. Kabul: yalnız PNG/JPEG (imza denetimi), ≤ 3 MB (`SUPPORT_MAX_BYTES`), base64 data URL.
+- **Oyun arayüzü:** kabukta dişlinin yanında yaşam simidi `#help` (Uç ekranında gizli; RTL'de solda) → `support/index.js openReportModal` (konu çipleri, başlık,
+  açıklama sayaçlı, "Sahneyi yakala" = görünür en büyük canvas → JPEG ≤ 1600 px, "Dosya seç", bağlam onay kutusu + önizleme); gönderince talep numarası +
+  "Merkez ekibi e-posta ile dönecek"; Ayarlar'da Destek kartı (Sorun bildir / Taleplerim); Uç bitiş raporunda "Bu uçuşla ilgili sorun bildir" (uçuş kimliğiyle);
+  `#/support` Taleplerim (durum rozeti, yeni yanıt işareti), `#/support/<id>` yanıt zinciri + ekler + kullanıcı yanıtı (kapalı/çözülmüşte yanıt alanı yok).
+  Saf kurallar `support/rules.js` (node testi). i18n `support.*` 7 dil. Denetim: `support_create`, `support_reply`, `support_fail`.
+- **Env:** SIMUMAV `.env`: `SIMUMAV_MT_SHARED_SECRET` (mevcut; zorunlu — yoksa 503 `support_unavailable`), `SIMUMAV_MT_INTERNAL` (mevcut), yeni
+  `SIMUMAV_PUBLIC_URL` (vars. `https://simumav.com`; ek bağlantıları). Hesap servisi: `SIMUMAV_MT_SHARED_SECRET` (mevcut) + Merkez bağlantısı (mevcut).
+  Merkez: değişiklik yalnız `TICKET_APPS['sv']` + liste `source=` filtresi (`static/js/modules/tickets.js` Kaynak seçimi: Firmalar / Mastertool / SIMUMAV).
+- **Dağıtım sırası:** HEPGO Merkez (sshmaster_admin + support router + tickets.js) → hesap servisi (`sshm/main.py`; restart hepgo-sshmasters) → SIMUMAV yayını.
+  Eski hesap servisiyle SIMUMAV: `X-Simumav-Secret` tanınmaz → 401 → kullanıcıya 503 "kullanılamıyor" (talep kaybı yok, 4xx mesajı geçmez).
+- **Testler:** `tests/test_simumav.py` (sahte hesap servisi `tests/simumav_fake_mt.py`: oluştur/ek/bağlam/liste/ayrıntı/yanıt/oran 429/413/422/CSRF/503/audit),
+  `central/sshmaster_server/tests/test_mastertool.py` (sv gizli yolu, 403/422/404/401, IP oranı yok, e-posta bağlantısı), `tests/test_sshmaster_admin.py`
+  (etiket SIMUMAV, `source` filtresi), `node tests/test_simumav_ui.mjs`, Playwright `tests/simumav_support_shots.py` (/tmp/simumav-ticket/).

@@ -125,6 +125,19 @@ CREATE TABLE IF NOT EXISTS audit (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit(ts);
+-- Destek ekleri (docs/simumav.md §9): talep Merkez'de tutulur, ekran görüntüsü/dosya burada; Merkez gövdesine rastgele token'lı bağlantı yazılır
+CREATE TABLE IF NOT EXISTS support_files (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ticket_id INTEGER,                          -- Merkez talep kimliği (hesap servisi yanıtı)
+    token TEXT NOT NULL UNIQUE,                 -- 32 bayt urlsafe rastgele; /api/support/att/<token> (oturumsuz — Merkez personeli açar)
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    path TEXT NOT NULL,                         -- DATA_DIR göreli: files/support/<uid>/<token>.<ext>
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_support_files_t ON support_files(user_id, ticket_id);
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 """
 _MIGRATIONS = []   # [(sürüm, [sql, …])] — ileride sütun eklemeleri

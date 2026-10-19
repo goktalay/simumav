@@ -81,6 +81,7 @@ MT_INTERNAL = os.environ.get('SIMUMAV_MT_INTERNAL', 'http://127.0.0.1:8095').rst
 MT_APP = os.environ.get('SIMUMAV_MT_APP', 'sv')                           # hesap servisinde oyun kodu (sm = SSH Master; çakışmaz)
 MT_SHARED_SECRET = os.environ.get('SIMUMAV_MT_SHARED_SECRET', '')        # sv_profiles yazımı (X-Simumav-Secret)
 PUBLIC_HOST = os.environ.get('SIMUMAV_PUBLIC_HOST', '').strip()           # MP bağlantı satırında gösterilen sunucu adı/IP
+PUBLIC_URL = os.environ.get('SIMUMAV_PUBLIC_URL', 'https://simumav.com').rstrip('/')   # destek eki bağlantıları Merkez gövdesine bu kökle yazılır (§9)
 MP_PORT_BASE = int(os.environ.get('SIMUMAV_MP_PORT_BASE', '15600') or 15600)
 MP_PORT_COUNT = max(10, int(os.environ.get('SIMUMAV_MP_PORT_COUNT', '400') or 400))
 MP_IDLE_S = float(os.environ.get('SIMUMAV_MP_IDLE_S', '60') or 60)        # bağlanılmazsa dinleyici kapanır
@@ -100,7 +101,9 @@ if GA_ID and not re.fullmatch(r'G-[A-Z0-9]{6,14}', GA_ID):
     GA_ID = ''
 # Kotalar (§7)
 QUOTA = {'drones': 20, 'pilots': 20, 'tracks': 20, 'missions': 50, 'flights': 100, 'disk_bytes': 1024 ** 3}
-RATE = {'session': (10, 60), 'write': (60, 60), 'read': (300, 60), 'ws': (100, 1)}   # (adet, pencere sn)
+RATE = {'session': (10, 60), 'write': (60, 60), 'read': (300, 60), 'ws': (100, 1),
+        'support': (5, 3600), 'support_reply': (30, 3600)}   # (adet, pencere sn); support: talep açma 5/sa/kullanıcı (§9)
+SUPPORT_MAX_BYTES = 3 * 1024 * 1024       # destek eki (PNG/JPG) ≤ 3 MB (§9)
 
 # ---- HEPGO'ya özgü modüllerin SIMUMAV karşılıkları (app.config/app.db/app.drone_hub/app.feed/app.flightlog/app.flight_analysis → shim) ----
 from . import shim  # noqa: E402

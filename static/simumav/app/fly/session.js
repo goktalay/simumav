@@ -140,7 +140,7 @@ export function patchMpBox(stage, mp) {
 }
 
 // Özet rapor: HEPGO reportBody + SIMUMAV halka istatistiği bloğu → modal (Promise, kapanınca)
-export function showFlightReport(MReport, sum, gates, { pilot, drone, track } = {}) {
+export function showFlightReport(MReport, sum, gates, { pilot, drone, track, flightId = null, ctx = null } = {}) {
   return new Promise(resolve => {
     const body = h('div', { class: 'sm-report' });
     body.append(h('div', { class: 'sm-report-head' }, h('b', null, drone?.name || ''), track?.name ? h('span', { class: 'muted' }, ` · ${track.name}`) : null, pilot?.name ? h('span', { class: 'muted' }, ` · ${tr('Pilot')}: ${pilot.name}`) : null));
@@ -151,7 +151,9 @@ export function showFlightReport(MReport, sum, gates, { pilot, drone, track } = 
       body.append(h('div', { class: 'sm-gates-sum' }, h('h3', null, 'FPV halkaları'),
         h('div', { class: 'sm-gate-tiles' }, tile(gates.passed, 'geçilen', 'ok'), tile(gates.missed, 'kaçırılan', gates.missed ? 'bad' : ''), tile(gates.laps, 'tur'), tile(clock(gates.best_lap_s), 'en iyi tur'))));
     }
-    modal({ title: tr('Uçuş özeti'), body, wide: true, actions: [{ label: tr('PDF / Yazdır'), onClick: () => { MReport.printReport?.(); return true; } }, 'spacer', { label: tr('Operasyon\'a git'), class: 'primary' }], onClose: () => resolve(sum) });
+    // "Bu uçuşla ilgili sorun bildir" (§9): destek modalı uçuş kimliğiyle açılır; rapor modalı açık kalır (true)
+    const report = { label: tr('support.report_flight'), onClick: async () => { const m = await import('../support/index.js'); m.openReportModal(ctx || { go: hs => { location.hash = String(hs).startsWith('#') ? hs : `#/${hs}`; } }, { flightId, source: 'flight' }); return true; } };
+    modal({ title: tr('Uçuş özeti'), body, wide: true, actions: [{ label: tr('PDF / Yazdır'), onClick: () => { MReport.printReport?.(); return true; } }, report, 'spacer', { label: tr('Operasyon\'a git'), class: 'primary' }], onClose: () => resolve(sum) });
   });
 }
 
@@ -469,7 +471,7 @@ export async function openSession(view, start, picked, ctx = {}) {
       const r = await net.post(`/api/fly/${encodeURIComponent(fid)}/stop`, body);
       const sum = r?.flight?.summary || r?.summary || null;   // POST stop → {ok, flight:{…, summary:{session, flight, mission, crash, gates}}}
       gaTrack('flight_end', { drone_type: drone?.type || 'unknown', duration_s: Math.round((Date.now() - tOpen) / 1000), world_mode: track?.world_mode || 'unknown', gates: body.gates ? 1 : 0 });
-      await showFlightReport(MReport, sum || {}, body.gates || r?.gates || null, { pilot, drone, track });
+      await showFlightReport(MReport, sum || {}, body.gates || r?.gates || null, { pilot, drone, track, flightId: fid, ctx });
       if (document.fullscreenElement) await document.exitFullscreen?.().catch(() => {});
       toast('Uçuş kaydedildi');
       go('#/ops');

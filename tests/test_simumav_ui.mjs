@@ -50,14 +50,38 @@ ok('CSP: inline script/style yok, CDN yok, three.js /vendor/three/');
 // 4) Router tablosu: 8 rota, fly → fly/index.js (bu ajan oluşturmaz), diğer modüller var ve mount dışa aktarır
 const app = readFileSync(join(APP, 'app.js'), 'utf8');
 const routes = [...app.matchAll(/^\s+(\w+): \(\) => import\('\.\/([\w/]+)\.js'\)/gm)].map(m => [m[1], m[2]]);
-assert.deepEqual(routes.map(r => r[0]), ['menu', 'hangar', 'crew', 'tracks', 'missions', 'fly', 'ops', 'settings'], 'rota tablosu');
+assert.deepEqual(routes.map(r => r[0]), ['menu', 'hangar', 'crew', 'tracks', 'missions', 'fly', 'ops', 'settings', 'support'], 'rota tablosu');
 for (const [name, path] of routes) {
   if (name === 'fly') { assert.equal(path, 'fly/index'); continue; }
   const p = join(APP, `${path}.js`);
   assert.ok(existsSync(p), `${p} yok`);
   assert.ok(/export async function mount\(/.test(readFileSync(p, 'utf8')), `${path} mount dışa aktarmıyor`);
 }
-ok('router: 8 rota; fly/index.js Uç ajanına bırakıldı; diğer 7 modül mount() veriyor');
+ok('router: 9 rota; fly/index.js Uç ajanına bırakıldı; diğer 8 modül mount() veriyor');
+
+// 4b) Destek (§9): yaşam simidi düğmesi kabukta ve fly'da gizli; ayarlar kartı; uçuş raporunda "sorun bildir"; saf yardımcılar
+{
+  assert.ok(/id="help" class="help"/.test(html), 'index.html #help düğmesi');
+  assert.ok(/help\.hidden = name === 'fly'/.test(app) && /openReportModal\(ctx\)/.test(app), 'app.js: help fly\'da gizli, tıklama → openReportModal');
+  assert.ok(/openReportModal\(ctx, \{ source: 'settings' \}\)/.test(readFileSync(join(APP, 'settings/index.js'), 'utf8')), 'ayarlar kartı');
+  const sessSrc = readFileSync(join(APP, 'fly/session.js'), 'utf8');
+  assert.ok(/support\.report_flight/.test(sessSrc) && /flightId: fid, ctx/.test(sessSrc), 'uçuş raporu → sorun bildir (uçuş kimliğiyle)');
+  const sup = await import(join(APP, 'support/rules.js'));
+  assert.ok(/from '\.\/rules\.js'/.test(readFileSync(join(APP, 'support/index.js'), 'utf8')), 'support/index.js kuralları rules.js\'den alır');
+  assert.deepEqual(sup.CATEGORIES, ['flight', 'account', 'hangar', 'track', 'mp', 'perf', 'other']);
+  for (const k of sup.CATEGORIES) assert.ok(`support.cat_${k}` in dicts.tr, `support.cat_${k}`);
+  for (const s of ['acik', 'yanit_bekliyor', 'cozuldu', 'kapali']) assert.ok(`support.st_${s}` in dicts.tr, `support.st_${s}`);
+  assert.equal(sup.fileProblem(null), 'support.shot_none');
+  assert.equal(sup.fileProblem({ type: 'image/gif', size: 10 }), 'support.shot_badtype');
+  assert.equal(sup.fileProblem({ type: 'image/png', size: sup.MAX_FILE + 1 }), 'support.shot_toolarge');
+  assert.equal(sup.fileProblem({ type: 'image/jpeg', size: 1000 }), null);
+  assert.equal(sup.MAX_SUBJECT, 120); assert.equal(sup.MAX_BODY, 4000);
+  const cx = sup.collectContext({ ua: 'UA'.repeat(200), lang: 'tr', width: 1440, height: 900, dpr: 2, flightId: 7, route: '#/menu', gl: 'SwiftShader' });
+  assert.equal(cx.ua.length, 300); assert.equal(cx.screen, '1440x900@2.0'); assert.equal(cx.flight_id, 7); assert.equal(cx.gl, 'SwiftShader'); assert.equal(sup.collectContext({}).flight_id, null);
+  const css = readFileSync(join(APP, 'theme.css'), 'utf8');
+  assert.ok(/\.help \{/.test(css) && /\[dir="rtl"\] \.help/.test(css) && /\.sup-form/.test(css), 'theme.css: .help + RTL + .sup-*');
+}
+ok('destek: #help düğmesi, ayarlar kartı, uçuş raporu düğmesi, kategori/durum i18n, dosya kuralı');
 
 // 5) Pilot karakterleri ve ikon dosyaları
 for (let i = 1; i <= 10; i++) assert.ok(existsSync(join(APP, 'img/pilots', `p${String(i).padStart(2, '0')}.svg`)), `p${i} yok`);

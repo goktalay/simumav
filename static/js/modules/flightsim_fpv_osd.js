@@ -18,7 +18,8 @@ export const LS = { analog: 'fs.fpv.analog', pip: 'fs.fpv.pip', nose: 'fs.fpv.no
 export const LOW_BATT_PCT = 25, LOW_ALT_M = 10, LOW_RSSI = 30, LOW_FUEL_PCT = 20;
 export const CELL = { min: 3.5, max: 4.2, nominal: 3.8 };   // LiPo hücre gerilimleri (yüzde kestirimi)
 const DEG = Math.PI / 180;
-const WHITE = '#f4f6f8', DIM = 'rgba(244,246,248,.6)', RED = '#ff4a4a';
+import { gaugeLevel } from './flightsim_power.js';   // §23.6: güç çubuğu seviye eşikleri (yeşil ≥ 30 · sarı < 30 · kırmızı < 15 · bitti) kadranlarla aynı
+const WHITE = '#f4f6f8', DIM = 'rgba(244,246,248,.6)', RED = '#ff4a4a', YEL = '#ffd84a';
 const num = (v, d = null) => (v == null || Number.isNaN(Number(v)) ? d : Number(v));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 export const wrap180 = a => ((a + 180) % 360 + 360) % 360 - 180;
@@ -72,6 +73,21 @@ export function osdBattery(t) {
   if (t?.elec) return { v: num(t.elec.v, null), pct: num(t.elec.pct, null), cells: num(t.elec.cells, null) || null, min: t.elec.min_left != null ? num(t.elec.min_left, null) : null, elec: true, empty: !!t.elec.empty };
   const v = num(t?.batt_v, null);
   return { v, pct: battPct(t?.batt_v, t?.batt_pct), cells: cellCount(v), min: null, elec: false, empty: false };
+}
+// §23.6 OSD güç satırları (alt sol, iki yatay çubuk + değer): [{ key:'bat'|'fuel', label, pct, level, value }] — BAT: elektronik batarya (V, %, S, kalan dk)
+// ya da SITL pili (V, %, S); FUEL: tele.fuel varsa (L, %, menzil). Seviye rengi kadranlarla aynı (gaugeLevel); hiçbiri yoksa []
+export function osdPowerRows(t) {
+  const rows = [], b = osdBattery(t);
+  if (b.v != null || b.pct != null) {
+    rows.push({ key: 'bat', label: 'BAT', pct: clamp(num(b.pct, 0), 0, 100), level: gaugeLevel(b.pct, b.empty),
+      value: [b.v != null && b.v > 0 ? `${b.v.toFixed(1)}V` : '--.-V', b.pct != null ? `${b.pct.toFixed(0)}%` : null, b.cells ? `${b.cells}S` : null, b.elec && b.min != null ? `${Math.round(b.min)}min` : null].filter(Boolean).join(' ') });
+  }
+  if (t?.fuel) {
+    const f = t.fuel, km = num(f.range_km, 0);
+    rows.push({ key: 'fuel', label: 'FUEL', pct: clamp(num(f.pct, 0), 0, 100), level: gaugeLevel(f.pct, !!f.empty || num(f.l, 0) <= 0),
+      value: `${num(f.l, 0).toFixed(2)}L ${Math.round(num(f.pct, 0))}% ${km >= 10 ? `${Math.round(km)}km` : `${km.toFixed(1)}km`}` });
+  }
+  return rows;
 }
 // §23 OSD yakıt satırı metni: "FUEL 4.14L 83% 103km" (yakıt yoksa null)
 export function osdFuelText(f) {
@@ -207,7 +223,7 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = 
     const gs = num(t.groundspeed, Math.hypot(vn, ve));
     const agl = num(t.alt_rel, num(t.alt_msl, null));
     const armed = !!t.armed;
-    const bat = osdBattery(t), bp = bat.pct, bv = bat.v;   // §23: elektronik batarya varsa o
+    const bp = osdBattery(t).pct;   // §23: elektronik batarya varsa o (uyarılar için yüzde; çubuklar osdPowerRows)
     const rssi = num(t.rssi, null);
     const hv = homeVector(t.lat, t.lon, t.home);
     const rcOn = !!ctx.rcOn || stage.classList.contains('rc-on');
@@ -281,23 +297,21 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = 
     const climb = num(t.climb, t.vd != null ? -num(t.vd, 0) : null);
     if (climb != null) text(`${climb > 0.05 ? '▲' : climb < -0.05 ? '▼' : '—'} ${Math.abs(climb).toFixed(1)}`, rightX, cy + 28 * S, { align: 'right', px: F * 0.95 });
 
-    // --- alt sol: pil (Mission Planner / kayıt bilgisi kutusunun üstünde) ---
+    // --- alt sol: güç çubukları (§23.6; Mission Planner / kayıt bilgisi kutusunun üstünde) — BAT üstte, FUEL altta: etiket + değer satırı, altında
+    //     120 px yatay çubuk (beyaz kontur, çeyrek çentikler; dolgu seviye rengi: beyaz / sarı < 30 % / kırmızı < 15 %; alarmda yanıp söner) ---
     const by = bottom - 10 * S, ly = bottom - 10 * S - (rcOn ? 0 : lay.mp);
-    const lowB = bat.empty || (bp != null && bp < LOW_BATT_PCT);
-    const fuelTxt = osdFuelText(t.fuel);
-    const fy = fuelTxt ? ly - 42 * S : ly;   // yakıt satırı varsa pil bloğu bir satır yukarı (yakıt en altta)
-    text(bv != null && bv > 0 ? `${bv.toFixed(1)}V` : '--.-V', m, fy, { px: F * 1.3, bold: true, base: 'bottom', color: lowB && blink() ? RED : WHITE });
-    if (bp != null) {
-      text(`${bp.toFixed(0)}%`, m + 86 * S, fy, { px: F * 1.1, base: 'bottom', color: lowB ? RED : WHITE });
-      g.beginPath(); g.rect(m, fy - 32 * S, 70 * S, 6 * S); stroke(WHITE, 1); g.fillStyle = lowB ? RED : WHITE; g.fillRect(m, fy - 32 * S, 70 * S * bp / 100, 6 * S);
-    }
-    if (bat.cells) text(`${bat.cells}S`, m + 140 * S, fy, { px: F * 0.9, base: 'bottom', color: DIM });
-    if (bat.elec && bat.min != null) text(`${Math.round(bat.min)}min`, m + 176 * S, fy, { px: F * 0.9, base: 'bottom', color: DIM });   // §23 kalan süre (elektronik)
-    if (fuelTxt) {   // §23 yakıt: litre · % · kalan menzil + çubuk
-      const lowF = t.fuel.empty || num(t.fuel.pct, 100) < LOW_FUEL_PCT;
-      text(fuelTxt, m, ly, { px: F * 1.05, bold: true, base: 'bottom', color: lowF && blink() ? RED : WHITE });
-      g.beginPath(); g.rect(m, ly - 26 * S, 70 * S, 5 * S); stroke(WHITE, 1); g.fillStyle = lowF ? RED : WHITE; g.fillRect(m, ly - 26 * S, 70 * S * clamp(num(t.fuel.pct, 0), 0, 100) / 100, 5 * S);
-    }
+    const prow = osdPowerRows(t), pw = 120 * S, ph = 9 * S, prh = 36 * S;
+    prow.forEach((r, i) => {
+      const y = ly - (prow.length - 1 - i) * prh, alarm = r.level === 'crit' || r.level === 'empty', on = blink(650);
+      const col = r.level === 'ok' ? WHITE : r.level === 'low' ? YEL : RED;
+      text(r.label, m, y - ph - 4 * S, { px: F * 0.85, bold: true, base: 'bottom', color: DIM });
+      text(r.value, m + 42 * S, y - ph - 4 * S, { px: F * 1.1, bold: true, base: 'bottom', color: alarm && !on ? 'rgba(255,74,74,.45)' : alarm ? RED : WHITE });
+      g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(m, y - ph, pw, ph);
+      g.beginPath(); g.rect(m, y - ph, pw, ph); stroke(WHITE, 1);
+      if (!alarm || on) { g.fillStyle = col; g.fillRect(m + 1.5, y - ph + 1.5, (pw - 3) * r.pct / 100, ph - 3); }
+      g.fillStyle = 'rgba(0,0,0,.7)';
+      for (const q of [0.25, 0.5, 0.75]) g.fillRect(m + pw * q - 0.5, y - ph, 1, 3 * S);
+    });
 
     // --- alt orta: RSSI · SAT · konum ---
     const rs = rssi != null ? `RSSI ${rssi.toFixed(0)}%` : 'RSSI --';

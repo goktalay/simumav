@@ -61,6 +61,7 @@ bash deploy.sh /opt/hepgo/sshmaster/data/releases/sv/<v>/simumav-<v>.tar.gz
 | `SIMUMAV_MT_APP` | `sv` |
 | `SIMUMAV_MT_SHARED_SECRET` | hesap servisi `.env`'deki aynı değer (`sv_profiles` yazımı, `X-Simumav-Secret`) |
 | `SIMUMAV_PUBLIC_HOST` | MP bağlantı satırında gösterilen sunucu adı/IP |
+| `SIMUMAV_PUBLIC_URL` | destek eki bağlantılarının kökü (vars. `https://simumav.com`; docs §9) |
 | `SIMUMAV_MAX_FLIGHTS` · `SIMUMAV_FLIGHT_MINUTES` | eşzamanlı uçuş (6) · uçuş süresi (≤ 45) |
 | `SIMUMAV_MP_PORT_BASE` · `SIMUMAV_MP_PORT_COUNT` | MP TCP aralığı (15600 / 400 → 15600–15999); ufw: `allow 15600:15999/tcp` |
 | `SIMUMAV_UDP_BASE` | iç SITL↔MP UDP aralığı (14550…); DIŞA KAPALI |

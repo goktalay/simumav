@@ -23,6 +23,16 @@ const pad3 = v => String(Math.round(((v % 360) + 360) % 360)).padStart(3, '0');
 const pad2 = v => String(v).padStart(2, '0');
 const CARD = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' };
 
+// §23.6 gimbal HUD güç çubukları (sol alt bloğun sağında iki DİKEY bar, yeşil fosfor): [{ label:'BAT'|'FUEL', pct, low, empty, l1, l2 }] — BAT: elektronik
+// batarya (V · kalan dk) ya da SITL pili (V · %); FUEL: tele.fuel varsa (L · menzil). Düşük (< 25 % / < 20 %) ya da bitti → kırmızı, dolgu yanıp söner.
+export function hudPowerBars(t) {
+  const out = [], e = t?.elec || null;
+  const bp = e ? num(e.pct, null) : num(t?.batt_pct, null), bv = e ? num(e.v, null) : num(t?.batt_v, null);
+  if (bp != null || (bv != null && bv > 0)) out.push({ label: 'BAT', pct: clamp(bp ?? 0, 0, 100), low: !!e?.empty || (bp != null && bp < 25), empty: !!e?.empty, l1: bv != null && bv > 0 ? `${bv.toFixed(1)}V` : '—', l2: e && e.min_left != null ? `${Math.round(e.min_left)}min` : '' });
+  if (t?.fuel) { const f = t.fuel, km = num(f.range_km, 0); out.push({ label: 'FUEL', pct: clamp(num(f.pct, 0), 0, 100), low: !!f.empty || num(f.pct, 100) < 20, empty: !!f.empty, l1: `${num(f.l, 0).toFixed(2)}L`, l2: km >= 10 ? `${Math.round(km)}km` : `${km.toFixed(1)}km` }); }
+  return out;
+}
+
 export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
   const canvas = document.createElement('canvas');
   canvas.className = 'fs-mhud';
@@ -285,7 +295,8 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
     text(`FOV ${fov.toFixed(0)}°`, rx, ry0 + 36 * S, { align: 'right', px: F * 0.9 });
 
     // --- sol alt: mod · ARM/SAFE · G · gaz · batarya · GPS (Mission Planner kutusunun üstünde) ---
-    const lx = 22 * S, lh = 17 * S, ly0 = bottomLimit - lay.mp - 14 * S - lh * ((ctx.launch ? 7 : 6) + (t.fuel ? 1 : 0));   // sol alttaki kutunun (MP / kayıt bilgisi) üstünde; §23 yakıt satırı varsa bir satır daha
+    const bars = hudPowerBars(t);   // §23.6: BAT/FUEL metin satırları yerine dikey barlar (blok yüksekliği ≥ 108 px)
+    const lx = 22 * S, lh = 17 * S, ly0 = bottomLimit - lay.mp - 14 * S - Math.max(lh * (ctx.launch ? 6 : 5), bars.length ? 108 * S : 0);   // sol alttaki kutunun (MP / kayıt bilgisi) üstünde
     let ly = ly0;
     text(t.mode || '—', lx, ly, { px: F * 1.2, bold: true }); ly += lh * 1.25;
     text(armed ? 'ARM' : 'SAFE', lx, ly, { px: F * 1.05, bold: true, color: armed ? C : '#cfd6cc' }); ly += lh;
@@ -294,15 +305,20 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
     const thr = clamp(num(t.throttle, 0), 0, 100);
     text(`THR ${thr.toFixed(0).padStart(3, ' ')}%`, lx, ly, { px: F * 0.95 });
     g.beginPath(); g.rect(lx + 78 * S, ly - 5 * S, 70 * S, 10 * S); stroke(C, 1); g.fillStyle = C; g.fillRect(lx + 78 * S, ly - 5 * S, 70 * S * thr / 100, 10 * S); ly += lh;
-    // §23: elektronik batarya (tele.elec) varsa pil satırı ondan (V kestirimi, %, kalan dk); yakıt satırı (L, %, menzil) altında
-    const el_ = t.elec || null;
-    const bp = el_ ? num(el_.pct, null) : num(t.batt_pct, null), bv = el_ ? num(el_.v, null) : num(t.batt_v, null);
-    const batLow = el_ ? (el_.empty || (bp != null && bp < 25)) : (bp != null && bp < 25);
-    text(`BAT ${bv != null ? bv.toFixed(1) + 'V' : '—'} ${bp != null ? bp.toFixed(0) + '%' : ''}${el_ && el_.min_left != null ? ` ${Math.round(el_.min_left)}min` : ''}`, lx, ly, { px: F * 0.95, color: batLow ? RED : C }); ly += lh;
-    if (t.fuel) {
-      const f = t.fuel, km = num(f.range_km, 0), fuelLow = f.empty || num(f.pct, 100) < 20;
-      text(`FUEL ${num(f.l, 0).toFixed(2)}L ${Math.round(num(f.pct, 0))}% ${km >= 10 ? Math.round(km) + 'km' : km.toFixed(1) + 'km'}`, lx, ly, { px: F * 0.95, color: fuelLow ? RED : C }); ly += lh;
-    }
+    // §23.6: güç çubukları — sol bloğun sağında iki dikey bar (BAT · FUEL): etiket üstte, 56 px bar (çeyrek çentikler, dolgu alttan), altında % · değer · menzil/süre;
+    //        düşük/bitti kırmızı ve dolgu yanıp söner (uyarı kutuları ayrıca üstte). Uyarı mantığı için bp/el_ korunur
+    const el_ = t.elec || null, bp = el_ ? num(el_.pct, null) : num(t.batt_pct, null);
+    bars.forEach((b, i) => {
+      const bx = lx + 176 * S + i * 46 * S, bw = 14 * S, bh = 56 * S, by = ly0 + 8 * S, col = b.low ? RED : C, on = !b.low || blink(600);
+      text(b.label, bx + bw / 2, ly0 - 3 * S, { align: 'center', px: F * 0.8, bold: true, color: col });
+      box(bx, by, bw, bh, col, 'rgba(0,0,0,.45)');
+      const ih = (bh - 4 * S) * b.pct / 100;
+      if (on && ih > 0) { g.fillStyle = col; g.fillRect(bx + 2 * S, by + bh - 2 * S - ih, bw - 4 * S, ih); }
+      for (const q of [0.25, 0.5, 0.75]) line(bx, by + bh * q, bx + 4 * S, by + bh * q, col, 1);
+      text(`${Math.round(b.pct)}%`, bx + bw / 2, by + bh + 10 * S, { align: 'center', px: F * 0.95, bold: true, color: col });
+      text(b.l1, bx + bw / 2, by + bh + 23 * S, { align: 'center', px: F * 0.78, color: col });
+      if (b.l2) text(b.l2, bx + bw / 2, by + bh + 35 * S, { align: 'center', px: F * 0.78, color: col });
+    });
     // GPS fix türü (MAVLink GPS_FIX_TYPE): 6 RTK Fixed (SITL u-blox arka ucu zaten RTK bildirir, §13), 5 RTK Float, 4 DGPS, 3 3D, 2 2D
     const fix = t.gps_fix >= 6 ? 'RTK' : t.gps_fix === 5 ? 'RTK FLT' : t.gps_fix === 4 ? 'DGPS' : t.gps_fix === 3 ? '3D' : t.gps_fix === 2 ? '2D' : '--';
     text(`GPS ${fix} ${t.sats != null ? t.sats + ' SAT' : ''}`, lx, ly, { px: F * 0.95 }); ly += lh;

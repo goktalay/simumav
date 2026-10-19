@@ -33,6 +33,10 @@ export async function mount(root, ctx) {
     row(t('settings.bgfx'), t('settings.bgfx_sub'), switchEl(bgOn(), v => { localStorage.setItem('sm:bgfx', v ? '1' : '0'); }, t('settings.bgfx'))),
     row(t('settings.analog'), t('settings.analog_sub'), switchEl(S.analog_fpv !== false, v => save({ analog_fpv: v }), t('settings.analog'))),
     row(t('settings.account'), `${user.display_name || ''}${user.email ? ` · ${user.email}` : ''}`, h('a', { class: 'btn', href: mtUrl, target: '_blank', rel: 'noopener' }, t('settings.account_link'))),
+    // Destek (§9): belirgin kart — Sorun bildir modalı + Taleplerim
+    (() => { const r = row(t('support.report'), t('support.report_sub'), h('div', { class: 'btn-row' },
+      btn(t('support.report'), async () => { (await import('../support/index.js')).openReportModal(ctx, { source: 'settings' }); }, 'primary', { dataset: { act: 'report' } }),
+      btn(t('support.my_tickets'), () => ctx.go('support'), '', { dataset: { act: 'tickets' } }))); r.classList.add('sup-card'); return r; })(),
     row(t('settings.version'), `SIMUMAV ${ctx.state.meta?.version || ''}`, btn(t('settings.logout'), logout, 'danger')),
   );
   stagger([...panel.children], 60);

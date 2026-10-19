@@ -487,6 +487,80 @@ def main():
         # dosya yolu denetimi: kök dışı yollar reddedilir
         assert bridge.dosya_yolu('../simumav.db') is None and bridge.dosya_yolu('/etc/passwd') is None and bridge.dosya_yolu('') is None
 
+        # ---- destek (§9): sahte hesap servisi (tests/simumav_fake_mt.py) → /api/sv/tickets* X-Simumav-Secret + user_id; talep SIMUMAV'da tutulmaz
+        from tests import simumav_fake_mt as fake
+        fsrv, fport = fake.serve()
+        eski_mt = (config.MT_INTERNAL, config.MT_SHARED_SECRET)
+        from app.simumav import auth as sauth
+        try:
+            ali_fid = c.get('/api/ops').json()['flights'][0]['id']
+            config.MT_INTERNAL, config.MT_SHARED_SECRET = f'http://127.0.0.1:{fport}', ''
+            r = c.get("/api/support"); assert r.status_code == 503 and r.json()["detail"]["error"] == "support_unavailable", (r.status_code, r.text[:300])   # paylaşılan gizli yok
+            config.MT_SHARED_SECRET = 'sv-gizli'
+            assert c.get('/api/support').json() == {'tickets': [], 'categories': [{'key': k, 'merkez': 'diger' if k == 'other' else 'teknik'} for k in ('flight', 'account', 'hangar', 'track', 'mp', 'perf', 'other')]}
+            # oluştur: ek (PNG), bağlam (uçuş kimliği, tarayıcı) → gövdede bağlam bloğu; app=sv, başlıkta kategori öneki; attachment url
+            png = terrarium_png()
+            import base64
+            durl = 'data:image/png;base64,' + base64.b64encode(png).decode()
+            body = {'category': 'flight', 'subject': 'Dron düşüyor', 'body': 'Kalkışta hemen çakılıyor.', 'screenshot': durl, 'attach_name': 'ekran.png', 'include_context': True,
+                    'context': {'ua': 'TestBrowser/1.0', 'lang': 'tr', 'screen': '1440x900@1.0', 'gl': 'SwiftShader', 'flight_id': ali_fid, 'route': '#/fly'}}
+            r = c.post('/api/support', json=body, headers=H); assert r.status_code == 201, r.text
+            tk = r.json(); assert tk['code'] == 'T-0001' and tk['id'] == 1 and tk['attachment']['name'] == 'ekran.png' and tk['attachment']['url'].startswith('/api/support/att/')
+            gelen = [x for x in fake.STATE['calls'] if x[0] == 'POST' and x[1] == '/api/sv/tickets'][-1]
+            assert gelen[2].get('X-Simumav-Secret') == 'sv-gizli' and gelen[3]['app'] == 'sv' and gelen[3]['category'] == 'teknik' and gelen[3]['subject'] == '[Uçuş / Simülasyon] Dron düşüyor', gelen
+            g = gelen[3]['body']
+            assert g.startswith('Kalkışta hemen çakılıyor.') and '--- SIMUMAV bağlamı ---' in g and f'Uçuş: #{ali_fid}' in g and 'Tarayıcı: TestBrowser/1.0' in g and 'GPU: SwiftShader' in g, g
+            assert f'Sürüm: {config.VERSION}' in g and 'Ek: ekran.png' in g and f'https://simumav.com{tk["attachment"]["url"]}' in g, g
+            # user_id sorguda (hesap servisi kullanıcıyı buradan çözer)
+            assert '/api/sv/tickets' in gelen[1] and [x for x in fake.STATE['calls'] if x[1].startswith('/api/sv/tickets')][-1][1] == '/api/sv/tickets'
+            # ek: oturumsuz indirme token ile; yanlış token 404; dosya diskte
+            att = c.get(tk['attachment']['url'], headers={'Cookie': ''}); assert att.status_code == 200 and att.headers['content-type'] == 'image/png' and att.content == png and 'sandbox' in att.headers['content-security-policy']
+            assert c.get('/api/support/att/' + 'A' * 43).status_code == 404 and c.get('/api/support/att/kisa').status_code == 404
+            assert any((config.DATA_DIR / 'files' / 'support').rglob('*.png'))
+            # bağlam kapalı: tarayıcı/uçuş satırı yok, sürüm/kategori var; ek yok; kategori other → diger
+            r = c.post('/api/support', json={'category': 'other', 'subject': 'Öneri', 'body': 'Gece modu', 'include_context': False, 'context': {'ua': 'X', 'flight_id': ali_fid}}, headers=H)
+            assert r.status_code == 201 and r.json()['attachment'] is None
+            g2 = [x for x in fake.STATE['calls'] if x[0] == 'POST' and x[1] == '/api/sv/tickets'][-1][3]
+            assert g2['category'] == 'diger' and 'Tarayıcı' not in g2['body'] and 'Uçuş:' not in g2['body'] and 'Kategori: Diğer' in g2['body']
+            # geçersizler: kategori, ek türü (GIF), 3 MB üstü → 413, boş başlık 422
+            assert c.post('/api/support', json={'category': 'uzay', 'subject': 'a', 'body': 'b'}, headers=H).status_code == 422
+            r = c.post('/api/support', json={'category': 'perf', 'subject': 'a', 'body': 'b', 'screenshot': 'data:image/gif;base64,R0lGODlh'}, headers=H); assert r.status_code == 422
+            buyuk = 'data:image/png;base64,' + base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\0' * (3 * 1024 * 1024 + 10)).decode()
+            r = c.post('/api/support', json={'category': 'perf', 'subject': 'a', 'body': 'b', 'screenshot': buyuk}, headers=H); assert r.status_code == 413 and r.json()['detail']['error'] == 'too_large', r.text
+            r = c.post('/api/support', json={'category': 'perf', 'subject': 'a', 'body': 'b', 'screenshot': 'data:image/png;base64,' + base64.b64encode(b'GIF89a' + b'\0' * 50).decode()}, headers=H); assert r.status_code == 422   # imza PNG değil
+            assert c.post('/api/support', json={'category': 'perf', 'subject': '', 'body': 'b'}, headers=H).status_code == 422
+            assert c.post('/api/support', json={'category': 'perf', 'subject': 'a', 'body': 'b'}).status_code == 403   # CSRF
+            # liste yalnız sv kayıtları; ayrıntı mesaj + ek listesi; Merkez yanıtı → unread + mesaj zinciri; kullanıcı yanıtı
+            fake.STATE['tickets'][2]['app'] = 'fm'   # başka Mastertool aracının talebi listede görünmez
+            lst = c.get('/api/support').json()['tickets']; assert [x['id'] for x in lst] == [1] and lst[0]['status'] == 'acik' and lst[0]['unread'] == 0
+            httpx_post = __import__('httpx').post
+            httpx_post(f'http://127.0.0.1:{fport}/__fake/reply/1', json={'body': 'Merhaba, günlüğü inceledik; THR_MAX düşük.'})
+            assert c.get('/api/support').json()['tickets'][0]['unread'] == 1
+            d = c.get('/api/support/1').json()
+            assert d['code'] == 'T-0001' and [m['author_kind'] for m in d['messages']] == ['company', 'support'] and d['messages'][1]['body'].startswith('Merhaba') and len(d['files']) == 1 and d['files'][0]['name'] == 'ekran.png'
+            assert set(d['messages'][0]) == {'id', 'author_kind', 'author_name', 'body', 'created_at'}
+            r = c.post('/api/support/1/reply', json={'body': 'Teşekkürler, deniyorum.'}, headers=H); assert r.status_code == 200, r.text
+            assert r.json()['status'] == 'yanit_bekliyor' and r.json()['messages'][-1]['body'] == 'Teşekkürler, deniyorum.' and len(r.json()['files']) == 1
+            assert c.get('/api/support/99').status_code == 404 and c.post('/api/support/99/reply', json={'body': 'x'}, headers=H).status_code == 404
+            # oran: talep 5/sa/kullanıcı (reddedilen ek/kategori denemeleri de sayılır — yukarıda kova doldu) → 429 + Retry-After; sıfırla → 5 × 201, 6. 429
+            r = c.post('/api/support', json={'category': 'perf', 'subject': 'o', 'body': 'b'}, headers=H); assert r.status_code == 429 and r.headers.get('Retry-After')
+            sauth.oran_sifirla()
+            kodlar = [c.post('/api/support', json={'category': 'perf', 'subject': f'o{i}', 'body': 'b'}, headers=H).status_code for i in range(6)]
+            assert kodlar == [201] * 5 + [429], kodlar
+            sauth.oran_sifirla()
+            # başka kullanıcı kendi talep listesini görür (hesap servisi e-posta ile ayırır); gönderim hatasında ek dosyası silinir
+            assert c.get('/api/support', headers=HC).json()['tickets'] == []
+            n_once = len(list((config.DATA_DIR / 'files' / 'support').rglob('*')))
+            config.MT_INTERNAL = 'http://127.0.0.1:1'
+            r = c.post('/api/support', json={'category': 'perf', 'subject': 'a', 'body': 'b', 'screenshot': durl}, headers=H); assert r.status_code == 503 and r.json()['detail']['error'] == 'support_unavailable'
+            assert len(list((config.DATA_DIR / 'files' / 'support').rglob('*'))) == n_once
+            with sdb_connect() as conn:
+                ev = {r[0] for r in conn.execute("SELECT event FROM audit WHERE event LIKE 'support%'").fetchall()}
+            assert ev == {'support_create', 'support_reply', 'support_fail'}, ev
+        finally:
+            config.MT_INTERNAL, config.MT_SHARED_SECRET = eski_mt
+            fsrv.shutdown(); fsrv.server_close()
+
         # ---- hesap servisi özeti (Merkez › Mastertool): sahte hesap servisine PUT /api/sv/profile X-Simumav-Secret ile
         # {pilot, pilots, drones, flights, hours, last_flight_at, version, updated_at}; dev kullanıcı (mt_user_id < 0) göndermez; gizli yoksa göndermez
         from http.server import BaseHTTPRequestHandler, HTTPServer
