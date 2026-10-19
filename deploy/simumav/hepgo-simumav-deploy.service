@@ -1,0 +1,24 @@
+# SIMUMAV yayın işi (root, oneshot). hepgo-simumav-deploy.path tetikler; elle: systemctl start hepgo-simumav-deploy
+# deploy.sh paketi doğrular, kurar, hepgo-simumav'ı yeniden başlatır; sağlık denetimi geçmezse önceki sürüme döner.
+[Unit]
+Description=SIMUMAV sürüm yayını (deploy.sh)
+After=network.target
+# Aynı anda ikinci yayın başlamasın
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStart=/opt/hepgo/simumav/deploy/simumav/deploy.sh
+# İlk kurulumda /opt/hepgo/simumav henüz yoksa betik yayın deposu klonundan ya da elle kopyadan çalıştırılır:
+#   /bin/bash /opt/hepgo/fabrika-yonetim/deploy/simumav/deploy.sh
+Environment=SIMUMAV_RELEASES=/opt/hepgo/sshmaster/data/releases/sv
+Environment=SIMUMAV_APP=/opt/hepgo/simumav
+Environment=SIMUMAV_UDS=/run/hepgo/simumav.sock
+Environment=SIMUMAV_DEPLOY_LOG=/var/log/hepgo-simumav-deploy.log
+TimeoutStartSec=900
+Nice=5
+# Yayın betiği kurulum dizini, venv ve servis dışında bir yere yazmaz
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=no

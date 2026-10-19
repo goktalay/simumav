@@ -1,0 +1,56 @@
+"""`/api/settings` — dil, tema, ses, FPV analog efekt (users.lang/theme/settings)."""
+import json
+from typing import Optional
+
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
+
+from .. import auth, config, db
+from .common import User
+
+router = APIRouter(prefix='/api/settings')
+THEMES = ('dark', 'light', 'auto')
+
+
+class SettingsIn(BaseModel):
+    lang: Optional[str] = Field(None, max_length=5)
+    theme: Optional[str] = Field(None, max_length=10)
+    sound: Optional[bool] = None
+    analog_fpv: Optional[bool] = None
+    music: Optional[bool] = None
+    volume: Optional[float] = Field(None, ge=0, le=1)
+    reduced_motion: Optional[bool] = None
+    units: Optional[str] = Field(None, max_length=8)
+
+
+def _out(u):
+    s = db.j(u.get('settings'))
+    return {'lang': u['lang'], 'theme': u['theme'], 'sound': bool(s.get('sound', True)), 'analog_fpv': bool(s.get('analog_fpv', True)),
+            'music': bool(s.get('music', True)), 'volume': float(s.get('volume', 0.8)), 'reduced_motion': bool(s.get('reduced_motion', False)),
+            'units': s.get('units', 'metric'), 'langs': list(config.LANGS), 'themes': list(THEMES)}
+
+
+@router.get('')
+def get_settings(user=User):
+    return _out(user)
+
+
+@router.put('')
+def put_settings(body: SettingsIn, user=User):
+    if body.lang is not None and body.lang not in config.LANGS:
+        raise auth.hata(422, 'invalid', 'Desteklenmeyen dil')
+    if body.theme is not None and body.theme not in THEMES:
+        raise auth.hata(422, 'invalid', 'theme dark | light | auto olmalı')
+    if body.units is not None and body.units not in ('metric', 'imperial'):
+        raise auth.hata(422, 'invalid', 'units metric | imperial olmalı')
+    s = db.j(user.get('settings'))
+    for k in ('sound', 'analog_fpv', 'music', 'volume', 'reduced_motion', 'units'):
+        v = getattr(body, k)
+        if v is not None:
+            s[k] = v
+    with db.connect() as conn:
+        conn.execute('UPDATE users SET lang = ?, theme = ?, settings = ?, updated_at = ? WHERE id = ?',
+                     (body.lang or user['lang'], body.theme or user['theme'], json.dumps(s), db.now(), user['id']))
+        conn.commit()
+        u = db.row(conn.execute('SELECT * FROM users WHERE id = ?', (user['id'],)))
+    return _out(u)

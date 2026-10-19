@@ -1,0 +1,29 @@
+[Unit]
+Description=SIMUMAV dron simülasyon oyunu (simumav.com) — Unix soketi, Cloudflare tüneli önünde; Mission Planner TCP 15600–15999
+After=network.target hepgo-sshmasters.service
+
+[Service]
+User=hepgo
+Group=hepgo
+# Kurulum kökü deploy.sh ile /opt/hepgo/simumav (root:root, hepgo yalnız okur); .env 640 root:hepgo, yayında dokunulmaz
+WorkingDirectory=/opt/hepgo/simumav
+EnvironmentFile=/opt/hepgo/simumav/.env
+Environment=SIMUMAV_UDS=/run/hepgo/simumav.sock
+Environment=SIMUMAV_DATA_DIR=/opt/hepgo/simumav-data
+Environment=HEPGO_SITL_DIR=/opt/hepgo/sitl/bin
+RuntimeDirectory=hepgo
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/hepgo/simumav/run-simumav.sh
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=40
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/hepgo/simumav-data /run/hepgo
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

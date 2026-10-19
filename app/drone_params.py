@@ -1,0 +1,331 @@
+"""Sanal dron (SITL) KALICI PARAMETRELERİ — tablo `drone_sitl_params` (docs/dron-kopru-protokolu.md "Kalıcı parametreler").
+
+Kullanıcı isteği: "sanal dron ile yaptığımız uçuşlar esnasında, gerek sistemden gerekse Mission Planner üzerinde bir parametre
+değiştirdiğimizde kalıcı olarak kaydetsin; aynı dronu tekrar kullandığımızda eski parametreler ile gelsin."
+
+İki yüzey aynı izleyiciyi kullanır:
+  - saha görevinin sanal dronu (drone_hub.SitlDrone, drone_id) — HEPGO harekât paneli `param_set` komutu,
+  - uçuş simülatörü oturumu (flightsim.SimSession, sihirbazda dron kaydı seçildiyse) — panel `param_set` + Mission Planner (UDP, ham).
+
+İZLEME (Izleyici): SITL'den gelen her PARAM_VALUE "bilinen değer"le karşılaştırılır.
+  (a) HEPGO `param_set` → `hepgo_set` bekleyen kaydı → yankı PARAM_VALUE gelince kaydedilir (source hepgo, kullanıcı).
+  (b) Mission Planner PARAM_SET (UDP ham baytlar `gcs_bayt` ile ayrıca ayrıştırılır; SITL'e ham geçer) → bekleyen → yankı gelince (source mp).
+  (c) Bekleyen yokken tabandaki değerden farklı PARAM_VALUE → source 'sitl' (araç kendi değiştirdi; ör. öğrenilen ofset) — yalnız ilk TAM
+      parametre listesi (param_count'un %90'ı görüldü) alındıktan sonra.
+  Taban: SITL'den ilk görülen değer (MP'nin açılıştaki param listesi / tekil okuma). Açılışta bizim yazdığımız kayıtlı parametrelerin
+  yankıları (`yukleme_isaretle`) yalnız tabana işlenir, yeniden kaydedilmez. Niyet (bekleyen) yalnız hedef değerle eşleşen yankıda tüketilir.
+HARİÇ (hiç kaydedilmez): STAT_*, LOG_*, SIM_WIND_*, SIM_GPS1_*, TKOFF_*, MAV1_/MAV2_/MAV3_* ve SR0_…SR3_* (akış hızları), MIS_TOTAL, FENCE_TOTAL, RALLY_TOTAL, FORMAT_VERSION, SYSID_THISMAV,
+  MAV_SYSID, SIM_SPEEDUP, SIM_RC_FAIL ve simülatör oturumunun kalp atışında yazdığı set (flightsim RC_PARAMLAR / GPS_RTK_PARAMLARI /
+  PLANE_YER_PARAMLARI / launch_parametreleri — `oturum_adlari`). Diğer SIM_* (ör. SIM_BATT_VOLTAGE) kaydedilir.
+YÜKLEME: `yukle` → `parm_satirlari` varsayilan.parm'a (HEPGO varsayılanlarından sonra) eklenir; ayrıca ilk kalp atışında PARAM_SET ile
+  yeniden yazılır (eeprom.bin'deki eski değer defaults dosyasını ezebilir) ve olay şeridine "N kayıtlı parametre yüklendi" düşer.
+"""
+import re
+import threading
+import time
+
+from . import db
+
+NIYET_SURESI_S = 30.0     # param_set niyeti bu süre içinde yankılanmazsa düşer
+
+# MAVn_* / SRn_*: MAVLink akış hızları — REQUEST_DATA_STREAM (sunucu 10 Hz, Mission Planner kendi hızları) bunları SITL'de değiştirir ve
+# PARAM_VALUE yayınlanır (gerçek SITL'de ölçüldü: MAV1_EXTRA1/EXTRA2/POSITION "sitl" kaydı üretiyordu) → oturum ayarıdır, kaydedilmez.
+# INS_GYR*OFFS_ (açılış gyro kalibrasyonu), BARO*_GND_PRESS / ARSPD*_OFFSET (açılış/ARM yer basıncı ve hava hızı kalibrasyonu): araç her
+# açılışta kendisi yeniden hesaplar ve kaydeder (gerçek SITL'de BARO1/2_GND_PRESS "sitl" kaydı üretiyordu) → kullanıcı değişikliği değil.
+HARIC_ONEKLER = ('STAT_', 'LOG_', 'SIM_WIND_', 'SIM_GPS1_', 'TKOFF_', 'MAV1_', 'MAV2_', 'MAV3_', 'SR0_', 'SR1_', 'SR2_', 'SR3_',
+                 'INS_GYROFFS_', 'INS_GYR2OFFS_', 'INS_GYR3OFFS_')
+HARIC_ADLAR = frozenset({'MIS_TOTAL', 'FENCE_TOTAL', 'RALLY_TOTAL', 'FORMAT_VERSION', 'SYSID_THISMAV', 'MAV_SYSID', 'SIM_SPEEDUP', 'SIM_RC_FAIL',
+                         'FS_THR_ENABLE', 'THR_FAILSAFE', 'RC_OVERRIDE_TIME', 'SERVO3_MIN', 'SERVO3_TRIM', 'TKOFF_THR_MINACC',
+                         'BARO1_GND_PRESS', 'BARO2_GND_PRESS', 'BARO3_GND_PRESS', 'GND_ABS_PRESS', 'ARSPD_OFFSET', 'ARSPD2_OFFSET'})
+TABAN_TAM_ORAN = 0.9      # param_count'un bu oranı görülünce "ilk tam param listesi" alınmış sayılır (niyetsiz fark kaydı bundan sonra)
+# Ön ek hariç olsa da KAYDEDİLEN adlar: flap yüzdeleri dron yapılandırmasıdır (flightsim.FLAP_PARAMLARI oturum başlangıcı; kullanıcı değiştirirse kalıcı)
+HARIC_DEGIL = frozenset({'TKOFF_FLAP_PCNT', 'LAND_FLAP_PERCNT'})
+AD_DESENI = re.compile(r'^[A-Z][A-Z0-9_]{0,15}$')
+KAYNAKLAR = {'hepgo': 'HEPGO', 'mp': 'Mission Planner', 'sitl': 'SITL (araç)'}
+MAX_PARAM = 2000          # dron başına kayıt üst sınırı (içe aktarma)
+_oturum_cache = None
+_cache_kilit = threading.Lock()
+
+
+def oturum_adlari():
+    """Uçuş simülatörü oturumunun kendisi için yazdığı parametre adları (flightsim'den türetilir; tembel import — döngü yok)."""
+    global _oturum_cache
+    with _cache_kilit:
+        if _oturum_cache is not None:
+            return _oturum_cache
+        adlar = {'SIM_WIND_SPD', 'SIM_WIND_DIR', 'SIM_SPEEDUP'}
+        try:
+            from . import flightsim as fs
+            for grup in (fs.RC_PARAMLAR, fs.GPS_RTK_PARAMLARI, fs.PLANE_YER_PARAMLARI, fs.TERRAIN_PARAMLARI):   # TERRAIN_ENABLE/SPACING: §18 arazi sunumu oturum ayarı
+                adlar |= {a for a, _ in grup}
+            for m in ('ramp', 'vehicle', 'wheels'):
+                adlar |= {a for a, _ in fs.launch_parametreleri({'method': m, 'angle_deg': 15, 'release_kmh': 70}, 50)}
+        except Exception:   # noqa: BLE001 — simülatör modülü yüklenemese bile sabit liste geçerli
+            pass
+        _oturum_cache = frozenset(adlar)
+        return _oturum_cache
+
+
+def haric_mi(name):
+    """Kalıcı yazmadan hariç parametre mi (oturum/simülatör/HEPGO yönetir ya da sayaç)."""
+    n = str(name or '')
+    if not n:
+        return True
+    if n in HARIC_DEGIL:
+        return False
+    if n.startswith(HARIC_ONEKLER) or n in HARIC_ADLAR:
+        return True
+    return n in oturum_adlari()
+
+
+def haric_listesi():
+    return {'prefixes': list(HARIC_ONEKLER), 'names': sorted(set(HARIC_ADLAR) | set(oturum_adlari()))}
+
+
+def _ad(name):
+    n = str(name or '').strip().upper().rstrip('\x00')
+    return n if AD_DESENI.match(n) else None
+
+
+# ---------------- veritabanı ----------------
+def yukle(drone_id, conn=None):
+    """Dronun kayıtlı parametreleri: [{name, value, ptype, source, source_text, updated_at, updated_by, updated_by_name}] (ada göre)."""
+    sql = '''SELECT p.name, p.value, p.ptype, p.source, p.updated_at, p.updated_by, u.full_name AS updated_by_name
+             FROM drone_sitl_params p LEFT JOIN users u ON u.id = p.updated_by WHERE p.drone_id = ? ORDER BY p.name'''
+    if conn is not None:
+        rows = db.rows(conn.execute(sql, (int(drone_id),)))
+    else:
+        with db.connect() as c:
+            rows = db.rows(c.execute(sql, (int(drone_id),)))
+    for r in rows:
+        r['source_text'] = KAYNAKLAR.get(r['source'], r['source'])
+    return rows
+
+
+def kaydet(drone_id, name, value, ptype=None, source='hepgo', user_id=None, conn=None):
+    """Tek parametreyi yazar/günceller (UPSERT). Hariç ya da geçersiz ad → False."""
+    n = _ad(name)
+    if n is None or haric_mi(n):
+        return False
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    args = (int(drone_id), n, v, int(ptype) if ptype else None, db.now(), user_id, source if source in KAYNAKLAR else 'hepgo')
+    sql = '''INSERT INTO drone_sitl_params (drone_id, name, value, ptype, updated_at, updated_by, source) VALUES (?,?,?,?,?,?,?)
+             ON CONFLICT(drone_id, name) DO UPDATE SET value = excluded.value, ptype = COALESCE(excluded.ptype, drone_sitl_params.ptype),
+             updated_at = excluded.updated_at, updated_by = excluded.updated_by, source = excluded.source'''
+    if conn is not None:
+        conn.execute(sql, args)
+    else:
+        with db.connect() as c:
+            c.execute(sql, args)
+            c.commit()
+    return True
+
+
+def sil(drone_id, name=None, conn=None):
+    """Tek parametreyi (name) ya da dronun tüm kayıtlarını siler; silinen satır sayısı."""
+    if name is not None:
+        sql, args = 'DELETE FROM drone_sitl_params WHERE drone_id = ? AND name = ?', (int(drone_id), str(name).upper())
+    else:
+        sql, args = 'DELETE FROM drone_sitl_params WHERE drone_id = ?', (int(drone_id),)
+    if conn is not None:
+        return conn.execute(sql, args).rowcount
+    with db.connect() as c:
+        n = c.execute(sql, args).rowcount
+        c.commit()
+    return n
+
+
+# ---------------- .param (Mission Planner) biçimi ----------------
+def param_metni(rows, baslik=None):
+    """Mission Planner `.param` biçimi: `AD,DEĞER` satırları (# yorum). Tam sayı değerler ondalıksız yazılır."""
+    out = [f'#NOTE: {baslik}'] if baslik else []
+    for r in rows:
+        v = float(r['value'])
+        out.append(f"{r['name']},{int(v) if v == int(v) and abs(v) < 1e15 else repr(v)}")
+    return '\n'.join(out) + '\n'
+
+
+def param_ayristir(text):
+    """`.param` / `.parm` metnini çözer: `AD,DEĞER`, `AD DEĞER`, `AD\\tDEĞER`; # ve // yorum, boş satır atlanır.
+    Dönüş: (gecerli [(ad, değer)], atlanan [{line, reason}])."""
+    gecerli, atlanan = [], []
+    for i, ham in enumerate(str(text or '').splitlines(), 1):
+        s = ham.strip()
+        if not s or s.startswith(('#', '//')):
+            continue
+        parca = [p for p in re.split(r'[,\t ]+', s) if p]
+        if len(parca) < 2:
+            atlanan.append({'line': i, 'text': s[:60], 'reason': 'biçim'})
+            continue
+        n = _ad(parca[0])
+        if n is None:
+            atlanan.append({'line': i, 'text': s[:60], 'reason': 'ad'})
+            continue
+        try:
+            v = float(parca[1])
+        except ValueError:
+            atlanan.append({'line': i, 'text': s[:60], 'reason': 'değer'})
+            continue
+        if haric_mi(n):
+            atlanan.append({'line': i, 'text': n, 'reason': 'hariç'})
+            continue
+        gecerli.append((n, v))
+    return gecerli, atlanan
+
+
+def ice_aktar(drone_id, text, user_id=None, conn=None):
+    """`.param` metnini dronun kayıtlarına yazar (source hepgo). Dönüş: {imported, skipped[], count}."""
+    gecerli, atlanan = param_ayristir(text)
+    if len(gecerli) > MAX_PARAM:
+        raise ValueError(f'En çok {MAX_PARAM} parametre içe aktarılabilir')
+    own = conn is None
+    c = conn or db.connect()
+    try:
+        for n, v in gecerli:
+            kaydet(drone_id, n, v, None, 'hepgo', user_id, conn=c)
+        if own:
+            c.commit()
+        toplam = c.execute('SELECT COUNT(*) FROM drone_sitl_params WHERE drone_id = ?', (int(drone_id),)).fetchone()[0]
+    finally:
+        if own:
+            c.close()
+    return {'imported': len(gecerli), 'skipped': atlanan[:50], 'skipped_count': len(atlanan), 'count': toplam}
+
+
+def parm_satirlari(rows):
+    """varsayilan.parm'a eklenecek `AD DEĞER` satırları (drone_sitl.parm_metni `ekstra`)."""
+    return [f"{r['name']} {float(r['value']):g}" for r in rows if not haric_mi(r['name'])]
+
+
+# ---------------- canlı izleme ----------------
+class Izleyici:
+    """Bir dronun (drone_id) çalışan SITL'i için PARAM_VALUE izleyicisi. Olay döngüsünde çağrılır (kısa sqlite yazımı).
+    `bildir(metin, severity)`: olay şeridi/konsol (isteğe bağlı)."""
+
+    def __init__(self, drone_id, bildir=None):
+        self.drone_id = int(drone_id)
+        self.bildir = bildir
+        self.taban = {}       # ad → son bilinen değer (SITL'den öğrenilen)
+        self.bekleyen = {}    # ad → (source, user_id, hedef, zaman): PARAM_SET gönderildi, yankı bekleniyor
+        self.yukleme = set()  # açılışta bizim yazdığımız kayıtlılar: yankı yalnız tabana işlenir
+        # Niyetsiz fark ("sitl" kaynağı) yalnız ilk TAM parametre listesi (Mission Planner / param_list akışı) alındıktan sonra kaydedilir:
+        # tekil yankılar tabanı kurar ama aracın açılış kalibrasyonları gibi ara değişimler kayıt üretmez (gerçek SITL ölçümü)
+        self.taban_tam = False
+        self.param_count = None
+        self._listelenen = set()
+        self.kayit_sayisi = 0
+        self.son_kayit = None
+        self._gcs_parser = None
+
+    # -- niyet bildirimleri (ad → (source, user_id, hedef değer, zaman)); yankı yalnız hedef değerle eşleşince niyeti tüketir:
+    #    köprü çekirdeği / MavKomut tip bilinmiyorsa önce PARAM_REQUEST_READ yapar, o ESKİ değerli yankı niyeti düşürmemeli (gerçek SITL'de ölçüldü) --
+    def hepgo_set(self, name, value=None, user_id=None):
+        self._niyet(name, value, 'hepgo', user_id)
+
+    def mp_set(self, name, value=None):
+        self._niyet(name, value, 'mp', None)
+
+    def _niyet(self, name, value, source, user_id):
+        n = _ad(name)
+        if n is None:
+            return
+        try:
+            hedef = float(value) if value is not None else None
+        except (TypeError, ValueError):
+            hedef = None
+        self.bekleyen[n] = (source, user_id, hedef, time.time())
+
+    @staticmethod
+    def _esit(a, b):
+        return abs(a - b) <= 1e-4 * max(1.0, abs(b))
+
+    def yukleme_isaretle(self, names):
+        for a in names:
+            n = _ad(a)
+            if n is not None:
+                self.yukleme.add(n)
+
+    def gcs_bayt(self, data):
+        """GCS'den (Mission Planner, UDP) gelen ham baytlar: yalnız PARAM_SET mesajları yakalanır (SITL'e iletim değişmez)."""
+        if self._gcs_parser is None:
+            try:
+                from pymavlink.dialects.v20 import ardupilotmega as d
+                self._gcs_parser = d.MAVLink(None)
+                self._gcs_parser.robust_parsing = True
+            except Exception:   # noqa: BLE001
+                return
+        try:
+            msgs = self._gcs_parser.parse_buffer(data) or []
+        except Exception:   # noqa: BLE001
+            return
+        for m in msgs:
+            try:
+                if m.get_type() == 'PARAM_SET':
+                    self.mp_set(str(m.param_id).rstrip('\x00'), m.param_value)
+            except Exception:   # noqa: BLE001
+                continue
+
+    # -- SITL yankısı --
+    def tam_liste_isaretle(self):
+        self.taban_tam = True
+
+    def param_value(self, name, value, ptype=None, index=None, count=None):
+        """SITL'den PARAM_VALUE (`index`/`count`: param_index/param_count — liste akışında taban tamlığı için). Kaydedildiyse {name, value, source}."""
+        n = _ad(name)
+        if n is None:
+            return None
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not self.taban_tam and count and index is not None and 0 <= int(index) < 65535:
+            self.param_count = int(count)
+            self._listelenen.add(n)
+            if len(self._listelenen) >= TABAN_TAM_ORAN * self.param_count:
+                self.taban_tam = True
+        bek = self.bekleyen.get(n)
+        if bek is not None:
+            if time.time() - bek[3] > NIYET_SURESI_S:
+                self.bekleyen.pop(n, None)   # eski niyet (yazma reddedildi / yankı gelmedi)
+                bek = None
+            elif bek[2] is None or self._esit(v, bek[2]):
+                self.bekleyen.pop(n, None)   # hedef değerle eşleşen yankı: niyet tüketildi
+            else:
+                bek = None                   # ara okuma (eski değer): niyet bekler, değer yalnız tabana işlenir
+                self.taban[n] = v
+                return None
+        if haric_mi(n):
+            self.taban[n] = v
+            return None
+        if n in self.yukleme:
+            self.yukleme.discard(n)
+            self.taban[n] = v
+            return None
+        eski = self.taban.get(n)
+        self.taban[n] = v
+        if bek is None:
+            if eski is None or self._esit(v, eski) or not self.taban_tam:
+                return None   # ilk öğrenme (taban), değişmedi ya da tam liste henüz alınmadı
+            source, user_id = 'sitl', None
+        else:
+            source, user_id = bek[0], bek[1]
+        try:
+            if not kaydet(self.drone_id, n, v, ptype, source, user_id):
+                return None
+        except Exception as e:   # noqa: BLE001 — veritabanı hatası uçuşu bozmasın
+            self._bildir(f'Parametre kaydedilemedi: {n} ({e})'[:200], 4)
+            return None
+        self.kayit_sayisi += 1
+        self.son_kayit = {'name': n, 'value': v, 'source': source}
+        self._bildir(f'Parametre kalıcı kaydedildi: {n} = {v:g} ({KAYNAKLAR.get(source, source)})', 6)
+        return self.son_kayit
+
+    def _bildir(self, metin, sev):
+        if self.bildir is not None:
+            try:
+                self.bildir(metin, sev)
+            except Exception:   # noqa: BLE001
+                pass

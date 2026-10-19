@@ -1,0 +1,5 @@
+fastapi>=0.115
+httpx>=0.27
+Pillow>=10
+pymavlink>=2.4.40
+uvicorn[standard]>=0.30

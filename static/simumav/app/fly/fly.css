@@ -1,0 +1,91 @@
+/* SIMUMAV › Uç — sihirbaz (oyun tadında) + oturum sahnesi ekleri (hız kadranı, geri sayım, elden atış etiketi, halka özeti). HEPGO fs-* kuralları fly-sim.css'te. */
+.sm-fly { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text, #e4e9f1); }
+.sm-loading { display: grid; place-items: center; gap: 14px; min-height: 60vh; text-align: center; color: #cbd5e1; font-size: 15px; }
+#view.sm-fly-session { position: fixed; inset: 0; z-index: 40; padding: 0; margin: 0; max-width: none; overflow: hidden; }
+.sm-fly-stage { position: absolute; inset: 0; }
+
+/* ---- sihirbaz ---- */
+.sm-wizard { position: relative; max-width: 1280px; margin: 0 auto; padding: 28px 24px 120px; min-height: 100vh; box-sizing: border-box; }
+.sm-wizard-head h1 { font-size: 44px; letter-spacing: .18em; margin: 0; background: linear-gradient(90deg, #38bdf8, #a78bfa); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sm-wizard-head p { margin: 2px 0 18px; }
+.sm-steps { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; }
+.sm-step { display: inline-flex; align-items: center; gap: 10px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.05); color: #cbd5e1; border-radius: 999px; padding: 6px 14px 6px 6px; cursor: pointer; font: inherit; font-size: 13.5px; transition: background .2s, border-color .2s, transform .2s; }
+.sm-step b { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: rgba(255,255,255,.1); font-size: 13px; }
+.sm-step.on { border-color: #38bdf8; background: rgba(56,189,248,.14); color: #fff; transform: translateY(-1px); }
+.sm-step.on b { background: #38bdf8; color: #05263a; }
+.sm-step.done b { background: #22c55e; color: #052e16; }
+.sm-step-body { min-height: 380px; }
+.sm-anim .sm-step-body { animation: sm-in .35s ease both; }
+@keyframes sm-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sm-anim .sm-step-body, .sm-countdown b, .fs-countdown b { animation: none !important; } }
+.sm-two { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(320px, .9fr); gap: 22px; align-items: start; }
+@media (max-width: 900px) { .sm-two { grid-template-columns: 1fr; } }
+.sm-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.sm-card { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; text-align: left; padding: 16px; border-radius: 16px; border: 1px solid rgba(255,255,255,.1); background: linear-gradient(160deg, rgba(255,255,255,.07), rgba(255,255,255,.02)); color: #e4e9f1; cursor: pointer; font: inherit; transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease; min-height: 120px; }
+.sm-card:hover { transform: translateY(-4px) scale(1.01); box-shadow: 0 14px 34px rgba(0,0,0,.45); border-color: rgba(255,255,255,.25); }
+.sm-card.sel { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,.45), 0 14px 34px rgba(0,0,0,.45); background: linear-gradient(160deg, rgba(56,189,248,.18), rgba(56,189,248,.04)); }
+.sm-card.hand.sel { border-color: #f59e0b; box-shadow: 0 0 0 2px rgba(245,158,11,.45), 0 14px 34px rgba(0,0,0,.45); }
+.sm-card > b { font-size: 16px; }
+.sm-card-sub { font-size: 12.5px; color: #a3adbd; line-height: 1.4; }
+.sm-card-badge { position: absolute; top: 10px; right: 10px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; background: #38bdf8; color: #05263a; border-radius: 999px; padding: 2px 8px; font-weight: 700; }
+.sm-card.hand .sm-card-badge { background: #f59e0b; color: #3b1d00; }
+.sm-card-img { width: 100%; height: 90px; object-fit: cover; border-radius: 10px; }
+.sm-ico { display: inline-grid; place-items: center; width: 52px; height: 52px; border-radius: 14px; background: rgba(255,255,255,.08); }
+.sm-ico svg { width: 34px; height: 34px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.sm-card.type-interceptor .sm-ico { color: #f87171; } .sm-card.type-fpv .sm-ico { color: #38bdf8; } .sm-card.type-plane .sm-ico, .sm-card.type-vtol .sm-ico { color: #a78bfa; } .sm-card.type-heli .sm-ico { color: #fbbf24; }
+.sm-ico-launch { position: relative; }
+.sm-ico-launch::before { content: ""; position: absolute; inset: 10px; border-radius: 6px; background: currentColor; opacity: .85; clip-path: polygon(0 100%, 100% 30%, 100% 45%, 0 100%); }
+.sm-launch-ramp { color: #f2b21a; } .sm-launch-vehicle { color: #60a5fa; } .sm-launch-vehicle::before { clip-path: polygon(0 60%, 20% 30%, 70% 30%, 100% 60%, 100% 85%, 0 85%); } .sm-launch-wheels { color: #cbd5e1; } .sm-launch-wheels::before { clip-path: circle(28% at 30% 70%); box-shadow: 14px 0 0 currentColor; } .sm-launch-hand { color: #f59e0b; } .sm-launch-hand::before { clip-path: polygon(20% 100%, 35% 55%, 60% 40%, 100% 10%, 100% 22%, 65% 55%, 45% 100%); }
+.sm-preview { position: relative; height: 320px; border-radius: 18px; overflow: hidden; background: radial-gradient(ellipse at 50% 80%, #1e3a5f, #0b1220 70%); border: 1px solid rgba(255,255,255,.1); }
+.sm-preview canvas { width: 100% !important; height: 100% !important; display: block; }
+.sm-preview-msg { position: absolute; inset: 0; display: grid; place-items: center; color: #cbd5e1; font-size: 13px; text-align: center; padding: 16px; }
+.sm-drone-info h2 { margin: 12px 0 2px; font-size: 22px; }
+.sm-launch-opts { margin-top: 18px; display: grid; gap: 10px; max-width: 560px; }
+.sm-slider { display: grid; grid-template-columns: 140px 1fr 80px; align-items: center; gap: 12px; font-size: 14px; }
+.sm-slider input { accent-color: #38bdf8; }
+.sm-rec-opts { margin-top: 22px; padding: 16px 18px; border-radius: 16px; border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.04); display: grid; gap: 10px; max-width: 560px; }
+.sm-rec-opts h3 { margin: 0 0 4px; font-size: 15px; }
+.sm-rec-opt { align-items: flex-start; } .sm-rec-opt span { display: grid; } .sm-rec-opt small { font-size: 12px; }
+.sm-fly [hidden] { display: none !important; }
+.sm-wizard-foot { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; align-items: center; gap: 14px; padding: 12px 24px; background: rgba(11,18,32,.82); backdrop-filter: blur(8px); border-top: 1px solid rgba(255,255,255,.08); }
+.sm-summary { flex: 1; font-size: 13px; color: #a3adbd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-nav-btn { height: 40px; padding: 0 18px; }
+.sm-start-btn { position: relative; height: 64px; min-width: 200px; padding: 0 36px; border: 0; border-radius: 999px; background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; font: inherit; font-size: 22px; font-weight: 800; letter-spacing: .14em; cursor: pointer; box-shadow: 0 10px 30px rgba(34,197,94,.45); transition: transform .15s; }
+.sm-start-btn:hover:not(:disabled) { transform: scale(1.04); } .sm-start-btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.sm-start-ring { position: absolute; inset: -6px; border-radius: 999px; border: 2px solid rgba(34,197,94,.6); animation: sm-ring 1.6s ease-out infinite; pointer-events: none; }
+.sm-start-btn:disabled .sm-start-ring { display: none; }
+@keyframes sm-ring { 0% { transform: scale(.96); opacity: .9; } 100% { transform: scale(1.18); opacity: 0; } }
+.sm-countdown, .fs-countdown { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; align-content: center; gap: 8px; background: rgba(5,10,20,.55); pointer-events: none; }
+.sm-countdown[hidden], .fs-countdown[hidden] { display: none; }
+.sm-countdown b, .fs-countdown b { font-size: clamp(96px, 22vw, 240px); font-weight: 900; color: #fff; text-shadow: 0 0 40px rgba(56,189,248,.8); line-height: 1; transform: scale(calc(1.25 - .25 * var(--frac, 0))); opacity: calc(1.1 - .5 * var(--frac, 0)); }
+.sm-countdown small, .fs-countdown span { font-size: 18px; letter-spacing: .2em; text-transform: uppercase; color: #cbd5e1; }
+.fs-countdown.pop b { animation: fs-pop .6s ease-out; }
+@keyframes fs-pop { from { transform: scale(1.35); opacity: .6; } to { transform: scale(1); opacity: 1; } }
+.fs-countdown { position: absolute; }
+
+/* ---- oturum ekleri ---- */
+.fs-speed-gauge { position: absolute; left: 14px; bottom: calc(var(--fs-bar-h, 54px) + 14px); z-index: 5; width: 150px; pointer-events: none; filter: drop-shadow(0 6px 16px rgba(0,0,0,.5)); }
+.fs-speed-gauge svg { width: 100%; height: auto; }
+.fs-speed-gauge .g-arc { fill: none; stroke: rgba(255,255,255,.25); stroke-width: 6; stroke-linecap: round; }
+.fs-speed-gauge .g-red { fill: none; stroke: rgba(239,68,68,.75); stroke-width: 6; stroke-linecap: round; }
+.fs-speed-gauge .g-ticks line { stroke: #e2e8f0; stroke-width: 1.4; } .fs-speed-gauge .g-ticks text { fill: #cbd5e1; font: 7.5px Consolas, Menlo, monospace; text-anchor: middle; }
+.fs-speed-gauge .g-needle path { fill: #f87171; } .fs-speed-gauge .g-hub { fill: #e2e8f0; }
+.fs-speed-gauge .g-val { fill: #fff; font: 700 16px Consolas, Menlo, monospace; text-anchor: middle; } .fs-speed-gauge .g-unit { fill: #94a3b8; font: 8px system-ui, sans-serif; text-anchor: middle; }
+.fs-speed-gauge .g-label { fill: #38bdf8; font: 700 8.5px system-ui, sans-serif; letter-spacing: .12em; text-anchor: middle; }
+.fs-speed-gauge.interceptor .g-label { fill: #f87171; } .fs-speed-gauge.over .g-val { fill: #f87171; }
+.fs-stage.fs-fpv .fs-speed-gauge, .fs-stage.fs-osd-on .fs-speed-gauge { opacity: .85; }
+/* yüzen MISSION PLANNER kutusu (.fs-mp.fs-pn-yuzen: panel kapalı ya da FPV/gimbal) sol altta → gösterge kutunun üstüne çıkar (üst üste binmesin) */
+.fs-stage:not(.fs-ops) .fs-speed-gauge { bottom: calc(var(--fs-bar-h, 54px) + 14px + 150px); }
+.fs-stage.fs-fpv .fs-speed-gauge { display: none; }   /* FPV OSD / gimbal HUD kendi hız göstergesini çizer; sol alttaki HUD metniyle çakışmasın */
+.fs-hand-lbl { position: absolute; right: 14px; bottom: calc(var(--fs-bar-h, 54px) + 14px); z-index: 5; font-size: 12px; color: #fbbf24; background: rgba(11,18,32,.6); padding: 4px 10px; border-radius: 8px; pointer-events: none; }
+.fs-stage.fs-mhud-on .fs-hand-lbl, .fs-stage.fs-osd-on .fs-hand-lbl { bottom: calc(var(--fs-bar-h, 54px) + 54px); }
+.fs-mp-lock { display: block; margin-top: 4px; color: #fbbf24; }
+.fs-end-btn { font-weight: 700; }
+.fs-overlay3d, .fs-overlay2d { position: absolute; inset: 0; pointer-events: none; }
+.sm-report-head { font-size: 15px; margin-bottom: 10px; }
+.sm-gates-sum { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border, #2a3444); }
+.sm-gates-sum h3 { margin: 0 0 8px; font-size: 14px; }
+.sm-gate-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.sm-gate-tile { display: grid; justify-items: center; gap: 2px; padding: 10px; border-radius: 12px; background: var(--surface-2, #1d2532); border: 1px solid var(--border, #2a3444); }
+.sm-gate-tile b { font-size: 22px; font-family: Consolas, Menlo, monospace; } .sm-gate-tile small { color: var(--muted, #a3adbd); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.sm-gate-tile.ok b { color: #22c55e; } .sm-gate-tile.bad b { color: #ef4444; }

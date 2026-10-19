@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="tr" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title data-i18n="meta.title">SIMUMAV — Gerçek dünya, gerçek fizik dron simülasyonu</title>
+  <meta name="description" data-i18n-attr="content:meta.desc" content="SIMUMAV: ArduPilot SITL fiziği, Google 3B dünyası ve Mission Planner bağlantısıyla tarayıcıda çalışan dron simülasyon oyunu.">
+  <meta name="theme-color" content="#05070f">
+  <meta name="color-scheme" content="dark">
+  <link rel="canonical" href="https://simumav.com/">
+  <link rel="alternate" hreflang="tr" href="https://simumav.com/?lang=tr">
+  <link rel="alternate" hreflang="en" href="https://simumav.com/?lang=en">
+  <link rel="alternate" hreflang="de" href="https://simumav.com/?lang=de">
+  <link rel="alternate" hreflang="fr" href="https://simumav.com/?lang=fr">
+  <link rel="alternate" hreflang="es" href="https://simumav.com/?lang=es">
+  <link rel="alternate" hreflang="ru" href="https://simumav.com/?lang=ru">
+  <link rel="alternate" hreflang="ar" href="https://simumav.com/?lang=ar">
+  <link rel="alternate" hreflang="x-default" href="https://simumav.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SIMUMAV">
+  <meta property="og:title" data-i18n-attr="content:meta.title" content="SIMUMAV — Gerçek dünya, gerçek fizik dron simülasyonu">
+  <meta property="og:description" data-i18n-attr="content:meta.desc" content="ArduPilot SITL fiziği, Google 3B dünyası ve Mission Planner bağlantısıyla tarayıcıda çalışan dron simülasyon oyunu.">
+  <meta property="og:url" content="https://simumav.com/">
+  <meta property="og:image" content="https://simumav.com/brand/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://simumav.com/brand/og.png">
+  <link rel="icon" href="/brand/favicon.ico" sizes="any">
+  <link rel="icon" href="/brand/simumav.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/brand/icon-180.png">
+  <link rel="preload" href="/brand/wordmark.svg" as="image">
+  <link rel="stylesheet" href="css/site.css">
+  <script type="module" src="js/site.js"></script>
+</head>
+<body data-scene="hero">
+  <a class="skip" href="#modules" data-i18n="nav.modules">Modüller</a>
+
+  <header class="nav" id="nav">
+    <a class="brand" href="#top" aria-label="SIMUMAV"><img src="/brand/wordmark.svg" alt="SIMUMAV" width="200" height="40"></a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="#modules" data-i18n="nav.modules">Modüller</a>
+      <a href="#physics" data-i18n="nav.physics">Fizik</a>
+      <a href="#fpv" data-i18n="nav.fpv">FPV</a>
+    </nav>
+    <div class="nav-actions">
+      <label class="lang"><span class="sr-only" data-i18n="nav.lang">Dil</span>
+        <select id="lang" aria-label="Dil">
+          <option value="tr">Türkçe</option><option value="en">English</option><option value="de">Deutsch</option>
+          <option value="fr">Français</option><option value="es">Español</option><option value="ru">Русский</option><option value="ar">العربية</option>
+        </select>
+      </label>
+      <button class="btn ghost" type="button" data-auth="login" data-i18n="nav.login">Giriş yap</button>
+      <button class="btn primary" type="button" data-auth="register" data-i18n="nav.register">Kayıt ol</button>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- AÇILIŞ SAHNESİ -->
+    <section class="hero bars" id="hero" aria-labelledby="hero-title">
+      <div class="sky" aria-hidden="true"><span class="sun"></span></div>
+      <canvas id="hero3d" aria-hidden="true"></canvas>
+      <div class="hero-fallback" id="hero-fallback" aria-hidden="true"><img src="/brand/simumav.svg" alt="" width="220" height="220"></div>
+      <div class="hero-vignette" aria-hidden="true"></div>
+      <div class="grain" aria-hidden="true"></div>
+      <div class="hero-copy">
+        <p class="kicker" data-reveal data-i18n="hero.kicker">Dron simülasyon oyunu</p>
+        <h1 id="hero-title" data-reveal data-i18n="hero.title">Gökyüzü senin.</h1>
+        <p class="lead" data-reveal data-i18n="hero.sub">Gerçek arazi, gerçek rüzgâr, gerçek uçuş kontrolcüsü.</p>
+        <div class="hero-actions" data-reveal>
+          <button class="btn primary lg" type="button" data-auth="register" data-i18n="hero.cta">Hemen kayıt ol</button>
+          <a class="btn ghost lg" href="#modules" data-i18n="hero.cta2">Modülleri keşfet</a>
+        </div>
+      </div>
+      <a class="scroll-hint" href="#modules" aria-hidden="true"><span data-i18n="hero.scroll">Kaydır</span><i></i></a>
+    </section>
+
+    <!-- MODÜLLER -->
+    <section class="scene modules" id="modules" aria-labelledby="mod-title">
+      <div class="wrap">
+        <p class="kicker" data-reveal data-i18n="mod.kicker">Altı modül, tek kokpit</p>
+        <h2 id="mod-title" data-reveal data-i18n="mod.title">Hangardan operasyona</h2>
+        <p class="lead" data-reveal data-i18n="mod.sub">Her uçuş bir hikâye.</p>
+        <ol class="mod-grid">
+          <li class="mod-card" data-reveal data-mod="hangar"><span class="mod-ico"><img src="/brand/icons/hangar.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.hangar.t">Hangar</h3><p data-i18n="mod.hangar.d">Dönen 3B modeller.</p></li>
+          <li class="mod-card" data-reveal data-mod="crew"><span class="mod-ico"><img src="/brand/icons/crew.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.crew.t">Mürettebat</h3><p data-i18n="mod.crew.d">On karakter.</p></li>
+          <li class="mod-card" data-reveal data-mod="tracks"><span class="mod-ico"><img src="/brand/icons/tracks.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.tracks.t">Parkur</h3><p data-i18n="mod.tracks.d">Gerçek arazi.</p></li>
+          <li class="mod-card" data-reveal data-mod="missions"><span class="mod-ico"><img src="/brand/icons/missions.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.missions.t">Görevler</h3><p data-i18n="mod.missions.d">Planı 3B dünyada çiz.</p></li>
+          <li class="mod-card" data-reveal data-mod="fly"><span class="mod-ico"><img src="/brand/icons/fly.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.fly.t">Uç</h3><p data-i18n="mod.fly.d">Tam HUD ve FPV.</p></li>
+          <li class="mod-card" data-reveal data-mod="ops"><span class="mod-ico"><img src="/brand/icons/ops.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.ops.t">Operasyon</h3><p data-i18n="mod.ops.d">Tekrar oynat, analiz et.</p></li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- FİZİK -->
+    <section class="scene physics" id="physics" aria-labelledby="phys-title">
+      <div class="wrap">
+        <p class="kicker" data-reveal data-i18n="phys.kicker">Gerçek dünya, gerçek fizik</p>
+        <h2 id="phys-title" data-reveal data-i18n="phys.title">Oyun gibi görünür, simülatör gibi davranır</h2>
+        <p class="lead" data-reveal data-i18n="phys.sub">Arkada çalışan şey bir oyun motoru değil.</p>
+        <div class="phys-grid">
+          <article class="phys-card" data-reveal>
+            <div class="viz viz-sitl" aria-hidden="true"><span></span><span></span><span></span><b></b></div>
+            <h3 data-i18n="phys.sitl.t">ArduPilot SITL</h3><p data-i18n="phys.sitl.d">Gerçek uçuş kontrolcüsü.</p>
+          </article>
+          <article class="phys-card" data-reveal>
+            <div class="viz viz-g3d" aria-hidden="true"><i class="peaks"></i><i class="grid"></i></div>
+            <h3 data-i18n="phys.g3d.t">Google 3B dünya</h3><p data-i18n="phys.g3d.d">Fotogerçekçi karolar.</p>
+          </article>
+          <article class="phys-card" data-reveal>
+            <div class="viz viz-mp" aria-hidden="true">
+              <svg viewBox="0 0 240 100" preserveAspectRatio="none"><polyline class="tele" points="0,70 20,66 40,72 60,50 80,54 100,30 120,38 140,22 160,30 180,18 200,26 220,12 240,20"/><polyline class="tele alt" points="0,90 30,86 60,88 90,70 120,74 150,60 180,64 210,50 240,54"/></svg>
+              <em>tcp:simumav.com:15600</em>
+            </div>
+            <h3 data-i18n="phys.mp.t">Mission Planner</h3><p data-i18n="phys.mp.d">TCP ile bağlan.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- FPV -->
+    <section class="scene fpv" id="fpv" aria-labelledby="fpv-title">
+      <div class="wrap split">
+        <div class="copy">
+          <p class="kicker" data-reveal data-i18n="fpv.kicker">FPV</p>
+          <h2 id="fpv-title" data-reveal data-i18n="fpv.title">Gözlüğü tak, bayrakları geç</h2>
+          <p class="lead" data-reveal data-i18n="fpv.sub">Analog FPV efekti, bayrak parkurları.</p>
+          <ul class="checks" data-reveal>
+            <li data-i18n="fpv.p1">Düşük gecikmeli kamera görünümü.</li>
+            <li data-i18n="fpv.p2">Hazır FPV-1 ve TRTEST parkuru.</li>
+          </ul>
+        </div>
+        <div class="fpv-view" data-reveal aria-hidden="true">
+          <div class="horizon"></div>
+          <div class="flags"><span></span><span></span><span></span></div>
+          <div class="cross"></div>
+          <div class="osd"><b>ARM</b><b>12.4V</b><b>00:42</b><b>96 km/h</b></div>
+          <div class="scan"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="scene cta" id="cta" aria-labelledby="cta-title">
+      <div class="wrap center">
+        <h2 id="cta-title" data-reveal data-i18n="cta.title">Pistte yerini al</h2>
+        <p class="lead" data-reveal data-i18n="cta.sub">Ücretsiz hesap, dakikalar içinde ilk uçuş.</p>
+        <div class="hero-actions" data-reveal>
+          <button class="btn primary lg" type="button" data-auth="register" data-i18n="cta.register">Kayıt ol</button>
+          <button class="btn ghost lg" type="button" data-auth="login" data-i18n="cta.login">Giriş yap</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot-grid">
+      <div>
+        <img src="/brand/wordmark.svg" alt="SIMUMAV" width="160" height="32">
+        <p><span data-i18n="foot.mt">Bir Master Tool ürünü</span> · <a href="https://mastertool.download" rel="noopener">mastertool.download</a></p>
+        <p class="small">© <span id="year">2026</span> Master Tool. <span data-i18n="foot.rights">Tüm hakları saklıdır.</span></p>
+      </div>
+      <div>
+        <h4 data-i18n="foot.products">Diğer ürünler</h4>
+        <ul class="plain">
+          <li><a href="https://mastertool.download/araclar/ssh-master/" rel="noopener">SSH Master</a></li>
+          <li><a href="https://mastertool.download/araclar/ftp-masters/" rel="noopener">FTP Masters</a></li>
+          <li><a href="https://mastertool.download/araclar/sql-master/" rel="noopener">SQL Master</a></li>
+          <li><a href="https://mastertool.download/araclar/notepad-master/" rel="noopener">Notepad Master</a></li>
+          <li><a href="https://mastertool.download/araclar/convert-master/" rel="noopener">Convert Master</a></li>
+          <li><a href="https://mastertool.download/araclar/ip-tools/" rel="noopener">IP Tools</a></li>
+          <li><a href="https://mastertool.download/oyunlar/volfai/" rel="noopener">VOLFAI</a></li>
+        </ul>
+      </div>
+      <div>
+        <ul class="plain">
+          <li><a href="legal/gizlilik.html" data-i18n="foot.privacy">Gizlilik</a></li>
+          <li><a href="legal/kvkk.html" data-i18n="foot.kvkk">KVKK</a></li>
+          <li><a href="legal/kosullar.html" data-i18n="foot.terms">Kullanım koşulları</a></li>
+        </ul>
+      </div>
+    </div>
+  </footer>
+
+  <!-- KAYIT / GİRİŞ -->
+  <div class="modal" id="auth" hidden role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <div class="modal-back" data-auth-close></div>
+    <div class="panel">
+      <button class="x" type="button" data-auth-close aria-label="Kapat" data-i18n-attr="aria-label:auth.close">×</button>
+      <img class="panel-logo" src="/brand/simumav.svg" alt="" width="56" height="56">
+      <h2 id="auth-title" data-i18n="auth.login.title">Giriş yap</h2>
+      <p class="msg" id="auth-msg" role="alert" hidden></p>
+
+      <form id="f-login" data-view="login" autocomplete="on">
+        <label><span data-i18n="auth.email">E-posta</span><input type="email" name="email" required autocomplete="email"></label>
+        <label><span data-i18n="auth.password">Şifre</span><input type="password" name="password" required autocomplete="current-password" minlength="1"></label>
+        <button class="btn primary wide" type="submit" data-i18n="auth.submit.login">Giriş yap</button>
+        <p class="links"><a href="#" data-auth="forgot" data-i18n="auth.to.forgot">Şifremi unuttum</a><a href="#" data-auth="register" data-i18n="auth.to.register">Hesabın yok mu? Kayıt ol</a></p>
+        <button class="btn ghost wide" type="button" id="dev-login" hidden data-i18n="auth.dev">Geliştirici girişi</button>
+      </form>
+
+      <form id="f-register" data-view="register" hidden autocomplete="on">
+        <label><span data-i18n="auth.name">Ad</span><input type="text" name="name" required minlength="2" maxlength="80" autocomplete="name"></label>
+        <label><span data-i18n="auth.email">E-posta</span><input type="email" name="email" required autocomplete="email"></label>
+        <label><span data-i18n="auth.password">Şifre</span><input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
+        <label><span data-i18n="auth.password2">Şifre (tekrar)</span><input type="password" name="password2" required minlength="8" autocomplete="new-password"></label>
+        <button class="btn primary wide" type="submit" data-i18n="auth.submit.register">Hesap oluştur</button>
+        <p class="small" data-i18n="auth.terms">Kayıt olarak kullanım koşullarını kabul etmiş olursun.</p>
+        <p class="links"><a href="#" data-auth="login" data-i18n="auth.to.login">Zaten hesabın var mı? Giriş yap</a></p>
+      </form>
+
+      <form id="f-forgot" data-view="forgot" hidden>
+        <label><span data-i18n="auth.email">E-posta</span><input type="email" name="email" required autocomplete="email"></label>
+        <button class="btn primary wide" type="submit" data-i18n="auth.submit.forgot">Sıfırlama bağlantısı gönder</button>
+        <p class="links"><a href="#" data-auth="login" data-i18n="auth.to.login">Giriş yap</a></p>
+      </form>
+
+      <div id="v-verify" data-view="verify" hidden>
+        <div class="mail-anim" aria-hidden="true"><i></i></div>
+        <p id="verify-text" data-i18n="auth.verify.text">Doğrulama bağlantısı gönderdik.</p>
+        <button class="btn primary wide" type="button" data-auth="login" data-i18n="auth.verify.done">Doğruladım, giriş yap</button>
+        <p class="links"><a href="#" id="resend" data-i18n="auth.verify.resend">Bağlantıyı yeniden gönder</a></p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

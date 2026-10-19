@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="tr" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>SIMUMAV</title>
+<link rel="icon" href="/brand/simumav.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app/theme.css">
+</head>
+<body>
+<!-- Oyun kabuğu: üst bant yok. Sahne (3B arka plan) → görünüm → kabuk öğeleri (çip, dişli) → perde → bildirimler -->
+<canvas id="stage" aria-hidden="true"></canvas>
+<main id="view" aria-live="polite"></main>
+<button id="chip" class="chip" type="button" hidden>
+  <span class="chip-avatar" id="chip-avatar"></span>
+  <span class="chip-text"><b id="chip-name">…</b><small id="chip-sub"></small></span>
+</button>
+<button id="gear" class="gear" type="button" aria-label="Ayarlar" hidden>
+  <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M19.4 13a7.7 7.7 0 0 0 .1-1 7.7 7.7 0 0 0-.1-1l2.1-1.7a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-4a.5.5 0 0 0-.5.4l-.4 2.6a7.3 7.3 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.5 11a7.7 7.7 0 0 0 0 2l-2.1 1.7a.5.5 0 0 0-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1a7.3 7.3 0 0 0 1.7 1l.4 2.6c0 .2.2.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.6a7.3 7.3 0 0 0 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6L19.4 13zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg>
+</button>
+<button id="back" class="back" type="button" hidden>
+  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M15 5l-7 7 7 7"/></svg>
+  <span id="back-label"></span>
+</button>
+<div id="curtain" class="curtain" aria-hidden="true"></div>
+<div id="toasts" class="toasts" role="status"></div>
+<div id="modal-root"></div>
+<script type="module" src="/app/app.js"></script>
+</body>
+</html>
