@@ -128,8 +128,9 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
 - `POST /api/session {token}` | `{dev_user}` → `{user, pilots_count, drones_count, tracks_count, missions_count, flights_count, active_flight, settings}`
   (`Set-Cookie: smsid`); hatalar 401 `bad_token`, 403 `unverified`, 503 `account_service`. `GET /api/session` aynı gövde; `DELETE /api/session {token?}`.
 - `GET/PUT /api/settings` → `{lang, theme ('dark'|'light'|'auto'), sound, analog_fpv, music, volume 0–1, reduced_motion, units, langs[], themes[]}`
-- `GET /api/hangar` → `{drones:[{id,name,type,model_key,params,color,preview (GLB|null),proc,is_default}], quota}`; `POST /api/hangar {name ≤40,type,model_key,params?,color '#rrggbb'}`
-  (201); `PUT /api/hangar/{id} {name?,model_key?,params?,color?,is_default?}`; `DELETE` (uçuştaki dron 409 `in_use`); kota 20 → 409 `quota`;
+- `GET /api/hangar` → `{drones:[{id,name,type,model_key,params,color,preview (GLB|null),proc,is_default,airframe}], quota}`; `POST /api/hangar {name ≤40,type,model_key,params?,color '#rrggbb',airframe?}`
+  (201); `PUT /api/hangar/{id} {name?,model_key?,params?,color?,is_default?,airframe?}`; `airframe` = kontrol düzeni classic|elevon|vtail (HEPGO docs/ucus-simulatoru.md §13.1;
+  yalnız plane/interceptor; eksikse katalog modelinin düzeni — talon_vtail vtail, zephyr/interceptor/caymaz elevon, cessna/believer classic; bilinmeyen 422; kopterde null; uçuş açılışında çekirdeğe `layout` olarak gider); `DELETE` (uçuştaki dron 409 `in_use`); kota 20 → 409 `quota`;
   params beyaz liste dışı → 422 `param_rejected` + `name`.
   `GET /api/hangar/catalog` → `{types:[{key,label,models:[{key,label,glb,thumb,defaults,proc,desc,orient?,has_prop?}]}]}` — her tipte önce **gerçekçi GLB
   modeller** (`glb:*`, static/simumav/models/*.glb, kaynak/lisans LICENSES.md, üretim tools/simumav_models_build.py; ilk model tipin varsayılanı): fpv `glb:iris_fpv`

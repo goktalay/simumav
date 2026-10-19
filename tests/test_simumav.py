@@ -155,6 +155,17 @@ def main():
         assert 'proc:interceptor' in keys['interceptor'] and 'proc:quad250' in keys['fpv'] and 'builtin:caymaz' in keys['plane'] and 'builtin:quad' in keys['multirotor']
         assert keys['fpv'][0] == 'glb:iris_fpv' and keys['interceptor'][0] == 'glb:jet' and keys['heli'][0] == 'glb:heli' and keys['vtol'][0] == 'glb:standard_vtol' and 'glb:typhoon_h480' in keys['multirotor']
         assert all(c.get(m['glb']).status_code == 200 for t in cat for m in t['models'] if m['key'].startswith('glb:'))   # gerçekçi GLB'ler sunuluyor
+        # §13.1 kontrol düzeni: katalog modellerinde `airframe` (talon vtail, caymaz/delta/zephyr elevon, cessna/believer classic); kayıtta kalıcı
+        af = {m['key']: m.get('airframe') for t in cat for m in t['models']}
+        assert af['glb:talon_vtail'] == 'vtail' and af['builtin:talon'] == 'vtail' and af['builtin:caymaz'] == 'elevon' and af['glb:rc_cessna'] == 'classic' and af['glb:believer'] == 'classic' and af['glb:zephyr'] == 'elevon' and af['proc:interceptor'] == 'elevon', af
+        assert 'glb:talon_vtail' in keys['plane'] and c.get('/static/simumav/models/talon_vtail.glb').status_code == 200
+        r = c.post('/api/hangar', json={'name': 'Talon', 'type': 'plane', 'model_key': 'glb:talon_vtail'}, headers=H); assert r.status_code == 201, r.text
+        tal = r.json(); assert tal['airframe'] == 'vtail', tal   # eksik → modelin düzeni
+        r = c.put(f"/api/hangar/{tal['id']}", json={'airframe': 'classic'}, headers=H); assert r.json()['airframe'] == 'classic'
+        r = c.put(f"/api/hangar/{tal['id']}", json={'model_key': 'builtin:caymaz'}, headers=H); assert r.json()['airframe'] == 'elevon', r.text   # model değişti, düzen gönderilmedi → yeni modelin düzeni
+        assert c.post('/api/hangar', json={'name': 'K', 'type': 'plane', 'model_key': 'builtin:delta', 'airframe': 'canard'}, headers=H).status_code == 422
+        r = c.post('/api/hangar', json={'name': 'Q', 'type': 'multirotor', 'model_key': 'builtin:quad', 'airframe': 'vtail'}, headers=H); assert r.status_code == 201 and r.json()['airframe'] is None   # kopterde düzen yok
+        c.delete(f"/api/hangar/{r.json()['id']}", headers=H); c.delete(f"/api/hangar/{tal['id']}", headers=H)
         inter = next(m for t in cat for m in t['models'] if m['key'] == 'proc:interceptor')
         assert inter['proc'] and inter['defaults']['AIRSPEED_MAX'] == 170 and inter['defaults']['THR_MAX'] == 100 and inter['defaults']['TKOFF_THR_MAX'] == 100
         r = c.post('/api/hangar', json={'name': 'Ok', 'type': 'interceptor', 'model_key': 'proc:interceptor', 'params': inter['defaults'], 'color': '#00ff88'}, headers=H)

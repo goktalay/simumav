@@ -267,5 +267,13 @@
   "support.report_flight": "Report a problem with this flight",
   "support.flight_ref": "Flight #{id}",
   "support.unavailable": "The support system is currently unavailable",
-  "support.rate": "You can open at most 5 requests per hour"
+  "support.rate": "You can open at most 5 requests per hour",
+  "airframe.title": "Control layout",
+  "airframe.classic": "Aileron + Elevator (T-tail)",
+  "airframe.elevon": "Elevon (delta wing)",
+  "airframe.vtail": "V-tail (ruddervator)",
+  "airframe.classic_desc": "Ailerons on the wing, elevator + rudder on the tail",
+  "airframe.elevon_desc": "Two elevons for pitch and roll (delta / flying wing)",
+  "airframe.vtail_desc": "Two ruddervators for pitch and yaw; ailerons on the wing",
+  "airframe.suggested": "Model’s layout"
 }

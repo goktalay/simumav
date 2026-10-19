@@ -87,7 +87,7 @@ class GlbTest(unittest.TestCase):
         for key, g in b.GLB_MODELS.items():
             self.assertIn(key, keys[g['type']])
             self.assertIn(key, b.MODEL_ESLEME, f'{key}: çekirdek eşlemesi yok')
-            self.assertIn(b.MODEL_ESLEME[key], ('builtin:quad', 'builtin:hexa', 'builtin:heli', 'builtin:caymaz', 'builtin:delta'))
+            self.assertIn(b.MODEL_ESLEME[key], ('builtin:quad', 'builtin:hexa', 'builtin:heli', 'builtin:caymaz', 'builtin:delta', 'builtin:talon'))
             m = b.glb_model_api(key)
             self.assertEqual(m['glb'], f"/static/simumav/models/{g['file']}.glb")
             self.assertEqual((m['orient']['forward'], m['orient']['up']), ('+x', '+y'))

@@ -42,6 +42,16 @@ export const launchBody = l => {
   return out;
 };
 
+// Kontrol düzeni (HEPGO §13.1; drones.airframe): classic | elevon | vtail — yalnız sabit kanat ailesinde (plane / interceptor). Dron kaydında
+// yoksa model anahtarından (talon → vtail; delta/interceptor/caymaz/zephyr → elevon; cessna/believer → classic), o da yoksa classic.
+export const AIRFRAMES = ['classic', 'elevon', 'vtail'];
+export const AIRFRAME_LABEL = { classic: 'Aileron + Elevatör (T-kuyruk)', elevon: 'Elevon (delta kanat)', vtail: 'V-kuyruk (ruddervator)' };
+export const AIRFRAME_SHORT = { classic: 'Klasik', elevon: 'Elevon', vtail: 'V-kuyruk' };
+export const needsAirframe = t => t === 'plane' || t === 'interceptor';
+export const airframeForModel = key => { const k = String(key || '').toLowerCase(); if (!k) return null; if (/talon|vtail|v-tail/.test(k)) return 'vtail'; if (/delta|interceptor|caymaz|zephyr|elevon/.test(k)) return 'elevon'; if (/cessna|believer|plane/.test(k)) return 'classic'; return null; };
+export const airframeOf = (drone, catalogModel = null) => (!drone || !needsAirframe(drone.type) ? null : (AIRFRAMES.includes(drone.airframe) ? drone.airframe : (catalogModel?.airframe && AIRFRAMES.includes(catalogModel.airframe) ? catalogModel.airframe : airframeForModel(drone.model_key) || 'classic')));
+export const airframeLabel = (a, tr = s => s) => (a && AIRFRAME_LABEL[a] ? tr(AIRFRAME_LABEL[a]) : '—');
+
 // Hız göstergesi ölçeği (km/h): interceptor 600 (ARSPD_FBW_MAX 170 m/s ≈ 612 km/h), sabit kanat / VTOL 200, helikopter 120, kopter / FPV 150
 export const SPEED_SCALE = { interceptor: 600, plane: 200, vtol: 200, heli: 120, fpv: 150, multirotor: 100 };
 export const speedScale = t => SPEED_SCALE[t] || 100;

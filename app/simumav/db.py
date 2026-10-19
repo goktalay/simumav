@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS drones (
     params TEXT NOT NULL DEFAULT '{}',          -- JSON {AD: değer} — yalnız beyaz liste (bridge.params_dogrula)
     color TEXT NOT NULL DEFAULT '#ff6a00',
     preview TEXT,                               -- dönen 3B için GLB yolu (statik; kullanıcıdan alınmaz)
+    airframe TEXT,                              -- kontrol düzeni (sabit kanat ailesi): classic | elevon | vtail; NULL → katalog modelinin düzeni (bridge.model_airframe)
     is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
@@ -165,6 +166,8 @@ def connect():
 def init():
     with connect() as conn:
         conn.executescript(SCHEMA)
+        if 'airframe' not in {r[1] for r in conn.execute('PRAGMA table_info(drones)')}:   # eski taban: kontrol düzeni sütunu (HEPGO §13.1)
+            conn.execute('ALTER TABLE drones ADD COLUMN airframe TEXT')
         cur = conn.execute('SELECT version FROM schema_version').fetchone()
         ver = cur[0] if cur else 0
         for v, sqls in _MIGRATIONS:

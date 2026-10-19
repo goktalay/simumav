@@ -7,7 +7,7 @@
 // session.js openSession. Stiller: ./fly.css (sihirbaz + sahne ekleri) ve ./fly-sim.css (HEPGO fs-* kopyası) bir kez eklenir.
 import { clear, h, toast, toastError, confirmDialog, fmtDuration, t as tr, onLeave, runLeave } from './simui.js';
 import { net } from './net.js';
-import { COUNTDOWN_S, LAUNCH_LIMITS, LAUNCH_METHODS_SM, STEP_TITLES, TYPE_LABEL, WORLD_MODE_LABEL, countdownAt, createWizard, launchLabelSm, modelFor, needsLaunch, simType, speedScale, worldFromTrack } from './wizard.js';
+import { COUNTDOWN_S, LAUNCH_LIMITS, LAUNCH_METHODS_SM, STEP_TITLES, TYPE_LABEL, WORLD_MODE_LABEL, airframeLabel, airframeOf, countdownAt, createWizard, launchLabelSm, modelFor, needsAirframe, needsLaunch, simType, speedScale, worldFromTrack } from './wizard.js';
 import { openSession, startFlight, fetchMeta } from './session.js';
 
 const here = new URL('.', import.meta.url);
@@ -154,7 +154,7 @@ async function renderWizard(view, ctx) {
     const drawList = () => clear(list, data.drones.map(d => card(d.id === W.state.drone_id, { icon: svgIco(TYPE_ICON[d.type]), title: d.name, sub: `${TYPE_LABEL[d.type] || d.type} · ${speedScale(d.type)} km/h`, badge: d.is_default ? 'Varsayılan' : null, cls: `type-${d.type}`,
       onClick: () => { W.set('drone_id', d.id); drawList(); drawInfo(); drawSteps(); drawFoot(); ensurePreview(); } })));
     const info = h('div', { class: 'sm-drone-info' });
-    const drawInfo = () => { const d = W.drone(); clear(info, d ? [h('h2', null, d.name), h('p', { class: 'muted' }, `${TYPE_LABEL[d.type] || d.type} · ${d.model_label || d.model_key || ''}${d.type === 'interceptor' ? ' · ARSPD_FBW_MAX 170 m/s (≈ 600 km/h)' : ''}${d.type === 'fpv' ? ' · FPV kamera + OSD' : ''}`)] : null); };
+    const drawInfo = () => { const d = W.drone(); clear(info, d ? [h('h2', null, d.name), h('p', { class: 'muted' }, `${TYPE_LABEL[d.type] || d.type} · ${d.model_label || d.model_key || ''}${d.type === 'interceptor' ? ' · ARSPD_FBW_MAX 170 m/s (≈ 600 km/h)' : ''}${d.type === 'fpv' ? ' · FPV kamera + OSD' : ''}${needsAirframe(d.type) ? ` · ${tr('Kontrol düzeni')}: ${airframeLabel(airframeOf(d), tr)}` : ''}`)] : null); };   // §13.1 düzen (hangar kaydı)
     drawList(); drawInfo();
     body.append(h('div', { class: 'sm-two' }, h('div', null, list), h('div', { class: 'sm-preview-col' }, previewBox, info)));
     ensurePreview();

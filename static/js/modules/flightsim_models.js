@@ -22,6 +22,7 @@ const AXES = ['+x', '-x', '+y', '-y', '+z', '-z'];
 const SOURCE_LABEL = { builtin: 'Dahili', design: 'Tasarım', upload: 'Yüklenen' };
 const SOURCE_TONE = { builtin: 'gray', design: 'purple', upload: 'blue' };
 const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL' };
+const LAYOUT_SHORT = { classic: 'Klasik', elevon: 'Elevon', vtail: 'V-kuyruk' };   // §13.1 kart rozeti (flightsim_airframe.LAYOUT_SHORT ile aynı)
 const fmtSize = b => (b == null ? '—' : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const isBuiltin = m => !!m && String(m.id).startsWith('builtin:');
 
@@ -132,7 +133,7 @@ const fixUp = o => { if (o.forward[1] === o.up[1]) o.up = AXES.find(a => a[1] !=
 // ======================================================================
 // Kart ızgarası + yönelim paneli
 // ======================================================================
-export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false }) {
+export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false, getLayout = null }) {   // getLayout (§13.1): seçili kontrol düzeni → uyan modeller öne + "Önerilen" rozeti
   const S = { type: getType(), list: [], meta: {}, sel: {}, busy: new Set() };   // sel: tip → model (seçim tipe göre hatırlanır)
   const grid = h('div', { class: 'fs-models' });
   const info = h('div', { class: 'small muted fs-models-info' });
@@ -156,7 +157,7 @@ export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false 
 
   const selected = () => S.sel[S.type] || null;
   const card = m => {
-    const on = selected()?.id === m.id;
+    const on = selected()?.id === m.id, lay = getLayout ? getLayout() : null;
     // Önbellek damgası yalnız sunucu adreslerine: blob: (sahte kip / yerel küçük resim) sorgu dizesi kabul etmez (ERR_FILE_NOT_FOUND)
     const thumbSrc = m.thumb_url && !m.thumb_url.startsWith('blob:') ? `${m.thumb_url}${m.thumb_url.includes('?') ? '&' : '?'}v=${m._v || 0}` : m.thumb_url;
     const thumb = m.thumb_url ? h('img', { class: 'fs-model-img', src: thumbSrc, alt: m.name, loading: 'lazy' })
@@ -166,11 +167,15 @@ export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false 
     const c = h('button', { type: 'button', class: `fs-model ${on ? 'on' : ''}`, 'data-id': m.id, onclick: () => pick(m) },
       thumb, prog,
       h('span', { class: 'fs-model-main' }, h('b', null, m.name), h('span', { class: 'small muted' }, m.desc || m.file_name || '')),
-      h('span', { class: 'fs-model-meta small' }, h('span', { class: `badge ${SOURCE_TONE[m.source] || 'gray'}` }, SOURCE_LABEL[m.source] || m.source), m.size != null ? h('span', { class: 'muted' }, fmtSize(m.size)) : null, status));
+      h('span', { class: 'fs-model-meta small' }, h('span', { class: `badge ${SOURCE_TONE[m.source] || 'gray'}` }, SOURCE_LABEL[m.source] || m.source),
+        m.layout ? h('span', { class: `badge ${lay && m.layout === lay ? 'green' : 'gray'} fs-model-layout`, 'data-layout': m.layout, title: tr('Kontrol düzeni') }, `${LAYOUT_SHORT[m.layout] || m.layout}${lay && m.layout === lay ? ` · ${tr('Önerilen')}` : ''}`) : null,   // §13.1
+        m.size != null ? h('span', { class: 'muted' }, fmtSize(m.size)) : null, status));
     c._prog = prog;
     return c;
   };
-  const draw = () => { clear(grid, S.list.length ? S.list.map(card) : h('div', { class: 'small muted' }, 'Model yükleniyor…')); drawPanel(); };
+  // §13.1: seçili düzene uyan modeller önce (kararlı sıralama; düzeni bilinmeyenler yerinde kalır)
+  const sorted = () => { const lay = getLayout ? getLayout() : null; return lay ? [...S.list].sort((a, b) => (b.layout === lay) - (a.layout === lay)) : S.list; };
+  const draw = () => { clear(grid, S.list.length ? sorted().map(card) : h('div', { class: 'small muted' }, 'Model yükleniyor…')); drawPanel(); };
   const setProg = (m, pct, text) => {
     const c = grid.querySelector(`.fs-model[data-id="${CSS.escape(String(m.id))}"]`); if (!c) return;
     c._prog.hidden = pct == null; c._prog.querySelector('i').style.width = `${pct || 0}%`; c._prog.querySelector('span').textContent = text || '';
@@ -351,12 +356,12 @@ export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false 
 // MOCK (?mock=1): dahili modeller + bellekte sahte yükleme
 // ======================================================================
 function mockModels() {
-  const B = { caymaz: ['Caymaz V3', ['sabit_kanat', 'vtol'], 'glb'], delta: ['Delta kanat', ['sabit_kanat', 'vtol'], 'procedural'], quad: ['Quad', ['multirotor'], 'procedural'], hexa: ['Hexa', ['hexarotor'], 'procedural'], heli: ['Heli', ['helikopter'], 'procedural'] };
+  const B = { caymaz: ['Caymaz V3', ['sabit_kanat', 'vtol'], 'glb', 'elevon'], delta: ['Delta kanat', ['sabit_kanat', 'vtol'], 'procedural', 'elevon'], talon: ['Talon V-kuyruk', ['sabit_kanat'], 'glb', 'vtail'], quad: ['Quad', ['multirotor'], 'procedural'], hexa: ['Hexa', ['hexarotor'], 'procedural'], heli: ['Heli', ['helikopter'], 'procedural'] };
   const extra = [];
   let seq = 0;
   const thumbs = new Map();
   return {
-    list: async type => ({ models: [...Object.entries(B).filter(([, v]) => v[1].includes(type)).map(([k, v]) => ({ id: `builtin:${k}`, name: type === 'vtol' && (k === 'caymaz' || k === 'delta') ? `VTOL-${v[0]}` : v[0], source: 'builtin', type, types: v[1], format: v[2], ready: true, has_prop: true, size: k === 'caymaz' ? 1500000 : null, thumb_url: thumbs.get(`builtin:${k}:${type}`) || null, glb_url: k === 'caymaz' ? '/static/models/caymaz-sim.glb' : null })),
+    list: async type => ({ models: [...Object.entries(B).filter(([, v]) => v[1].includes(type)).map(([k, v]) => ({ id: `builtin:${k}`, name: type === 'vtol' && (k === 'caymaz' || k === 'delta') ? `VTOL-${v[0]}` : v[0], source: 'builtin', type, types: v[1], format: v[2], ready: true, has_prop: true, layout: v[3] || null, size: k === 'caymaz' ? 1500000 : k === 'talon' ? 44000 : null, thumb_url: thumbs.get(`builtin:${k}:${type}`) || null, glb_url: k === 'caymaz' ? '/static/models/caymaz-sim.glb' : k === 'talon' ? '/static/models/talon-vtail.glb' : null, orient: k === 'talon' ? { forward: '+x', up: '+y', scale: 1, offset: [0, 0, 0], prop: { mode: 'none', pos: [0, 0, 0], r: 0.3 } } : null })),
       ...extra.filter(m => m.type === type)], defaults: { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', sabit_kanat: 'builtin:caymaz', vtol: 'builtin:caymaz' }, can_write: true, design_allowed: false, limits: { max_bytes: 50 * 1024 * 1024 } }),
     designFiles: async () => [],
     fromDesign: async () => { throw new Error('Sahte kipte yok'); },

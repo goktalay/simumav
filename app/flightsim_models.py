@@ -30,11 +30,17 @@ EKSENLER = ('+x', '-x', '+y', '-y', '+z', '-z')
 PROP_KIPLERI = ('none', 'tail', 'nose', 'manual')
 _ID_RE = re.compile(r'^builtin:([a-z0-9_]+)$')
 
-# Dahili modeller: ön yüz (flightsim3d.js) bu anahtarları tanır; `glb` yalnız bilgi (tarayıcı static yoldan yükler)
+# Dahili modeller: ön yüz (flightsim3d.js) bu anahtarları tanır; `glb` yalnız bilgi (tarayıcı static yoldan yükler). `layout` (§13.1): modelin
+# kontrol düzeni — classic (aileron + elevatör) | elevon (delta / uçan kanat: iki elevon hem yunuslama hem yatış) | vtail (ruddervator); sihirbaz
+# model seçilince düzeni buna göre önerir, oturum `layout` verilmezse bu kullanılır. `orient` verilen dahili GLB'ler kütüphane modeli gibi yüklenir
+# (flightsim3d buildLibrary: SIMUMAV GLB çerçevesi burun +X, yukarı +Y).
 BUILTIN = {
-    'caymaz': {'name': 'Caymaz V3', 'types': ('sabit_kanat', 'vtol'), 'format': 'glb', 'glb': 'models/caymaz-sim.glb', 'has_prop': True,
-               'desc': 'Ürettiğimiz uçağın STEP modelinden (kanat açıklığı 3,03 m, arkadan itişli)'},
-    'delta': {'name': 'Delta kanat', 'types': ('sabit_kanat', 'vtol'), 'format': 'procedural', 'has_prop': True, 'desc': 'Prosedürel delta uçan kanat (2,2 m, arkadan itişli)'},
+    'caymaz': {'name': 'Caymaz V3', 'types': ('sabit_kanat', 'vtol'), 'format': 'glb', 'glb': 'models/caymaz-sim.glb', 'has_prop': True, 'layout': 'elevon',
+               'desc': 'Ürettiğimiz uçağın STEP modelinden (kanat açıklığı 3,03 m, arkadan itişli). Delta kanat: iki elevon hem yunuslama hem yatış'},
+    'delta': {'name': 'Delta kanat', 'types': ('sabit_kanat', 'vtol'), 'format': 'procedural', 'has_prop': True, 'layout': 'elevon', 'desc': 'Prosedürel delta uçan kanat (2,2 m, arkadan itişli); elevonlar'},
+    'talon': {'name': 'Talon V-kuyruk', 'types': ('sabit_kanat',), 'format': 'glb', 'glb': 'models/talon-vtail.glb', 'has_prop': True, 'layout': 'vtail',
+              'orient': {'forward': '+x', 'up': '+y', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}},
+              'desc': 'X-UAV Talon tarzı prosedürel uçak (1,72 m, tek itici pervane, V-kuyruk ruddervator); HEPGO üretimi'},
     'quad': {'name': 'Quad', 'types': ('multirotor',), 'format': 'procedural', 'has_prop': True, 'desc': 'Prosedürel dört rotor (60 cm)'},
     'hexa': {'name': 'Hexa', 'types': ('hexarotor',), 'format': 'procedural', 'has_prop': True, 'desc': 'Prosedürel altı rotor (90 cm)'},
     'heli': {'name': 'Heli', 'types': ('helikopter',), 'format': 'procedural', 'has_prop': True, 'desc': 'Prosedürel helikopter (1,5 m)'},
@@ -83,8 +89,8 @@ def builtin_api(key, tip):
     return {'id': mid, 'name': builtin_ad(key, tip), 'source': 'builtin', 'type': tip, 'types': list(b['types']), 'desc': b.get('desc'),
             'thumb_url': _url(mid, 'thumb', tip) if builtin_thumb_yolu(key, tip).is_file() else None,
             'glb_url': f"/static/{b['glb']}" if glb else None, 'file_url': None, 'format': b['format'],
-            'size': glb.stat().st_size if glb and glb.is_file() else None, 'ready': True, 'orient': None, 'has_prop': bool(b.get('has_prop')),
-            'created_by': None, 'created_at': None}
+            'size': glb.stat().st_size if glb and glb.is_file() else None, 'ready': True, 'orient': json.loads(json.dumps(b['orient'])) if b.get('orient') else None,
+            'has_prop': bool(b.get('has_prop')), 'layout': b.get('layout'), 'created_by': None, 'created_at': None}
 
 
 def orient_dogrula(o):
@@ -150,7 +156,7 @@ def row_api(r):
     return {'id': mid, 'name': r['name'], 'source': r['source'], 'source_ref': r.get('source_ref'), 'type': r['type'], 'types': [r['type']],
             'thumb_url': _url(mid, 'thumb') if r.get('thumb_path') else None, 'glb_url': _url(mid, 'glb') if r.get('glb_path') else None,
             'file_url': _url(mid, 'file') if r.get('file_path') else None, 'format': _format(r.get('file_path')), 'file_name': r.get('file_name'),
-            'size': r.get('size'), 'ready': bool(r.get('glb_path')), 'orient': orient, 'has_prop': bool(r.get('has_prop')),
+            'size': r.get('size'), 'ready': bool(r.get('glb_path')), 'orient': orient, 'has_prop': bool(r.get('has_prop')), 'layout': None,   # yüklenen/tasarım: düzen ön yüzde düğüm adlarından (ruddervator/elevon) tahmin edilir
             'created_by': r.get('created_by'), 'created_by_name': r.get('created_by_name'), 'created_at': r['created_at']}
 
 

@@ -35,7 +35,8 @@ def drone_api(d):
     Eski kayıtların prosedürel/dahili anahtarları bridge.MODEL_YUKSELT ile gerçekçi GLB'ye yükseltilir (model_key değişmez)."""
     g = bridge.model_gorsel(d.get('model_key'))
     return {**d, 'params': db.j(d.get('params')), 'is_default': bool(d.get('is_default')), 'proc': g['proc'],
-            'preview': d.get('preview') or g['preview'], 'orient': g['orient'], 'has_prop': g['has_prop'], 'model_label': g['label']}
+            'preview': d.get('preview') or g['preview'], 'orient': g['orient'], 'has_prop': g['has_prop'], 'model_label': g['label'],
+            'airframe': bridge.drone_airframe(d)}   # kontrol düzeni (HEPGO §13.1): sütun → katalog modeli → classic; kopter/heli/VTOL None
 
 
 def _glb(model_key):

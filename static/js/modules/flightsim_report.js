@@ -6,6 +6,7 @@
 // Dışa: showReport(sum, { tr, be, canWrite }) → Promise (modal kapanınca) · reportsCard({ be, tr, canWrite }) → { el, refresh } · buildReportText(sum, tr)
 
 import { clear, fmtDateTime, fmtDuration, h, modal, toast, toastError } from '../ui.js';
+import { layoutLabel } from './flightsim_airframe.js';   // §13.1 kontrol düzeni satırı
 
 const REASON = { terrain: 'arazi', water: 'su', building: 'bina', sitl_hit: 'SITL yer teması (fizik)', sitl: 'SITL (otopilot çarpışma algısı)', manual: 'el ile' };
 const SOURCE = { mp: 'Mission Planner', hepgo: 'HEPGO paneli' };
@@ -32,6 +33,7 @@ export function buildReportText(sum, tr) {
   const S = sum.session || {}, F = sum.flight || {}, M = sum.mission, C = sum.crash, D = sum.deviation;
   const out = [`${tr('Uçuş Simülatörü raporu')} · ${tr(S.type_name || S.type || '—')} · ${S.center?.name || '—'} · ${fmtDuration(F.duration_s || 0)}`,
     `${tr('En yüksek AGL')} ${f1(F.max_agl)} m · ${tr('En yüksek hız')} ${f1(F.max_speed)} m/s · ${tr('Kat edilen mesafe')} ${km(F.dist_m)} · ARM ${F.arm_count ?? 0}`];
+  if (S.layout) out.push(`${tr('Kontrol düzeni')}: ${layoutLabel(S.layout, tr)}${S.layout_sitl_model ? ` · SITL ${S.layout_sitl_model}` : ''}`);   // §13.1
   if (M) out.push(`${tr('Görev')}: ${M.count} WP (${tr(SOURCE[M.source] || M.source || '—')}) · ${tr('bitiş noktası')} ${ll(M.end)}`);
   if (C) out.push(`${tr('ÇARPIŞMA')}: ${ll(C)} · ${f1(C.speed)} m/s · ${tr(REASON[C.reason] || C.reason || '—')}`);
   if (D) out.push(`${tr('Sapma')}: ${f1(D.dist_m)} m ${tr('yatay')}, ${f1(D.dz_m)} m ${tr('dikey')}${D.in_circle ? ` · ${tr('İniş dairesi içinde')}` : ''}`);
@@ -162,6 +164,7 @@ export function reportBody(sum, tr, { canWrite = false, be = null } = {}) {
     kv(tr('Merkez'), `${S.center?.name || '—'} (${ll(S.center, 5)}${S.center?.alt != null ? ` · ${f0(S.center.alt)} m MSL` : ''})`),
     kv(tr('Dünya kipi'), `${tr({ procedural: 'Prosedürel', real: 'Gerçek arazi', google3d: 'Google 3B' }[S.world_mode] || S.world_mode || '—')} · ${tr({ day: 'Gündüz', dusk: 'Akşam', night: 'Gece' }[S.world_time] || S.world_time || '—')} · ${tr('rüzgâr')} ${f1(S.wind_ms)} m/s @ ${f0(S.wind_dir)}°`),
     S.type === 'sabit_kanat' ? kv(tr('Kalkış yöntemi'), launch) : null,
+    S.type === 'sabit_kanat' && S.layout ? kv(tr('Kontrol düzeni'), `${layoutLabel(S.layout, tr)}${S.layout_sitl_model ? ` · SITL ${S.layout_sitl_model}` : ''}${S.layout_effective && S.layout_effective !== S.layout ? ` · ${tr('kalıcı kayıt öncelikli')}: ${layoutLabel(S.layout_effective, tr)}` : ''}`) : null,   // §13.1
     kv(tr('Başlangıç / bitiş'), `${clock(F.start_ts)} → ${clock(F.end_ts)}${sum.created_at ? ` · ${fmtDateTime(sum.created_at)}` : ''}`),
     kv(tr('En yüksek MSL'), `${f1(F.max_msl)} m`),
     kv(tr('Modlar'), (F.modes || []).join(' → ') || '—'),

@@ -18,6 +18,7 @@ import contextlib
 import json
 import math
 import os
+import re
 import time
 
 from . import db, drone_params, drone_sitl, flightsim_hub, flightsim_mission, flightsim_power
@@ -112,6 +113,87 @@ class SimHata(Exception):
 
 
 AIRFRAMES = ('caymaz', 'delta')   # sabit kanat / VTOL 3B gövdesi (ön yüz modeli); varsayılan caymaz
+
+# ---- Kontrol düzeni (§13.1; yalnız sabit_kanat): klasik aileron + elevatör (+ rudder) · elevon (delta / uçan kanat) · V-kuyruk (ruddervator) ----
+# ArduPlane 4.7 SERVOn_FUNCTION kodları (libraries/SRV_Channel/SRV_Channel.h): 4 Aileron, 19 Elevator, 21 Rudder, 77 ElevonLeft, 78 ElevonRight,
+# 79 VTailLeft, 80 VTailRight. Karışım (MIXING_GAIN, varsayılan 0,5 — doymaz) ArduPlane içinde (SRV_Channels::channel_function_mixer):
+# elevon L = g·(e − a), R = g·(e + a); V-kuyruk L = g·(e + r), R = g·(e − r) (+ = arka kenar yukarı).
+# SITL fiziği (SIM_Plane.cpp) KANAL SABİTLİDİR ve karışımı geri çözer: `-elevon` son eki kanal 1/2'yi elevon çifti (aileron = (ch2−ch1)/2,
+# elevator = −(ch2+ch1)/2), `-vtail` kanal 2/4'ü ruddervator çifti (elevator = (ch4−ch2)/2, rudder = (ch4+ch2)/2) olarak okur; düz `plane`
+# kanal 1 aileron / 2 elevator / 4 rudder okur. Bu yüzden düzen ↔ SITL modeli birlikte seçilir ve setler ArduPilot'un KENDİ SITL kurulumlarıdır
+# (Tools/autotest/default_params/plane-elevons.parm: SERVO1 78, SERVO2 77, SERVO1/2_REVERSED 1; plane-vtail.parm: SERVO2 80, SERVO4 79,
+# SERVO2_REVERSED 1) — REVERSED burada karışım işaretini SITL fiziğinin beklediği yöne çevirir (kalıcı kayıtta SERVOn_REVERSED yoksa SIM_SRV_REV
+# maskesine girmez; stok davranış = autotest ile aynı). Karşılık gelmeyen kanallar nötrlenir (klasikte REVERSED 0, elevonda SERVO4 0: rudder yok).
+# Oturum BAŞLANGIÇ setidir ama dron yapılandırması sayılır (FLAP_PARAMLARI gibi): dronun kalıcı kaydında olan ad yazılmaz (kalıcı öncelikli, konsola
+# not); SITL model son eki ETKİN fonksiyonlardan (kalıcı kayıt ∪ düzen seti) türetilir — CAYMAZ kalıcı kaydı 4/19 ise düzen "elevon" seçilse de SITL
+# düz `plane` ile açılır (eski §20.1 davranışı birebir korunur; 77/78 yalnız `-elevon` modelinde doğru uçar).
+LAYOUTS = ('classic', 'elevon', 'vtail')
+LAYOUT_ADLARI = {'classic': 'Aileron + Elevatör (T-kuyruk)', 'elevon': 'Elevon (delta kanat)', 'vtail': 'V-kuyruk (ruddervator)'}
+LAYOUT_PARAMLARI = {
+    'classic': (('SERVO1_FUNCTION', 4.0), ('SERVO2_FUNCTION', 19.0), ('SERVO4_FUNCTION', 21.0),
+                ('SERVO1_REVERSED', 0.0), ('SERVO2_REVERSED', 0.0), ('SERVO4_REVERSED', 0.0)),
+    'elevon': (('SERVO1_FUNCTION', 78.0), ('SERVO2_FUNCTION', 77.0), ('SERVO4_FUNCTION', 0.0),
+               ('SERVO1_REVERSED', 1.0), ('SERVO2_REVERSED', 1.0), ('SERVO4_REVERSED', 0.0), ('MIXING_GAIN', 0.5)),
+    'vtail': (('SERVO1_FUNCTION', 4.0), ('SERVO2_FUNCTION', 80.0), ('SERVO4_FUNCTION', 79.0),
+              ('SERVO1_REVERSED', 0.0), ('SERVO2_REVERSED', 1.0), ('SERVO4_REVERSED', 0.0), ('MIXING_GAIN', 0.5)),
+}
+LAYOUT_SITL_EKI = {'elevon': '-elevon', 'vtail': '-vtail'}
+ARDUPLANE_VARSAYILAN_FN = {1: 4, 2: 19, 3: 70, 4: 21}   # SERVOn_FUNCTION fabrika değerleri (kanal 1..4)
+_FN_RE = re.compile(r'^SERVO([1-9]|1[0-6])_FUNCTION$')
+
+
+def layout_dogrula(tip, layout, model=None):
+    """Kontrol düzeni: yalnız sabit kanatta anlamlı (aksi None). Eksikse modelin düzeni (`model.layout`; dahili Caymaz/Delta → elevon,
+    Talon → vtail), o da yoksa 'classic'. Bilinmeyen değer → SimHata('invalid')."""
+    if tip != 'sabit_kanat':
+        return None
+    if layout is None or layout == '':
+        m = (model or {}).get('layout') if isinstance(model, dict) else None
+        return m if m in LAYOUTS else 'classic'
+    if not isinstance(layout, str) or layout not in LAYOUTS:
+        raise SimHata('invalid', 'layout classic | elevon | vtail olmalı')
+    return layout
+
+
+def layout_parametreleri(layout, kayitli_adlar=()):
+    """Düzen başlangıç seti → (yazılacak (ad, değer) listesi, kalıcı kayıt yüzünden atlanan adlar). Kayıtlı ad kullanıcı yapılandırmasıdır, ezilmez."""
+    kayitli = set(kayitli_adlar or ())
+    sett = LAYOUT_PARAMLARI.get(layout or 'classic', LAYOUT_PARAMLARI['classic'])
+    return [(a, v) for a, v in sett if a not in kayitli], [a for a, _ in sett if a in kayitli]
+
+
+def layout_etkin_fn(layout, kayitli_rows=()):
+    """SITL'de etkin olacak SERVOn_FUNCTION'lar (kanal → kod): ArduPlane varsayılanı ← düzen seti ← kalıcı kayıt (öncelikli)."""
+    fn = dict(ARDUPLANE_VARSAYILAN_FN)
+    for a, v in LAYOUT_PARAMLARI.get(layout or 'classic', ()):
+        m = _FN_RE.match(a)
+        if m:
+            fn[int(m.group(1))] = int(round(float(v)))
+    for r in kayitli_rows or ():
+        m = _FN_RE.match(str(r.get('name') or ''))
+        if m:
+            try:
+                fn[int(m.group(1))] = int(round(float(r.get('value'))))
+            except (TypeError, ValueError):
+                pass
+    return fn
+
+
+def sitl_model_eki(fn):
+    """Etkin fonksiyonlardan SITL `plane` son eki: kanal 1/2 elevon çifti (77/78) → '-elevon'; kanal 2/4 V-kuyruk çifti (79/80) → '-vtail';
+    aksi '' (düz plane: 1 aileron / 2 elevator / 4 rudder). SIM_Plane kanal sabitlidir: çift başka kanaldaysa fizik onu göremez → düz."""
+    f1, f2, f4 = fn.get(1), fn.get(2), fn.get(4)
+    if {f1, f2} == {77, 78}:
+        return '-elevon'
+    if {f2, f4} == {79, 80}:
+        return '-vtail'
+    return ''
+
+
+def layout_etkin(fn):
+    """Etkin fonksiyonlardan fiilen uçan düzen adı (konsol notu / kayıt): elevon | vtail | classic."""
+    ek = sitl_model_eki(fn)
+    return 'elevon' if ek == '-elevon' else 'vtail' if ek == '-vtail' else 'classic'
 
 
 def airframe_dogrula(tip, a):
@@ -487,7 +569,7 @@ class _UdpProto(asyncio.DatagramProtocol):
 # Oturum
 # ======================================================================
 class SimSession:
-    def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None):
+    def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None, layout=None):
         self.id = int(sid)
         self.kimlik = KIMLIK_TABANI + self.id
         self.type, self.center, self.world, self.owner = tip, center, world, owner
@@ -534,6 +616,12 @@ class SimSession:
         # `airframe` geriye uyum: dahili caymaz/delta için kısa ad (uçak tiplerinde), aksi None.
         self.model = model if model is not None else _model_eski(tip, airframe)
         self.airframe = airframe if model is None else _airframe_adi(self.model, tip)
+        # §13.1 kontrol düzeni (yalnız sabit kanat): classic | elevon | vtail; eksikse modelin düzeni. `layout_etkin` SITL'de fiilen uçan düzen
+        # (kalıcı kayıt öncelikli olabilir), `layout_sitl_model` açılan SITL modeli (`plane[-elevon|-vtail][-catapult]`), `layout_atlanan` kalıcı yüzünden yazılmayanlar.
+        self.layout = layout_dogrula(tip, layout, self.model)
+        self.layout_etkin = self.layout
+        self.layout_sitl_model = None
+        self.layout_atlanan = []
         self.yonetici = yonetici
         self.state = 'BASLIYOR'          # BASLIYOR | HAZIR | HATA | KAPANDI
         self.udp_port = None
@@ -576,7 +664,8 @@ class SimSession:
                      'vn': 0.0, 've': 0.0, 'vd': 0.0, 'airspeed': 0.0, 'groundspeed': 0.0, 'heading': 0.0, 'climb': 0.0, 'mode': None, 'armed': False,
                      'gps_fix': 0, 'sats': 0, 'batt_v': None, 'batt_pct': None, 'throttle': 0.0, 'rc': [0] * 8, 'home': None,
                      'servo': None,   # SERVO_OUTPUT_RAW 1…8 µs (gerçek SITL; kontrol yüzeyi animasyonu, §5) — sahte kipte None → istemci rc'den türetir
-                     'servo_fn': [None] * 8}   # SERVO1..8_FUNCTION (PARAM_VALUE'dan; 3B model flap/aileron eşlemesi için)
+                     'servo_fn': [None] * 8,   # SERVO1..8_FUNCTION (PARAM_VALUE'dan; 3B model flap/aileron/elevon/ruddervator eşlemesi için)
+                     'servo_rev': [None] * 8}  # SERVO1..8_REVERSED (PARAM_VALUE'dan; 3B yüzeyi MANTIKSAL yönde oynatır — §13.1)
         self._tele_son = 0.0             # son `tele` yayını (duvar saati; bekçi)
         self._tele_tbm = -10 ** 9        # son yayının SITL time_boot_ms'i (kapı: TELE_TBM_KAPI)
         self._att_son = 0.0              # son ATTITUDE alımı (ATTITUDE akıyorsa GLOBAL_POSITION_INT yayın tetiklemez)
@@ -587,6 +676,7 @@ class SimSession:
     # ---- dışa görünüm ----
     def to_dict(self, host=None):
         return {'id': self.id, 'mode': 'sitl', 'type': self.type, 'airframe': self.airframe, 'model': dict(self.model) if self.model else None,
+                'layout': self.layout, 'layout_effective': self.layout_etkin, 'layout_sitl_model': self.layout_sitl_model, 'layout_skipped': list(self.layout_atlanan),
                 'center': dict(self.center), 'alt_note': self.alt_not, 'world': dict(self.world), 'state': self.state, 'launch': {**self.launch, 'phase': self.launch_phase},
                 'udp_port': self.udp_port, 'host': host or PUBLIC_HOST or None, 'created_at': self.created_at, 'owner': dict(self.owner),
                 'client': dict(self.client) if self.client else None,
@@ -709,11 +799,12 @@ class SimSession:
         if SITL_ENABLED:
             c = self.center
             self._olay(f'SITL başlatılıyor ({TIP_ADLARI.get(self.type, self.type)}) · {c.get("name") or ""}', 6)
-            sitl_model = LAUNCH_SITL_MODEL.get(self.launch.get('method')) if self.type == 'sabit_kanat' else None   # rampa: plane-catapult
             await self._kayitli_oku()
+            sitl_model = self._sitl_modeli()   # sabit kanat: plane[-elevon|-vtail][-catapult] (düzen §13.1 + rampa §13); diğer tipler None (TIP_ESLEME)
             port, err = await ex(None, lambda: drone_sitl.YONETICI.baslat(self.kimlik, self.type, c['lat'], c['lon'], sysid=1,
                                                                           irtifa=c.get('alt') or EV_IRTIFA, konsol=self._konsol, model=sitl_model,
-                                                                          log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type)))
+                                                                          log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type)
+                                                                          + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]]))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir)
             if port and self.rec['bin']:
                 self._olay('DataFlash kaydı açık: uçuş logu (.bin) oturum kapanışında Uçuş Logları\'na kaydedilir', 6)
             if not port:
@@ -724,6 +815,7 @@ class SimSession:
             self.sitl.update(port=port, pid=drone_sitl.YONETICI.bilgi(self.kimlik).get('pid'), error=None)
         else:
             await self._kayitli_oku()
+            self._sitl_modeli()   # sahte kip: etkin düzen / model adı yalnız bilgi (SITL açılmaz)
             port = self.yonetici.sahte_tcp_port
             self.sitl.update(port=port, pid=None, error=None)
         if port:
@@ -814,6 +906,11 @@ class SimSession:
         if ad.startswith('SERVO') and ad.endswith('_FUNCTION') and ad[5:-9].isdigit() and 1 <= int(ad[5:-9]) <= 8:
             try:
                 self.tele['servo_fn'][int(ad[5:-9]) - 1] = int(round(float(m.param_value)))
+            except (TypeError, ValueError):
+                pass
+        elif ad.startswith('SERVO') and ad.endswith('_REVERSED') and ad[5:-9].isdigit() and 1 <= int(ad[5:-9]) <= 8:
+            try:
+                self.tele['servo_rev'][int(ad[5:-9]) - 1] = int(round(float(m.param_value)))
             except (TypeError, ValueError):
                 pass
         if self.param_izleyici is not None:
@@ -988,6 +1085,7 @@ class SimSession:
         if self.type == 'sabit_kanat':   # kalkış yöntemi + yerde kayma düzeltmesi parametreleri (§13)
             self._param_set(launch_parametreleri(self.launch))
             self._param_set(self.flap_parametreleri())   # otomatik flaplar (kayıtlı değeri olanlar atlanır: kullanıcı yapılandırması)
+            self._layout_yaz()                           # kontrol düzeni başlangıç seti (§13.1; kayıtlı adlar atlanır) + konsol notu
         self._hiz_yaz()   # §23 azami hız (uçak): AIRSPEED_MAX/CRUISE, THR_MAX + SIM_PLN_THR_MUL (yamalı ikili)
         if self.speedup_istek != 1.0:   # reset sonrası yeni SITL: seçili simülasyon hızı korunur
             self._param_set(((flightsim_power.SIM_SPEEDUP, self.speedup_istek),))
@@ -1073,6 +1171,37 @@ class SimSession:
         """FLAP_PARAMLARI'ndan dronun kalıcı kaydında olmayanlar (kayıtlı SERVOn_FUNCTION / *_FLAP_* kullanıcı kararıdır, ezilmez)."""
         kayitli = {r['name'] for r in self.kayitli_params}
         return [(a, v) for a, v in FLAP_PARAMLARI if a not in kayitli]
+
+    def layout_parametreleri(self):
+        """§13.1 düzen başlangıç setinden dronun kalıcı kaydında olmayanlar → (yazılacak, atlanan). Sabit kanat dışı boş."""
+        if self.type != 'sabit_kanat':
+            return [], []
+        return layout_parametreleri(self.layout, [r['name'] for r in self.kayitli_params])
+
+    def _sitl_modeli(self):
+        """Sabit kanat SITL modeli: `plane` + düzen son eki (ETKİN fonksiyonlardan: kalıcı kayıt öncelikli) + rampa `-catapult`; diğer tiplerde None."""
+        if self.type != 'sabit_kanat':
+            return None
+        fn = layout_etkin_fn(self.layout, self.kayitli_params)
+        self.layout_etkin = layout_etkin(fn)
+        model = 'plane' + sitl_model_eki(fn) + ('-catapult' if self.launch.get('method') == 'ramp' else '')
+        self.layout_sitl_model = model
+        return model
+
+    def _layout_yaz(self):
+        """İlk kalp atışı: düzen seti PARAM_SET (kayıtlı adlar atlanır) + konsol notu (etkin düzen, SITL modeli, atlananlar)."""
+        yaz, atla = self.layout_parametreleri()
+        self.layout_atlanan = atla
+        if yaz:
+            self._param_set(yaz)
+        ad = LAYOUT_ADLARI.get(self.layout, self.layout)
+        ozet = ', '.join(f'{a} {v:g}' for a, v in yaz)
+        if self.layout_etkin != self.layout:
+            self._olay(f'Kontrol düzeni {ad}: dronun kalıcı kaydı öncelikli ({", ".join(atla)}) → SITL fiilen {LAYOUT_ADLARI.get(self.layout_etkin)} '
+                       f'kurulumuyla uçuyor (model {self.layout_sitl_model})' + (f'; yazılan: {ozet}' if ozet else ''), 4)
+        else:
+            self._olay(f'Kontrol düzeni {ad}: SITL modeli {self.layout_sitl_model or "plane"}' + (f' · yazılan {ozet}' if ozet else '')
+                       + (f' · kalıcı kayıt öncelikli: {", ".join(atla)}' if atla else ''), 6)
 
     def _param_set(self, ciftler):
         d = _dialect()
@@ -1712,7 +1841,7 @@ class SimManager:
     def acik_sayisi(self):
         return len([s for s in self.sessions.values() if s.state != 'KAPANDI'])
 
-    async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None):
+    async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None, layout=None):
         """Yeni oturum: doğrulama (400) → limit (409) → SITL ikilisi (503) → UDP port (503, oturum içinde HATA) → görev.
         `model`: flightsim_models.coz ile çözülmüş kütüphane nesnesi (router); yoksa `airframe` ile dahili model.
         `drone` (§14, isteğe bağlı): Dron Envanteri kaydı {id, code, name, model} — harekât panelinde telemetri bu adla akar.
@@ -1731,6 +1860,7 @@ class SimManager:
         except ValueError as e:
             raise SimHata('invalid', str(e))
         airframe = airframe_dogrula(tip, airframe)
+        layout = layout_dogrula(tip, layout, model)   # §13.1 kontrol düzeni (400)
         if not center or center.get('lat') is None or center.get('lon') is None:
             raise SimHata('invalid', 'Merkez bulunamadı')
         world = world_dogrula(world)
@@ -1764,7 +1894,7 @@ class SimManager:
         sid = self._next
         self._next += 1
         s = SimSession(sid, tip, {'id': center.get('id'), 'name': center.get('name'), 'lat': float(center['lat']), 'lon': float(center['lon']),
-                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power)
+                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout)
         s.alt_not = alt_not
         self.sessions[sid] = s
         s.task = asyncio.get_running_loop().create_task(s.run())

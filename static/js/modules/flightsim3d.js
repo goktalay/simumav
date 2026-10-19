@@ -29,6 +29,7 @@
 //        setKeyboardLock(bool) (sanal kumanda açıkken WASD/QE/ok/boşluk tuşları 3B'ye gitmez) }. opts: { type, airframe, preview, origin, onProgress, onFallback, … }
 
 import { addLandingGear, createLaunchRig, RIG_FINE_ERR } from './flightsim_launch.js';   // sabit kanat kalkış yöntemi (§13): iniş takımı, rampa, pickup
+import { CTRL_RE, CTRL_MAX, controlInputs, surfaceTarget, easeSurface, layoutForModel } from './flightsim_airframe.js';   // §13.1 kontrol düzeni: servo → mantıksal eksen → yüzey açıları (ruddervator dahil)
 import { createTimeline } from './flightsim_interp.js';   // telemetri zaman çizgisi: uyarlanır gecikme tamponlu enterpolasyon (§5)
 import { createMissionLayer } from './flightsim_mission.js';   // §18: görev çizimi (tüp bacaklar, WP etiketleri, ikonlar) + iniş dairesi H
 
@@ -905,8 +906,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // ---------- kontrol yüzeyleri (Caymaz GLB düğümleri / delta / kütüphane GLB'si; animasyon kare döngüsünde) ----------
   // Kayıt: { obj, surface: elevon|flap|aileron|elevator|rudder, side: l|r|'' , q0 (dinlenme yönelimi), teDown (yerel X etrafında arka kenarı
   // AŞAĞI — rudder'da SAĞA — indiren dönüş işareti), deg (gösterilen açı, ° arka kenar aşağı +), tgt (hedef °) }.
-  // GLB düğümleri adıyla bulunur (step2glb.js: elevon_l/elevon_r/flap_l/flap_r, rudder_l/r); extras.te_down işareti (glTF'de −1), yoksa −1.
-  const CTRL_RE = /^(elevon|flap|aileron|elevator|rudder)(?:_?(l|r|left|right))?$/i;
+  // GLB düğümleri adıyla bulunur (step2glb.js: elevon_l/elevon_r/flap_l/flap_r, rudder_l/r; talon: aileron_l/r, ruddervator_l/r); extras.te_down
+  // işareti (glTF'de −1), yoksa −1. CTRL_RE flightsim_airframe.js'den (ruddervator dahil).
   const ctrlSurface = (obj, surface, side, teDown) => { obj.userData.ctrl = { surface, side }; return { obj, surface, side, q0: obj.quaternion.clone(), teDown: teDown || -1, deg: 0, tgt: 0 }; };
   const findCtrlNodes = sc => {
     const out = [];
@@ -1009,6 +1010,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     const w = Math.max(bb.max.x - bb.min.x, 0.3), hz = bb.max.z;
     return { grp, props, ctrl: findCtrlNodes(sc), tips: { left: [bb.min.x, bb.min.y + (bb.max.y - bb.min.y) * 0.3, hz * 0.6], right: [bb.max.x, bb.min.y + (bb.max.y - bb.min.y) * 0.3, hz * 0.6], tail: [0, bb.min.y, hz * 0.4] }, span: w };
   };
+  // Dahili GLB modeller (yönelimli; flightsim_models BUILTIN ile aynı): talon → SIMUMAV GLB çerçevesi (burun +X, yukarı +Y)
+  const BUILTIN_GLB = { talon: { glb_url: '/static/models/talon-vtail.glb', orient: { forward: '+x', up: '+y', scale: 1, offset: [0, 0, 0] }, has_prop: true, layout: 'vtail' } };
   // Model seçimi (§12): dize ('caymaz' | 'delta' eski; 'builtin:<ad>') ya da kütüphane nesnesi {id, glb_url, orient, …}
   const SIZES = { multirotor: 0.6, hexarotor: 0.9 };
   const normModel = (type, model) => {
@@ -1019,10 +1022,12 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const buildFor = async (type, model, M) => {
     const plane = type === 'sabit_kanat' || type === 'vtol';
     let built = null;
-    if (model.id && !String(model.id).startsWith('builtin:') && model.glb_url) {
+    const key = String(model.id || '').replace('builtin:', '');
+    const isBuiltin = String(model.id || '').startsWith('builtin:');
+    if (isBuiltin && BUILTIN_GLB[key] && !model.glb_url) model = { ...model, ...BUILTIN_GLB[key] };   // dize/kısa nesne ile gelen dahili GLB (mock, eski istemci)
+    if (model.glb_url && (!isBuiltin || model.orient)) {   // kütüphane modeli ya da yönelimli dahili GLB (talon): GLB + orient
       try { built = await buildLibrary(model, M); } catch (e) { console.warn('Kütüphane modeli yüklenemedi, dahili modele düşüldü:', e?.message || e); built = null; }
     }
-    const key = String(model.id || '').replace('builtin:', '');
     if (!built && plane && key !== 'delta') { try { built = await buildCaymaz(M); } catch { built = null; } }   // GLB yüklenemedi → delta kanat
     if (!built && plane) built = buildDelta(M);
     if (!built) built = type === 'helikopter' ? buildHeli(M) : buildMulti(type === 'hexarotor' ? 6 : 4, SIZES[type] || 0.6, M);
@@ -1116,7 +1121,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // tarayıcısız test edilebilir modüldedir; burada yalnız kare başına yan alanlar (gaz, arm, RC, hız) ve ilk karede kamera yayının oturması.
   const tl = createTimeline(T, { toLocal });
   const cur = tl.cur;                                // render edilen konum/yönelim/hız (yumuşatılmış)
-  const tele = { has: false, at: 0, throttle: 0, armed: false, speed: 0, rc: null, servo: null, servoFn: null, mode: null, terrainAgl: null, last: null };
+  const tele = { has: false, at: 0, throttle: 0, armed: false, speed: 0, rc: null, servo: null, servoFn: null, servoRev: null, mode: null, terrainAgl: null, last: null };
   function setTelemetry(t) {
     if (!t) return;
     const now = performance.now();
@@ -1126,6 +1131,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     tele.rc = Array.isArray(t.rc) ? t.rc : null;   // RC kanalları 1000…2000 (1: roll, 2: pitch, 4: yaw) → kontrol yüzeyleri (servo yoksa)
     tele.servo = Array.isArray(t.servo) ? t.servo : null;   // SERVO_OUTPUT_RAW 1…8 µs (gerçek SITL): kontrol yüzeylerinin birincil kaynağı
     tele.servoFn = Array.isArray(t.servo_fn) ? t.servo_fn : null;   // isteğe bağlı SERVOn_FUNCTION listesi (4 aileron, 19 elevator, 21 rudder, 2/3 flap, 77/78 elevon L/R)
+    tele.servoRev = Array.isArray(t.servo_rev) ? t.servo_rev : null;   // SERVOn_REVERSED listesi: yüzeyler mantıksal yönde (§13.1)
     tele.mode = t.mode || null;
     tele.terrainAgl = typeof t.terrain_agl === 'number' ? t.terrain_agl : null;   // ArduPilot TERRAIN_REPORT AGL (SRTM): 3B arazi örneğiyle tutarlılık süzgeci (§18)
     tele.speed = r.speed;   // son karenin hızı (çarpışma denetimi için; render döngüsü enterpolasyonlu hızla günceller)
@@ -1300,64 +1306,19 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // ---------- kare döngüsü ----------
   let raf = 0, lastT = performance.now(), disposed = false, previewAngle = 0.6;
   const propAngle = { v: 0 };
-  // ---------- kontrol yüzeyi animasyonu ----------
-  // Kaynak önceliği: tele.servo (SERVO_OUTPUT_RAW µs; SITL karışımı/flap otomatiği hazır) → tele.rc (sahte kip / kayıt). Eşleme 1000–2000 µs →
-  // ±1 (±400 µs; SERVOn_MIN/MAX 1100/1900): aileron + = sağa yatış (sağ yüzey arka kenar YUKARI, sol AŞAĞI), elevator + = burun yukarı (arka kenar YUKARI), rudder + = sağa (arka kenar
-  // SAĞA), flap 1100…1900 → 0…1 (yalnız aşağı). Uçan kanatta elevon = elevator ± aileron (ArduPlane channel_function_mixer: L = e − a, R = e + a;
-  // + = arka kenar yukarı). Açılar: elevon/aileron/elevator/rudder ±25°, flap 0…+35°. Servo hızı: 60°/0,15 s = 400°/s; küçük 1. derece gecikme (τ 40 ms).
-  // Flap kanalı: servo_fn varsa 2/3 işlevli kanal, yoksa SERVO5/6 (yalnız 900…2100 µs geçerli). Disarm → tüm yüzeyler nötr. Servo yoksa (sahte kip /
-  // kayıt) ya da flap kanalı dinlenmedeyse flap moddan türetilir: TAKEOFF %50, LAND/QLAND %100 (TKOFF_FLAP_PCNT / LAND_FLAP_PERCNT öykünmesi).
-  const CTRL_MAX = { elevon: 25, aileron: 25, elevator: 25, rudder: 25, flap: 35 }, CTRL_RATE = 400, CTRL_TAU = 0.04;
-  const ctrlIn = { ail: 0, ele: 0, rud: 0, flap: 0, elevonL: null, elevonR: null, source: 'none' };
-  // ArduPilot SERVOn_MIN/TRIM/MAX varsayılanı 1100/1500/1900: ±400 µs = tam sapma; flap 0 % = 1100 (işlev atanmamış kanal da 1100 verir → 0)
-  const nrm = v => (v >= 900 && v <= 2100 ? clamp((v - 1500) / 400, -1, 1) : 0);
-  const flapPct = v => (v >= 900 && v <= 2100 ? clamp((v - 1100) / 800, 0, 1) : null);
-  const fnIdx = (fn, code) => (fn ? fn.findIndex(f => Number(f) === code) : -1);
-  const flapFromMode = () => { const md = String(tele.mode || '').toUpperCase(); return md === 'TAKEOFF' ? 0.5 : (md === 'LAND' || md === 'QLAND') ? 1 : 0; };
-  function ctrlInputs() {
-    const o = ctrlIn; o.ail = o.ele = o.rud = o.flap = 0; o.elevonL = o.elevonR = null; o.source = 'none';
-    if (!tele.armed) return o;
-    const sv = tele.servo, fn = tele.servoFn;
-    if (sv && sv.length >= 4 && (sv[0] >= 900 || sv[1] >= 900)) {
-      o.source = 'servo';
-      const iA = fnIdx(fn, 4), iE = fnIdx(fn, 19), iR = fnIdx(fn, 21), iL = fnIdx(fn, 77), iRt = fnIdx(fn, 78);
-      if (iL >= 0 || iRt >= 0) { o.elevonL = iL >= 0 ? nrm(sv[iL]) : 0; o.elevonR = iRt >= 0 ? nrm(sv[iRt]) : 0; }
-      o.ail = nrm(sv[iA >= 0 ? iA : 0]); o.ele = nrm(sv[iE >= 0 ? iE : 1]); o.rud = nrm(sv[iR >= 0 ? iR : 3]);
-      let fl = [];
-      if (fn) fl = fn.map((f, i) => (Number(f) === 2 || Number(f) === 3 ? i : -1)).filter(i => i >= 0);
-      if (!fl.length) fl = [4, 5];
-      let acc = 0, n = 0;
-      for (const i of fl) { const f = flapPct(sv[i]); if (f !== null) { acc += f; n++; } }
-      o.flap = n ? acc / n : flapFromMode();   // flap kanalı hiç yoksa (0 µs) moddan türet
-      if (n && !fn && o.flap === 0) o.flap = flapFromMode();   // işlev bilinmiyor ve kanal dinlenmede (1100) → TAKEOFF/LAND öykünmesi
-      return o;
-    }
-    const rc = tele.rc;
-    if (rc && rc.length >= 2) {
-      o.source = 'rc';
-      o.ail = nrm(rc[0]); o.ele = nrm(rc[1]); o.rud = rc.length > 3 ? nrm(rc[3]) : 0;
-      o.flap = flapFromMode();
-    }
-    return o;
-  }
+  // ---------- kontrol yüzeyi animasyonu (§13.1; saf katman flightsim_airframe.js) ----------
+  // Kaynak önceliği: tele.servo (SERVO_OUTPUT_RAW µs; SITL karışımı/flap otomatiği hazır) → tele.rc (sahte kip / kayıt). SERVOn_FUNCTION (tele.servoFn)
+  // ile kanal → işlev (4/19/21/2/3/77/78/79/80), SERVOn_REVERSED (tele.servoRev) ile MANTIKSAL çıkış (gerçek uçakta ters monteli servo PWM'i geri
+  // çevirir). Elevon/ruddervator çiftleri doğrudan ArduPlane karışımından; eksen komutları geri çözülür → düğüm adı düzenden farklı modelde de
+  // (Caymaz + V-kuyruk düzeni) yüzeyler tutarlı. Açılar ±25°, flap 0…+35°; servo 400°/s + τ 40 ms. Disarm → nötr. Servo yoksa flap moddan
+  // (TAKEOFF %50, LAND %100).
+  let ctrlIn = controlInputs(null);
   const ctrlQ = new T.Quaternion(), ctrlAxis = new T.Vector3(1, 0, 0);
   function updateCtrl(dt) {
-    const o = ctrlInputs();
+    const o = ctrlIn = controlInputs({ servo: tele.servo, fn: tele.servoFn, rev: tele.servoRev, rc: tele.rc, mode: tele.mode, armed: tele.armed });
     for (const c of drone.ctrl) {
-      const L = c.side === 'l', mx = CTRL_MAX[c.surface] || 25;
-      let tgt = 0;   // ° arka kenar aşağı +
-      if (c.surface === 'elevon') {
-        const up = o.elevonL !== null ? (L ? o.elevonL : o.elevonR) : (L ? o.ele - o.ail : o.ele + o.ail);   // + = arka kenar yukarı
-        tgt = -clamp(up, -1, 1) * mx;
-      } else if (c.surface === 'aileron') tgt = (L ? 1 : -1) * o.ail * mx;
-      else if (c.surface === 'elevator') tgt = -o.ele * mx;
-      else if (c.surface === 'rudder') tgt = o.rud * mx;   // + = arka kenar sağa (teDown işareti bunun için)
-      else if (c.surface === 'flap') tgt = o.flap * mx;
-      c.tgt = tgt;
-      // 1. derece gecikme + servo hızı sınırı (°/s); dt kırpılmamış gerçek süre
-      const want = c.deg + (tgt - c.deg) * Math.min(1, dt / CTRL_TAU);
-      const step = CTRL_RATE * dt;
-      c.deg = clamp(want, c.deg - step, c.deg + step);
+      c.tgt = surfaceTarget(c.surface, c.side, o, CTRL_MAX);
+      c.deg = easeSurface(c.deg, c.tgt, dt);
       ctrlQ.setFromAxisAngle(ctrlAxis, c.deg * c.teDown * Math.PI / 180);
       c.obj.quaternion.copy(c.q0).multiply(ctrlQ);
     }
@@ -1624,7 +1585,10 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     setLaunch, setLaunchPhase, get launchPhase() { return rig ? rig.phase : null; }, get groundLocked() { return gLock.on; },   // kalkış yöntemi + yerde kilit (§13)
     setRoute, setMission, setMissionCurrent, get route() { return routePts.slice(); }, get mission() { return mission.data; }, get missionObjects() { return mission.objectCount; },   // §14/§18: SITL'deki görev (çizim flightsim_mission.js)
     get modelInfo() { return { type: drone.type, model: drone.model, bbox: drone.bbox || null, props: drone.props.length }; },   // yönelim paneli (§12)
-    ctrlState: () => ({ source: ctrlIn.source, armed: tele.armed, mode: tele.mode, servo: tele.servo, rc: tele.rc, inputs: { ail: ctrlIn.ail, ele: ctrlIn.ele, rud: ctrlIn.rud, flap: ctrlIn.flap }, surfaces: drone.ctrl.map(c => ({ name: c.obj.name || `${c.surface}_${c.side}`, surface: c.surface, side: c.side, deg: +c.deg.toFixed(2), tgt: +c.tgt.toFixed(2) })) }),   // teşhis: kontrol yüzeyi açıları (° arka kenar aşağı +)
+    ctrlState: () => { const ctrlIn = controlInputs({ servo: tele.servo, fn: tele.servoFn, rev: tele.servoRev, rc: tele.rc, mode: tele.mode, armed: tele.armed }); return { source: ctrlIn.source, armed: tele.armed, mode: tele.mode, servo: tele.servo, servoFn: tele.servoFn, servoRev: tele.servoRev, rc: tele.rc, layout: layoutForModel(drone.model, drone.ctrl),   // girişler SON kareden taze (düşük fps'te kare gecikmesi servo ile eşleşmezdi)
+      inputs: { ail: ctrlIn.ail, ele: ctrlIn.ele, rud: ctrlIn.rud, flap: ctrlIn.flap, elevonL: ctrlIn.elevonL, elevonR: ctrlIn.elevonR, vtailL: ctrlIn.vtailL, vtailR: ctrlIn.vtailR },
+      surfaces: drone.ctrl.map(c => ({ name: c.obj.name || `${c.surface}_${c.side}`, surface: c.surface, side: c.side, deg: +c.deg.toFixed(2), tgt: +surfaceTarget(c.surface, c.side, ctrlIn, CTRL_MAX).toFixed(2) })) }; },   // teşhis: kontrol yüzeyi açıları (° arka kenar aşağı +)
+    ctrlLayout: () => layoutForModel(drone.model, drone.ctrl),   // §13.1: yüklü modelin düzeni (model.layout ya da yüzey düğüm adlarından)
     get collided() { return collided; }, get world() { return W; }, get waterZ() { return terrain ? terrain.waterZ : -Infinity; },
     get real() { return !!terrain?.real; },
     get google() { return !!g3d; },

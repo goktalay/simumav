@@ -6,7 +6,7 @@
 //   • gates.js: düzlem kesişimi (içinde / dışında / ters yön / düzlem geçilmedi), izleyici (pass/miss/atlama/ters yön/tur/bitiş), replayGatesAt, gateStats
 //   • session.js: installWsBridge (yalnız /ws/drone/live yolu yönlendirilir) — DOM gerektirmeyen kısım sahte `win` ile
 import assert from 'node:assert/strict';
-import { createWizard, normLaunch, launchBody, speedScale, speedAngle, speedTicks, modelFor, worldFromTrack, countdownAt, needsLaunch, simType, STEPS, timeOfDay } from '../static/simumav/app/fly/wizard.js';
+import { createWizard, normLaunch, launchBody, speedScale, speedAngle, speedTicks, modelFor, worldFromTrack, countdownAt, needsLaunch, simType, STEPS, timeOfDay, AIRFRAMES, airframeOf, airframeForModel, airframeLabel, needsAirframe } from '../static/simumav/app/fly/wizard.js';
 import { HAND, handPoseAt, handReleaseTime, shimTelemetry, replayHandTimeline, replayHandPhaseAt, replayHandPhaseStart, handCfg, REPLAY_HAND_RELEASE } from '../static/simumav/app/fly/hand_launch.js';
 import { crossing, createGateTracker, gateLocal, localFrom, replayGatesAt, gateStats, MISS_FACTOR } from '../static/simumav/app/fly/gates.js';
 
@@ -183,5 +183,13 @@ if (installWsBridge) test('installWsBridge: yalnız /ws/drone/live → hedef; di
   const again = installWsBridge('wss://x/y', { win }); again(); assert.ok(win.WebSocket.__smBridged, 'ikinci kurulum atlanır, geri alma zararsız');
   restore(); assert.equal(win.WebSocket, FakeWS);
   const r = recRest(7); assert.equal(r.fileUrl('ab'), '/api/fly/rec/ab/file');
+});
+test('kontrol düzeni (§13.1): kayıt → katalog modeli → anahtar tahmini → classic; yalnız sabit kanat ailesi', () => {
+  assert.deepEqual(AIRFRAMES, ['classic', 'elevon', 'vtail']); assert.ok(needsAirframe('plane') && needsAirframe('interceptor') && !needsAirframe('vtol') && !needsAirframe('fpv'));
+  assert.equal(airframeOf({ type: 'plane', model_key: 'glb:talon_vtail' }), 'vtail'); assert.equal(airframeOf({ type: 'plane', model_key: 'builtin:caymaz' }), 'elevon');
+  assert.equal(airframeOf({ type: 'plane', model_key: 'glb:rc_cessna' }), 'classic'); assert.equal(airframeOf({ type: 'interceptor', model_key: 'proc:interceptor' }), 'elevon');
+  assert.equal(airframeOf({ type: 'plane', model_key: 'glb:rc_cessna', airframe: 'vtail' }), 'vtail', 'kayıt öncelikli'); assert.equal(airframeOf({ type: 'plane', model_key: 'lib-x' }, { airframe: 'elevon' }), 'elevon', 'katalog modeli');
+  assert.equal(airframeOf({ type: 'plane', model_key: 'lib-x' }), 'classic'); assert.equal(airframeOf({ type: 'fpv', model_key: 'glb:talon_vtail', airframe: 'vtail' }), null); assert.equal(airframeOf(null), null);
+  assert.equal(airframeForModel('glb:zephyr'), 'elevon'); assert.equal(airframeForModel(''), null); assert.equal(airframeLabel('vtail'), 'V-kuyruk (ruddervator)'); assert.equal(airframeLabel(null), '—');
 });
 console.log(`\n${n} test geçti`);

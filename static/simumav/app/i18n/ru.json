@@ -267,5 +267,13 @@
   "support.report_flight": "Сообщить о проблеме с этим полётом",
   "support.flight_ref": "Полёт #{id}",
   "support.unavailable": "Система поддержки сейчас недоступна",
-  "support.rate": "Не более 5 запросов в час"
+  "support.rate": "Не более 5 запросов в час",
+  "airframe.title": "Схема управления",
+  "airframe.classic": "Элероны + руль высоты (Т-хвост)",
+  "airframe.elevon": "Элевоны (дельта-крыло)",
+  "airframe.vtail": "V-образный хвост (руддерватор)",
+  "airframe.classic_desc": "Элероны на крыле, руль высоты + направления на хвосте",
+  "airframe.elevon_desc": "Два элевона для тангажа и крена (дельта / летающее крыло)",
+  "airframe.vtail_desc": "Два руддерватора для тангажа и рыскания; элероны на крыле",
+  "airframe.suggested": "Схема модели"
 }

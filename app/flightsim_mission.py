@@ -411,6 +411,7 @@ class GorevIzleyici:
                         'drone': {'code': drone.get('code'), 'name': drone.get('name'), 'model': drone.get('model')} if drone else None,
                         'center': dict(s.center) if s.center else None, 'world_mode': (s.world or {}).get('mode'), 'world_time': (s.world or {}).get('time'),
                         'launch': dict(s.launch) if getattr(s, 'launch', None) else None, 'landing_circle_m': R * 2,
+                        'layout': getattr(s, 'layout', None), 'layout_effective': getattr(s, 'layout_etkin', None), 'layout_sitl_model': getattr(s, 'layout_sitl_model', None),
                         'wind_ms': (s.world or {}).get('wind_ms'), 'wind_dir': (s.world or {}).get('wind_dir')},
             'flight': {'start_ts': round(self.started, 1), 'end_ts': round(now, 1), 'duration_s': int(now - self.started), 'air_s': self.air_s,
                        'max_agl': round(self.max_agl, 1), 'max_msl': round(self.max_msl, 1) if self.max_msl is not None else None, 'max_speed': round(self.max_speed, 1),

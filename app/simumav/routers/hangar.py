@@ -19,6 +19,7 @@ class DroneIn(BaseModel):
     model_key: str = Field(..., max_length=40)
     params: Optional[dict] = None
     color: Optional[str] = Field('#ff6a00', max_length=7)
+    airframe: Optional[str] = Field(None, max_length=12)   # kontrol düzeni classic | elevon | vtail (sabit kanat ailesi); eksik → katalog modelinin düzeni
 
 
 class DronePatch(BaseModel):
@@ -27,6 +28,7 @@ class DronePatch(BaseModel):
     params: Optional[dict] = None
     color: Optional[str] = Field(None, max_length=7)
     is_default: Optional[bool] = None
+    airframe: Optional[str] = Field(None, max_length=12)
 
 
 def _dogrula(tip, model_key, params, color, request, user):
@@ -58,11 +60,15 @@ def list_drones(user=User):
 @router.post('', status_code=201)
 def add_drone(body: DroneIn, request: Request, user=User):
     params = _dogrula(body.type, body.model_key, body.params, body.color, request, user)
+    try:
+        airframe = bridge.airframe_dogrula(body.type, body.airframe, body.model_key)
+    except bridge.BridgeHata as e:
+        hata_cevir(e)
     t = db.now()
     with db.connect() as conn:
         kota(conn, 'drones', user, request)
-        did = conn.execute('INSERT INTO drones (user_id, name, type, model_key, params, color, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
-                           (user['id'], body.name.strip(), body.type, body.model_key, json.dumps(params), body.color or '#ff6a00', t, t)).lastrowid
+        did = conn.execute('INSERT INTO drones (user_id, name, type, model_key, params, color, airframe, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                           (user['id'], body.name.strip(), body.type, body.model_key, json.dumps(params), body.color or '#ff6a00', airframe, t, t)).lastrowid
         conn.commit()
         return drone_api(sahip(conn, 'drones', did, user))
 
@@ -73,11 +79,15 @@ def update_drone(did: int, body: DronePatch, request: Request, user=User):
         d = sahip(conn, 'drones', did, user)
         model_key = body.model_key or d['model_key']
         params = _dogrula(d['type'], model_key, body.params if body.params is not None else db.j(d['params']), body.color, request, user)
+        try:   # düzen: gönderilmişse doğrula; model değişip düzen gönderilmediyse yeni modelin düzeni; aksi eski değer
+            airframe = bridge.airframe_dogrula(d['type'], body.airframe, model_key) if (body.airframe is not None or (body.model_key and body.model_key != d['model_key'])) else d.get('airframe')
+        except bridge.BridgeHata as e:
+            hata_cevir(e)
         if body.is_default:
             conn.execute('UPDATE drones SET is_default = 0 WHERE user_id = ?', (user['id'],))
-        conn.execute('UPDATE drones SET name = ?, model_key = ?, params = ?, color = ?, is_default = ?, updated_at = ? WHERE id = ?',
+        conn.execute('UPDATE drones SET name = ?, model_key = ?, params = ?, color = ?, is_default = ?, airframe = ?, updated_at = ? WHERE id = ?',
                      ((body.name or d['name']).strip(), model_key, json.dumps(params), body.color or d['color'],
-                      1 if body.is_default else (0 if body.is_default is False else d['is_default']), db.now(), did))
+                      1 if body.is_default else (0 if body.is_default is False else d['is_default']), airframe, db.now(), did))
         conn.commit()
         return drone_api(sahip(conn, 'drones', did, user))
 

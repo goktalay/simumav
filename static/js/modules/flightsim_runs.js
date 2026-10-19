@@ -13,6 +13,7 @@
 
 import { clear, confirmDialog, fmtDateTime, fmtDuration, h, modal, toast, toastError } from '../ui.js';
 import { launchLabel } from './flightsim_launch.js';
+import { layoutShort } from './flightsim_airframe.js';   // §13.1 kontrol düzeni sütunu (Detaylı)
 
 const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL' };
 
@@ -25,6 +26,9 @@ const COLS = [['started_at', 'Tarih / saat'], ['owner', 'Kullanıcı'], ['type',
 // §23 "Detaylı" kipte ek sütunlar (Detaylı kutusundaki onay; localStorage fs.runs.power): Yakıt (harcanan L · ölçülen km/L) · Batarya (Wh · ortalama W)
 const POWER_COLS = [[null, 'Yakıt'], [null, 'Batarya']];
 const KEY_POWER_COLS = 'fs.runs.power';
+// §13.1 "Detaylı" kipte Düzen sütunu (kontrol düzeni: Klasik / Elevon / V-kuyruk; localStorage fs.runs.layout) — Kalkış'tan sonra
+const LAYOUT_COL = [null, 'Düzen'];
+const KEY_LAYOUT_COL = 'fs.runs.layout';
 export const fuelCell = r => (r?.fuel_used_l == null ? '—' : `${Number(r.fuel_used_l).toFixed(2)} L${r.fuel_km_per_l != null ? ` · ${Number(r.fuel_km_per_l).toFixed(1)} km/L` : ''}`);
 export const elecCell = r => (r?.elec_wh == null ? '—' : `${Number(r.elec_wh).toFixed(1)} Wh${r.elec_w_avg != null ? ` · ${Number(r.elec_w_avg).toFixed(0)} W` : ''}`);
 // Hızlı tarih kapsülü: anahtar → gün sayısı (0 = Tümü). Varsayılan 1 hafta.
@@ -85,6 +89,7 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
   const F = { from: sinceDays(7), to: '', center_id: '', type: '', owner_id: '', result: '', mode: '', q: '', sort: '-started_at', page: 1 };
   let period = '7d';
   let powerCols = (() => { try { return localStorage.getItem(KEY_POWER_COLS) === '1'; } catch { return false; } })();   // §23 yakıt/batarya sütunları
+  let layoutCol = (() => { try { return localStorage.getItem(KEY_LAYOUT_COL) === '1'; } catch { return false; } })();   // §13.1 düzen sütunu
   let data = { items: [], total: 0, page: 1, pages: 1, facets: { centers: [], owners: [], types: [] } };
   let facets = { centers: [], owners: [], types: [] };
   const tableBox = h('div', { class: 'fs-runs-table' });
@@ -125,6 +130,7 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
     const modeSel = selOf('mode', 'Canlı + kayıt', [['sitl', 'Canlı simülasyon'], ['replay', 'Kayıttan oynatma']].map(([id, l]) => ({ id, l })), o => tr(o.l));
     const qInp = h('input', { class: 'input sm', type: 'search', 'data-f': 'q', value: D.q, placeholder: tr('Ara: model, log adı, merkez, kullanıcı, oturum no') });
     const powerCb = h('input', { type: 'checkbox', 'data-f': 'power_cols', checked: powerCols, onchange: () => { powerCols = powerCb.checked; try { localStorage.setItem(KEY_POWER_COLS, powerCols ? '1' : '0'); } catch { /* */ } draw(); } });   // §23: anında uygulanır
+    const layoutCb = h('input', { type: 'checkbox', 'data-f': 'layout_col', checked: layoutCol, onchange: () => { layoutCol = layoutCb.checked; try { localStorage.setItem(KEY_LAYOUT_COL, layoutCol ? '1' : '0'); } catch { /* */ } draw(); } });   // §13.1: anında uygulanır
     [centerSel, typeSel, ownerSel, resultSel, modeSel].forEach(s => { s.value = D[s.dataset.f] || ''; if (s.value !== (D[s.dataset.f] || '')) s.value = ''; });
     const row = (label, ...ctrls) => h('label', { class: 'fs-pop-row' }, h('span', { class: 'small muted' }, tr(label)), h('span', { class: 'fs-pop-ctl' }, ctrls));
     const apply = () => {
@@ -141,6 +147,7 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
       row('Merkez / konum', centerSel), row('Dron tipi', typeSel), row('Kullanıcı', ownerSel), row('Sonuç', resultSel), row('Kaynak', modeSel),
       row('Arama', qInp),
       h('label', { class: 'check fs-pop-check' }, powerCb, tr('Yakıt / batarya sütunları'), h('span', { class: 'small muted' }, tr('harcanan yakıt ve ölçülen km/L · batarya Wh ve ortalama W'))),
+      h('label', { class: 'check fs-pop-check' }, layoutCb, tr('Düzen sütunu'), h('span', { class: 'small muted' }, tr('Kontrol düzeni: Klasik / Elevon / V-kuyruk (sabit kanat)'))),   // §13.1
       h('div', { class: 'fs-pop-foot' },
         h('button', { class: 'btn sm', type: 'button', 'data-act': 'clear', onclick: clearAll }, tr('Temizle')),
         h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'apply', onclick: apply }, tr('Uygula')))), { cls: 'fs-runs-pop', width: 340 });
@@ -198,7 +205,8 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
   };
 
   const draw = () => {
-    const cols = powerCols ? [...COLS.slice(0, 8), ...POWER_COLS, ...COLS.slice(8)] : COLS;   // §23: Sonuç'tan sonra Yakıt · Batarya
+    let cols = powerCols ? [...COLS.slice(0, 8), ...POWER_COLS, ...COLS.slice(8)] : COLS;   // §23: Sonuç'tan sonra Yakıt · Batarya
+    if (layoutCol) cols = [...cols.slice(0, 6), LAYOUT_COL, ...cols.slice(6)];   // §13.1: Kalkış'tan sonra Düzen
     const head = h('tr', null, cols.map(([key, label]) => {
       if (!key) return h('th', null, tr(label));
       const active = F.sort.replace(/^-/, '') === key;
@@ -216,6 +224,7 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
         h('td', null, r.center_name || '—', r.lat != null ? h('div', { class: 'small muted mono' }, `${Number(r.lat).toFixed(4)}, ${Number(r.lon).toFixed(4)}`) : null),
         h('td', null, tr(WORLD_MODE[r.world?.mode] || r.world?.mode || '—')),
         h('td', null, r.type === 'sabit_kanat' && r.launch?.method ? launchLabel(r.launch, tr) : '—'),
+        layoutCol ? h('td', { class: 'fs-runs-layout' }, r.type === 'sabit_kanat' && r.layout ? h('span', { class: 'badge gray', title: tr('Kontrol düzeni') }, layoutShort(r.layout, tr)) : '—') : null,   // §13.1
         h('td', { class: 'num' }, r.duration_s != null ? fmtDuration(r.duration_s) : '—'),
         h('td', null, h('span', { class: `badge ${cls}` }, r.result === 'carpisma' && r.crash_count > 1 ? `${tr(txt)} ×${r.crash_count}` : tr(txt)),
           r.speedup_max > 1 ? h('span', { class: 'badge gray fs-runs-speed', title: tr('Simülasyon hızı (en yüksek)') }, `${r.speedup_max}×`) : null),

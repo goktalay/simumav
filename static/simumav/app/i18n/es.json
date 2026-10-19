@@ -267,5 +267,13 @@
   "support.report_flight": "Informar de un problema con este vuelo",
   "support.flight_ref": "Vuelo #{id}",
   "support.unavailable": "El sistema de soporte no está disponible ahora",
-  "support.rate": "Puedes abrir como máximo 5 solicitudes por hora"
+  "support.rate": "Puedes abrir como máximo 5 solicitudes por hora",
+  "airframe.title": "Disposición de mandos",
+  "airframe.classic": "Alerón + elevador (cola en T)",
+  "airframe.elevon": "Elevón (ala delta)",
+  "airframe.vtail": "Cola en V (ruddervator)",
+  "airframe.classic_desc": "Alerones en el ala, elevador + timón en la cola",
+  "airframe.elevon_desc": "Dos elevones para cabeceo y alabeo (delta / ala volante)",
+  "airframe.vtail_desc": "Dos ruddervators para cabeceo y guiñada; alerones en el ala",
+  "airframe.suggested": "Disposición del modelo"
 }

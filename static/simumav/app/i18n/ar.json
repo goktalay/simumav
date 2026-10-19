@@ -267,5 +267,13 @@
   "support.report_flight": "الإبلاغ عن مشكلة في هذه الرحلة",
   "support.flight_ref": "الرحلة #{id}",
   "support.unavailable": "نظام الدعم غير متاح حاليًا",
-  "support.rate": "يمكنك فتح 5 طلبات كحد أقصى في الساعة"
+  "support.rate": "يمكنك فتح 5 طلبات كحد أقصى في الساعة",
+  "airframe.title": "تخطيط التحكم",
+  "airframe.classic": "جنيحات + رافع (ذيل T)",
+  "airframe.elevon": "إليفون (جناح دلتا)",
+  "airframe.vtail": "ذيل V (رودرفيتور)",
+  "airframe.classic_desc": "جنيحات على الجناح، رافع + دفة على الذيل",
+  "airframe.elevon_desc": "إليفونان للانحدار والالتفاف (دلتا / جناح طائر)",
+  "airframe.vtail_desc": "رودرفيتوران للانحدار والانعراج؛ جنيحات على الجناح",
+  "airframe.suggested": "تخطيط النموذج"
 }

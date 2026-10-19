@@ -267,5 +267,13 @@
   "support.report_flight": "Bu uçuşla ilgili sorun bildir",
   "support.flight_ref": "Uçuş #{id}",
   "support.unavailable": "Destek sistemi şu an kullanılamıyor",
-  "support.rate": "Saatte en fazla 5 talep açabilirsin"
+  "support.rate": "Saatte en fazla 5 talep açabilirsin",
+  "airframe.title": "Kontrol düzeni",
+  "airframe.classic": "Aileron + Elevatör (T-kuyruk)",
+  "airframe.elevon": "Elevon (delta kanat)",
+  "airframe.vtail": "V-kuyruk (ruddervator)",
+  "airframe.classic_desc": "Kanatta aileron, kuyrukta elevatör + rudder",
+  "airframe.elevon_desc": "İki elevon hem yunuslama hem yatış (delta / uçan kanat)",
+  "airframe.vtail_desc": "İki ruddervator hem yunuslama hem sapma; kanatta aileron",
+  "airframe.suggested": "Modelin düzeni"
 }

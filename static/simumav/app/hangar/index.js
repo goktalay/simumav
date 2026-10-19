@@ -61,7 +61,7 @@ export async function mount(root, ctx) {
   const modelLabel = d => d?.model_label || (d?.model_key?.startsWith('proc:') ? t('hangar.proc_model') : d?.model_key || '');
   const select = d => {
     selected = d;
-    clear(caption, h('h2', { class: 'title xl' }, d ? d.name : t('hangar.empty_title')), h('p', { class: 'sub' }, d ? `${t(`types.${d.type}`)} · ${modelLabel(d)}` : t('hangar.empty_sub')));
+    clear(caption, h('h2', { class: 'title xl' }, d ? d.name : t('hangar.empty_title')), h('p', { class: 'sub' }, d ? `${t(`types.${d.type}`)} · ${modelLabel(d)}${d.airframe ? ` · ${t(`airframe.${d.airframe}`)}` : ''}` : t('hangar.empty_sub')));   // §13.1 düzen
     for (const c of strip.children) c.classList.toggle('sel', c.dataset.id === String(d?.id));
     viewer?.setModel(d);
   };
@@ -73,7 +73,7 @@ export async function mount(root, ctx) {
         miniBtn(svg('0 0 24 24', EDIT_SVG), () => rename(d), '', t('common.rename')),
         miniBtn(svg('0 0 24 24', TRASH_SVG), () => remove(d), 'danger', t('common.delete'))),
       h('div', { class: 'thumb' }, h('span', { class: 'badge', style: null }, t(`types.${d.type}`))),
-      h('b', {}, d.name), h('small', {}, d.is_default ? `★ ${t('common.default')}` : modelLabel(d)));
+      h('b', {}, d.name), h('small', {}, d.is_default ? `★ ${t('common.default')}` : modelLabel(d)), d.airframe ? h('small', { class: 'airframe-tag' }, t(`airframe.${d.airframe}`)) : null);   // §13.1
     const sw = h('i', { class: 'swatch on' }); sw.style.background = d.color || '#38bdf8'; sw.style.width = '22px'; sw.style.height = '22px';
     c.querySelector('.thumb').append(sw);
     c.addEventListener('pointerenter', () => sfx.takeoff());   // kart hover: kalkış sesi
@@ -109,6 +109,11 @@ export async function mount(root, ctx) {
     // Türün varsayılan modeli: katalogdaki ilk model (gerçekçi GLB); katalog yoksa prosedürel şablon
     const firstModel = ty => (catalog.types || []).find(x => x.key === ty)?.models?.[0] || { key: `proc:${TYPE_TEMPLATE[ty]}`, glb: null };
     const draft = { type: 'fpv', model_key: firstModel('fpv').key, color: COLORS[0], name: '' };
+    // Kontrol düzeni (HEPGO §13.1; drones.airframe): yalnız sabit kanat ailesinde; model değişince modelin düzeni (katalog `airframe`), kullanıcı değiştirebilir
+    const AIRFRAMES = ['classic', 'elevon', 'vtail'];
+    const needsAirframe = ty => ty === 'plane' || ty === 'interceptor';
+    const modelAirframe = (ty, key) => (catalog.types || []).find(x => x.key === ty)?.models?.find(m => m.key === key)?.airframe || null;
+    draft.airframe = null;   // null → sunucu modelin düzenini yazar
 
     // Adım 1: tür seçimi (yatay seçici + tek paylaşılan 3B önizleme)
     setStep(0);
@@ -135,10 +140,17 @@ export async function mount(root, ctx) {
       draft.model_key = models.find(m => m.key === draft.model_key) ? draft.model_key : models[0].key;
       const grid = h('div', { class: 'strip' });
       const stage3 = h('div', { class: 'model-stage' });
-      const paint = () => { for (const c of grid.children) c.classList.toggle('sel', c.dataset.key === draft.model_key); pv?.setModel({ type: draft.type, model_key: draft.model_key, color: draft.color, glb: models.find(m => m.key === draft.model_key)?.glb }); };
-      for (const m of models) grid.append(h('div', { class: 'card lift strip-card', tabindex: '0', dataset: { key: m.key }, onclick: () => { draft.model_key = m.key; paint(); } },
-        h('div', { class: 'thumb' }, m.thumb ? h('img', { src: m.thumb, alt: '' }) : h('span', { class: 'badge accent' }, m.key.startsWith('proc:') ? 'PROC' : 'GLB')), h('b', {}, m.label || m.key)));
-      clear(body, stage3, grid, h('div', { class: 'btn-row' }, btn(t('common.back'), () => openWizard(), 'ghost'), btn(t('common.next'), () => stepColor(), 'primary lg')));
+      const afBox = h('div', { class: 'airframe-box', hidden: !needsAirframe(draft.type) }, h('h3', { class: 'title md' }, t('airframe.title')), h('div', { class: 'strip airframe-strip' }));
+      const paintAf = () => {
+        const strip = afBox.querySelector('.airframe-strip'); const sug = modelAirframe(draft.type, draft.model_key); const cur = draft.airframe || sug || 'classic';
+        clear(strip, AIRFRAMES.map(a => h('div', { class: `card lift strip-card airframe-card ${cur === a ? 'sel' : ''}`, tabindex: '0', dataset: { airframe: a }, onclick: () => { draft.airframe = a; paintAf(); } },
+          h('b', {}, t(`airframe.${a}`)), h('small', {}, t(`airframe.${a}_desc`)), sug === a ? h('span', { class: 'badge accent' }, t('airframe.suggested')) : null)));
+      };
+      const paint = () => { for (const c of grid.children) c.classList.toggle('sel', c.dataset.key === draft.model_key); pv?.setModel({ type: draft.type, model_key: draft.model_key, color: draft.color, glb: models.find(m => m.key === draft.model_key)?.glb }); if (needsAirframe(draft.type)) paintAf(); };
+      for (const m of models) grid.append(h('div', { class: 'card lift strip-card', tabindex: '0', dataset: { key: m.key }, onclick: () => { if (m.key !== draft.model_key) draft.airframe = null; draft.model_key = m.key; paint(); } },
+        h('div', { class: 'thumb' }, m.thumb ? h('img', { src: m.thumb, alt: '' }) : h('span', { class: 'badge accent' }, m.key.startsWith('proc:') ? 'PROC' : 'GLB')), h('b', {}, m.label || m.key),
+        m.airframe ? h('small', { class: 'airframe-tag' }, t(`airframe.${m.airframe}`)) : null));
+      clear(body, stage3, grid, afBox, h('div', { class: 'btn-row' }, btn(t('common.back'), () => openWizard(), 'ghost'), btn(t('common.next'), () => stepColor(), 'primary lg')));
       if (pv) { stage3.append(prevHost); pv.stage.resize(); }
       paint();
     }
@@ -160,7 +172,7 @@ export async function mount(root, ctx) {
     async function save() {
       const name = (draft.name || '').trim() || `${t(`types.${draft.type}`)}-${drones.length + 1}`;
       try {
-        const d = await api.post('/api/hangar', { name, type: draft.type, model_key: draft.model_key, color: draft.color });
+        const d = await api.post('/api/hangar', { name, type: draft.type, model_key: draft.model_key, color: draft.color, airframe: needsAirframe(draft.type) ? (draft.airframe || modelAirframe(draft.type, draft.model_key) || 'classic') : undefined });   // §13.1 düzen
         setStep(3);
         // Hangara iniş animasyonu: model yukarıdan iner, yere değince toz halkası + ışık patlaması + iniş sesi
         const stage3 = h('div', { class: 'model-stage land-anim' }, h('span', { class: 'land-dust' }), h('span', { class: 'land-dust d2' }), h('span', { class: 'land-flash' }));

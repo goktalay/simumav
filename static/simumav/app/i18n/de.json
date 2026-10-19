@@ -267,5 +267,13 @@
   "support.report_flight": "Problem mit diesem Flug melden",
   "support.flight_ref": "Flug #{id}",
   "support.unavailable": "Das Support-System ist derzeit nicht verfügbar",
-  "support.rate": "Du kannst höchstens 5 Anfragen pro Stunde öffnen"
+  "support.rate": "Du kannst höchstens 5 Anfragen pro Stunde öffnen",
+  "airframe.title": "Steueranordnung",
+  "airframe.classic": "Querruder + Höhenruder (T-Leitwerk)",
+  "airframe.elevon": "Elevon (Deltaflügel)",
+  "airframe.vtail": "V-Leitwerk (Ruddervator)",
+  "airframe.classic_desc": "Querruder am Flügel, Höhen- und Seitenruder am Leitwerk",
+  "airframe.elevon_desc": "Zwei Elevons für Nicken und Rollen (Delta / Nurflügler)",
+  "airframe.vtail_desc": "Zwei Ruddervators für Nicken und Gieren; Querruder am Flügel",
+  "airframe.suggested": "Anordnung des Modells"
 }

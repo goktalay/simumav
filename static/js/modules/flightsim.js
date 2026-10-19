@@ -20,6 +20,7 @@ import { G3D_LOGO } from './flightsim_g3d.js';   // Google 3B kipi (§11): logo 
 import { modelPicker } from './flightsim_models.js';   // görsel model kütüphanesi (§12): kart ızgarası, yükleme, tarayıcıda STEP→GLB, yönelim paneli
 import { clientsCard } from './flightsim_clients.js';   // CAYSIM masaüstü istemcileri kartı (docs/caysim-api.md §9): kod bir kez gösterilir, rekey, sil
 import { LAUNCH_DEFAULTS, LAUNCH_METHODS, launchLabel, rampExitSpeed, replayLaunchTimeline, replayLaunchPhaseAt } from './flightsim_launch.js';   // sabit kanat kalkış yöntemi (§13; kayıtta aşamalar logdan §8)
+import { LAYOUTS, LAYOUT_PARAMS, LAYOUT_SITL_MODEL, layoutForModel, layoutLabel, layoutShort } from './flightsim_airframe.js';   // §13.1 kontrol düzeni: klasik / elevon / V-kuyruk kartları, model → düzen önerisi
 import { createEngineAudio } from './flightsim_audio.js';   // §16: tipe göre sentezlenmiş motor sesi (Web Audio); 🔊 düğmesi + M tuşu alt çubukta
 import { createOpsPanel } from './flightsim_panel.js';
 import { acquireDisplayStream, createRecorder, enterFullscreen, exitFullscreen, pendingCard, recOptionsBox, recPrefs, stashStream, takeStashedStream } from './flightsim_record.js';   // §17: ekran kaydı (Başlat→Bitir) → Şirketten Haberler / sakla; kayıt seçenekleri kutusu; otomatik tam ekran   // §14: YERLİ harekât paneli (iframe yok) — kartlar 3B'nin üstünde yüzer; hub soketi + komutlar panelde
@@ -70,6 +71,12 @@ const TYPE_ICON = {
   heli: svgIco('<path d="M3 7h18M12 7v3"/><ellipse cx="11" cy="13" rx="4.5" ry="3"/><path d="M15.5 13h5l-2 2.5M20.5 13v-3M7 18h8"/>'),
   plane: svgIco('<path d="M12 3v18M4 13l8-3 8 3M8 20l4-2 4 2M12 3c1.5 0 2 2 2 4v3M12 3c-1.5 0-2 2-2 4v3"/>'),
   vtol: svgIco('<path d="M12 4v16M5 12l7-2 7 2M9 20l3-1.5 3 1.5"/><circle cx="6" cy="7" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="6" cy="17" r="2"/><circle cx="18" cy="17" r="2"/>'),
+};
+// Kontrol düzeni simgeleri (§13.1): klasik (düz kanat + T-kuyruk), elevon (delta kanat, arka kenar iki yüzey), V-kuyruk (düz kanat + V)
+const LAYOUT_ICON = {
+  classic: svgIco('<path d="M12 3v17M3 11l9-2 9 2M8 20l4-1.5 4 1.5M12 15v5"/><path d="M9 11.5v1.5M15 11.5v1.5" stroke-dasharray="1 1"/>'),
+  elevon: svgIco('<path d="M12 3 3 19h18L12 3z"/><path d="M5.5 19l3-2M18.5 19l-3-2"/><path d="M12 9v10"/>'),
+  vtail: svgIco('<path d="M12 3v14M3 11l9-2 9 2"/><path d="M12 17l-5 4M12 17l5 4"/><path d="M8.5 19.6l1-1.3M15.5 19.6l-1-1.3"/>'),
 };
 // Kalkış yöntemi simgeleri (§13): tekerlekli (uçak + tekerlekler), rampa (eğik ray + kızak), araç üstü (pickup + uçak)
 const LAUNCH_ICON = {
@@ -294,17 +301,18 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const defaults = { ...WORLD_DEFAULTS, ...(meta.world_defaults || {}) };
   const logsAllowed = meta.replay ? meta.replay.logs_allowed !== false : true;
   const S = { mode: preset.mode === 'replay' ? 'replay' : 'sitl', type: types[0]?.key || 'multirotor', center: centers[0]?.id ?? null, log: preset.log ?? null, logs: null, q: '', drone: null,
-    world: { ...defaults, seed: randomSeed(), launch: { ...LAUNCH_DEFAULTS, ...(defaults.launch || {}) } } };
+    world: { ...defaults, seed: randomSeed(), launch: { ...LAUNCH_DEFAULTS, ...(defaults.launch || {}) } }, layout: 'elevon' };   // §13.1 kontrol düzeni; varsayılan model Caymaz → elevon (model seçilince modelin düzeni)
   // Etkin dron tipi: canlı kipte seçilen kart, kayıt kipinde seçili logun araç tipi (model kütüphanesi bu tipe göre listelenir)
   const activeType = () => (S.mode === 'replay' ? ((S.logs || []).find(x => x.id === S.log)?.type || 'multirotor') : S.type);
 
   // ---------- 1. dron tipi ----------
   const typeCards = h('div', { class: 'fs-types' });
   // Görsel model kütüphanesi (§12): tip kartının altında kart ızgarası (dahili + tasarım + yüklenen), seçim önizlemeye uygulanır
-  const picker = modelPicker({ getType: activeType, canWrite, mock, getSim: () => preview, onSelect: m => preview?.setType(activeType(), m) });
+  const picker = modelPicker({ getType: activeType, canWrite, mock, getSim: () => preview, getLayout: () => (activeType() === 'sabit_kanat' ? S.layout : null),
+    onSelect: m => { const l = layoutForModel(m); if (l) { S.layout = l; drawLayout?.(); } preview?.setType(activeType(), m).then(() => { if (!l) { const d = preview?.ctrlLayout?.(); if (d) { S.layout = d; drawLayout?.(); } } }); } });   // §13.1: model seçilince düzen modelin düzeni (Caymaz → elevon, Talon → V-kuyruk, Cessna → klasik); kullanıcı sonra değiştirebilir
   const modelBox = h('div', { class: 'fs-model-step' }, h('p', { class: 'small muted' }, 'Dron tipi için görsel gövde: dahili modeller her zaman vardır; sistemdeki STEP/GLB/OBJ dosyaları ya da yüklediğiniz model seçilince tarayıcıda GLB\'ye dönüştürülür.'), picker.el);
   const refreshModels = () => picker.refresh(activeType()).then(m => { if (m) preview?.setType(activeType(), m); });
-  const drawTypes = () => clear(typeCards, types.map(t => h('button', { type: 'button', class: `fs-type ${S.type === t.key ? 'on' : ''}`, onclick: () => { S.type = t.key; drawTypes(); drawLaunch(); refreshModels(); powerSec?.refresh(); } },
+  const drawTypes = () => clear(typeCards, types.map(t => h('button', { type: 'button', class: `fs-type ${S.type === t.key ? 'on' : ''}`, onclick: () => { S.type = t.key; drawTypes(); drawLaunch(); drawLayout(); refreshModels(); powerSec?.refresh(); } },
     h('span', { class: 'fs-type-ico', html: TYPE_ICON[t.icon] || TYPE_ICON.quad }),
     h('b', null, t.name), h('span', { class: 'small muted' }, t.desc || ''))));
   drawTypes();
@@ -342,6 +350,27 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const launchBox = h('div', { class: 'fs-launch-step' }, h('h4', null, 'Kalkış yöntemi'), launchDesc,
     launchCards, h('div', { class: 'fs-launch-params' }, angleRow, relRow, vehicleRow), launchInfo);
   drawLaunch();
+
+  // ---------- 1K. kontrol düzeni (§13.1; yalnız Sabit Kanat, canlı kip): Aileron + Elevatör (T-kuyruk) · Elevon (delta kanat) · V-kuyruk (ruddervator) ----------
+  const layoutCards = h('div', { class: 'fs-launches fs-layouts' });
+  const layoutInfo = h('div', { class: 'small muted fs-launch-info fs-layout-info' });
+  const layoutDesc = h('p', { class: 'small muted' }, 'Kontrol yüzeylerinin düzeni: ArduPlane SERVO işlevleri ve SITL uçak modeli buna göre kurulur, 3B\'de yüzeyler buna göre oynar. Model seçilince modelin düzeni önerilir; değiştirebilirsiniz.');
+  const drawLayoutInfo = () => {
+    const prm = LAYOUT_PARAMS[S.layout] || {};
+    const liste = Object.entries(prm).map(([k, v]) => `${k} ${v}`).join(' · ');
+    const not_ = S.layout === 'elevon' ? tr('CAYMAZ delta kanat: iki elevon hem yunuslama hem yatış; ArduPlane karışımı MIXING_GAIN 0,5 (doymaz). Dronun kalıcı kaydında SERVO1/2_FUNCTION varsa (ör. CAYMAZ 4/19) kalıcı değer öncelikli; SITL modeli etkin işlevlerden seçilir ve konsola yazılır.')
+      : S.layout === 'vtail' ? tr('V-kuyruk: sağa sapma komutunda sol ruddervator arka kenarı yukarı, sağ aşağı; burun yukarı komutunda ikisi de yukarı. ArduPilot\'un kendi SITL kurulumu (plane-vtail.parm) ile aynı.')
+      : tr('Klasik: aileron yatış, elevatör yunuslama, rudder sapma. ArduPlane varsayılan işlevleri.');
+    layoutInfo.textContent = `${tr('SITL modeli')}: ${LAYOUT_SITL_MODEL[S.layout] || 'plane'} · ${liste}. ${not_}`;
+  };
+  const drawLayout = () => {
+    layoutBox.hidden = activeType() !== 'sabit_kanat' || S.mode === 'replay';
+    clear(layoutCards, LAYOUTS.map(([key, name, desc]) => h('button', { type: 'button', class: `fs-type fs-launch fs-layout ${S.layout === key ? 'on' : ''}`, 'data-layout': key, onclick: () => { S.layout = key; drawLayout(); picker.redraw(); } },
+      h('span', { class: 'fs-type-ico', html: LAYOUT_ICON[key] }), h('b', null, name), h('span', { class: 'small muted' }, desc))));
+    drawLayoutInfo();
+  };
+  const layoutBox = h('div', { class: 'fs-launch-step fs-layout-step' }, h('h4', null, 'Kontrol düzeni'), layoutDesc, layoutCards, layoutInfo);
+  drawLayout();
 
   // ---------- 2. merkez ----------
   const centerList = h('div', { class: 'fs-centers' });
@@ -608,7 +637,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
       const model = modelBody(picker.selectionFor(activeType()), mock);
       s = S.mode === 'replay'
         ? await be.create({ mode: 'replay', log_id: S.log, world: { ...S.world }, model })
-        : await be.create({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model, drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values() });   // §23 güç ve yakıt
+        : await be.create({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model, drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values(), layout: S.type === 'sabit_kanat' ? S.layout : undefined });   // §23 güç ve yakıt · §13.1 kontrol düzeni
     } catch (err) {
       const msg = { 400: S.mode === 'replay' ? 'Log açılamadı; analizi tamamlanmış bir .bin/.tlog seçin' : 'Geçersiz ayar; dünya değerlerini ve merkezi kontrol edin', 409: 'Oturum sınırı doldu; açık bir oturumu bitirin', 503: 'SITL hazır değil (ikili ya da boş port yok)' }[err?.status];
       toast(msg || err.message, 'err');
@@ -624,7 +653,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   };
   const limits = meta.limits || {};
   // Kip seçimi: canlı simülasyon (SITL + Mission Planner; kontrol kullanıcıda) · kayıttan oynat (yüklü uçuş logu; kontrol yok)
-  const stepType = h('div', { class: 'card card-pad fs-step no-collapse' }, h('h3', null, h('span', { class: 'fs-no' }, '1'), 'Dron tipi'), typeCards, launchBox, modelBox);
+  const stepType = h('div', { class: 'card card-pad fs-step no-collapse' }, h('h3', null, h('span', { class: 'fs-no' }, '1'), 'Dron tipi'), typeCards, launchBox, layoutBox, modelBox);
   const stepCenter = h('div', { class: 'card card-pad fs-step no-collapse' }, h('h3', null, h('span', { class: 'fs-no' }, '2'), 'Merkez'), h('p', { class: 'small muted' }, 'Sanal dünyanın merkezi ve kalkış noktası. Mission Planner haritası bu koordinatı gösterir.'), centerList,
     h('h4', { class: 'fs-sub-h' }, 'Dron kaydı (isteğe bağlı)'), droneBox);
   const worldNo = h('span', { class: 'fs-no' }, '3');
@@ -639,10 +668,10 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     clear(startNote, canWrite
       ? (rp ? tr('Kayıt sunucuda bir kez ayrıştırılır ve önbelleğe alınır; SITL ve Mission Planner köprüsü açılmaz.') : tr('En çok {n} eşzamanlı oturum · oturum süresi {m} dk', { n: limits.max_sessions ?? '—', m: limits.max_minutes ?? '—' }))
       : 'Oturum açmak için Dron Yönetimi yazma izni gerekir; açık oturumları izleyebilirsiniz.');
-    (rp ? stepLog : stepType).append(launchBox, modelBox);   // kalkış yöntemi + model bölümü: canlı kipte tip kartlarının, kayıt kipinde log listesinin altında
+    (rp ? stepLog : stepType).append(launchBox, layoutBox, modelBox);   // kalkış yöntemi + düzen + model bölümü: canlı kipte tip kartlarının, kayıt kipinde log listesinin altında (düzen kayıtta gizli)
     powerSec.el.hidden = rp;   // §23: kayıtta ayarlar kaydın canlı oturumundan gelir (session.power)
     recOpts.sync();   // .bin seçeneği yalnız canlı SITL'de
-    drawLaunch();
+    drawLaunch(); drawLayout();
     if (rp && S.logs === null) loadLogs().then(refreshModels); else refreshModels();
   };
   const modeSeg = segmented([['sitl', 'Canlı simülasyon (SITL + Mission Planner)'], ['replay', 'Kayıttan oynat']], S.mode, v => { S.mode = v; drawMode(); });
@@ -722,6 +751,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     h('b', null, 'Uçuş Simülatörü'), h('span', { class: 'fs-nav-sub' }, `${TYPE_NAME[type] || type} · ${(replay ? session.replay?.file_name : session.center?.name) || '—'}`), stateBadge, wsBadge,
     replay ? h('span', { class: 'badge purple', title: 'Kayıttan oynatma: yüklü uçuş logu aynen oynatılır; kontrol yok' }, 'Kayıt') : null,
     launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, launchLabel(launch, tr)) : null,
+    session.layout ? h('span', { class: `badge ${session.layout_effective && session.layout_effective !== session.layout ? 'yellow' : 'gray'} fs-layout-badge`, title: `${tr('Kontrol düzeni')}: ${layoutLabel(session.layout, tr)}${session.layout_sitl_model ? ` · SITL ${session.layout_sitl_model}` : ''}${session.layout_effective && session.layout_effective !== session.layout ? ` · ${tr('kalıcı kayıt öncelikli')}: ${layoutShort(session.layout_effective, tr)}` : ''}` }, layoutShort(session.layout, tr)) : null,   // §13.1
     mock ? h('span', { class: 'badge purple' }, 'Sahte veri') : null,
     replay ? null : speedPill.el,   // §23 simülasyon hızı 1×/2×/4×/8× (SIM_SPEEDUP); yazma izni yoksa yalnız gösterir
     h('button', { class: 'fs-nav-btn fs-full-btn', type: 'button', title: 'Tam ekran', onclick: () => { (document.fullscreenElement ? document.exitFullscreen?.() : document.documentElement.requestFullscreen?.())?.then(() => onFullChange()).catch(() => {}); } }, '⛶'));
@@ -763,6 +793,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     h('div', { class: 'fs-row fs-row-rc' }, h('span', null, 'RC'), h('div', { class: 'fs-rcs' }, rcBars)),
     h('div', { class: 'fs-row' }, h('span', null, 'Rüzgâr'), h('span', { class: 'fs-rv' }, windArrow, V.wind, h('i', null, 'm/s'))),
     launch ? h('div', { class: 'fs-row' }, h('span', null, 'Kalkış'), h('span', { class: 'fs-rv' }, h('b', { class: 'fs-v fs-launch-v' }, launchLabel(launch, tr)))) : null,
+    session.layout ? h('div', { class: 'fs-row' }, h('span', null, 'Düzen'), h('span', { class: 'fs-rv' }, h('b', { class: 'fs-v fs-layout-v' }, layoutLabel(session.layout, tr)))) : null,   // §13.1 kontrol düzeni
     netLbl);
   V.wind.textContent = `${f1(world.wind_ms)} @ ${f0(world.wind_dir)}°`;
   windArrow.style.transform = `rotate(${(Number(world.wind_dir) || 0) + 90}deg)`;   // ➤ sağa bakar; rüzgâr "nereden" → ok akış yönünü gösterir
@@ -863,6 +894,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const rigDiagEl = rigdiag ? h('pre', { class: 'fs-rigdiag' }) : null;
   if (rigDiagEl) stage.append(rigDiagEl);
   window.__fsRig = () => (sim?.rigDiag ? sim.rigDiag() : null);
+  window.__fsCtrl = () => (sim?.ctrlState ? sim.ctrlState() : null);
+  window.__fsTele = () => last;   // teşhis: son telemetri karesi (roll/pitch/alt_rel/mode/armed/servo)   // §13.1 kontrol yüzeyi teşhisi: servo/servo_fn/servo_rev → eksen girişleri → yüzey açıları (° arka kenar aşağı +)
   ops = createOpsPanel(stage, { sid, session, type, modes, launch, canWrite, hub: !replay && !mock, mp: mpOpts, getSim: () => sim, cmdSim: (name, params) => cmd(name, params), onReset: () => reset(), onToggle: on => opsBtn.classList.toggle('primary', on),
     speed: replay ? null : { onPick: f => cmd('speed', { factor: f }) } });   // §23: panel "Sim" grubunda hız seçici
   opsBtn.classList.toggle('primary', ops.enabled);
@@ -1468,12 +1501,12 @@ function mockBackend(ctx) {
   let centersP = null;
   const centers = () => (centersP ??= api.get('/api/drone/centers').then(r => (Array.isArray(r) && r.length ? r.map(c => ({ id: c.id, name: c.name, lat: c.lat, lon: c.lon, alt: c.alt ?? 0, location_name: c.location_name })) : SAMPLE_CENTERS)).catch(() => SAMPLE_CENTERS));
   const mockModel = (type, model) => (model && typeof model === 'object' ? model : { id: model || ({ multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli' }[type] || 'builtin:caymaz'), source: 'builtin', type, ready: true });
-  const mk = async (type, centerId, world, model, power = null) => {
+  const mk = async (type, centerId, world, model, power = null, layout = null) => {
     const cs = await centers();
     const center = cs.find(c => String(c.id) === String(centerId)) || cs[0];
     const id = `mock-${++MOCK.seq}`;
     const mdl = mockModel(type, model);
-    const s = { id, type, model: mdl, airframe: isPlane(type) ? ({ 'builtin:caymaz': 'caymaz', 'builtin:delta': 'delta' }[mdl.id] || null) : null, center, world: { ...WORLD_DEFAULTS, ...(world || {}) }, state: 'HAZIR', udp_port: 14550 + MOCK.seq - 1, host: location.hostname,
+    const s = { id, type, model: mdl, airframe: isPlane(type) ? ({ 'builtin:caymaz': 'caymaz', 'builtin:delta': 'delta' }[mdl.id] || null) : null, layout: type === 'sabit_kanat' ? (layout || layoutForModel(mdl) || 'classic') : null, center, world: { ...WORLD_DEFAULTS, ...(world || {}) }, state: 'HAZIR', udp_port: 14550 + MOCK.seq - 1, host: location.hostname,
       power: { ...(isPlane(type) ? { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25 } : { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25 }), elec_cells: 4, elec_mah: 10000, elec_w: 30, ...(power || {}) },   // §23 (sahte kip: göstergeler istemci modelinden)
       launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: type === 'sabit_kanat' ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null },
       created_at: new Date().toISOString(), owner: { id: ctx.user?.id, name: ctx.user?.full_name || ctx.user?.username || '—' }, gcs: { connected: false, addr: null, since: null }, sitl: { pid: 0, port: 0, error: null } };
@@ -1521,7 +1554,7 @@ function mockBackend(ctx) {
     create: async body => {
       if ([...MOCK.sessions.values()].filter(s => s.state !== 'KAPANDI').length >= 2) throw Object.assign(new Error('Oturum sınırı'), { status: 409 });
       if (body.mode === 'replay') { const s = await mkReplay(body.log_id, body.world, body.model); MOCK.sessions.delete(s.id); s.id = `${s.id}r`; MOCK.sessions.set(s.id, s); return pub(s); }
-      return pub(await mk(body.type, body.center_id, body.world, body.model || body.airframe, body.power));
+      return pub(await mk(body.type, body.center_id, body.world, body.model || body.airframe, body.power, body.layout));
     },
     end: async id => { const s = MOCK.sessions.get(id); if (s) { s.state = 'KAPANDI'; s.flight?.end('Kullanıcı bitirdi'); MOCK.sessions.delete(id); } return { ok: true }; },
     cmd: async (id, name, params) => { const s = MOCK.sessions.get(id); if (!s) throw Object.assign(new Error('Oturum yok'), { status: 404 }); if (s.mode === 'replay') { if (name !== 'reset') throw Object.assign(new Error('Kayıtta komut yok'), { status: 400 }); return { ok: true }; } s.flight.cmd(name, params || {}); return { ok: true }; },

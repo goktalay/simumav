@@ -267,5 +267,13 @@
   "support.report_flight": "Signaler un problème sur ce vol",
   "support.flight_ref": "Vol #{id}",
   "support.unavailable": "Le système d'assistance est indisponible pour le moment",
-  "support.rate": "Tu peux ouvrir au plus 5 demandes par heure"
+  "support.rate": "Tu peux ouvrir au plus 5 demandes par heure",
+  "airframe.title": "Disposition des commandes",
+  "airframe.classic": "Ailerons + profondeur (empennage en T)",
+  "airframe.elevon": "Élevons (aile delta)",
+  "airframe.vtail": "Empennage en V (ruddervator)",
+  "airframe.classic_desc": "Ailerons sur l’aile, profondeur + direction à l’arrière",
+  "airframe.elevon_desc": "Deux élevons pour le tangage et le roulis (delta / aile volante)",
+  "airframe.vtail_desc": "Deux ruddervators pour le tangage et le lacet ; ailerons sur l’aile",
+  "airframe.suggested": "Disposition du modèle"
 }

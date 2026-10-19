@@ -35,7 +35,7 @@ LAUNCH_CEKIRDEK = {'wheels': 'wheels', 'ramp': 'ramp', 'vehicle': 'vehicle', 'ha
 # seçimi için dahili modele eşlenir; GLB'nin kendisi ön yüzde (flightsim3d buildLibrary: glb_url + orient) çizilir.
 MODEL_ESLEME = {'proc:quad250': 'builtin:quad', 'proc:interceptor': 'builtin:delta',
                 'glb:iris_fpv': 'builtin:quad', 'glb:iris': 'builtin:quad', 'glb:x500': 'builtin:quad', 'glb:typhoon_h480': 'builtin:quad',
-                'glb:rc_cessna': 'builtin:caymaz', 'glb:believer': 'builtin:caymaz', 'glb:standard_vtol': 'builtin:caymaz',
+                'glb:rc_cessna': 'builtin:caymaz', 'glb:believer': 'builtin:caymaz', 'glb:standard_vtol': 'builtin:caymaz', 'glb:talon_vtail': 'builtin:talon',
                 'glb:jet': 'builtin:delta', 'glb:zephyr': 'builtin:delta', 'glb:heli': 'builtin:heli'}
 # Eski kayıtların model_key'i (prosedürel/dahili) → aynı sınıfın gerçekçi GLB'si: kayıt değişmez, görsel (preview/orient) yükseltilir
 MODEL_YUKSELT = {'proc:quad250': 'glb:iris_fpv', 'proc:interceptor': 'glb:jet', 'builtin:quad': 'glb:iris', 'builtin:hexa': 'glb:typhoon_h480',
@@ -153,7 +153,7 @@ PROC_MODELS = {
                      'desc': '5" FPV yarış quad (250 mm, 4S); akro/hız ağırlıklı oran döngüleri', 'core_model': 'builtin:quad'},
     'proc:interceptor': {'key': 'proc:interceptor', 'label': 'Interceptor (delta kanat)', 'type': 'interceptor', 'proc': True, 'glb': None, 'thumb': None,
                          'defaults': INTERCEPTOR_PARAMS, 'desc': 'Yüksek hızlı önleyici delta kanat: 170 m/s (~610 km/h), tam gaz, sert manevra',
-                         'core_model': 'builtin:delta'},
+                         'core_model': 'builtin:delta', 'airframe': 'elevon'},
 }
 TYPE_LABELS = {'multirotor': 'Multikopter', 'fpv': 'FPV', 'plane': 'Sabit kanat', 'interceptor': 'Interceptor', 'heli': 'Helikopter', 'vtol': 'VTOL'}
 # Gerçekçi GLB modeller (static/simumav/models/<ad>.glb; kaynak/lisans: static/simumav/models/LICENSES.md; üretim: tools/simumav_models_build.py).
@@ -167,13 +167,15 @@ GLB_MODELS = {
     'glb:x500': {'type': 'multirotor', 'label': 'X500', 'file': 'x500', 'defaults': {}, 'desc': 'NXP HoverGames X500 karbon çerçeve quad (PX4, 0,6 m)'},
     'glb:typhoon_h480': {'type': 'multirotor', 'label': 'Typhoon H480 (hexa)', 'file': 'typhoon_h480', 'defaults': {},
                          'desc': 'Yuneec Typhoon H altı rotor + gimbal kamera (PX4 Gazebo modeli, 0,7 m)'},
-    'glb:rc_cessna': {'type': 'plane', 'label': 'RC Cessna', 'file': 'rc_cessna', 'defaults': {}, 'desc': 'RC Cessna 172 (PX4 Gazebo modeli, 1,1 m açıklık)'},
-    'glb:believer': {'type': 'plane', 'label': 'Believer', 'file': 'believer', 'defaults': {}, 'desc': 'MakeFlyEasy Believer çift motorlu haritalama uçağı (PX4, 1,9 m)'},
+    'glb:rc_cessna': {'type': 'plane', 'label': 'RC Cessna', 'file': 'rc_cessna', 'defaults': {}, 'airframe': 'classic', 'desc': 'RC Cessna 172 (PX4 Gazebo modeli, 1,1 m açıklık); aileron + elevatör + rudder'},
+    'glb:believer': {'type': 'plane', 'label': 'Believer', 'file': 'believer', 'defaults': {}, 'airframe': 'classic', 'desc': 'MakeFlyEasy Believer çift motorlu haritalama uçağı (PX4, 1,9 m); klasik kuyruk'},
+    'glb:talon_vtail': {'type': 'plane', 'label': 'Talon V-kuyruk', 'file': 'talon_vtail', 'defaults': {}, 'airframe': 'vtail',
+                        'desc': 'X-UAV Talon tarzı prosedürel uçak (1,72 m, tek itici pervane, V-kuyruk ruddervator); HEPGO üretimi'},
     'glb:standard_vtol': {'type': 'vtol', 'label': 'Standard VTOL', 'file': 'standard_vtol', 'defaults': {},
                           'desc': 'PX4 standart VTOL: X8 kanat + 4 dikey rotor + itici (2,2 m açıklık)'},
-    'glb:jet': {'type': 'interceptor', 'label': 'Interceptor (jet)', 'file': 'jet', 'defaults': INTERCEPTOR_PARAMS,
+    'glb:jet': {'type': 'interceptor', 'label': 'Interceptor (jet)', 'file': 'jet', 'defaults': INTERCEPTOR_PARAMS, 'airframe': 'classic',
                 'desc': 'Yüksek hızlı önleyici jet: 170 m/s (~610 km/h), tam gaz, sert manevra'},
-    'glb:zephyr': {'type': 'interceptor', 'label': 'Zephyr (delta kanat)', 'file': 'zephyr', 'defaults': INTERCEPTOR_PARAMS,
+    'glb:zephyr': {'type': 'interceptor', 'label': 'Zephyr (delta kanat)', 'file': 'zephyr', 'defaults': INTERCEPTOR_PARAMS, 'airframe': 'elevon',
                    'desc': 'Zephyr delta uçan kanat (Gazebo modeli, 1,5 m açıklık); önleyici parametreleri'},
     'glb:heli': {'type': 'heli', 'label': 'Tek rotorlu heli', 'file': 'heli', 'defaults': {}, 'desc': 'Tek ana rotor + kuyruk rotoru helikopter (1,75 m)'},
 }
@@ -183,7 +185,7 @@ VARSAYILAN_MODEL = {'fpv': 'glb:iris_fpv', 'multirotor': 'glb:iris', 'plane': 'g
 def glb_model_api(key):
     g = GLB_MODELS[key]
     return {'key': key, 'label': g['label'], 'type': g['type'], 'glb': GLB_URL.format(ad=g['file']), 'thumb': None, 'defaults': g['defaults'], 'proc': False,
-            'desc': g['desc'], 'orient': json.loads(json.dumps(GLB_ORIENT)), 'has_prop': True}
+            'desc': g['desc'], 'orient': json.loads(json.dumps(GLB_ORIENT)), 'has_prop': True, 'airframe': g.get('airframe')}
 
 
 def katalog():
@@ -197,10 +199,10 @@ def katalog():
             if ctip in b['types'] and t not in ('fpv', 'interceptor'):
                 m = flightsim_models.builtin_api(key, ctip)
                 models.append({'key': m['id'], 'label': m['name'], 'glb': m['glb_url'], 'thumb': None, 'defaults': {}, 'proc': m['format'] != 'glb',
-                               'desc': m.get('desc')})
+                               'desc': m.get('desc'), 'airframe': m.get('layout'), 'orient': m.get('orient')})
         for pm in PROC_MODELS.values():
             if pm['type'] == t:
-                models.append({k: pm[k] for k in ('key', 'label', 'glb', 'thumb', 'defaults', 'proc', 'desc')})
+                models.append({**{k: pm[k] for k in ('key', 'label', 'glb', 'thumb', 'defaults', 'proc', 'desc')}, 'airframe': pm.get('airframe')})
         out.append({'key': t, 'label': TYPE_LABELS[t], 'models': models})
     return {'types': out}
 
@@ -223,6 +225,43 @@ def model_gorsel(model_key):
             if m['key'] == key:
                 return {'preview': m.get('glb'), 'orient': None, 'has_prop': True, 'label': m['label'], 'proc': not m.get('glb')}
     return {'preview': None, 'orient': None, 'has_prop': True, 'label': key, 'proc': True}
+
+
+AIRFRAMES = flightsim.LAYOUTS   # ('classic', 'elevon', 'vtail') — HEPGO §13.1 kontrol düzeni; drones.airframe
+AIRFRAME_TIPLERI = ('plane', 'interceptor')   # düzen yalnız sabit kanat ailesinde anlamlı (çekirdek: sabit_kanat); VTOL/kopterde NULL
+
+
+def model_airframe(model_key):
+    """Katalog modelinin varsayılan kontrol düzeni (GLB tanımı `airframe`, dahili `layout`); bilinmiyorsa None."""
+    key = str(model_key or '')
+    g = key if key in GLB_MODELS else MODEL_YUKSELT.get(key)
+    if g in GLB_MODELS:
+        return GLB_MODELS[g].get('airframe')
+    if key in PROC_MODELS:
+        return PROC_MODELS[key].get('airframe')
+    k = flightsim_models.kimlik_coz(key)
+    if k and k[0] == 'builtin':
+        return flightsim_models.BUILTIN[k[1]].get('layout')
+    return None
+
+
+def airframe_dogrula(tip, airframe, model_key=None):
+    """drones.airframe: sabit kanat ailesinde classic|elevon|vtail (eksikse katalog modelinin düzeni, o da yoksa classic); diğer tiplerde None.
+    Bilinmeyen değer → BridgeHata 422."""
+    if tip not in AIRFRAME_TIPLERI:
+        return None
+    if airframe in (None, ''):
+        return model_airframe(model_key) or 'classic'
+    if airframe not in AIRFRAMES:
+        raise BridgeHata(422, 'invalid', 'airframe classic | elevon | vtail olmalı')
+    return airframe
+
+
+def drone_airframe(d):
+    """Kaydın etkin düzeni (API ve uçuş açılışı): sütun → katalog modeli → classic; sabit kanat ailesi dışında None."""
+    if (d or {}).get('type') not in AIRFRAME_TIPLERI:
+        return None
+    return (d.get('airframe') if d.get('airframe') in AIRFRAMES else None) or model_airframe(d.get('model_key')) or 'classic'
 
 
 def _core_model_id(model_key):
@@ -512,12 +551,12 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         owner = {'id': user['id'], 'name': user['display_name']}
         core_drone = {'id': drone['id'], 'code': drone['name'], 'name': drone['name'], 'model': drone['model_key'], 'protocol': 'sanal'}
         try:
-            s = await flightsim.MANAGER.ac(ctip, center, world, owner, None, mdl, core_drone, {'bin': bool((record or {}).get('bin', True))})
+            s = await flightsim.MANAGER.ac(ctip, center, world, owner, None, mdl, core_drone, {'bin': bool((record or {}).get('bin', True))}, layout=drone_airframe(drone))
         except flightsim.SimHata as e:
             kod = {'invalid': 422, 'limit': 429, 'sitl': 503}.get(e.kod, 400)
             raise BridgeHata(kod, e.kod, str(e))
         t = db.now()
-        snap = {'drone': {'id': drone['id'], 'name': drone['name'], 'type': drone['type'], 'model_key': drone['model_key'], 'color': drone.get('color')},
+        snap = {'drone': {'id': drone['id'], 'name': drone['name'], 'type': drone['type'], 'model_key': drone['model_key'], 'color': drone.get('color'), 'airframe': drone_airframe(drone)},
                 'pilot': {'id': pilot['id'], 'name': pilot['name'], 'character': pilot['character']},
                 'track': {'id': track['id'], 'name': track['name'], 'lat': track['lat'], 'lon': track['lon'], 'radius_m': track.get('radius_m'), 'world_mode': track.get('world_mode'),
                           'world': db.j(track.get('world')) if isinstance(track.get('world'), str) else (track.get('world') or {}),
