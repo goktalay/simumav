@@ -1,13 +1,13 @@
 // SIMUMAV › Uç — küçük REST yardımcısı (yalnız simumav /api/*; hesap servisine doğrudan çağrı YOK). Çerez (smsid) same-origin ile gider;
 // yazma isteklerinde Origin denetimi sunucuda (§7). Hata: {detail:{error,message}} → Error(message) + .status.
-export class NetError extends Error { constructor(status, message, error) { super(message); this.status = status; this.error = error; } }
+export class NetError extends Error { constructor(status, message, error, detail = null) { super(message); this.status = status; this.error = error; this.detail = detail; } }   // detail: sunucu gövdesi (409 flight_open → flight_id, sim_id)
 async function req(method, url, body) {
   const res = await fetch(url, { method, credentials: 'same-origin', headers: body !== undefined ? { 'Content-Type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
   const txt = await res.text();
   let data = null; try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
   if (!res.ok) {
     const d = data?.detail;
-    throw new NetError(res.status, (d && (d.message || d.error)) || (typeof d === 'string' ? d : null) || `İstek başarısız (${res.status})`, d?.error);
+    throw new NetError(res.status, (d && (d.message || d.error)) || (typeof d === 'string' ? d : null) || `İstek başarısız (${res.status})`, d?.error, d && typeof d === 'object' ? d : null);
   }
   return data;
 }

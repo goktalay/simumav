@@ -1,6 +1,7 @@
 """SIMUMAV testleri (docs/simumav.md §4, §7): shim ile çekirdek yüklemesi, oturum (dev login), CSRF reddi, oran sınırı 429, hangar/crew/tracks/missions
 CRUD + kota aşımı, parametre beyaz listesi reddi, parkur önizlemesi (ağsız sahte karo), fly/start sahte kipte (HEPGO_SITL=0) → flight kaydı + MP TCP
-dinleyici IP kilidi (127.0.0.2'den ikinci bağlantı reddi), WS hello, stop → flights satırı, ops listesi / sahiplik 404, meta.
+dinleyici IP kilidi (127.0.0.2'den ikinci bağlantı reddi), WS hello, stop → flights satırı, GET /fly/current + 409 flight_open gövdesi + yetim uçuş
+(WS bağlanmayan uçuş ORPHAN_S sonra kapanır, audit fly_orphan), ops listesi / sahiplik 404, meta.
 
 Çalıştırma: CAYMAZ_FORCE_SECURE_COOKIE=0 ./.venv/bin/python -m tests.test_simumav
 """
@@ -227,9 +228,13 @@ def main():
         assert r.status_code == 201, r.text
         f = r.json(); fid, sid, port = f['flight_id'], f['sim_id'], f['mp']['port']
         assert f['mp']['proto'] == 'tcp' and 25600 <= port < 25640 and f['ws'] == f'/ws/fly/{sid}'
-        # ikinci uçuş → 409 flight_active
+        # GET /api/fly/current → açık uçuş özeti (ön yüz "Süren uçuşunuz var" kartı); başka kullanıcıda null
+        cur = c.get('/api/fly/current').json()
+        assert cur['flight_id'] == fid and cur['sim_id'] == sid and cur['started_at'] and cur['ws'] == f'/ws/fly/{sid}' and cur['drone']['id'] == drone_id and cur['track']['id'] == t2['id'] and cur['ws_seen'] is False, cur
+        assert c.get('/api/fly/current', headers=HV).json() is None
+        # ikinci uçuş → 409 {error:'flight_open', flight_id, sim_id}
         r = c.post('/api/fly/start', json={'drone_id': drone_id, 'pilot_id': pilot_id, 'track_id': t2['id'], 'launch': 'wheels'}, headers=H)
-        assert r.status_code == 409 and r.json()['detail']['error'] == 'flight_active'
+        assert r.status_code == 409 and r.json()['detail']['error'] == 'flight_open' and r.json()['detail']['flight_id'] == fid and r.json()['detail']['sim_id'] == sid, r.text
         # dron silinemez (uçuşta)
         assert c.delete(f'/api/hangar/{drone_id}', headers=H).status_code == 409
         st = c.get(f'/api/fly/{fid}').json()
@@ -338,6 +343,35 @@ def main():
             pass
         assert c.get('/api/session').json()['active_flight'] is None and c.get('/api/crew').json()['pilots'][0]['flights'] == 1
         assert c.post(f'/api/fly/{fv}/stop', headers=HVW).json()['ok']
+        # ---- yetim uçuş: WS hiç bağlanmazsa ORPHAN_S sonra sunucu kapatır (audit fly_orphan); WS bağlanan uçuş kapanmaz
+        assert c.get('/api/fly/current').json() is None
+        config.ORPHAN_S = 1.5
+        try:
+            r = c.post('/api/fly/start', json={'drone_id': drone_id, 'pilot_id': pilot_id, 'track_id': t2['id'], 'launch': 'wheels'}, headers=H); assert r.status_code == 201, r.text
+            fo, so = r.json()['flight_id'], r.json()['sim_id']
+            assert c.get('/api/fly/current').json()['flight_id'] == fo
+            for _ in range(80):
+                if c.get('/api/fly/current').json() is None:
+                    break
+                time.sleep(0.1)
+            assert c.get('/api/fly/current').json() is None, 'yetim uçuş kapanmadı'
+            fo_row = c.get(f'/api/fly/{fo}').json(); assert fo_row['ended_at'] and fo_row['state'] == 'KAPANDI' and fo_row['active'] is False, fo_row
+            with sdb_connect() as conn:
+                assert conn.execute("SELECT COUNT(*) FROM audit WHERE event = 'fly_orphan' AND detail LIKE ?", (f'flight {fo} sim {so}:%',)).fetchone()[0] == 1
+            # WS bağlanan uçuş yetim sayılmaz
+            r = c.post('/api/fly/start', json={'drone_id': drone_id, 'pilot_id': pilot_id, 'track_id': t2['id'], 'launch': 'wheels'}, headers=H); assert r.status_code == 201, r.text
+            fw, sw = r.json()['flight_id'], r.json()['sim_id']
+            with c.websocket_connect(f'/ws/fly/{sw}', headers=CK) as ws:
+                assert ws.receive_json()['t'] == 'hello'
+                assert c.get('/api/fly/current').json()['ws_seen'] is True
+                time.sleep(2.2)
+                assert c.get('/api/fly/current').json()['flight_id'] == fw
+            time.sleep(0.5)
+            assert c.get('/api/fly/current').json()['flight_id'] == fw
+            assert c.post(f'/api/fly/{fw}/stop', json={'reason': 'webgl'}, headers=H).json()['ok'] and c.get('/api/fly/current').json() is None
+        finally:
+            config.ORPHAN_S = 90.0
+
         # ---- ikinci uçuş: launch nesnesi (hand, sabit kanat), GET /fly/{id} start biçimi, kayıt (video) REST akışı
         pl = c.post('/api/hangar', json={'name': 'Kanat', 'type': 'plane', 'model_key': 'builtin:delta'}, headers=H).json()
         r = c.post('/api/fly/start', json={'drone_id': pl['id'], 'pilot_id': pilot_id, 'track_id': t2['id'], 'launch': {'method': 'hand', 'hand_speed_ms': 9}}, headers=H); assert r.status_code == 422
@@ -384,16 +418,16 @@ def main():
         assert c.get(f'/api/ops/{fid2}').json()['launch'] == 'hand'
         assert c.delete(f'/api/fly/rec/{rid}', headers=H).json()['ok'] and c.get(f'/api/fly/rec/{rid}/file').status_code == 404
         # ops: liste, sahiplik 404, replay yok (sahte kipte .bin yok) → 404 no_bin, silme
-        ops = c.get('/api/ops').json(); assert ops['total'] == 2 and ops['flights'][0]['id'] == fid2 and ops['stats']['flights'] == 2
+        ops = c.get('/api/ops').json(); assert ops['total'] == 4 and ops['flights'][0]['id'] == fid2 and ops['stats']['flights'] == 4   # fid, yetim, ws, fid2
         assert c.get(f'/api/ops/{fid}', headers=HV).status_code == 404 and c.delete(f'/api/ops/{fid}', headers=HVW).status_code == 404
         r = c.get(f'/api/ops/{fid}/replay'); assert r.status_code == 404 and r.json()['detail']['error'] == 'no_bin'
         assert c.get(f'/api/ops/{fid}/bin').status_code == 404
-        assert c.delete(f'/api/ops/{fid}', headers=H).json()['ok'] and c.get('/api/ops').json()['total'] == 1
+        assert c.delete(f'/api/ops/{fid}', headers=H).json()['ok'] and c.get('/api/ops').json()['total'] == 3
         # denetim kayıtları
         from app.simumav import db as sdb
         with sdb.connect() as conn:
             olaylar = {r[0] for r in conn.execute('SELECT DISTINCT event FROM audit')}
-        assert {'login', 'csrf', 'quota', 'param_reject', 'plan_reject', 'fly_start', 'fly_stop', 'mp_reject'} <= olaylar, olaylar
+        assert {'login', 'csrf', 'quota', 'param_reject', 'plan_reject', 'fly_start', 'fly_stop', 'fly_orphan', 'mp_reject'} <= olaylar, olaylar
         # dosya yolu denetimi: kök dışı yollar reddedilir
         assert bridge.dosya_yolu('../simumav.db') is None and bridge.dosya_yolu('/etc/passwd') is None and bridge.dosya_yolu('') is None
 

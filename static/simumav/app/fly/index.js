@@ -5,7 +5,7 @@
 // dünya kipi + halka sayısı) · 3 kalkış yöntemi (yalnız plane/interceptor/vtol: Rampa / Araç Üstü / Tekerlekli / ELDEN ATIŞ; açı/hız) · 4 görev
 // (isteğe bağlı, /api/missions?track_id=) · 5 pilot (/api/crew; varsayılan seçili) + kayıt seçenekleri (video / .bin) → BAŞLA (geri sayım) →
 // session.js openSession. Stiller: ./fly.css (sihirbaz + sahne ekleri) ve ./fly-sim.css (HEPGO fs-* kopyası) bir kez eklenir.
-import { clear, h, toast, toastError, t as tr, onLeave, runLeave } from './simui.js';
+import { clear, h, toast, toastError, confirmDialog, fmtDuration, t as tr, onLeave, runLeave } from './simui.js';
 import { net } from './net.js';
 import { COUNTDOWN_S, LAUNCH_LIMITS, LAUNCH_METHODS_SM, STEP_TITLES, TYPE_LABEL, WORLD_MODE_LABEL, countdownAt, createWizard, launchLabelSm, modelFor, needsLaunch, simType, speedScale, worldFromTrack } from './wizard.js';
 import { openSession, startFlight, fetchMeta } from './session.js';
@@ -56,10 +56,11 @@ async function resumeFlight(view, fid, ctx) {
 async function renderWizard(view, ctx) {
   const root = h('div', { class: 'sm-fly sm-wizard' });
   clear(view, h('div', { class: 'sm-fly sm-loading' }, tr('Hangar, parkurlar ve mürettebat yükleniyor…')));
-  let data;
+  let data, openFlight = null;
   try {
-    const [hangar, tracks, crew, missions, meta] = await Promise.all([net.get('/api/hangar'), net.get('/api/tracks'), net.get('/api/crew'), net.get('/api/missions').catch(() => ({ missions: [] })), ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta()]);
+    const [hangar, tracks, crew, missions, meta, cur] = await Promise.all([net.get('/api/hangar'), net.get('/api/tracks'), net.get('/api/crew'), net.get('/api/missions').catch(() => ({ missions: [] })), ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), fetchCurrent()]);
     data = { drones: hangar?.drones || hangar || [], tracks: tracks?.tracks || tracks || [], pilots: crew?.pilots || crew || [], missions: missions?.missions || missions || [], meta: meta || {} };
+    openFlight = cur;
   } catch (err) { toastError(err); clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Veriler alınamadı: {e}', { e: err.message })), h('button', { class: 'btn primary', type: 'button', onclick: () => renderWizard(view, ctx) }, 'Yeniden dene'))); return; }
   if (!data.drones.length) { clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Hangarınız boş. Önce bir dron ekleyin.')), h('button', { class: 'btn primary', type: 'button', onclick: () => ctx.go('#/hangar') }, 'Hangar\'a git'))); return; }
   const W = createWizard(data, ctx.preset || {});
@@ -74,8 +75,33 @@ async function renderWizard(view, ctx) {
   const startBtn = h('button', { class: 'sm-start-btn', type: 'button', hidden: true, onclick: () => start() }, h('span', { class: 'sm-start-ring' }), h('b', null, 'BAŞLA'));
   const foot = h('div', { class: 'sm-wizard-foot' }, prevBtn, h('div', { class: 'sm-summary' }), nextBtn, startBtn);
   const countdown = h('div', { class: 'sm-countdown', hidden: true }, h('b', null, '3'), h('small', null, ''));
-  root.append(h('div', { class: 'sm-wizard-head' }, h('h1', null, 'UÇ'), h('p', { class: 'muted' }, 'Dronunu seç, parkuru belirle, kalk.')), stepsBar, body, foot, countdown);
+  const openBox = h('div', { class: 'sm-open-flight-holder' });
+  root.append(h('div', { class: 'sm-wizard-head' }, h('h1', null, 'UÇ'), h('p', { class: 'muted' }, 'Dronunu seç, parkuru belirle, kalk.')), openBox, stepsBar, body, foot, countdown);
   clear(view, root);
+
+  // ---------- "Süren uçuşunuz var" kartı: GET /api/fly/current ya da BAŞLA → 409 flight_open ----------
+  const drawOpen = () => {
+    clear(openBox);
+    if (!openFlight) return;
+    const f = openFlight, id = f.flight_id ?? f.id;
+    const sub = [f.drone?.name, f.track?.name, f.pilot?.name, f.elapsed_s != null ? tr('{d} sürüyor', { d: fmtDuration(f.elapsed_s) }) : null, f.state ? (f.state === 'HAZIR' ? tr('SITL hazır') : f.state) : null].filter(Boolean).join(' · ');
+    const endBtn = h('button', { class: 'btn danger', type: 'button', onclick: async () => {
+      if (!await confirmDialog(tr('Uçuşu bitir'), tr('Süren uçuş sunucuda kapatılsın mı? Özet Operasyon\'da saklanır.'), { okLabel: tr('Bitir'), danger: true })) return;
+      endBtn.disabled = true;
+      try { await net.post(`/api/fly/${encodeURIComponent(id)}/stop`, { reason: 'wizard' }); toast(tr('Uçuş kapatıldı')); openFlight = null; drawOpen(); drawFoot(); }
+      catch (err) { if (err?.status === 404) { openFlight = null; drawOpen(); drawFoot(); } else { toastError(err); endBtn.disabled = false; } }
+    } }, '■ ', tr('Uçuşu bitir'));
+    openBox.append(h('div', { class: 'sm-open-flight', role: 'status' }, h('span', { class: 'sm-of-ico', 'aria-hidden': 'true' }, '✈'),
+      h('div', { class: 'sm-of-text' }, h('b', null, tr('Süren uçuşunuz var')), h('span', null, sub || tr('Uçuş #{id}', { id }))),
+      h('div', { class: 'btn-row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => ctx.go(`#/fly/${encodeURIComponent(id)}`) }, tr('Uçuşa dön')), endBtn)));
+  };
+  const showOpenFromError = async err => {   // 409 gövdesi {error:'flight_open', flight_id, sim_id}
+    const d = err?.detail || {};
+    openFlight = (await fetchCurrent()) || { flight_id: d.flight_id, sim_id: d.sim_id };
+    if (openFlight.flight_id == null) openFlight = null;
+    drawOpen(); drawFoot();
+    openBox.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  };
 
   const drawSteps = () => {
     const steps = W.steps(), cur = W.step();
@@ -83,7 +109,8 @@ async function renderWizard(view, ctx) {
   };
   const drawFoot = () => {
     const last = W.isLast();
-    prevBtn.disabled = W.index() === 0; nextBtn.hidden = last; nextBtn.disabled = !W.canNext(); startBtn.hidden = !last; startBtn.disabled = !W.ready();
+    prevBtn.disabled = W.index() === 0; nextBtn.hidden = last; nextBtn.disabled = !W.canNext(); startBtn.hidden = !last; startBtn.disabled = !W.ready() || !!openFlight;
+    startBtn.title = openFlight ? tr('Önce süren uçuşunuza dönün ya da bitirin') : '';
     const d = W.drone(), t = W.track(), p = W.pilot(), m = W.mission();
     clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : null, m ? m.name : null, p ? p.name : null].filter(Boolean).join(' · '));
   };
@@ -201,9 +228,10 @@ async function renderWizard(view, ctx) {
     if (destroyed) return;
     let s;
     try { s = await startFlight(payload); } catch (err) {
-      const m = { 429: 'Sunucu dolu; bekleme odası — biraz sonra yeniden deneyin', 409: 'Zaten süren bir uçuşunuz var; Operasyon\'dan bitirin', 400: 'Geçersiz ayar; dron/parkur/kalkış değerlerini kontrol edin', 503: 'SITL hazır değil' }[err?.status];
+      const m = { 429: 'Sunucu dolu; bekleme odası — biraz sonra yeniden deneyin', 409: 'Zaten süren bir uçuşunuz var: uçuşa dönün ya da bitirin', 400: 'Geçersiz ayar; dron/parkur/kalkış değerlerini kontrol edin', 503: 'SITL hazır değil' }[err?.status];
       toast(m || err.message, 'err'); countdown.hidden = true; starting = false; startBtn.disabled = false;
       if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+      if (err?.status === 409) await showOpenFromError(err);
       return;
     }
     toast(tr('Uçuş başladı · MP tcp:{h}:{p}', { h: s.mp?.host || location.hostname, p: s.mp?.port ?? '—' }));
@@ -212,6 +240,10 @@ async function renderWizard(view, ctx) {
     await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.state.launch, record: W.state.record }, { ...ctx, meta: data.meta });
   };
   onLeave(() => { destroyed = true; preview?.dispose(); preview = null; });
+  drawOpen();
   draw();
-  return { wizard: W, draw, start };
+  return { wizard: W, draw, start, get openFlight() { return openFlight; } };
 }
+
+/** Kullanıcının açık uçuşu (GET /api/fly/current) ya da null; ağ hatası null sayılır. */
+export async function fetchCurrent() { try { const c = await net.get('/api/fly/current'); return c && c.flight_id != null ? c : null; } catch { return null; } }

@@ -25,8 +25,11 @@ const TIMES = ['day', 'dusk', 'night'];
 const normTime = v => (TIMES.includes(v) ? v : (Number.isFinite(Number(v)) ? (Number(v) < 6 || Number(v) >= 20 ? 'night' : Number(v) >= 17 ? 'dusk' : 'day') : 'day'));
 const newTrack = () => ({ name: '', lat: PRESETS[0].lat, lon: PRESETS[0].lon, radius_m: 1500, wind: { speed_ms: 3, dir_deg: 270, gust: 1 }, time_of_day: 'day', weather: 'clear', world_mode: 'google3d', world: { ...WORLD_DEFAULTS }, gates: [] });
 
+let active = null;   // etkin temizleyici (mount içten yeniden çağrılır: editör iptal/kaydet)
 export async function mount(root, ctx) {
+  await active?.(); active = null;
   const viewers = [];
+  let dead = false, gen = 0;   // gen: kart listesi yenilenince bekleyen önizleme sözleri atılır
   const sc = screen({ title: t('tracks.title'), sub: t('tracks.sub'), cls: 'scroll' });
   const grid = h('div', { class: 'grid' });
   sc.append(grid);
@@ -45,12 +48,13 @@ export async function mount(root, ctx) {
       h('div', { class: 'meta-row' }, h('span', { class: 'badge accent' }, t(`world.${tr.world_mode || 'google3d'}`)), tr.gates?.length ? h('span', { class: 'badge' }, `${tr.gates.length} ${t('tracks.gates_short')}`) : null, tr.is_default ? h('span', { class: 'badge ok' }, t('common.default')) : null),
       h('small', {}, `${Number(tr.lat).toFixed(4)}, ${Number(tr.lon).toFixed(4)} · ${tr.radius_m} m · ${t('tracks.wind')} ${tr.wind?.speed_ms ?? 0} m/s · ${t(`weather.${tr.weather || 'clear'}`)}`));
     c.addEventListener('click', e => { if (!e.target.closest('.row-actions')) openEditor(tr); });
-    if (idx < MAX_VIEWERS) terrainViewer(thumb).then(v => { viewers.push(v); v.setTrack(tr); }).catch(() => thumb.append(h('img', { src: `/api/tracks/${tr.id}/preview.png`, alt: '' })));
+    const g = gen;
+    if (idx < MAX_VIEWERS) terrainViewer(thumb).then(v => { if (dead || g !== gen) { v.dispose(); return; } viewers.push(v); v.setTrack(tr); }).catch(() => thumb.append(h('img', { src: `/api/tracks/${tr.id}/preview.png`, alt: '' })));
     else thumb.append(h('img', { src: `/api/tracks/${tr.id}/preview.png`, alt: '' }));
     return c;
   };
   const render = () => {
-    viewers.splice(0).forEach(v => v.dispose());
+    gen++; viewers.splice(0).forEach(v => v.dispose());
     clear(grid, tracks.map(card), h('div', { class: 'strip-card plus-holder' }, plusButton(t('tracks.new'), () => openEditor(null), { small: true })));
     stagger([...grid.children], 50);
   };
@@ -61,7 +65,8 @@ export async function mount(root, ctx) {
   // ---------- Editör ----------
   let edDispose = null;
   async function openEditor(existing) {
-    viewers.splice(0).forEach(v => v.dispose());
+    gen++; viewers.splice(0).forEach(v => v.dispose());
+    edDispose?.(); edDispose = null;
     const T = existing ? JSON.parse(JSON.stringify({ ...newTrack(), ...existing, time_of_day: normTime(existing.time_of_day), wind: { ...newTrack().wind, ...(existing.wind || {}) }, world: { ...WORLD_DEFAULTS, ...(existing.world || {}) }, gates: (existing.gates || []).map((g, i) => ({ ...g, i })) })) : newTrack();
     const ed = h('div', { class: 'screen track-editor' });
     const mapBox = h('div', { class: 'card ed-map' });
@@ -136,7 +141,7 @@ export async function mount(root, ctx) {
       h('div', { class: 'field' }, h('label', {}, t('tracks.weather')), weatherSeg),
       h('div', { class: 'field' }, h('label', {}, t('tracks.radius'), ' ', radius.out), radius.inp),
       h('h3', {}, t('tracks.gates')), h('p', { class: 'sub small' }, t('tracks.gates_hint')), addBtn, gateList,
-      h('div', { class: 'btn-row' }, btn(t('common.cancel'), () => mount(root, ctx), 'ghost'), btn(t('common.save'), save, 'primary lg')),
+      h('div', { class: 'btn-row' }, btn(t('common.cancel'), () => { edDispose?.(); edDispose = null; mount(root, ctx); }, 'ghost'), btn(t('common.save'), save, 'primary lg')),
     );
     ed.append(note);
 
@@ -148,9 +153,10 @@ export async function mount(root, ctx) {
       if (google) { clear(mapBox); gmap = await pickerMap(google, mapBox, { lat: T.lat, lon: T.lon, radius_m: T.radius_m, onPick, onGateMove: (g, p) => { g.lat = p.lat; g.lon = p.lon; dirty(); }, dark: document.documentElement.dataset.theme !== 'light' }); gmap.setGates(T.gates); }
       else clear(mapBox, h('div', { class: 'map-fallback' }, h('p', {}, t('tracks.no_maps')), h('img', { src: existing ? `/api/tracks/${existing.id}/preview.png` : '/app/img/icons/tracks.svg', alt: '' })));
     } catch (e) { clear(mapBox, h('div', { class: 'map-fallback' }, h('p', {}, e.message))); }
-    terrainViewer(prevBox, { spin: 0.15, onPick, tilt: 1.0 }).then(v => { terrain = v; v.setTrack(T); }).catch(() => {});
+    let edDead = false;
+    terrainViewer(prevBox, { spin: 0.15, onPick, tilt: 1.0 }).then(v => { if (edDead) { v.dispose(); return; } terrain = v; v.setTrack(T); }).catch(() => {});
     dirty();
-    edDispose = () => { terrain?.dispose(); gmap?.dispose(); };
+    edDispose = () => { edDead = true; terrain?.dispose(); terrain = null; gmap?.dispose(); gmap = null; };
 
     async function save() {
       if (!T.name.trim()) { nameInp.focus(); toast(t('tracks.name_req'), 'err'); return; }
@@ -166,5 +172,6 @@ export async function mount(root, ctx) {
 
   await load();
   if (ctx.param === 'new') openEditor(null);
-  return () => { viewers.splice(0).forEach(v => v.dispose()); edDispose?.(); };
+  active = () => { dead = true; gen++; viewers.splice(0).forEach(v => v.dispose()); edDispose?.(); edDispose = null; };
+  return () => { const f = active; active = null; return f?.(); };
 }

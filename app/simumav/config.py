@@ -83,6 +83,7 @@ PUBLIC_HOST = os.environ.get('SIMUMAV_PUBLIC_HOST', '').strip()           # MP b
 MP_PORT_BASE = int(os.environ.get('SIMUMAV_MP_PORT_BASE', '15600') or 15600)
 MP_PORT_COUNT = max(10, int(os.environ.get('SIMUMAV_MP_PORT_COUNT', '400') or 400))
 MP_IDLE_S = float(os.environ.get('SIMUMAV_MP_IDLE_S', '60') or 60)        # bağlanılmazsa dinleyici kapanır
+ORPHAN_S = float(os.environ.get('SIMUMAV_ORPHAN_S', '90') or 90)          # bu süre boyunca hiç WS bağlanmayan uçuş otomatik kapanır (audit fly_orphan)
 GOOGLE_KEY = os.environ.get('GOOGLE_MAPS_API_KEY', '').strip()
 # Çerez: üretimde Secure; yerel http geliştirmede SIMUMAV_SECURE_COOKIE=0 ya da CAYMAZ_FORCE_SECURE_COOKIE=0
 SECURE_COOKIE = os.environ.get('SIMUMAV_SECURE_COOKIE', os.environ.get('CAYMAZ_FORCE_SECURE_COOKIE', '1')) != '0'

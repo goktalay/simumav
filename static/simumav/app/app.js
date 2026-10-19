@@ -1,6 +1,9 @@
 // SIMUMAV oyun kabuğu: hash router (#/menu #/hangar #/crew #/tracks #/missions #/fly #/ops #/settings), tema, dil, kullanıcı çipi.
+import { installGlCounter } from './core/gl.js';
 import * as api from './core/api.js';
 import { h, clear } from './core/dom.js';
+
+installGlCounter();   // teşhis: window.__smGl() → canlı WebGL bağlam sayısı (three.js/Cesium yüklenmeden önce kurulmalı)
 import { setLang, detectLang, t } from './i18n/i18n.js';
 import { sweep } from './ui/transition.js';
 import { toast, toastErr } from './ui/components.js';
@@ -84,11 +87,12 @@ async function route(force = false) {
   let mod;
   try { mod = await ROUTES[name](); } catch (e) {
     console.error(e);
-    await sweep(() => { state.unmount?.(); state.unmount = null; view.className = ''; clear(view, h('div', { class: 'screen center-stack' }, h('div', { class: 'err-box' }, t('shell.module_missing', { name })))); ctx.setBack(t('common.back')); });
+    await sweep(async () => { try { await state.unmount?.(); } catch (e2) { console.error(e2); } state.unmount = null; view.className = ''; clear(view, h('div', { class: 'screen center-stack' }, h('div', { class: 'err-box' }, t('shell.module_missing', { name })))); ctx.setBack(t('common.back')); });
     routing = false; return;
   }
   await sweep(async () => {
-    try { state.unmount?.(); } catch (e) { console.error(e); }
+    // Önce eski modülün unmount'u (Promise dönebilir: 3B görünümler/çizici bırakılır) BEKLENİR; yeni modül ancak sonra kurulur
+    try { await state.unmount?.(); } catch (e) { console.error(e); }
     state.unmount = null; view.className = ''; view.scrollTop = 0;
     clear(view);
     back.hidden = true; chip.hidden = name === 'fly'; gear.hidden = name === 'fly' || name === 'settings';

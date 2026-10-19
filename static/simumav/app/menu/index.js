@@ -48,7 +48,7 @@ export async function mount(root, ctx) {
     const { THREE } = lib;
     let earth, stars, ring, glowMesh;
     stage = makeStage(lib, canvas, {
-      alpha: true, fov: 45, env: false, pixelRatioMax: 1.25,
+      fov: 45, env: false, pixelRatioMax: 1.25,
       onFrame: (dt, tm) => {
         mouse.x += (target.x - mouse.x) * 0.05; mouse.y += (target.y - mouse.y) * 0.05;
         earth.rotation.y += dt * 0.08; ring.rotation.z += dt * 0.03;
@@ -84,12 +84,12 @@ export async function mount(root, ctx) {
   } catch (e) { console.warn('3B arka plan açılamadı', e); }
 
   return () => {
+    // Menü arka planı görünmezken durur ve kapanır: görünüm silinir (paylaşılan çizici boşta kalınca bağlamı bırakır)
     document.removeEventListener('keydown', onKey);
     window.removeEventListener('pointermove', onMove);
     if (themeHandler) window.removeEventListener('sm:theme', themeHandler);
-    stage?.dispose();
-    const c2 = canvas.getContext('2d'); if (c2) c2.clearRect(0, 0, canvas.width, canvas.height);
-    canvas.hidden = true;
+    stage?.dispose(); stage = null;
+    (document.getElementById('stage') || canvas).hidden = true;
   };
 }
 

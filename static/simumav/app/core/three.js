@@ -1,5 +1,12 @@
-// three.js yükleyici ve küçük sahne yardımcısı (HEPGO vendor: /vendor/three/). CDN yok.
+// three.js yükleyici + TEK paylaşılan WebGLRenderer (HEPGO vendor: /vendor/three/). CDN yok.
+// Tüm küçük 3B görünümler (menü arka planı, hangar dönen model, tür seçici, parkur/ops kart mini 3B'leri, parkur editörü) tek paylaşılan
+// çizici ile SIRAYLA render edilir ve her görünümün kendi 2B tuvaline kopyalanır (drawImage) — görünüm başına WebGL bağlamı AÇILMAZ.
+// Böylece sayfadaki canlı bağlam sayısı: paylaşılan 1 (+ Uç sahnesi 1, + Cesium replay 1) ≤ 3; tarayıcı ~16 sınırı aşılmaz.
+// Görünüm yokken (modül geçişi) paylaşılan çizici boşta kalır ve IDLE_RELEASE_MS sonra bağlamı bırakır (dispose + forceContextLoss);
+// Uç sahnesi açılmadan önce `releaseShared()` ile hemen bırakılır.
 const LIB = '/vendor/three/';
+const IDLE_RELEASE_MS = 3000;
+const MAX_DIM = 4096;
 let loading = null;
 export function loadThree() {
   loading ??= Promise.all(['three.module.min.js', 'OrbitControls.js', 'GLTFLoader.js', 'RoomEnvironment.js'].map(f => import(LIB + f)))
@@ -7,50 +14,129 @@ export function loadThree() {
   return loading;
 }
 
-/** Bir kapsayıcıya (ya da canvas'a) bağlı render döngüsü. onFrame(dt, t) her karede çağrılır. Görünmezken durur. */
-export function makeStage(lib, host, { alpha = true, fov = 40, near = 0.05, far = 2000, env = true, onFrame, pixelRatioMax = 1.75 } = {}) {
+// ---------- paylaşılan çizici ----------
+const views = new Set();
+let shared = null, raf = 0, lastT = 0, idleTimer = 0;
+
+function ensureShared(lib) {
+  if (shared && !shared.lost) return shared;
+  if (shared) hardRelease();   // bağlam tarayıcı tarafından kaybedilmiş → yeni tuval
   const { THREE, RoomEnvironment } = lib;
-  const isCanvas = host instanceof HTMLCanvasElement;
-  const canvas = isCanvas ? host : document.createElement('canvas');
-  if (!isCanvas) host.append(canvas);
-  const renderer = new THREE.WebGLRenderer({ canvas, alpha, antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, pixelRatioMax));
+  const canvas = document.createElement('canvas');
+  canvas.className = 'sm-gl-shared';
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
+  const me = { renderer, canvas, lib, env: null, lost: false, w: 0, h: 0 };
+  canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); me.lost = true; });
+  me.getEnv = () => {
+    if (!me.env && RoomEnvironment) {
+      renderer.setScissorTest(false);
+      const pm = new THREE.PMREMGenerator(renderer);
+      me.env = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+      pm.dispose();
+    }
+    return me.env;
+  };
+  shared = me;
+  return me;
+}
+
+function hardRelease() {
+  if (!shared) return;
+  const s = shared; shared = null;
+  try { s.env?.dispose(); } catch { /* */ }
+  try { s.renderer.dispose(); } catch { /* */ }
+  try { s.renderer.forceContextLoss?.(); } catch { /* */ }
+  for (const v of views) if (v.env) v.scene.environment = null;   // yeni çizicide yeniden üretilir
+}
+
+/** Paylaşılan WebGL bağlamını hemen bırak (Uç sahnesi öncesi). Görünümler kalır; yeniden render gerekirse çizici yeniden kurulur. */
+export function releaseShared() {
+  clearTimeout(idleTimer); idleTimer = 0;
+  for (const v of views) v.running = false;   // kalan görünümler (olmamalı) yeni bağlam açtırmasın
+  cancelAnimationFrame(raf); raf = 0;
+  hardRelease();
+}
+/** Teşhis: {views, running, shared, w, h} */
+export function sharedInfo() { return { views: views.size, running: [...views].filter(v => v.running).length, shared: !!shared && !shared.lost, w: shared?.w || 0, h: shared?.h || 0 }; }
+
+function renderView(v, now) {
+  const dt = Math.min(0.1, (now - v.last) / 1000); v.last = now; v.t += dt;
+  v.onFrame?.(dt, v.t);
+  if (!v.visible) return;
+  const s = ensureShared(v.lib), { renderer } = s;
+  if (v.env && !v.scene.environment) v.scene.environment = s.getEnv();
+  const pr = Math.min(window.devicePixelRatio || 1, v.pixelRatioMax);
+  const w = Math.max(1, Math.min(MAX_DIM, Math.round(v.cssW * pr))), h = Math.max(1, Math.min(MAX_DIM, Math.round(v.cssH * pr)));
+  if (v.target.width !== w || v.target.height !== h) { v.target.width = w; v.target.height = h; }
+  if (w > s.w || h > s.h) { s.w = Math.max(s.w, w); s.h = Math.max(s.h, h); renderer.setSize(s.w, s.h, false); }
+  v.camera.aspect = w / h; v.camera.updateProjectionMatrix();
+  renderer.setScissorTest(true);
+  renderer.setViewport(0, 0, w, h); renderer.setScissor(0, 0, w, h);
+  renderer.setClearColor(0x000000, 0); renderer.clear();
+  renderer.render(v.scene, v.camera);
+  renderer.setScissorTest(false);
+  if (s.lost) return;
+  v.ctx.clearRect(0, 0, w, h);
+  try { v.ctx.drawImage(s.canvas, 0, s.h - h, w, h, 0, 0, w, h); } catch { /* bağlam kaybı anı */ }
+}
+
+function loop(now) {
+  raf = 0;
+  let any = false;
+  for (const v of views) if (v.running) { any = true; renderView(v, now); }
+  schedule(any);
+}
+function schedule(active = [...views].some(v => v.running)) {
+  if (active && !document.hidden) {
+    clearTimeout(idleTimer); idleTimer = 0;
+    if (!raf) raf = requestAnimationFrame(loop);
+  } else if (!idleTimer && shared) {
+    idleTimer = setTimeout(() => { idleTimer = 0; if (![...views].some(v => v.running)) hardRelease(); }, IDLE_RELEASE_MS);
+  }
+}
+if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (document.hidden) { cancelAnimationFrame(raf); raf = 0; } schedule(); });
+
+/** Bir kapsayıcıya (ya da 2B tuvale) bağlı görünüm. onFrame(dt, t) her karede çağrılır. Görünmezken/ekran dışında render edilmez.
+ *  Dönüş eski API ile aynı: { THREE, renderer (paylaşılan), scene, camera, canvas (2B hedef), start, stop, dispose, resize, renderOnce }. */
+export function makeStage(lib, host, { fov = 40, near = 0.05, far = 2000, env = true, onFrame, pixelRatioMax = 1.75 } = {}) {
+  const { THREE } = lib;
+  const isCanvas = host instanceof HTMLCanvasElement;
+  let target = isCanvas ? host : document.createElement('canvas');
+  let ctx = target.getContext('2d');
+  if (!ctx) {   // bu tuvalde daha önce WebGL bağlamı alınmış → yerine yeni tuval
+    const n = document.createElement('canvas'); n.id = target.id; n.className = target.className; n.hidden = target.hidden; n.setAttribute('aria-hidden', 'true');
+    target.replaceWith(n); target = n; ctx = n.getContext('2d');
+  }
+  if (!isCanvas) host.append(target);
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(fov, 1, near, far);
-  if (env && RoomEnvironment) {
-    const pm = new THREE.PMREMGenerator(renderer);
-    scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
-    pm.dispose();
-  }
+  const sizeHost = () => (isCanvas ? target.parentElement : host);
+  const v = { lib, scene, camera, target, ctx, env, onFrame, pixelRatioMax, cssW: 1, cssH: 1, running: false, visible: true, last: performance.now(), t: 0 };
   const size = () => {
-    const w = (isCanvas ? canvas.parentElement : host)?.clientWidth || window.innerWidth;
-    const hgt = (isCanvas ? canvas.parentElement : host)?.clientHeight || window.innerHeight;
-    renderer.setSize(w, hgt, false);
-    camera.aspect = w / Math.max(1, hgt); camera.updateProjectionMatrix();
+    const el = sizeHost();
+    v.cssW = Math.max(1, el?.clientWidth || window.innerWidth); v.cssH = Math.max(1, el?.clientHeight || window.innerHeight);
+    camera.aspect = v.cssW / v.cssH; camera.updateProjectionMatrix();
   };
   size();
-  const ro = new ResizeObserver(size); ro.observe(isCanvas ? canvas.parentElement || document.body : host);
-  let raf = 0, last = performance.now(), running = false, t = 0;
-  const loop = now => {
-    if (!running) return;
-    const dt = Math.min(0.1, (now - last) / 1000); last = now; t += dt;
-    onFrame?.(dt, t);
-    renderer.render(scene, camera);
-    raf = requestAnimationFrame(loop);
-  };
-  const start = () => { if (running) return; running = true; last = performance.now(); raf = requestAnimationFrame(loop); };
-  const stop = () => { running = false; cancelAnimationFrame(raf); };
-  const vis = () => (document.hidden ? stop() : start());
-  document.addEventListener('visibilitychange', vis);
+  const ro = new ResizeObserver(size); ro.observe(sizeHost() || document.body);
+  const io = typeof IntersectionObserver === 'function' ? new IntersectionObserver(es => { for (const e of es) v.visible = e.isIntersecting; }) : null;
+  io?.observe(target);
+  views.add(v);
+  const start = () => { if (v.running) return; v.running = true; v.last = performance.now(); schedule(true); };
+  const stop = () => { v.running = false; schedule(); };
+  const renderOnce = () => { v.visible = true; renderView(v, performance.now()); };
   const dispose = () => {
-    stop(); ro.disconnect(); document.removeEventListener('visibilitychange', vis);
+    stop(); views.delete(v); ro.disconnect(); io?.disconnect();
     scene.traverse(o => { o.geometry?.dispose?.(); const m = o.material; if (m) (Array.isArray(m) ? m : [m]).forEach(x => { x.map?.dispose?.(); x.dispose?.(); }); });
-    renderer.dispose(); if (!isCanvas) canvas.remove();
+    scene.environment = null; scene.clear();
+    if (!isCanvas) target.remove(); else ctx.clearRect(0, 0, target.width, target.height);
+    schedule();
   };
-  return { THREE, renderer, scene, camera, canvas, start, stop, dispose, resize: size, renderOnce: () => renderer.render(scene, camera) };
+  return { THREE, get renderer() { return shared?.renderer || null; }, scene, camera, canvas: target, start, stop, dispose, resize: size, renderOnce };
 }
 
 /** Standart üç nokta aydınlatma. */

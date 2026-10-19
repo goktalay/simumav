@@ -407,7 +407,8 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
     async with _KILIT:
         fid, _a = aktif_ucus(user['id'])
         if fid is not None:
-            raise BridgeHata(409, 'flight_active', 'Zaten süren bir uçuşunuz var; önce onu bitirin', flight_id=fid)
+            # 409 gövdesi {error:'flight_open', flight_id, sim_id}: ön yüz "Süren uçuşunuz var" kartını (Uçuşa dön / Uçuşu bitir) gösterir
+            raise BridgeHata(409, 'flight_open', 'Zaten süren bir uçuşunuz var; önce onu bitirin', flight_id=fid, sim_id=_a['sim_id'])
         if aktif_sayisi() >= config.MAX_FLIGHTS:
             raise BridgeHata(429, 'server_full', 'Sunucudaki tüm simülasyon yuvaları dolu — bekleme odası', retry_after=bekleme_suresi() or 60)
         port = bos_mp_port()
@@ -465,9 +466,10 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         s.sm_flight_id = fid
         if launch['method'] == 'hand':
             s.launch = {**s.launch, 'hand': True, 'hand_speed_ms': launch['hand_speed_ms'], 'hand_pitch_deg': launch['hand_pitch_deg']}
-        a = {'sim_id': s.id, 'user_id': user['id'], 'mp': mp, 'task': None, 'started': time.time(), 'mission': mission, 'gates_result': None}
+        a = {'sim_id': s.id, 'user_id': user['id'], 'mp': mp, 'task': None, 'started': time.time(), 'mission': mission, 'gates_result': None, 'ws_seen': False}
         _AKTIF[fid] = a
         a['task'] = loop.create_task(_izle(fid, s, mp))
+        a['orphan'] = loop.create_task(_yetim_denetim(fid, a))
     if mission and mission.get('plan'):
         loop.create_task(_gorev_yukle(s, mission))
     return {'flight_id': fid, 'sim_id': s.id, 'mp': {'host': host_adi(request), 'port': port, 'proto': 'tcp'} if mp else None,
@@ -527,6 +529,45 @@ async def _gorev_yukle(s, mission):
         pass
 
 
+def ws_goruldu(sim_id):
+    """WS /ws/fly/{sim_id} açıldı: uçuş artık yetim sayılmaz."""
+    for a in _AKTIF.values():
+        if a['sim_id'] == sim_id:
+            a['ws_seen'] = True
+
+
+async def _yetim_denetim(fid, a):
+    """Ek güvenlik: sahne açılamayan (WebGL yok, sekme kapandı…) uçuş sunucuda açık kalmasın — ORPHAN_S boyunca hiç WS bağlanmadıysa (ve MP istemcisi
+    de yoksa) uçuş otomatik kapanır; audit 'fly_orphan'."""
+    try:
+        await asyncio.sleep(max(1.0, float(config.ORPHAN_S)))
+    except asyncio.CancelledError:
+        return
+    if _AKTIF.get(fid) is not a or a.get('ws_seen'):
+        return
+    mp = a.get('mp')
+    if mp is not None and mp.client is not None:
+        return
+    db.audit_bagimsiz('fly_orphan', a['user_id'], None, f'flight {fid} sim {a["sim_id"]}: {int(config.ORPHAN_S)} sn WS bağlanmadı → kapatıldı')
+    await ucus_durdur(fid, 'yetim')
+
+
+def aktif_ucus_ozeti(user_id, request=None):
+    """GET /api/fly/current gövdesi: kullanıcının açık uçuşu ya da None."""
+    fid, a = aktif_ucus(user_id)
+    if fid is None:
+        return None
+    with db.connect() as conn:
+        f = db.row(conn.execute('SELECT * FROM flights WHERE id = ?', (fid,)))
+    snap = db.j((f or {}).get('snapshot')) or {}
+    s = flightsim.MANAGER.sessions.get(a['sim_id'])
+    return {'flight_id': fid, 'sim_id': a['sim_id'], 'started_at': (f or {}).get('started_at'), 'state': s.state if s else 'KAPANDI',
+            'elapsed_s': int(time.time() - a['started']), 'remaining_s': max(0, config.FLIGHT_MINUTES * 60 - int(time.time() - a['started'])),
+            'drone': snap.get('drone'), 'track': snap.get('track'), 'pilot': snap.get('pilot'), 'mission': snap.get('mission'), 'launch': snap.get('launch'),
+            'ws_seen': bool(a.get('ws_seen')), 'ws': f"/ws/fly/{a['sim_id']}",
+            'mp': {'host': host_adi(request), 'port': a['mp'].port, 'proto': 'tcp'} if a.get('mp') else None}
+
+
 async def _izle(fid, s, mp):
     """Çekirdek oturum görevi bitince flights satırını tamamla, MP köprüsünü kapat, kota uygula."""
     try:
@@ -542,7 +583,9 @@ async def _izle(fid, s, mp):
             await asyncio.get_running_loop().run_in_executor(None, _ucus_kapanis, fid, s)
         except Exception:   # noqa: BLE001
             pass
-        _AKTIF.pop(fid, None)
+        a = _AKTIF.pop(fid, None)
+        if a and a.get('orphan') is not None and not a['orphan'].done():
+            a['orphan'].cancel()
 
 
 def _sonuc(s, run):

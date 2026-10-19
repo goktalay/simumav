@@ -147,8 +147,12 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
   ≤ 500 öğe, parkur yarıçapı içinde, z 0–1000, kalibrasyon/reboot komutları yasak; `fpv_gates` planı `{order:[halka i…], laps 1–10}`; red 422 `plan_rejected`.
 - `POST /api/fly/start {drone_id, pilot_id, track_id, mission_id?, launch: {method wheels|ramp|vehicle|hand, angle_deg 10–30, release_kmh 40–110,
   hand_speed_ms 6–8, hand_pitch_deg 10–15} | 'yöntem', record:{bin (vars. true), video}}` → 201
-  `{flight_id, sim_id, mp:{host,port,proto:'tcp'}|null, ws:'/ws/fly/<sim_id>', state}`; 409 `flight_active` (`flight_id`), 429 `server_full` (`retry_after`,
-  `Retry-After`), 422 görev başka parkura ait, 503 `sitl`/`no_port`. Görev planı SITL hazır olunca `mission_upload` ile yüklenir.
+  `{flight_id, sim_id, mp:{host,port,proto:'tcp'}|null, ws:'/ws/fly/<sim_id>', state}`; 409 `flight_open` (`flight_id`, `sim_id` — ön yüz "Süren uçuşunuz var"
+  kartı: Uçuşa dön `#/fly/{id}` / Uçuşu bitir), 429 `server_full` (`retry_after`, `Retry-After`), 422 görev başka parkura ait, 503 `sitl`/`no_port`. Görev planı
+  SITL hazır olunca `mission_upload` ile yüklenir. `GET /api/fly/current` → kullanıcının açık uçuşu `{flight_id, sim_id, started_at, state, elapsed_s,
+  remaining_s, drone, track, pilot, mission, launch, ws, ws_seen, mp}` ya da `null`. Yetim denetimi: `SIMUMAV_ORPHAN_S` (vars. 90 sn) boyunca hiç WS bağlanmayan
+  (ve MP istemcisi olmayan) uçuş sunucuda otomatik kapanır (audit `fly_orphan`, end_reason `yetim`); sahne kurulamazsa (WebGL yok) ön yüz uçuşu
+  `stop {reason:'webgl'}` ile hemen kapatır — açık uçuş bırakılmaz.
   `GET /api/fly/{flight_id}` → start biçimi: `{flight_id, sim_id, state, mp, ws, session (to_dict), drone, track (gates/world/wind dâhil), pilot, mission (plan),
   launch (nesne), record, ended_at?, live:{sim_id,state,gates,elapsed_s,remaining_s,mp:{port,locked_ip,connected,rejected,…},sitl,tele}}`.
   **Ekran kaydı (flightsim_rec kalıbı; dosyalar `core/sim_rec/`, ≤ 300 MB, video → flights.video_path):** `POST /api/fly/{flight_id}/rec/start {mime}` → 201
@@ -352,6 +356,13 @@ oran 10/dk/IP; hata halinde sürüm klasörü silinir. Parçalı uç (`/part`) v
   DÜZELTTİ): `#/fly` için `fly/index.js` `render(view, params, ctx)` dışa aktarır, kabuk `app.js` `mod.mount(view, ctx)` çağırırdı → router artık iki imzayı da
   destekler (`mount(view, ctx)` ya da `render(view, {id}, ctx{i18n,toast,go,user,settings,meta})`; `unmount()` dışa aktarımı ayrılırken çağrılır; `ctx.go('#/ops')` hash
   biçimini de kabul eder). `/brand/crew/p01.svg` 404 → `/app/img/pilots/<key>.svg` (common.PILOT_SVG). Replay (ops) ve .bin/params gerçek SITL ile doğrulandı.
+- **WebGL bağlam bütçesi (canlı hata "A WebGL context could not be created … context loss and was blocked"):** kabuğun tüm küçük 3B görünümleri
+  (menü arka planı, hangar dönen model + tür seçici, parkur/ops kart mini 3B'leri, parkur editörü) `core/three.js` içindeki TEK paylaşılan WebGLRenderer ile
+  sırayla render edilip her görünümün kendi 2B tuvaline kopyalanır (`drawImage`); kart başına WebGL bağlamı açılmaz. `makeStage` API'si aynı (renderer alanı
+  paylaşılanı verir). Görünüm kalmayınca çizici 3 sn sonra bağlamı bırakır (`dispose` + `forceContextLoss`); Uç sahnesi (HEPGO createFlightSim3D kendi
+  renderer'ı) açılmadan `releaseShared()` çağrılır. Router eski modülün `unmount` Promise'ini bekler; hangar/tracks/ops bekleyen önizleme sözlerini
+  (`dead`/`gen`) atar; `fly/session.js` dispose zinciri adım adım korunur (`safe`). Teşhis: `window.__smGl()` → canlı bağlam sayısı (`core/gl.js`,
+  getContext sarmalaması; `__smGl.list()`); hedef modüller arası gezintide ≤ 3 (ölçüm: paylaşılan 1, Uç sahnesinde 1–2). E2E: /tmp/simumav-gl/e2e_gl.py.
 - **Bütünleştirme (oyun arayüzü ↔ gerçek API; E2E betiği ve kareler /tmp/simumav-e2e2):** `tools/simumav_export.py` yalnız HEPGO `static/js/api.js`'i dışlar
   (SIMUMAV `app/core/api.js` kopyalanır; shim eşlemeleri ayrı "Shim" satırı, `--dry-run` not/uyarı 0). Parkur editörü: `time_of_day` 'day|dusk|night' (saat
   kaydırıcısı yerine segment), `world` yalnız WORLD_KEYS, halka `i` 0..n-1 (görünüm +1; gates.js/OSD/harita etiketleri de +1). Görev editörü `route.points` biçimi

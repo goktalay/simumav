@@ -84,10 +84,16 @@ async def start(body: StartIn, request: Request, user=User):
     try:
         out = await bridge.ucus_baslat(user, pilot, drone, track, mission, launch, body.record.model_dump() if body.record else None, request)
     except bridge.BridgeHata as e:
-        if e.error in ('server_full', 'flight_active'):
+        if e.error in ('server_full', 'flight_open'):
             db.audit_bagimsiz('quota', user['id'], auth.client_ip(request), e.message)
         hata_cevir(e)
     return out
+
+
+@router.get('/current')
+def current(request: Request, user=User):
+    """Kullanıcının açık uçuşu `{flight_id, sim_id, started_at, state, drone, track, pilot, …}` ya da null. (`/{fid}`'den ÖNCE tanımlı: int yol eşleşmesin.)"""
+    return bridge.aktif_ucus_ozeti(user['id'], request)
 
 
 def _ucus(conn, fid, user):
@@ -445,6 +451,7 @@ async def _sim_ws(ws, sid):
         return
     host = bridge.host_adi(ws)
     hu = _hub_user(user)
+    bridge.ws_goruldu(s.id)   # yetim denetimi: sahne bağlandı
     q = s.izleyici_ekle(ws)
     v = drone_hub.Viewer(ws, hu)
     v.sim_only = True

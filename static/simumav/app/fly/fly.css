@@ -4,6 +4,16 @@
 #view.sm-fly-session { position: fixed; inset: 0; z-index: 40; padding: 0; margin: 0; max-width: none; overflow: hidden; }
 .sm-fly-stage { position: absolute; inset: 0; }
 
+/* ---- açık uçuş kartı (GET /api/fly/current ya da BAŞLA → 409 flight_open) + sahne hatası ---- */
+.sm-open-flight { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; margin: 0 0 20px; padding: 16px 20px; border-radius: 16px; border: 1px solid rgba(245,158,11,.55); background: linear-gradient(160deg, rgba(245,158,11,.16), rgba(245,158,11,.04)); color: #fde68a; }
+.sm-open-flight .sm-of-ico { font-size: 26px; line-height: 1; }
+.sm-open-flight .sm-of-text { flex: 1 1 260px; min-width: 0; }
+.sm-open-flight .sm-of-text b { display: block; font-size: 16px; color: #fff; }
+.sm-open-flight .sm-of-text span { font-size: 13px; color: #e2e8f0; }
+.sm-open-flight .btn-row { display: flex; gap: 10px; margin: 0; }
+.sm-scene-fail h2 { margin: 0; color: #fca5a5; }
+.sm-scene-fail .btn-row { display: flex; gap: 10px; }
+
 /* ---- sihirbaz ---- */
 .sm-wizard { position: relative; max-width: 1280px; margin: 0 auto; padding: 28px 24px 120px; min-height: 100vh; box-sizing: border-box; }
 .sm-wizard-head h1 { font-size: 44px; letter-spacing: .18em; margin: 0; background: linear-gradient(90deg, #38bdf8, #a78bfa); -webkit-background-clip: text; background-clip: text; color: transparent; }

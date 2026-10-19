@@ -22,6 +22,7 @@ import { INTERCEPTOR_AUDIO, TYPE_LABEL, WORLD_MODE_LABEL, audioTypeFor, launchBo
 import { HAND, HAND_PHASES, createHandOverlay, handCfg, handHud, handReleaseTime, shimTelemetry } from './hand_launch.js';
 import { createOverlay3D } from './overlay3d.js';
 import { createGateLayer } from './gates.js';
+import { releaseShared } from '../core/three.js';
 
 const SIM = '/sim/';
 const THREE_URL = '/static/vendor/three/three.module.min.js';   // HEPGO modülleriyle aynı yol → aynı modül örneği
@@ -37,7 +38,8 @@ const LAUNCH_PHASE_TEXT = {
   released: { ramp: 'Uçak rampadan ayrıldı', vehicle: 'BIRAKILDI', wheels: 'Uçak havalandı', hand: 'Uçak elden çıktı' },
 };
 const CRASH_KIND = { terrain: 'Arazi ile temas', water: 'Suya düşüş', building: 'Binaya çarpma', sitl_hit: 'SITL yer teması', sitl: 'Otopilot çarpışma algısı' };
-const END_REASON = { kapatildi: 'Uçuş bitirildi', bosta: 'İzleyici kalmadığından kapatıldı', sure: 'Uçuş süresi doldu (45 dk)', sunucu_kapaniyor: 'Sunucu kapanıyor' };
+const END_REASON = { kapatildi: 'Uçuş bitirildi', bosta: 'İzleyici kalmadığından kapatıldı', sure: 'Uçuş süresi doldu (45 dk)', sunucu_kapaniyor: 'Sunucu kapanıyor', yetim: 'Sahne bağlanmadığından uçuş sunucuda kapatıldı', webgl: '3B görünüm açılamadığından uçuş kapatıldı' };
+const safe = fn => { try { const r = fn?.(); if (r && typeof r.catch === 'function') r.catch(() => {}); } catch (e) { console.warn('dispose adımı', e); } };   // dispose zinciri: bir adım fırlatsa da kalanlar çalışır
 const num = (v, d = null) => (v == null || Number.isNaN(Number(v)) ? d : Number(v));
 const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
@@ -152,6 +154,7 @@ export function showFlightReport(MReport, sum, gates, { pilot, drone, track } = 
 // ======================================================================
 export async function openSession(view, start, picked, ctx = {}) {
   const go = ctx.go || (hash => { location.hash = hash; });
+  releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
   const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport } = await loadSim();
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
   const drone = picked.drone || start.drone || { name: 'Dron', type: 'multirotor' }, track = picked.track || start.track || {}, pilot = picked.pilot || start.pilot || null, mission = picked.mission || start.mission || null;
@@ -191,7 +194,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const onFullChange = () => { const full = !!document.fullscreenElement; stage.classList.toggle('fs-full', full); document.body.classList.toggle('fs-full', full); fullBtn.title = tr(full ? 'Tam ekrandan çık' : 'Tam ekran'); };
   document.addEventListener('fullscreenchange', onFullChange); onFullChange();
 
-  let sim = null, milHud = null, osd = null, ops = null, hand = null, overlay = null, gateLayer = null, last = null, destroyed = false, socket = null, rec = null;
+  let sim = null, milHud = null, osd = null, ops = null, hand = null, overlay = null, gateLayer = null, last = null, destroyed = false, socket = null, rec = null, sceneError = null;
   const camBtns = M3D.CAMERA_MODES.map(([k, label], i) => h('button', { class: 'btn sm', type: 'button', 'data-cam': k, title: tr('{label} (tuş {n})', { label, n: i + 1 }), onclick: () => sim?.setCamera(k) }, `${i + 1} `, label));
   const gimbalLbl = h('span', { class: 'small fs-gimbal', hidden: true }, '');
   const mhudBtn = h('button', { class: 'btn sm fs-mhud-btn', type: 'button', hidden: true, title: tr('Askeri HUD aç/kapa (H) · Shift+H renk'), onclick: () => { milHud?.toggle(); mhudBtn.classList.toggle('primary', !!milHud?.enabled); } }, 'HUD');
@@ -330,7 +333,26 @@ export async function openSession(view, start, picked, ctx = {}) {
     }
     sim.addFrameHook(() => gauge.frame(1 / 60));
     if (rec) rec.start(MRec.takeStashedStream()).catch(() => {});
-  } catch (err) { msg.hidden = false; msg.classList.add('err'); msg.textContent = tr('3B dünya açılamadı: {e}', { e: err.message }); }
+  } catch (err) { sceneError = err; console.error('3B sahne kurulamadı', err); }
+
+  // Sahne kurulamadı (WebGL bağlamı yok vb.): uçuş sunucuda açık BIRAKILMAZ → otomatik stop + anlaşılır mesaj (BAŞLA tekrar denenebilir)
+  if (sceneError) {
+    const e = sceneError.message || String(sceneError);
+    const dispose0 = () => { if (destroyed) return; destroyed = true; safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose()); safe(() => restoreWs()); document.removeEventListener('fullscreenchange', onFullChange); document.body.classList.remove('fs-full'); view.classList.remove('sm-fly-session'); stage.remove(); };
+    dispose0();
+    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    let stopped = false;
+    try { await net.post(`/api/fly/${encodeURIComponent(fid)}/stop`, { reason: 'webgl' }); stopped = true; } catch (err2) { console.warn('uçuş kapatılamadı', err2); }
+    const box = h('div', { class: 'sm-fly sm-loading sm-scene-fail' },
+      h('h2', null, tr('3B görünüm açılamadı')),
+      h('p', null, tr('3B görünüm açılamadı: {e}', { e })),
+      h('p', { class: 'muted small' }, stopped ? tr('Uçuş sunucuda kapatıldı; açık uçuş bırakılmadı. Sekmeyi yenileyip (ya da başka sekmeleri kapatıp) yeniden deneyebilirsiniz.') : tr('Uçuş kapatılamadı; Uç sihirbazındaki "Süren uçuşunuz var" kartından bitirebilirsiniz.')),
+      h('div', { class: 'btn-row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => go('#/fly') }, tr('Sihirbaza dön'))));
+    clear(view, box);
+    const api0 = { dispose: dispose0, stage, sim: null, error: sceneError, stopped, session, world };
+    window.__smSession = api0;
+    return api0;
+  }
 
   // ---------- durum / telemetri ----------
   const setState = st => {
@@ -414,13 +436,15 @@ export async function openSession(view, start, picked, ctx = {}) {
   window.addEventListener('keydown', onKey);
   const onDocClick = e => { if (!fpvMenu.hidden && !fpvCtl.contains(e.target)) fpvMenu.hidden = true; };
   document.addEventListener('click', onDocClick, true);
+  // Çıkış zinciri (her adım ayrı korunur; biri fırlatsa da sim.dispose → forceContextLoss kesin çağrılır): WS, panel, HUD, OSD, kayıt, ses, kaplama, sahne
   const dispose = () => {
     if (destroyed) return; destroyed = true;
-    clearHandTimers(); socket?.close();
+    safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();
-    milHud?.dispose(); osd?.dispose(); if (rec) { rec.abandon(); rec.dispose(); } audio.dispose(); ops?.dispose(); hand?.dispose(); gateLayer?.dispose(); overlay?.dispose(); sim?.dispose();
-    restoreWs();
-    if (window.__smSim === sim) delete window.__smSim; delete window.__smHand; delete window.__smGates;
+    safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose());
+    safe(() => hand?.dispose()); safe(() => gateLayer?.dispose()); safe(() => overlay?.dispose()); safe(() => sim?.dispose());
+    safe(restoreWs);
+    if (window.__smSim === sim) delete window.__smSim; delete window.__smHand; delete window.__smGates; if (window.__smSession === api) delete window.__smSession;
     document.removeEventListener('fullscreenchange', onFullChange); window.removeEventListener('keydown', onKey); document.removeEventListener('click', onDocClick, true);
     document.body.classList.remove('fs-full'); view.classList.remove('sm-fly-session');
     stage.remove();

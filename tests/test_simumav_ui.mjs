@@ -73,4 +73,40 @@ for (const f of files) {
 }
 ok('API erişimi core/api.js üzerinden');
 
+// 7) WebGL bağlam sayacı (core/gl.js, saf): webgl/webgl2 bağlamları izlenir, kaybedilen bağlam sayılmaz, 2d sayılmaz; sarmalama idempotent
+const { createGlCounter, installGlCounter } = await import(join(APP, 'core/gl.js'));
+{
+  const cnt = createGlCounter();
+  const mk = () => { let lost = false; return { width: 1, height: 1, className: 'x', isConnected: true, gl: { isContextLost: () => lost, lose: () => { lost = true; } } }; };
+  const a = mk(), b = mk();
+  cnt.track(a, a.gl); cnt.track(b, b.gl); cnt.track(a, a.gl);
+  assert.equal(cnt.count(), 2); assert.ok(cnt.isGl('webgl2') && cnt.isGl('WebGL') && !cnt.isGl('2d') && !cnt.isGl('bitmaprenderer'));
+  a.gl.lose(); assert.equal(cnt.count(), 1); assert.equal(cnt.list().length, 1);
+  // sahte pencere: prototip sarmalaması; getContext('2d') izlenmez, 'webgl' izlenir; __smGl() sayı verir; ikinci kurulum aynı sayaç
+  const made = [];
+  class FakeCanvas { constructor() { this.width = 2; this.height = 2; this.className = ''; this.isConnected = false; } getContext(type) { if (type === '2d') return { fillRect() {} }; const gl = { lost: false, isContextLost() { return this.lost; } }; made.push(gl); return gl; } }
+  const win = { HTMLCanvasElement: FakeCanvas };
+  const c1 = installGlCounter(win), c2 = installGlCounter(win);
+  assert.equal(c1, c2);
+  const k1 = new FakeCanvas(), k2 = new FakeCanvas(), k3 = new FakeCanvas();
+  k1.getContext('2d'); k2.getContext('webgl'); k3.getContext('webgl2', { alpha: true });
+  assert.equal(win.__smGl(), 2); assert.equal(win.__smGl.list().length, 2);
+  made[0].lost = true; assert.equal(win.__smGl(), 1);
+}
+ok('core/gl.js: bağlam sayacı (webgl/webgl2 izlenir, 2d ve kaybedilen sayılmaz, idempotent kurulum)');
+
+// 8) Tek paylaşılan çizici: yalnız core/three.js ve fly/ (HEPGO sahnesi) WebGLRenderer kurar; kabuk modülleri makeStage kullanır; app.js sayacı kurar
+for (const f of files) {
+  const s = readFileSync(f, 'utf8');
+  if (f.endsWith('core/three.js') || f.includes('/fly/')) continue;
+  assert.ok(!/new\s+\w+\.WebGLRenderer/.test(s), `${f}: WebGLRenderer doğrudan kurulmuş (makeStage kullanın)`);
+}
+assert.equal((three.match(/new THREE\.WebGLRenderer/g) || []).length, 1, 'core/three.js tek paylaşılan WebGLRenderer');
+assert.ok(/forceContextLoss/.test(three) && /export function releaseShared/.test(three) && /drawImage\(/.test(three), 'paylaşılan çizici: releaseShared + forceContextLoss + 2B kopya');
+assert.ok(/installGlCounter\(\)/.test(app), 'app.js __smGl sayacını kurmalı');
+assert.ok(/await state\.unmount\?\.\(\)/.test(app), 'router unmount Promise\'ini beklemeli');
+const sess = readFileSync(join(APP, 'fly/session.js'), 'utf8');
+assert.ok(/releaseShared\(\)/.test(sess) && /\/stop`, \{ reason: 'webgl' \}/.test(sess), 'session.js: sahne öncesi releaseShared; sahne hatasında uçuş stop');
+ok('tek paylaşılan WebGLRenderer; Uç sahnesi öncesi bağlam bırakılır; sahne hatasında otomatik stop');
+
 console.log(`\n${n} denetim geçti`);

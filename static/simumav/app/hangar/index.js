@@ -37,7 +37,10 @@ export async function modelViewer(host, { speed = 0.6, env = true } = {}) {
   return { setModel, dispose: () => stage.dispose(), stage };
 }
 
+// Modül düzeyinde etkin temizleyici: mount() içten yeniden çağrılabilir ("Hangara dön"); router hangi mount etkinse onu kapatır
+let active = null;
 export async function mount(root, ctx) {
+  await active?.(); active = null;
   const sc = screen({ title: t('hangar.title'), sub: t('hangar.sub') });
   const stageBox = h('div', { class: 'model-stage' });
   const caption = h('div', { class: 'model-caption' });
@@ -47,8 +50,8 @@ export async function mount(root, ctx) {
   clear(root, sc);
   ctx.setBack(t('common.menu'));
 
-  let drones = [], selected = null, viewer = null, catalog = null, wizDispose = null;
-  const viewerP = modelViewer(stageBox).then(v => { viewer = v; if (selected) v.setModel(selected); }).catch(e => console.warn(e));
+  let drones = [], selected = null, viewer = null, catalog = null, wizDispose = null, dead = false, viewerWanted = true;
+  const viewerP = modelViewer(stageBox).then(v => { if (dead || !viewerWanted) { v.dispose(); return; } viewer = v; if (selected) v.setModel(selected); }).catch(e => console.warn(e));
 
   const select = d => {
     selected = d;
@@ -94,7 +97,7 @@ export async function mount(root, ctx) {
     wiz.append(head, body);
     clear(root, wiz);
     ctx.setBack(t('hangar.title'), 'hangar');
-    viewer?.dispose(); viewer = null;
+    viewer?.dispose(); viewer = null; viewerWanted = false;   // sihirbazda ana dönen model yok (tek paylaşılan önizleme)
     const setStep = n => [...head.querySelectorAll('.steps i')].forEach((i, k) => { i.classList.toggle('on', k === n); i.classList.toggle('done', k < n); });
     const draft = { type: 'fpv', model_key: 'proc:quad250', color: COLORS[0], name: '' };
 
@@ -112,7 +115,8 @@ export async function mount(root, ctx) {
     const selWrap = h('div', { class: 'hsel-wrap' }, sel);
     body.classList.add('wiz-select');
     clear(body, selWrap, h('div', { class: 'btn-row' }, btn(t('common.next'), () => stepModel(), 'primary lg')));
-    modelViewer(prevHost, { speed: 0.9 }).then(v => { pv = v; place(draft.type); }).catch(() => {});
+    let wizDead = false;
+    modelViewer(prevHost, { speed: 0.9 }).then(v => { if (wizDead) { v.dispose(); return; } pv = v; place(draft.type); }).catch(() => {});
     sel.focus();
 
     function stepModel() {
@@ -151,15 +155,17 @@ export async function mount(root, ctx) {
         // Hangara iniş animasyonu
         const stage3 = h('div', { class: 'model-stage land-anim' });
         clear(body, stage3, h('h2', { class: 'title xl appear' }, name), h('p', { class: 'sub appear' }, t('hangar.landed')),
-          h('div', { class: 'btn-row appear' }, btn(t('hangar.to_hangar'), () => { pv?.dispose(); pv = null; mount(root, ctx); }, 'primary lg'), btn(t('common.menu'), () => ctx.go('menu'), 'ghost')));
+          h('div', { class: 'btn-row appear' }, btn(t('hangar.to_hangar'), () => { wizDispose?.(); wizDispose = null; mount(root, ctx); }, 'primary lg'), btn(t('common.menu'), () => ctx.go('menu'), 'ghost')));
         if (pv) { stage3.append(prevHost); pv.stage.resize(); pv.setModel({ ...d, type: draft.type, model_key: draft.model_key, color: draft.color }); }
         toast(t('common.saved'), 'ok');
       } catch (e) { toastErr(e); }
     }
-    wizDispose = () => { pv?.dispose(); pv = null; };
+    wizDispose = () => { wizDead = true; pv?.dispose(); pv = null; };
   }
 
   await load();
   if (ctx.param === 'new') openWizard();
-  return () => { viewer?.dispose(); viewerP.then(() => viewer?.dispose()); wizDispose?.(); };
+  // unmount: 3B görünümler (dönen model + sihirbaz önizlemesi) kesin bırakılır; router Promise'i bekler
+  active = async () => { dead = true; viewer?.dispose(); viewer = null; wizDispose?.(); wizDispose = null; await viewerP; };
+  return () => { const f = active; active = null; return f?.(); };
 }
