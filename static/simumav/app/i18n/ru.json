@@ -195,5 +195,17 @@
   "settings.version": "Версия",
   "settings.logout": "Выйти",
   "settings.logout_q": "Завершить сеанс?",
-  "settings.bye": "До встречи, пилот!"
+  "settings.bye": "До встречи, пилот!",
+  "settings.volume": "Громкость",
+  "settings.volume_sub": "Эффекты интерфейса и звук двигателя",
+  "settings.engine": "Звук двигателя",
+  "settings.engine_sub": "Тихий гул двигателя в полётной сцене главного меню",
+  "settings.bgfx": "Фоновый полёт",
+  "settings.bgfx_sub": "Живая 3D-сцена полёта в главном меню (отключите на слабых устройствах)",
+  "menu.hint": "Нажмите для выбора · Навигация стрелками или геймпадом",
+  "menu.live": "Живой полёт",
+  "menu.live_real": "Реальный рельеф · TR TEST Kalecik",
+  "menu.live_proc": "Процедурный рельеф",
+  "menu.live_loading": "Подготовка сцены",
+  "common.loading_scene": "Загрузка сцены"
 }

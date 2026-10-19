@@ -140,14 +140,40 @@ export function animateDrone(group, dt, t) {
   if (group.userData.flame) group.userData.flame.scale.set(1, 0.9 + Math.sin(t * 40) * 0.15, 1);
 }
 
-/** GLB yükle (katalogdaki gerçek model); hata → null. */
-export async function loadGlb(lib, url) {
+// GLB düğüm adları (flightsim3d ile aynı): pervane/rotor düğümleri döner (en üst eşleşen; ekseni en ince sınır kutusu boyutu), `accent` adlı
+// materyal kullanıcı rengine boyanır (static/simumav/models/*.glb; tools/simumav_models_build.py Gazebo/Blue → accent).
+const PROP_RE = /prop|propeller|rotor|pervane/i;
+const glbCache = new Map();   // url → Promise<scene>
+const loadScene = (lib, url) => {
+  if (!glbCache.has(url)) glbCache.set(url, new lib.GLTFLoader().loadAsync(url).then(g => g.scene).catch(e => { glbCache.delete(url); throw e; }));
+  return glbCache.get(url);
+};
+
+/** GLB yükle (katalogdaki gerçek model) → Group (birim kutuya sığdırılmış; userData.spin pervane düğümleri); hata → null. */
+export async function loadGlb(lib, url, color = null) {
   try {
-    const gltf = await new lib.GLTFLoader().loadAsync(url);
-    const g = gltf.scene;
-    const box = new lib.THREE.Box3().setFromObject(g), s = 1.8 / Math.max(...box.getSize(new lib.THREE.Vector3()).toArray());
-    g.scale.setScalar(s); g.position.sub(box.getCenter(new lib.THREE.Vector3()).multiplyScalar(s));
-    const wrap = new lib.THREE.Group(); wrap.add(g); wrap.userData.spin = [];
+    const { THREE } = lib;
+    const g = (await loadScene(lib, url)).clone(true);
+    const spin = [];
+    g.traverse(o => {
+      if (o.isMesh) {
+        o.material = Array.isArray(o.material) ? o.material.map(m => m.clone()) : o.material.clone();
+        for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (color && /^accent$/i.test(m.name || '')) m.color.set(color);
+      }
+    });
+    g.traverse(n => {
+      if (!PROP_RE.test(n.name || '')) return;
+      for (let a = n.parent; a && a !== g; a = a.parent) if (PROP_RE.test(a.name || '')) return;   // yalnız en üst eşleşen düğüm
+      n.updateWorldMatrix(true, false);
+      const inv = new THREE.Matrix4().copy(n.matrixWorld).invert(), bb = new THREE.Box3();
+      n.traverse(c => { if (c.isMesh && c.geometry) { c.geometry.computeBoundingBox(); c.updateWorldMatrix(true, false); bb.union(c.geometry.boundingBox.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, c.matrixWorld))); } });
+      const sz = bb.isEmpty() ? new THREE.Vector3(1, 1, 0.1) : bb.getSize(new THREE.Vector3());
+      const axis = sz.x <= sz.y && sz.x <= sz.z ? 'x' : sz.y <= sz.z ? 'y' : 'z';
+      spin.push({ mesh: n, axis, speed: (spin.length % 2 ? -1 : 1) * 30 });
+    });
+    const box = new THREE.Box3().setFromObject(g), s = 1.8 / Math.max(...box.getSize(new THREE.Vector3()).toArray());
+    g.scale.setScalar(s); g.position.sub(box.getCenter(new THREE.Vector3()).multiplyScalar(s));
+    const wrap = new THREE.Group(); wrap.add(g); wrap.userData.spin = spin; wrap.userData.glb = url;
     return wrap;
   } catch { return null; }
 }

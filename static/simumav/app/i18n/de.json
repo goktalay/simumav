@@ -195,5 +195,17 @@
   "settings.version": "Version",
   "settings.logout": "Abmelden",
   "settings.logout_q": "Sitzung beenden?",
-  "settings.bye": "Bis bald, Pilot!"
+  "settings.bye": "Bis bald, Pilot!",
+  "settings.volume": "Lautstärke",
+  "settings.volume_sub": "UI-Effekte und Motorgeräusch",
+  "settings.engine": "Motorgeräusch",
+  "settings.engine_sub": "Leises Motorbrummen in der Flugszene des Hauptmenüs",
+  "settings.bgfx": "Hintergrundflug",
+  "settings.bgfx_sub": "Live-3D-Flugszene im Hauptmenü (auf schwachen Geräten ausschalten)",
+  "menu.hint": "Klicken zum Auswählen · Navigation mit Pfeiltasten oder Gamepad",
+  "menu.live": "Live-Flug",
+  "menu.live_real": "Echtes Gelände · TR TEST Kalecik",
+  "menu.live_proc": "Prozedurales Gelände",
+  "menu.live_loading": "Szene wird vorbereitet",
+  "common.loading_scene": "Szene wird geladen"
 }

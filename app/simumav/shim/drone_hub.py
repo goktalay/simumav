@@ -31,7 +31,8 @@ RATE_WINDOW, RATE_MAX = 60, 10
 CMD_TIMEOUT = 10
 CMD_TIMEOUTS = {'mission_upload': 60, 'mission_download': 60, 'log_list': 60}
 # Sunucu-içi bileşik komutlar (GÖKTUNGU dron.py / gorev.py akışı birebir; köprüye v1 set_mode/arm/takeoff olarak gider):
-#  takeoff       → set_mode GUIDED → mod teyidi (4 sn) → (ARM değilse) ARM (zorlamasız) → ARM teyidi (6 sn) → NAV_TAKEOFF.
+#  takeoff       → [SIMUMAV: SITL kalp atışı beklenir ≤ 45 sn] → set_mode GUIDED → mod teyidi (4 sn) → (ARM değilse) ARM (zorlamasız) →
+#                  ARM teyidi (6 sn; reddedilirse pre-arm/EKF beklenip ≤ 45 sn yeniden denenir) → NAV_TAKEOFF. Sabit kanat: TKOFF_ALT → TAKEOFF → ARM (aynı yeniden deneme).
 #                  Pilot ayrıca ARM etmez. Akış arka planda yürür; yanıt akış başlayınca döner, adımlar dron konsoluna düşer.
 #  mission_start → (ARM değilse) GUIDED → 0,3 sn → ARM → teyit (5 sn) → AUTO → 0,3 sn → MISSION_START (köprü 'mission_start'
 #                  yeteneği bildirdiyse). NAV_TAKEOFF gönderilmez: rotanın ilk öğesi TAKEOFF'tur (routes/{id}/mission ekler).
@@ -688,8 +689,104 @@ def _mark_takeoff_check(kid, sent, error):
     return None
 
 
+HEARTBEAT_WAIT_S = 45.0   # oturum HAZIR'a SITL TCP bağlanınca geçer; kalp atışı/EKF birkaç sn sonra gelir → komutlar o ana kadar bekler
+ARM_RETRY_S = 45.0        # ARM reddi (PreArm: EKF/GPS henüz oturmadı) → pre-arm beklenir ve yeniden denenir (tek denemede düşmez)
+ARM_RETRY_STEP_S = 2.0
+
+
+def _kalp_atisi_var(b, d):
+    """Simülatör oturumunda SITL kalp atışı alındı mı (flightsim.SimSession._heartbeat_alindi; sahte kipte her zaman)."""
+    s = getattr(b, 's', None)
+    if s is None:
+        return bool(d.get('mode'))
+    return s.sahte is not None or bool(getattr(s, '_heartbeat_alindi', False))
+
+
+async def _kalp_atisi_bekle(b, sim, sysid, d):
+    """SIMUMAV paritesi (kullanıcı: "Kalkış ARM olmadan çalışmıyor"): panel HAZIR görür görmez Kalkış'a basar; SITL kalp atışı gelmeden
+    set_mode/arm 'SITL henüz kalp atışı göndermedi' ile düşüyordu (kullanıcı sonradan ARM'a basınca akış çalışıyordu). Kalp atışı
+    HEARTBEAT_WAIT_S içinde beklenir; konsola yazılır. Dönüş: alındı mı."""
+    if _kalp_atisi_var(b, d):
+        return True
+    console_line(b, sysid, 'KOMUT', 'SITL kalp atışı bekleniyor (otopilot açılıyor)...', 'uyari')
+    ok = await _wait_for(lambda: _kalp_atisi_var(b, d) or not _alive(b), HEARTBEAT_WAIT_S, 0.25)
+    return ok and _alive(b) and _kalp_atisi_var(b, d)
+
+
+POS_WAIT_S = 60.0   # EKF konum (GUIDED/TAKEOFF "requires position") beklemesi
+
+
+def kalkis_konum_hazir(s, d=None):
+    """Otopilot kalkışa hazır mı: GPS 3B fix + EKF yatay konum (EKF_STATUS_REPORT POS_HORIZ_ABS 16 | PRED_POS_HORIZ_ABS 512; rapor yoksa
+    HOME_POSITION alınmış olması) + SYS_STATUS pre-arm sağlık biti 'fail' değil. Sahte kipte her zaman. SITL'de EKF oturmadan ARM kabul edilse
+    de GUIDED/TAKEOFF modu 'requires position' ile reddedilir ve araç DISARM olur (ölçüldü) — bu yüzden ARM öncesi beklenir."""
+    if s is None or s.sahte is not None:
+        return True
+    te = s.tele or {}
+    if (te.get('gps_fix') or 0) < 3:
+        return False
+    if d is None:
+        hub = getattr(s, 'hub', None)
+        st = hub.drones.get(1) if hub is not None else None
+        d = st.d if st is not None else {}
+    flags = d.get('ekf_flags')
+    pos = bool(flags & 528) if flags is not None else te.get('home') is not None
+    prearm_ok = (d.get('sensors') or {}).get('prearm') != 'fail'
+    return pos and prearm_ok
+
+
+async def _konum_bekle(b, sim, sysid, d):
+    s = getattr(b, 's', None)
+    if kalkis_konum_hazir(s, d):
+        return True
+    console_line(b, sysid, 'KOMUT', 'EKF/GPS konumu bekleniyor (kalkış için gerekli)...', 'uyari')
+    bitis = time.time() + POS_WAIT_S
+    son_yazi = time.time()
+    while time.time() < bitis and _alive(b):
+        if kalkis_konum_hazir(s, d):
+            console_line(b, sysid, 'KOMUT', 'EKF konumu hazır', 'basari')
+            return True
+        if time.time() - son_yazi >= 6:
+            son_yazi = time.time()
+            console_line(b, sysid, 'KOMUT', f"EKF/GPS konumu bekleniyor: {d.get('last_text') or 'GPS fix ' + str((s.tele or {}).get('gps_fix') if s else '?')}", 'uyari')
+        await asyncio.sleep(0.25)
+    return kalkis_konum_hazir(s, d)
+
+
+def _prearm_metni(b, sysid):
+    st = b.drones.get(int(sysid))
+    if st is None:
+        return ''
+    if st.prearm_hata and time.time() - st.prearm_ani < 30:
+        return st.prearm_hata
+    return (st.d.get('prearm') or [''])[-1]
+
+
+async def _arm_dene(b, sim, sysid, d, viewer_ws, teyit_s):
+    """ARM (zorlamasız) + teyit; reddedilir ya da teyit gelmezse pre-arm (EKF/GPS/baro oturması) beklenir ve ARM_RETRY_S içinde yeniden
+    denenir. Her denemede son PreArm metni konsola düşer. Dönüş: armed mi."""
+    bitis = time.time() + ARM_RETRY_S
+    deneme = 0
+    while _alive(b):
+        deneme += 1
+        r = await _dispatch(b, sim, sysid, 'arm', {}, viewer_ws)
+        if await _wait_for(lambda: bool(d.get('armed')), teyit_s if r['ok'] else min(teyit_s, 1.5)):
+            if deneme > 1:
+                console_line(b, sysid, 'KOMUT', f'ARM teyit edildi ({deneme}. deneme)', 'basari')
+            return True
+        if time.time() >= bitis:
+            return False
+        sebep = _prearm_metni(b, sysid) or (r.get('error') if not r['ok'] else '') or 'otopilot henüz hazır değil'
+        console_line(b, sysid, 'KOMUT', f'ARM bekleniyor: {sebep} — {ARM_RETRY_STEP_S:.0f} sn sonra yeniden denenecek', 'uyari')
+        await asyncio.sleep(ARM_RETRY_STEP_S)
+        if d.get('armed'):
+            return True
+    return False
+
+
 async def _takeoff_flow(b, sim, sysid, hedef, kontrol_id, viewer_ws):
-    """GÖKTUNGU dron.py _kalkis_islemi: tek deneme, teyit telemetriden (mod adı ve armed bayrağı)."""
+    """GÖKTUNGU dron.py _kalkis_islemi (HEPGO drone_hub ile aynı sıra: GUIDED → ARM → NAV_TAKEOFF); SIMUMAV eki: kalp atışı beklemesi ve
+    ARM yeniden denemesi (_kalp_atisi_bekle / _arm_dene) — pilot ayrıca ARM düğmesine basmaz."""
     d = b.drones[int(sysid)].d
     sent, hata = False, None
 
@@ -698,6 +795,10 @@ async def _takeoff_flow(b, sim, sysid, hedef, kontrol_id, viewer_ws):
         hata = msg
         console_line(b, sysid, 'KOMUT', msg, 'hata')
     try:
+        if not await _kalp_atisi_bekle(b, sim, sysid, d):
+            return fail('SITL kalp atışı alınamadı; kalkış başlatılmadı. Oturumu "Sıfırla" ile yeniden başlatın.')
+        if not await _konum_bekle(b, sim, sysid, d):
+            return fail(f"EKF/GPS konumu {POS_WAIT_S:.0f} sn içinde oturmadı; kalkış başlatılmadı ({d.get('last_text') or '—'}).")
         if d.get('type') == 1:   # SABİT KANAT (MAV_TYPE_FIXED_WING): ArduPlane'in kendi kalkışı (GÖKTUNGU'da yok; GUIDED+NAV_TAKEOFF reddedilir)
             sent = await _plane_takeoff(b, sim, sysid, hedef, viewer_ws, d, fail)
             return
@@ -706,9 +807,8 @@ async def _takeoff_flow(b, sim, sysid, hedef, kontrol_id, viewer_ws):
         if not r['ok'] or not await _wait_for(lambda: str(d.get('mode') or '').upper() == 'GUIDED', GUIDED_CONFIRM_S):
             return fail('GUIDED modu teyit edilmedi; takeoff gönderilmedi.')
         if not d.get('armed'):
-            r = await _dispatch(b, sim, sysid, 'arm', {}, viewer_ws)
-            if not r['ok'] or not await _wait_for(lambda: bool(d.get('armed')), ARM_CONFIRM_S):
-                return fail('ARM teyidi alınamadı; takeoff gönderilmedi. Pre-arm uyarılarını kontrol edin.')
+            if not await _arm_dene(b, sim, sysid, d, viewer_ws, ARM_CONFIRM_S):
+                return fail(f"ARM teyidi alınamadı ({ARM_RETRY_S:.0f} sn); takeoff gönderilmedi. Pre-arm: {_prearm_metni(b, sysid) or '—'}")
         if not _alive(b):
             return fail('Takeoff öncesi MAVLink bağlantısı kesildi.')
         r = await _dispatch(b, sim, sysid, 'takeoff', {'alt_rel_m': hedef}, viewer_ws)
@@ -754,9 +854,8 @@ async def _plane_takeoff(b, sim, sysid, hedef, viewer_ws, d, fail):
         if not _alive(b):
             fail('Kalkış öncesi MAVLink bağlantısı kesildi.')
             return False
-        r = await _dispatch(b, sim, sysid, 'arm', {}, viewer_ws)
-        if not r['ok'] or not await _wait_for(lambda: bool(d.get('armed')), ARM_CONFIRM_S):
-            fail('ARM teyidi alınamadı; kalkış başlatılmadı. Pre-arm uyarılarını kontrol edin.')
+        if not await _arm_dene(b, sim, sysid, d, viewer_ws, ARM_CONFIRM_S):
+            fail(f"ARM teyidi alınamadı ({ARM_RETRY_S:.0f} sn); kalkış başlatılmadı. Pre-arm: {_prearm_metni(b, sysid) or '—'}")
             return False
     b.drones[int(sysid)].hedef_rel = hedef
     console_line(b, sysid, 'KOMUT', f'TAKEOFF modu: sabit kanat kalkışı başladı ({hedef:.0f} m)', 'basari')

@@ -63,6 +63,11 @@ test('model eşlemesi: proc şablonları dahili modele; kütüphane + preview �
   assert.deepEqual(modelFor(DATA.drones[0]), { id: 'builtin:quad' }); assert.deepEqual(modelFor(DATA.drones[1]), { id: 'builtin:caymaz' }); assert.deepEqual(modelFor(DATA.drones[2]), { id: 'builtin:delta' });
   assert.deepEqual(modelFor(DATA.drones[3]), { id: 'lib-heli', glb_url: '/files/heli.glb', orient: undefined });
   assert.deepEqual(modelFor({ type: 'heli' }), { id: 'builtin:heli' }); assert.deepEqual(modelFor({ type: 'vtol', model_key: 'proc:bilinmez' }), { id: 'builtin:caymaz' });
+  // gerçekçi GLB: sunucu preview + orient verir → kütüphane modeli (glb_url + orient + has_prop); eski proc anahtarı da yükseltilmiş preview/orient ile GLB
+  const O = { forward: '+x', up: '+y', scale: 1, offset: [0, 0, 0], prop: { mode: 'none', pos: [0, 0, 0], r: 0.3 } };
+  assert.deepEqual(modelFor({ type: 'fpv', model_key: 'glb:iris_fpv', preview: '/static/simumav/models/iris_fpv.glb', orient: O, has_prop: true }), { id: 'glb:iris_fpv', glb_url: '/static/simumav/models/iris_fpv.glb', orient: O, has_prop: true });
+  assert.deepEqual(modelFor({ type: 'fpv', model_key: 'proc:quad250', preview: '/static/simumav/models/iris_fpv.glb', orient: O }), { id: 'proc:quad250', glb_url: '/static/simumav/models/iris_fpv.glb', orient: O, has_prop: true });
+  assert.deepEqual(modelFor({ type: 'plane', model_key: 'builtin:caymaz', preview: '/static/models/caymaz-sim.glb', orient: null }), { id: 'builtin:caymaz' });   // dahili GLB çekirdekte
 });
 test('parkur → dünya: google3d anahtar yoksa prosedürel; real/procedural korunur; yüzdeler 0…1; pist yönü; saat eşlemesi', () => {
   const w = worldFromTrack(DATA.tracks[0], null);

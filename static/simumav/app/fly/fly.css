@@ -89,6 +89,16 @@
 .fs-stage.fs-fpv .fs-speed-gauge { display: none; }   /* FPV OSD / gimbal HUD kendi hız göstergesini çizer; sol alttaki HUD metniyle çakışmasın */
 .fs-hand-lbl { position: absolute; right: 14px; bottom: calc(var(--fs-bar-h, 54px) + 14px); z-index: 5; font-size: 12px; color: #fbbf24; background: rgba(11,18,32,.6); padding: 4px 10px; border-radius: 8px; pointer-events: none; }
 .fs-stage.fs-mhud-on .fs-hand-lbl, .fs-stage.fs-osd-on .fs-hand-lbl { bottom: calc(var(--fs-bar-h, 54px) + 54px); }
+/* HEPGO paritesi: ağ göstergesi (HEPGO'da HUD altında; burada HUD yok → üst şerit altı, sağ) ve sanal kumanda açıkken etiket çubukların üstünde */
+.sm-fly-stage .fs-net { position: absolute; left: 176px; bottom: calc(var(--fs-bar-h, 54px) + 8px); z-index: 5; margin: 0; padding: 2px 8px; border-radius: 6px; background: rgba(11,18,32,.55); pointer-events: none; white-space: nowrap; }   /* kadranın sağı; panel kartı sağ kenarı kaplar */
+.sm-fly-stage .fs-net:empty, .sm-fly-stage .fs-net[hidden] { display: none; }
+.sm-fly-stage.rc-on .fs-net { bottom: calc(var(--fs-bar-h, 54px) + 170px); }   /* sol çubuğun üstü */
+.sm-fly-stage.fs-fpv .fs-net { left: 14px; bottom: calc(var(--fs-bar-h, 54px) + 200px); }   /* FPV: kadran gizli, MP yüzen kutusu sol altta */
+.sm-fly-stage .fs-hand-lbl { bottom: calc(var(--fs-bar-h, 54px) + 34px); }
+.sm-fly-stage.fs-mhud-on .fs-hand-lbl, .sm-fly-stage.fs-osd-on .fs-hand-lbl { bottom: calc(var(--fs-bar-h, 54px) + 74px); }
+.sm-fly-stage.rc-on .fs-hand-lbl { bottom: calc(var(--fs-bar-h, 54px) + 170px); }
+.sm-fly-stage.rc-on .fs-countdown, .sm-fly-stage.rc-on .fs-crash { z-index: 7; }
+.sm-fly-stage .fs-cmds .fs-modesel { max-width: 120px; }
 .fs-mp-lock { display: block; margin-top: 4px; color: #fbbf24; }
 .fs-end-btn { font-weight: 700; }
 .fs-overlay3d, .fs-overlay2d { position: absolute; inset: 0; pointer-events: none; }

@@ -103,7 +103,7 @@ tests/test_simumav.py   REST + oturum + bridge (SITL yok) · tests/test_simumav_
 - `drones(id, user_id, name, type ('multirotor'|'plane'|'heli'|'fpv'|'interceptor'|'vtol'), model_key (flightsim_models
   anahtarı ya da 'proc:<şablon>'), params JSON (SITL parametre farkları; interceptor: ARSPD_FBW_MAX 170 m/s ≈ 600 km/h,
   THR_MAX 100, hızlı rate PID'ler), color, preview (dönen 3B için GLB yolu), is_default)`
-  — kayıtta otomatik **1 hazır FPV dron** (`type 'fpv'`, model 'proc:quad250', ad "FPV-1").
+  — kayıtta otomatik **1 hazır FPV dron** (`type 'fpv'`, model 'glb:iris_fpv', ad "FPV-1").
 - `tracks(id, user_id, name, lat, lon, alt_mode 'terrain', radius_m, wind {speed_ms, dir_deg, gust}, time_of_day, weather,
   world_mode ('real'|'google3d'|'procedural' — HEPGO'daki üç kip: Gerçek arazi / Google 3B / Prosedürel; varsayılan 'google3d'),
   world JSON (HEPGO `flightsim3d.js` WORLD_DEFAULTS alt kümesi — GERÇEK anahtarlar: seed, size_m, tree_density, mountain_height, mountain_count,
@@ -131,9 +131,13 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
 - `GET /api/hangar` → `{drones:[{id,name,type,model_key,params,color,preview (GLB|null),proc,is_default}], quota}`; `POST /api/hangar {name ≤40,type,model_key,params?,color '#rrggbb'}`
   (201); `PUT /api/hangar/{id} {name?,model_key?,params?,color?,is_default?}`; `DELETE` (uçuştaki dron 409 `in_use`); kota 20 → 409 `quota`;
   params beyaz liste dışı → 422 `param_rejected` + `name`.
-  `GET /api/hangar/catalog` → `{types:[{key,label,models:[{key,label,glb,thumb,defaults,proc,desc}]}]}` — tipler multirotor (builtin:quad, builtin:hexa),
-  fpv (`proc:quad250`), plane (builtin:caymaz GLB, builtin:delta), interceptor (`proc:interceptor`), heli (builtin:heli), vtol (builtin:caymaz).
-  `proc:true` = GLB yok, ön yüz prosedürel çizer. Interceptor varsayılanları ArduPlane 4.6+ adlarıyla: AIRSPEED_MAX 170, AIRSPEED_MIN 24, AIRSPEED_CRUISE 95,
+  `GET /api/hangar/catalog` → `{types:[{key,label,models:[{key,label,glb,thumb,defaults,proc,desc,orient?,has_prop?}]}]}` — her tipte önce **gerçekçi GLB
+  modeller** (`glb:*`, static/simumav/models/*.glb, kaynak/lisans LICENSES.md, üretim tools/simumav_models_build.py; ilk model tipin varsayılanı): fpv `glb:iris_fpv`
+  (3DR Iris + FPV kamera), multirotor `glb:iris` / `glb:x500` / `glb:typhoon_h480` (hexa), plane `glb:rc_cessna` / `glb:believer`, interceptor `glb:jet` / `glb:zephyr`,
+  heli `glb:heli`, vtol `glb:standard_vtol`; ardından dahili (builtin:quad/hexa/caymaz/delta/heli) ve prosedürel şablonlar (`proc:quad250`, `proc:interceptor`) yedek.
+  GLB'ler glTF Y yukarı, burun +X (orient {forward:'+x', up:'+y'}), pervaneler `rotor_*`/`propeller` düğümleri, kontrol yüzeyleri flightsim3d CTRL_RE adlarıyla.
+  Dron kayıtları `preview` (GLB url), `orient`, `has_prop`, `model_label` döndürür; eski prosedürel/dahili anahtarlar `bridge.MODEL_YUKSELT` ile aynı sınıfın GLB'sine
+  yükseltilir (model_key değişmez). `proc:true` = GLB yok, ön yüz prosedürel çizer. Yeni kullanıcının hazır dronu FPV-1 `glb:iris_fpv`. Interceptor varsayılanları ArduPlane 4.6+ adlarıyla: AIRSPEED_MAX 170, AIRSPEED_MIN 24, AIRSPEED_CRUISE 95,
   THR_MAX 100, TKOFF_THR_MAX 100, LIM_ROLL_CD 7500, hızlı PTCH_/RLL_ oran döngüleri, TECS_CLMB_MAX 30 (eski `ARSPD_FBW_*` adları beyaz listede ama 4.7.2'de yok).
 - `GET /api/crew` → `{pilots:[{…, svg}], quota}`; `POST /api/crew {name, character p01…p10}`; `PUT /api/crew/{id} {name?,character?,is_default?}`; `DELETE`
   (son pilot 409 `last_pilot`); `GET /api/crew/characters` → `{characters:[{key,label,gender,svg:'/app/img/pilots/<key>.svg'}]}` (pilot kayıtlarının `svg` alanı da aynı yol; tek doğruluk kaynağı
@@ -202,13 +206,30 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
   Uç ayrıntıları (static/simumav/app/fly; tests/test_simumav_fly.mjs):
   • Sihirbaz adımları `wizard.js` createWizard: drone → track → launch (yalnız plane/interceptor/vtol) → mission → pilot; parkur değişince görev sıfırlanır;
     `payload()` = POST /api/fly/start gövdesi (launch: {method, angle_deg 10–30, release_kmh 40–110, hand_speed_ms 6–8, hand_pitch_deg 10–15}; kopterde
-    {method:'wheels'}). Tip eşlemesi: plane/interceptor → sabit_kanat, heli → helikopter, fpv/multirotor → multirotor. Model: 'proc:quad250' → builtin:quad,
-    'proc:caymaz' → builtin:caymaz, 'proc:interceptor' → builtin:delta, kütüphane anahtarı + preview GLB → {id, glb_url}. Dron önizlemesi: dronun çevresinde dönen
+    {method:'wheels'}). Tip eşlemesi: plane/interceptor → sabit_kanat, heli → helikopter, fpv/multirotor → multirotor. Model: sunucu `preview`+`orient` verdiyse gerçekçi GLB {id, glb_url, orient, has_prop} (glb:* ve yükseltilmiş proc:*);
+    'proc:quad250' → builtin:quad, 'proc:caymaz' → builtin:caymaz, 'proc:interceptor' → builtin:delta, kütüphane anahtarı + preview GLB → {id, glb_url}. Dron önizlemesi: dronun çevresinde dönen
     serbest kamera (preview:true dünya turu yaptığından kullanılmaz).
   • Dünya: `worldFromTrack(track, maps_key)` — world_mode 'real'|'google3d'|'procedural' (google3d anahtar yoksa prosedürel); track.world alanları
     (size_m, trees_pct|tree_density, extra_buildings|building_count, fog_pct|fog, runway_deg|runway_heading, runway, time_of_day|time) HEPGO WORLD_DEFAULTS'a; rüzgâr
     tracks.wind'den. Kurulum HEPGO flightsim.js renderSession ile aynı (createFlightSim3D opts: camera, pilotFov, fpvAnalog, fpvNose, onPilotFov, g3dKey, onFallback).
   • Kameralar: HEPGO CAMERA_MODES (Takip · FPV 'pilot' + OSD · Gimbal 'fpv' + askeri HUD · Serbest · Yer); FPV dron başlangıçta 'pilot'. Ayarlar.analog_fpv → analog OSD.
+  • SİMÜLASYON PARİTESİ (HEPGO renderSession ile birebir; kullanıcı simumav.com'da üç gerilemeyi bildirdi):
+    – Titreme: telemetri 3B'nin uyarlanır tamponlu zaman çizgisine (flightsim3d.js içindeki flightsim_interp.js) HEPGO sırasıyla verilir (setTelemetry →
+      HUD/OSD/ses/panel); `net: 50 Hz · jitter · tampon · DR` etiketi (.fs-net, alt çubuk üstü sağ); teşhis `/app/?netsim=jitter30,loss5,delay40#/fly/<id>`
+      (`rc.js` parseNetsim/netsimDeliver; window.__fsSim). Kabul testi tarayıcısız: tests/test_simumav_rc.mjs (50 Hz jitter'lı/kayıplı tele → ardışık
+      karelerde konum TEK YÖNLÜ, DR ≤ 1). Elden atış kaydırması (shimTelemetry) tbm/tbm_pos/rs/ps/ys'yi korur.
+    – Kalkış ARM'siz: KÖK NEDEN — oturum SITL TCP bağlanınca HAZIR'a geçer, kalp atışı/EKF birkaç sn sonra gelir; panel HAZIR'da "Kalkış" → hub
+      _takeoff_flow `set_mode: SITL henüz kalp atışı göndermedi` ile tek denemede düşüyordu (kullanıcı ARM'a basınca akış çalışıyordu; ArduCopter'da EKF
+      oturmadan ARM kabul edilip GUIDED "requires position" ile reddediliyor ve araç DISARM oluyordu — SITL'de ölçüldü). shim/drone_hub.py: kalp atışı
+      beklemesi (≤ 45 sn) → EKF/GPS konum beklemesi (`kalkis_konum_hazir`: fix ≥ 3, EKF_STATUS_REPORT POS_HORIZ_ABS|PRED, pre-arm biti; ≤ 60 sn) → GUIDED →
+      ARM (red/teyit yoksa pre-arm metni konsola, 2 sn sonra yeniden; ≤ 45 sn) → NAV_TAKEOFF; sabit kanat `_plane_takeoff` aynı bekleme/yeniden deneme.
+      Sim yolu (düzenek/elden atış `takeoff{alt}`) için `bridge.kalp_atisi_bekle` (≤ 90 sn; /ws/fly takeoff ayrı görevde, WS döngüsü bloklanmaz).
+      Gerçek SITL kabul: tests/test_simumav_sitl.py (HEPGO_SITL_DIR; ArduCopter 47 sn / ArduPlane 27 sn'de ARM düğmesiz armed + havada; rc override).
+    – Sanal kumanda (`rc.js` virtualRC, HEPGO kopyası): alt çubuk 🎮 → iki çubuk + klavye → 20 Hz {t:'rc', ch[8]} → /ws/fly `rc` → RC_CHANNELS_OVERRIDE;
+      kapatınca/çıkışta 8×0; FPV'de görünür (panel gizli); MP joystick uyarısı (gcs_connected); 3B WASD kilidi; dokunmatik pointer events.
+    – Ayrıca taşınan: alt çubuk ARM/DISARM · mod · Kalkış (hub akışı) · RTL (.fs-cmds; panel açıkken gizli), Esc → Geri onayı, cmd takeoff zaman aşımı 100 sn.
+      P/O tuşları artık yalnız HEPGO modüllerinde (session.js'deki ikinci dinleyici çift tetikliyordu → kaldırıldı). E2E: tests/simumav_par_shots.py
+      (sahte SITL, port 8605, /tmp/simumav-par/*.png; SwiftShader'da kare hızı < 12 ise tarayıcı içi titreme kabulü atlanır).
   • Interceptor: hız kadranı 600 km/h (SVG; kırmızı bölge %85+), ses modeli yüksek devir; HUD'da mach yok. Diğer ölçekler: plane/vtol 200, fpv 150, heli 120, kopter 100.
   • ELDEN ATIŞ (`hand_launch.js`, HAND): omuz 1,6 m; SITL başlangıç irtifası 1,8 m (çekirdek); bırakma 7 m/s (6–8), burun yukarı 12° (10–15), yalpa 3°;
     geri sayım 3 sn → kol geri 0,25 sn → ileri 0,45 sn → BIRAKMA (t=0,7 sn) → ofset 1,2 sn'de SITL'e erir. Görsel: telemetri kaydırması (shimTelemetry:

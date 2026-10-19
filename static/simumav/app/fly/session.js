@@ -16,12 +16,19 @@
 //   • Interceptor: hız göstergesi 600 km/h (SVG kadran), ses modeli AUDIO_MODELS.interceptor (yüksek devir); HUD'da mach yok (HEPGO HUD'da zaten yok).
 //   • FPV dron: başlangıç kamerası 'pilot' (gerçek FPV + OSD); ayarlar.analog_fpv → sim.setFpvAnalog + osd.setAnalog.
 //   • Halkalar: tracks.gates → neon halka/kapı; geçiş algılama; OSD ok + mesafe + tur/süre; stop gövdesine gates:{passed, missed, best_lap_s, laps}.
+// HEPGO renderSession paritesi (./rc.js; docs/ucus-simulatoru.md §5): titreme → telemetri 3B'nin uyarlanır tamponlu zaman çizgisine (flightsim3d.js
+//   içindeki flightsim_interp.js) HEPGO ile aynı sırada verilir (sim.setTelemetry önce, sonra HUD/OSD/ses/panel); `net:` etiketi (Hz · jitter · tampon · DR)
+//   ve `#/fly/<id>?netsim=jitter30,loss5,delay40` teşhis kipi (window.__fsSim = 3B). Sanal kumanda 🎮: iki sanal çubuk + klavye → 20 Hz {t:'rc', ch[8]}
+//   (/ws/fly → RC_CHANNELS_OVERRIDE); kapatınca 8×0; FPV'de görünür, panel gizli; MP joystick uyarısı; 3B WASD kilidi. Alt çubukta panel kapalıyken
+//   ARM/DISARM · mod · Kalkış (hub akışı: GUIDED → ARM → NAV_TAKEOFF; pilot ayrıca ARM etmez) · RTL (.fs-cmds; panel açıkken gizli). Esc → Geri.
+//   P/O/H/C tuşları HEPGO modüllerinin kendi dinleyicilerindedir (panel/OSD/HUD/3B) — burada yeniden bağlanmaz (çift tetikleme olurdu).
 import { clear, confirmDialog, fmtDateTime, fmtDuration, h, modal, toast, toastError, t as tr, onLeave } from './simui.js';
 import { net, wsUrl } from './net.js';
 import { INTERCEPTOR_AUDIO, TYPE_LABEL, WORLD_MODE_LABEL, audioTypeFor, launchBody, launchLabelSm, modelFor, needsLaunch, simType, speedAngle, speedScale, speedTicks, startCameraFor, worldFromTrack } from './wizard.js';
 import { HAND, HAND_PHASES, createHandOverlay, handCfg, handHud, handReleaseTime, shimTelemetry } from './hand_launch.js';
 import { createOverlay3D } from './overlay3d.js';
 import { createGateLayer } from './gates.js';
+import { netsimDeliver, netsimFromLocation, parseNetsim, virtualRC } from './rc.js';
 import { releaseShared } from '../core/three.js';
 
 const SIM = '/sim/';
@@ -214,14 +221,33 @@ export async function openSession(view, start, picked, ctx = {}) {
   const opsBtn = h('button', { class: 'btn sm fs-ops-btn', type: 'button', title: tr('Dron panelini göster/gizle (P)'), onclick: () => ops?.toggle() }, 'Panel');
   const gauge = createSpeedGauge(maxKmh, dType === 'interceptor' ? 'INTERCEPTOR' : (TYPE_LABEL[dType] || '').toUpperCase());
   const endBtn = h('button', { class: 'btn sm danger fs-end-btn', type: 'button', onclick: () => endFlight() }, '■ ', 'Uçuşu Bitir');
+  // HEPGO alt çubuk komutları (.fs-cmds; panel açıkken CSS gizler): ARM/DISARM · mod · Kalkış · RTL
+  const armBtn = h('button', { class: 'btn sm', type: 'button', onclick: () => cmd(last?.armed ? 'disarm' : 'arm') }, 'ARM');
+  const rcBtn = h('button', { class: 'btn sm fs-rc-btn', type: 'button', title: tr('Sanal kumanda: iki sanal çubuk + klavye (W/S gaz, A/D yaw, ok tuşları pitch/roll, Q/E mod kanalı, Boşluk gaz orta). RC_CHANNELS_OVERRIDE 20 Hz.'), onclick: () => rcToggle() }, '🎮 ', 'Sanal kumanda');
+  const modeSel = h('select', { class: 'input sm fs-modesel', onchange: () => { if (modeSel.value) cmd('mode', { mode: modeSel.value }); } },
+    h('option', { value: '' }, 'Mod…'), modes.map(mm => h('option', { value: mm }, mm)));
+  const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış', hand: 'Elden at' };
   const bar = h('div', { class: 'fs-bar' }, h('div', { class: 'pill-group' }, camBtns), gimbalLbl, mhudBtn, fpvCtl, opsBtn, h('span', { class: 'spacer' }),
+    h('div', { class: 'pill-group fs-cmds' }, armBtn, modeSel,
+      h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => cmd('rtl') }, 'RTL')),
+    h('div', { class: 'pill-group' }, rcBtn),
     h('div', { class: 'pill-group' }, h('button', { class: 'btn sm', type: 'button', title: 'SITL aynı ayarlarla yeniden başlar; çarpışma kaldırılır', onclick: () => reset() }, '↺ Sıfırla'), endBtn));
+  // Sanal kumanda katmanı (HEPGO birebir): sol çubuk gaz/yaw, sağ çubuk pitch/roll (Mode 2); klavye ipucu; Mission Planner joystick uyarısı
+  const stickL = h('div', { class: 'fs-stick', 'data-side': 'l' }, h('i', { class: 'fs-stick-knob' }), h('small', null, 'Gaz / Yaw'));
+  const stickR = h('div', { class: 'fs-stick', 'data-side': 'r' }, h('i', { class: 'fs-stick-knob' }), h('small', null, 'Pitch / Roll'));
+  const rcWarn = h('div', { class: 'fs-rc-warn', hidden: true }, 'Mission Planner joystick de açıksa son gelen RC komutu geçerli olur');
+  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', null, 'W/S gaz · A/D yaw · ↑↓ pitch · ←→ roll · Q/E mod kanalı · Boşluk gaz orta'), rcWarn);
+  const sticks = h('div', { class: 'fs-sticks', hidden: true }, stickL, stickR, rcHint);
+  const netLbl = h('div', { class: 'fs-net mono', title: tr('Telemetri alım hızı, jitter (alım aralığı − kaynak aralığı) ve uyarlanır gecikme tamponu; DR = ölü hesap') }, '');
+  const netsim = ctx.netsim !== undefined ? parseNetsim(ctx.netsim) : netsimFromLocation();   // §5 teşhis: ?netsim=jitter30,loss5,delay40
+  let rc = null;   // sanal kumanda (virtualRC) ya da null
   const ended = h('div', { class: 'fs-ended', hidden: true });
   const countdown = h('div', { class: 'fs-countdown', hidden: true }, h('b', null, '3'), h('span', null, ''));
   const handLbl = isHand ? h('div', { class: 'fs-hand-lbl mono' }, handHud(hcfg)) : null;
   const attribTxt = h('span', null, g3dMode ? 'Google' : M3D.ATTRIBUTION);
   const attrib = h('div', { class: `fs-attrib ${g3dMode ? 'fs-attrib-g3d' : ''}`, hidden: !(g3dMode || realMode) }, g3dMode ? h('img', { class: 'fs-g3d-logo', src: '/static/img/google-logo.png', alt: 'Google' }) : null, attribTxt);
-  stage.append(mount, msg, crash, events, bar, nav, ended, countdown, gauge.el, attrib);
+  stage.append(mount, msg, crash, events, sticks, bar, nav, ended, countdown, gauge.el, attrib, netLbl);
   if (handLbl) stage.append(handLbl);
   view.classList.add('sm-fly-session');
   clear(view, stage);
@@ -239,7 +265,8 @@ export async function openSession(view, start, picked, ctx = {}) {
   let ridSeq = 0; const pending = new Map();
   const cmd = (name, params = {}) => new Promise(resolve => {
     const rid = `f${++ridSeq}-${Date.now().toString(36)}`;
-    const timer = setTimeout(() => { pending.delete(rid); resolve({ ok: false, error: tr('yanıt alınamadı (15 sn)') }); }, 15000);
+    const tmo = name === 'takeoff' ? 100000 : 15000;   // sim yolu kalkış: sunucu kalp atışı/EKF konumunu bekleyebilir (≤ 90 sn)
+    const timer = setTimeout(() => { pending.delete(rid); resolve({ ok: false, error: tr('yanıt alınamadı ({s} sn)', { s: tmo / 1000 }) }); }, tmo);
     pending.set(rid, { resolve, timer });
     if (!socket?.send({ t: 'cmd', rid, bridge_id: session.hub.bridge_id, sysid: 1, name, params })) { clearTimeout(timer); pending.delete(rid); resolve({ ok: false, error: tr('bağlantı yok') }); return; }
     addEvent(tr('Komut: {c}', { c: name + (params.mode ? ` ${params.mode}` : params.alt != null ? ` ${params.alt} m` : '') }), 'info', 'KOMUT');
@@ -265,6 +292,19 @@ export async function openSession(view, start, picked, ctx = {}) {
     return r;
   };
   const cmdSim = (name, params = {}) => (name === 'takeoff' && isHand ? handTakeoff(num(params.alt, 60)) : cmd(name, params));
+  // Alt çubuk Kalkış (panel kapalıyken; HEPGO takeoffDialog kalıbı): sabit kanat ailesi → sim yolu takeoff{alt} (düzenek dizisi, ARM dâhil);
+  // diğerleri → hub akışı takeoff{alt_rel_m} (GUIDED → ARM → NAV_TAKEOFF; kalp atışı/EKF beklenir) — pilot ayrıca ARM etmez
+  const takeoffDialog = () => {
+    const alt = h('input', { class: 'input', type: 'number', min: 1, max: 500, value: launch ? 80 : 30 });
+    const m = launch?.method;
+    const hint = m === 'ramp' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; 1 sn sonra pnömatik rampa kızağı {a}° açıyla fırlatır (SITL mancınık tetiği).', { a: Math.round(launch.angle_deg) })
+      : m === 'vehicle' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; pickup pist boyunca hızlanır, {k} km/h yer hızında uçak bırakılır ve tırmanır.', { k: Math.round(launch.release_kmh) })
+      : m === 'hand' ? tr('Geri sayım sonunda pilot uçağı elden atar; motor ARM edilir ve uçak tırmanır.')
+      : launch ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; pist boyunca hızlanır.') : tr('GÖKTUNGU akışı: GUIDED → ARM → NAV_TAKEOFF; dron hedef irtifaya yükselir.');
+    const label = LAUNCH_BTN[m] || 'Kalkış';
+    modal({ title: label, body: h('div', null, h('label', { class: 'field' }, h('span', null, tr('Hedef irtifa (m, AGL)')), alt), h('p', { class: 'small muted' }, hint)),
+      actions: [{ label: tr('Vazgeç') }, { label, class: 'primary', onClick: () => { const a = Math.min(500, Math.max(1, Number(alt.value) || 30)); if (launch) cmdSim('takeoff', { alt: a }); else cmd('takeoff', { alt_rel_m: a }); } }] });
+  };
 
   // ---------- panel / ses / HUD / OSD / kayıt ----------
   const restoreWs = installWsBridge(wsAddr);
@@ -278,7 +318,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   milHud = MHud.createMilHud(stage, hudCtx, { tr });
   mhudBtn.classList.toggle('primary', milHud.enabled);
   const osdCtx = { session, replay: false, t0: hudCtx.t0, get pose() { return sim?.getPose?.() || null; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; },
-    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.pipRect; }, get rcOn() { return false; } };
+    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.pipRect; }, get rcOn() { return !!rc; } };
   osd = MOsd.createFpvOsd(stage, osdCtx, { tr });
   osd.setAnalog?.(fpvPrefs.analog);
   const recText = () => ['SIMUMAV', TYPE_LABEL[dType] || dType, drone.name, track.name, pilot?.name, launch ? launchLabelSm(launch) : null, fmtDateTime(session.created_at)].filter(Boolean).join(' · ');
@@ -316,6 +356,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     });
     if (destroyed) { s3.dispose(); return { dispose() {} }; }
     sim = s3; window.__smSim = sim;
+    if (netsim) window.__fsSim = sim;   // HEPGO teşhis adı: Playwright/konsol sim.netStats() · sim.motionStats(true)
     if (sim.terrainInfo && !worldReady) progMsg({ stage: 'done', real: sim.real, google: sim.google, ...sim.terrainInfo });
     msg.hidden = session.state === 'HAZIR';
     sim.setPip?.(fpvPrefs.pip);
@@ -371,9 +412,13 @@ export async function openSession(view, start, picked, ctx = {}) {
       if (!handAnchored && raw.lat != null && raw.lon != null) { const p = sim.toLocal(raw.lat, raw.lon); hand.anchorAt(p.x, p.y); handAnchored = true; }
       t = shimTelemetry(raw, hand.lastPose, world.runway_heading);
     }
+    // HEPGO updateHud sırası: 3B zaman çizgisi (interp tamponu) ÖNCE, sonra HUD/OSD/ses/panel (aynı kare; kamera güncellemesi 3B'nin rAF'ında)
     sim?.setTelemetry(t); milHud?.update(t); osd?.update(t); audio.update(raw); ops?.update(t);
     gateLayer?.update(raw, num(raw.tbm, null) != null ? num(raw.tbm) / 1000 : (Date.now() - hudCtx.t0) / 1000);
     gauge.update((type === 'sabit_kanat' || type === 'vtol' ? num(raw.airspeed, num(raw.groundspeed, 0)) : num(raw.groundspeed, 0)) * 3.6);
+    if (rc) rcWarn.hidden = !raw.gcs_connected;
+    armBtn.textContent = raw.armed ? 'DISARM' : 'ARM'; armBtn.classList.toggle('danger', !!raw.armed);
+    if (raw.mode && modeSel.value !== raw.mode && document.activeElement !== modeSel) modeSel.value = modes.includes(raw.mode) ? raw.mode : '';
     if (raw.gcs_connected != null) ops?.setGcs(!!raw.gcs_connected, raw.gcs_addr);
     if (sim && session.state === 'HAZIR' && !msg.classList.contains('err')) msg.hidden = true;
   };
@@ -392,7 +437,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     message: m => {
       if (destroyed) return;
       switch (m.t) {
-        case 'tele': return onTele(m);
+        case 'tele': return void netsimDeliver(netsim, () => { if (!destroyed) onTele(m); });   // netsim yoksa anında (HEPGO: gecikme + jitter + kayıp)
         case 'hello': if (m.session) { Object.assign(session, m.session, { hub: { ...session.hub, ...(m.session.hub || {}) } }); setState(session.state); if (Array.isArray(session.route) && session.route.length) { sim?.setMission({ ...(session.mission || {}), points: session.route }); ops?.setRoute(session.route); } } return;
         case 'route': sim?.setMission(m); ops?.setRoute(m.points || []); if (m.source === 'mp') toast(tr("Mission Planner'dan görev yüklendi: {n} nokta", { n: m.points?.length || 0 })); return;
         case 'mission_cur': return sim?.setMissionCurrent(m.seq);
@@ -428,10 +473,36 @@ export async function openSession(view, start, picked, ctx = {}) {
     } catch (err) { toastError(err); ending = false; endBtn.disabled = false; }
   };
   const leaveToMenu = async () => { if (await confirmDialog('Uçuştan çık', 'Uçuş sürüyor. Bitirmeden çıkılsın mı? (Uçuş arka planda kalır; Operasyon\'dan bitirebilirsiniz.)', { okLabel: 'Çık', danger: true })) go('#/fly'); };
+  // ---------- sanal kumanda (HEPGO rcToggle birebir): 20 Hz {t:'rc', ch} yalnız açıkken; kapatınca tek sefer 8×0 (override serbest) ----------
+  const rcToggle = () => {
+    if (rc) {
+      rc.dispose();                      // zamanlayıcı durur, dinleyiciler kalkar, 8×0 gönderilir
+      rc = null;
+      sticks.hidden = true; stage.classList.remove('rc-on'); rcBtn.classList.remove('primary');
+      sim?.setKeyboardLock?.(false);
+      addEvent(tr('Sanal kumanda kapatıldı (RC override serbest)'));
+      return;
+    }
+    rc = virtualRC({ plane: type === 'sabit_kanat' || type === 'vtol', stickL, stickR, send: ch => socket?.send({ t: 'rc', ch }),
+      throttle0: last?.armed ? last.throttle : null });   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000)
+    sticks.hidden = false; stage.classList.add('rc-on'); rcBtn.classList.add('primary');
+    rcWarn.hidden = !last?.gcs_connected;
+    sim?.setKeyboardLock?.(true);
+    addEvent(tr('Sanal kumanda açık (RC override)'));
+  };
+  const netTick = setInterval(() => {
+    if (!sim?.netStats) { netLbl.hidden = true; return; }
+    const n = sim.netStats();
+    netLbl.hidden = false;
+    netLbl.textContent = tr('net: {hz} Hz · jitter {j} ms · tampon {d} ms', { hz: n.hz, j: n.jitter, d: n.delay }) + (n.deadReckoning ? ' · DR' : '');
+    netLbl.classList.toggle('warn', n.hz > 0 && (n.hz < 15 || n.jitter > 40));
+  }, 500);
+  // Klavye: P (panel), O (OSD), H (askeri HUD), C/1–5 (kamera) HEPGO modüllerinin kendi dinleyicilerinde — burada yalnız Esc → Geri (HEPGO onKeyBack:
+  // tam ekran dışında, pencere yokken, odak girişte değilken; tam ekranda Escape'i tarayıcı yakalar ve çıkar)
   const onKey = e => {
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
-    if (e.key === 'p' || e.key === 'P') ops?.toggle();
-    if ((e.key === 'o' || e.key === 'O') && sim?.getCamera() === 'pilot') { osd?.toggle(); drawFpv(); }
+    if (e.key !== 'Escape' || e.defaultPrevented || document.fullscreenElement) return;
+    if (document.querySelector('.modal-back, .fs-pop') || /^(INPUT|SELECT|TEXTAREA)$/.test(e.target?.tagName || '')) return;
+    e.preventDefault(); leaveToMenu();
   };
   window.addEventListener('keydown', onKey);
   const onDocClick = e => { if (!fpvMenu.hidden && !fpvCtl.contains(e.target)) fpvMenu.hidden = true; };
@@ -439,18 +510,20 @@ export async function openSession(view, start, picked, ctx = {}) {
   // Çıkış zinciri (her adım ayrı korunur; biri fırlatsa da sim.dispose → forceContextLoss kesin çağrılır): WS, panel, HUD, OSD, kayıt, ses, kaplama, sahne
   const dispose = () => {
     if (destroyed) return; destroyed = true;
+    clearInterval(netTick);
+    safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();
     safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose());
     safe(() => hand?.dispose()); safe(() => gateLayer?.dispose()); safe(() => overlay?.dispose()); safe(() => sim?.dispose());
     safe(restoreWs);
-    if (window.__smSim === sim) delete window.__smSim; delete window.__smHand; delete window.__smGates; if (window.__smSession === api) delete window.__smSession;
+    if (window.__smSim === sim) delete window.__smSim; if (window.__fsSim === sim) delete window.__fsSim; delete window.__smHand; delete window.__smGates; if (window.__smSession === api) delete window.__smSession;
     document.removeEventListener('fullscreenchange', onFullChange); window.removeEventListener('keydown', onKey); document.removeEventListener('click', onDocClick, true);
     document.body.classList.remove('fs-full'); view.classList.remove('sm-fly-session');
     stage.remove();
   };
   onLeave(dispose);
-  const api = { dispose, stage, get sim() { return sim; }, get hand() { return hand; }, get gates() { return gateLayer; }, gauge, cmd: cmdSim, endFlight, session, world, addEvent };
+  const api = { dispose, stage, get sim() { return sim; }, get hand() { return hand; }, get gates() { return gateLayer; }, get rc() { return rc; }, rcToggle, takeoffDialog, netsim, gauge, cmd: cmdSim, endFlight, session, world, addEvent };
   window.__smSession = api;   // teşhis (Playwright): komut gönder, halka/elden atış durumunu oku
   return api;
 }

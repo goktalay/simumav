@@ -195,5 +195,17 @@
   "settings.version": "Version",
   "settings.logout": "Déconnexion",
   "settings.logout_q": "Fermer la session ?",
-  "settings.bye": "À bientôt, pilote !"
+  "settings.bye": "À bientôt, pilote !",
+  "settings.volume": "Volume",
+  "settings.volume_sub": "Effets d’interface et son du moteur",
+  "settings.engine": "Son du moteur",
+  "settings.engine_sub": "Léger bourdonnement du moteur dans la scène de vol du menu",
+  "settings.bgfx": "Vol en arrière-plan",
+  "settings.bgfx_sub": "Scène de vol 3D en direct dans le menu principal (désactiver sur appareils modestes)",
+  "menu.hint": "Cliquer pour choisir · Naviguer avec les flèches ou la manette",
+  "menu.live": "Vol en direct",
+  "menu.live_real": "Terrain réel · TR TEST Kalecik",
+  "menu.live_proc": "Terrain procédural",
+  "menu.live_loading": "Préparation de la scène",
+  "common.loading_scene": "Chargement de la scène"
 }

@@ -1,5 +1,5 @@
 """SIMUMAV veritabanı (sqlite, WAL) — şema docs/simumav.md §3 + oturum/denetim tabloları (§7). HEPGO `app.db` ile ilişkisi yoktur.
-Yeni kullanıcı: varsayılan pilot (p01, hesap adı), hazır FPV dron (FPV-1, proc:quad250) ve TRTEST parkuru (Kalecik) otomatik oluşur.
+Yeni kullanıcı: varsayılan pilot (p01, hesap adı), hazır FPV dron (FPV-1, glb:iris_fpv) ve TRTEST parkuru (Kalecik) otomatik oluşur.
 Migrasyon: `schema_version` tablosu; her sürüm `_MIGRATIONS` listesinde idempotent SQL."""
 import json
 import sqlite3
@@ -134,7 +134,7 @@ SCHEMA_VERSION = 1
 # 725 m) yakınındaki sözleşme değeri kullanılır. Kullanıcı parkuru düzenleyip kaydırabilir.
 TRTEST = {'name': 'TRTEST', 'lat': 40.0990, 'lon': 33.4101, 'radius_m': 2000, 'wind': {'speed_ms': 3, 'dir_deg': 270, 'gust': 0},
           'time_of_day': 'day', 'weather': 'clear'}
-DEFAULT_DRONE = {'name': 'FPV-1', 'type': 'fpv', 'model_key': 'proc:quad250', 'color': '#ff6a00'}
+DEFAULT_DRONE = {'name': 'FPV-1', 'type': 'fpv', 'model_key': 'glb:iris_fpv', 'color': '#ff6a00'}
 
 
 def now():

@@ -195,5 +195,17 @@
   "settings.version": "الإصدار",
   "settings.logout": "تسجيل الخروج",
   "settings.logout_q": "إنهاء الجلسة؟",
-  "settings.bye": "إلى اللقاء أيها الطيار!"
+  "settings.bye": "إلى اللقاء أيها الطيار!",
+  "settings.volume": "مستوى الصوت",
+  "settings.volume_sub": "مؤثرات الواجهة وصوت المحرك",
+  "settings.engine": "صوت المحرك",
+  "settings.engine_sub": "همهمة محرك خفيفة في مشهد الطيران بالقائمة الرئيسية",
+  "settings.bgfx": "طيران الخلفية",
+  "settings.bgfx_sub": "مشهد طيران ثلاثي الأبعاد حي في القائمة الرئيسية (أوقفه على الأجهزة الضعيفة)",
+  "menu.hint": "انقر للاختيار · تنقّل بالأسهم أو بذراع التحكم",
+  "menu.live": "طيران مباشر",
+  "menu.live_real": "تضاريس حقيقية · TR TEST Kalecik",
+  "menu.live_proc": "تضاريس إجرائية",
+  "menu.live_loading": "جارٍ تجهيز المشهد",
+  "common.loading_scene": "جارٍ تحميل المشهد"
 }

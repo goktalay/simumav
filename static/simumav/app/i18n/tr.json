@@ -195,5 +195,17 @@
   "settings.version": "Sürüm",
   "settings.logout": "Çıkış",
   "settings.logout_q": "Oturum kapatılsın mı?",
-  "settings.bye": "Görüşürüz, pilot!"
+  "settings.bye": "Görüşürüz, pilot!",
+  "settings.volume": "Ses düzeyi",
+  "settings.volume_sub": "Arayüz efektleri ve motor sesi",
+  "settings.engine": "Motor sesi",
+  "settings.engine_sub": "Ana menü uçuş sahnesinde hafif motor uğultusu",
+  "settings.bgfx": "Arka plan uçuşu",
+  "settings.bgfx_sub": "Ana menüde canlı 3B uçuş sahnesi (düşük cihazlarda kapatın)",
+  "menu.hint": "Seçmek için tıkla · Ok tuşları ya da gamepad ile gez",
+  "menu.live": "Canlı uçuş",
+  "menu.live_real": "Gerçek arazi · TR TEST Kalecik",
+  "menu.live_proc": "Prosedürel arazi",
+  "menu.live_loading": "Sahne hazırlanıyor",
+  "common.loading_scene": "Sahne yükleniyor"
 }

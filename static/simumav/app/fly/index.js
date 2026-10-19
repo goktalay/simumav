@@ -154,7 +154,7 @@ async function renderWizard(view, ctx) {
     const drawList = () => clear(list, data.drones.map(d => card(d.id === W.state.drone_id, { icon: svgIco(TYPE_ICON[d.type]), title: d.name, sub: `${TYPE_LABEL[d.type] || d.type} · ${speedScale(d.type)} km/h`, badge: d.is_default ? 'Varsayılan' : null, cls: `type-${d.type}`,
       onClick: () => { W.set('drone_id', d.id); drawList(); drawInfo(); drawSteps(); drawFoot(); ensurePreview(); } })));
     const info = h('div', { class: 'sm-drone-info' });
-    const drawInfo = () => { const d = W.drone(); clear(info, d ? [h('h2', null, d.name), h('p', { class: 'muted' }, `${TYPE_LABEL[d.type] || d.type} · ${d.model_key || ''}${d.type === 'interceptor' ? ' · ARSPD_FBW_MAX 170 m/s (≈ 600 km/h)' : ''}${d.type === 'fpv' ? ' · FPV kamera + OSD' : ''}`)] : null); };
+    const drawInfo = () => { const d = W.drone(); clear(info, d ? [h('h2', null, d.name), h('p', { class: 'muted' }, `${TYPE_LABEL[d.type] || d.type} · ${d.model_label || d.model_key || ''}${d.type === 'interceptor' ? ' · ARSPD_FBW_MAX 170 m/s (≈ 600 km/h)' : ''}${d.type === 'fpv' ? ' · FPV kamera + OSD' : ''}`)] : null); };
     drawList(); drawInfo();
     body.append(h('div', { class: 'sm-two' }, h('div', null, list), h('div', { class: 'sm-preview-col' }, previewBox, info)));
     ensurePreview();

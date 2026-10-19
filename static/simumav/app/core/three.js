@@ -136,7 +136,9 @@ export function makeStage(lib, host, { fov = 40, near = 0.05, far = 2000, env = 
     if (!isCanvas) target.remove(); else ctx.clearRect(0, 0, target.width, target.height);
     schedule();
   };
-  return { THREE, get renderer() { return shared?.renderer || null; }, scene, camera, canvas: target, start, stop, dispose, resize: size, renderOnce };
+  // setPixelRatioMax: kalite yöneticisi (menü uçuş sahnesi) kare süresine göre çözünürlüğü düşürür/yükseltir
+  const setPixelRatioMax = n => { v.pixelRatioMax = Math.max(0.4, Math.min(3, Number(n) || 1)); };
+  return { THREE, get renderer() { return shared?.renderer || null; }, scene, camera, canvas: target, start, stop, dispose, resize: size, renderOnce, setPixelRatioMax, get running() { return v.running; } };
 }
 
 /** Standart üç nokta aydınlatma. */

@@ -7,6 +7,7 @@ import { screen, plusButton, btn, miniBtn, hSelector, statsBars, toast, toastErr
 import { stagger } from '../ui/transition.js';
 import { loadThree, makeStage, lights } from '../core/three.js';
 import { buildDrone, animateDrone, loadGlb, TYPE_TEMPLATE } from './procmodels.js';
+import * as sfx from '../ui/sfx.js';
 
 export const TYPES = ['multirotor', 'plane', 'heli', 'vtol', 'fpv', 'interceptor'];
 // hız / menzil / dayanıklılık / çeviklik (0–100)
@@ -26,11 +27,14 @@ export async function modelViewer(host, { speed = 0.6, env = true } = {}) {
   ring.rotation.x = -Math.PI / 2; ring.position.y = -0.95; stage.scene.add(ring);
   const ring2 = new THREE.Mesh(new THREE.RingGeometry(1.3, 1.31, 64), new THREE.MeshBasicMaterial({ color: 0xa78bfa, transparent: true, opacity: 0.3, side: THREE.DoubleSide }));
   ring2.rotation.x = -Math.PI / 2; ring2.position.y = -0.95; stage.scene.add(ring2);
+  let setSeq = 0;
   const setModel = async d => {
-    if (model) { stage.scene.remove(model); model = null; }
+    const seq = ++setSeq;
     let m = null;
-    if (d?.glb || d?.preview) m = await loadGlb(lib, d.glb || d.preview);
+    if (d?.glb || d?.preview) m = await loadGlb(lib, d.glb || d.preview, d?.color || null);   // gerçekçi GLB (accent materyali kullanıcı rengi)
+    if (seq !== setSeq) return;   // bu arada başka model seçildi
     if (!m) m = buildDrone(THREE, d?.model_key, d?.color || '#38bdf8', d?.type);
+    if (model) { stage.scene.remove(model); model = null; }
     model = m; stage.scene.add(model);
   };
   stage.start();
@@ -53,9 +57,11 @@ export async function mount(root, ctx) {
   let drones = [], selected = null, viewer = null, catalog = null, wizDispose = null, dead = false, viewerWanted = true;
   const viewerP = modelViewer(stageBox).then(v => { if (dead || !viewerWanted) { v.dispose(); return; } viewer = v; if (selected) v.setModel(selected); }).catch(e => console.warn(e));
 
+  // Model alt yazısı: sunucunun model_label'ı (GLB kataloğu / yükseltilmiş eski anahtar); yoksa prosedürel etiketi ya da anahtar
+  const modelLabel = d => d?.model_label || (d?.model_key?.startsWith('proc:') ? t('hangar.proc_model') : d?.model_key || '');
   const select = d => {
     selected = d;
-    clear(caption, h('h2', { class: 'title xl' }, d ? d.name : t('hangar.empty_title')), h('p', { class: 'sub' }, d ? `${t(`types.${d.type}`)} · ${d.model_key?.startsWith('proc:') ? t('hangar.proc_model') : d.model_key}` : t('hangar.empty_sub')));
+    clear(caption, h('h2', { class: 'title xl' }, d ? d.name : t('hangar.empty_title')), h('p', { class: 'sub' }, d ? `${t(`types.${d.type}`)} · ${modelLabel(d)}` : t('hangar.empty_sub')));
     for (const c of strip.children) c.classList.toggle('sel', c.dataset.id === String(d?.id));
     viewer?.setModel(d);
   };
@@ -67,9 +73,10 @@ export async function mount(root, ctx) {
         miniBtn(svg('0 0 24 24', EDIT_SVG), () => rename(d), '', t('common.rename')),
         miniBtn(svg('0 0 24 24', TRASH_SVG), () => remove(d), 'danger', t('common.delete'))),
       h('div', { class: 'thumb' }, h('span', { class: 'badge', style: null }, t(`types.${d.type}`))),
-      h('b', {}, d.name), h('small', {}, d.is_default ? `★ ${t('common.default')}` : (d.model_key?.startsWith('proc:') ? t('hangar.proc_model') : d.model_key || '')));
+      h('b', {}, d.name), h('small', {}, d.is_default ? `★ ${t('common.default')}` : modelLabel(d)));
     const sw = h('i', { class: 'swatch on' }); sw.style.background = d.color || '#38bdf8'; sw.style.width = '22px'; sw.style.height = '22px';
     c.querySelector('.thumb').append(sw);
+    c.addEventListener('pointerenter', () => sfx.takeoff());   // kart hover: kalkış sesi
     return c;
   };
 
@@ -99,7 +106,9 @@ export async function mount(root, ctx) {
     ctx.setBack(t('hangar.title'), 'hangar');
     viewer?.dispose(); viewer = null; viewerWanted = false;   // sihirbazda ana dönen model yok (tek paylaşılan önizleme)
     const setStep = n => [...head.querySelectorAll('.steps i')].forEach((i, k) => { i.classList.toggle('on', k === n); i.classList.toggle('done', k < n); });
-    const draft = { type: 'fpv', model_key: 'proc:quad250', color: COLORS[0], name: '' };
+    // Türün varsayılan modeli: katalogdaki ilk model (gerçekçi GLB); katalog yoksa prosedürel şablon
+    const firstModel = ty => (catalog.types || []).find(x => x.key === ty)?.models?.[0] || { key: `proc:${TYPE_TEMPLATE[ty]}`, glb: null };
+    const draft = { type: 'fpv', model_key: firstModel('fpv').key, color: COLORS[0], name: '' };
 
     // Adım 1: tür seçimi (yatay seçici + tek paylaşılan 3B önizleme)
     setStep(0);
@@ -109,9 +118,9 @@ export async function mount(root, ctx) {
       index: TYPES.indexOf(draft.type),
       render: ty => h('div', { class: 'card' }, h('div', { class: 'thumb-3d', dataset: { ty } }), h('h3', { class: 'title md' }, t(`types.${ty}`)), h('p', { class: 'sub' }, t(`types.${ty}_desc`)),
         statsBars([[t('spec.speed'), SPECS[ty][0]], [t('spec.range'), SPECS[ty][1]], [t('spec.endurance'), SPECS[ty][2]], [t('spec.agility'), SPECS[ty][3]]])),
-      onChange: (ty, i, confirm) => { draft.type = ty; draft.model_key = `proc:${TYPE_TEMPLATE[ty]}`; place(ty); if (confirm) stepModel(); },
+      onChange: (ty, i, confirm) => { draft.type = ty; draft.model_key = firstModel(ty).key; place(ty); if (confirm) stepModel(); },
     });
-    const place = ty => { const host = sel.querySelector(`.thumb-3d[data-ty="${ty}"]`); if (host && pv) { host.append(prevHost); pv.stage.resize(); pv.setModel({ type: ty, model_key: `proc:${TYPE_TEMPLATE[ty]}`, color: draft.color }); } };
+    const place = ty => { const host = sel.querySelector(`.thumb-3d[data-ty="${ty}"]`); if (host && pv) { const fm = firstModel(ty); host.append(prevHost); pv.stage.resize(); pv.setModel({ type: ty, model_key: fm.key, glb: fm.glb, color: draft.color }); } };
     const selWrap = h('div', { class: 'hsel-wrap' }, sel);
     body.classList.add('wiz-select');
     clear(body, selWrap, h('div', { class: 'btn-row' }, btn(t('common.next'), () => stepModel(), 'primary lg')));
@@ -137,7 +146,8 @@ export async function mount(root, ctx) {
       setStep(2);
       const stage3 = h('div', { class: 'model-stage' });
       const sw = h('div', { class: 'swatches' });
-      const paint = () => { for (const s of sw.children) s.classList.toggle('on', s.dataset.c === draft.color); pv?.setModel({ type: draft.type, model_key: draft.model_key, color: draft.color }); };
+      const glb = (catalog.types || []).find(x => x.key === draft.type)?.models?.find(m => m.key === draft.model_key)?.glb || null;
+      const paint = () => { for (const s of sw.children) s.classList.toggle('on', s.dataset.c === draft.color); pv?.setModel({ type: draft.type, model_key: draft.model_key, glb, color: draft.color }); };
       for (const c of COLORS) { const s = h('button', { class: 'swatch', type: 'button', dataset: { c }, 'aria-label': c, onclick: () => { draft.color = c; paint(); } }); s.style.background = c; sw.append(s); }
       const nameInp = h('input', { class: 'input big', placeholder: t('hangar.name_ph'), maxlength: '40', value: draft.name });
       nameInp.addEventListener('input', () => { draft.name = nameInp.value; });
@@ -152,8 +162,9 @@ export async function mount(root, ctx) {
       try {
         const d = await api.post('/api/hangar', { name, type: draft.type, model_key: draft.model_key, color: draft.color });
         setStep(3);
-        // Hangara iniş animasyonu
-        const stage3 = h('div', { class: 'model-stage land-anim' });
+        // Hangara iniş animasyonu: model yukarıdan iner, yere değince toz halkası + ışık patlaması + iniş sesi
+        const stage3 = h('div', { class: 'model-stage land-anim' }, h('span', { class: 'land-dust' }), h('span', { class: 'land-dust d2' }), h('span', { class: 'land-flash' }));
+        sfx.takeoff(); setTimeout(() => sfx.land(), 650);
         clear(body, stage3, h('h2', { class: 'title xl appear' }, name), h('p', { class: 'sub appear' }, t('hangar.landed')),
           h('div', { class: 'btn-row appear' }, btn(t('hangar.to_hangar'), () => { wizDispose?.(); wizDispose = null; mount(root, ctx); }, 'primary lg'), btn(t('common.menu'), () => ctx.go('menu'), 'ghost')));
         if (pv) { stage3.append(prevHost); pv.stage.resize(); pv.setModel({ ...d, type: draft.type, model_key: draft.model_key, color: draft.color }); }

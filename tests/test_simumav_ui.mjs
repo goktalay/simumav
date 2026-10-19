@@ -109,4 +109,64 @@ const sess = readFileSync(join(APP, 'fly/session.js'), 'utf8');
 assert.ok(/releaseShared\(\)/.test(sess) && /\/stop`, \{ reason: 'webgl' \}/.test(sess), 'session.js: sahne öncesi releaseShared; sahne hatasında uçuş stop');
 ok('tek paylaşılan WebGLRenderer; Uç sahnesi öncesi bağlam bırakılır; sahne hatasında otomatik stop');
 
+// 9) Oyun kabuğu görsel yükseltme — saf çekirdekler: uçuş yolu/kamera/kalite yöneticisi (menu/flightcore.js), ses tablosu (ui/sfx.js), FLIP (ui/transition.js), ikonlar
+{
+  const fc = await import(join(APP, 'menu/flightcore.js'));
+  // uçuş yolu: sürekli, alçak irtifa (30–65 m), yatış sınırlı, hız > 0
+  for (let t = 0; t < 120; t += 0.5) { const p = fc.flightPath(t); assert.ok(p.alt > 30 && p.alt < 65, `irtifa ${p.alt}`); assert.ok(Math.abs(p.bank) <= 0.75); assert.ok(p.speed > 0); assert.ok(Number.isFinite(p.heading)); }
+  // kamera döngüsü: 5 kip, toplam süre; her kipte poz araziden yukarıda; FPV geniş açı; parallax hafif kaydırır
+  assert.equal(fc.CAM_CYCLE.length, 5); assert.equal(fc.CAM_PERIOD, 62);
+  const ground = () => 0;
+  const seen = new Set();
+  for (let t = 0; t < fc.CAM_PERIOD * 2; t += 0.25) { const p = fc.flightPath(t); const c = fc.cameraPose(t, { x: p.x, y: p.alt, z: p.z, heading: p.heading }, ground); seen.add(c.mode); assert.ok(c.pos.y >= 1.8, `kamera yerin altında (${c.mode})`); assert.ok(c.fov >= 38 && c.fov <= 95); assert.ok(c.blend >= 0 && c.blend <= 1); }
+  assert.deepEqual([...seen].sort(), ['chase', 'fpv', 'ground', 'orbit', 'side']);
+  assert.equal(fc.cameraPose(fc.CAM_CYCLE[0].dur + fc.CAM_CYCLE[1].dur + 1, { x: 0, y: 50, z: 0, heading: 0 }, ground).mode, 'fpv');
+  const base = fc.cameraPose(3, { x: 0, y: 50, z: 0, heading: 0 }, ground), par = fc.cameraPose(3, { x: 0, y: 50, z: 0, heading: 0 }, ground, { x: 1, y: 0 });
+  assert.ok(Math.abs(par.pos.x - base.pos.x) > 1 && Math.abs(par.pos.x - base.pos.x) < 8, 'parallax hafif');
+  // arazi altına girmez
+  assert.ok(fc.cameraPose(45, { x: 0, y: 50, z: 0, heading: 0 }, () => 200).pos.y >= 201.8);
+  // prosedürel arazi: merkez düz, sınırlı
+  const nz = fc.makeNoise(7); assert.ok(Math.abs(fc.procHeight(nz, 0, 0)) < 1e-9 && Math.abs(fc.procHeight(nz, 100, -100)) < 1e-9, 'merkez düz');
+  for (let i = 0; i < 200; i++) { const h = fc.procHeight(nz, (Math.random() - 0.5) * 3000, (Math.random() - 0.5) * 3000); assert.ok(h > -60 && h < 260, `yükseklik ${h}`); }
+  // kalite yöneticisi: yavaş kareler → seviye düşer (histerezis), hızlı kareler 3 pencere sonra yükselir; dev dt yoksayılır
+  const g = fc.createQualityGovernor({ start: 1, windowFrames: 10 });
+  assert.equal(g.level().name, 'high');
+  let changed = 0; for (let i = 0; i < 10; i++) changed += g.push(40) ? 1 : 0; assert.equal(changed, 1); assert.equal(g.level().name, 'medium');
+  for (let i = 0; i < 10; i++) g.push(40); assert.equal(g.level().name, 'low');
+  for (let i = 0; i < 20; i++) g.push(10); assert.equal(g.level().name, 'low', 'iki iyi pencere yetmez');
+  for (let i = 0; i < 10; i++) g.push(10); assert.equal(g.level().name, 'medium', 'üçüncü iyi pencerede yükselir');
+  for (let i = 0; i < 10; i++) assert.equal(g.push(900), false, 'sekme gizliyken dev dt yoksayılır');
+  assert.equal(g.stats().level, 'medium');
+  assert.equal(fc.QUALITY_LEVELS.at(-1).particles, 0);
+  // model yolu TEK sabitten: önce gerçekçi GLB yolu (static/simumav/models/<tip>.glb), sonra HEPGO caymaz, en son procmodels (kodda)
+  assert.deepEqual(fc.modelCandidates('plane'), ['/static/simumav/models/plane.glb', '/static/models/caymaz-sim.glb']);
+  assert.ok(fc.modelCandidates('bilinmeyen').length >= 1);
+  const flightSrc = readFileSync(join(APP, 'menu/flight.js'), 'utf8');
+  assert.ok(!/\.glb'/.test(flightSrc.replace(/\/\/.*$/gm, '')), 'flight.js model yolunu kendisi yazmaz; flightcore MODEL_URLS kullanır');
+  assert.ok(/prefers-reduced-motion/.test(flightSrc) && /renderOnce\(\)/.test(flightSrc), 'reduced-motion: tek statik kare');
+  assert.ok(/createQualityGovernor/.test(flightSrc) && /setPixelRatioMax/.test(flightSrc), 'kalite yöneticisi piksel oranını yönetir');
+  // ses: tablo + zarf saf
+  const sfx = await import(join(APP, 'ui/sfx.js'));
+  for (const k of ['hover', 'select', 'back', 'error', 'sweep', 'takeoff', 'land', 'tick']) assert.ok(sfx.SFX_DEFS[k]?.dur > 0 && sfx.SFX_DEFS[k].gain > 0 && sfx.SFX_DEFS[k].gain <= 0.4, `sfx ${k}`);
+  assert.equal(sfx.env(-1, 1), 0); assert.equal(sfx.env(2, 1), 0); assert.ok(sfx.env(0.08, 1) > sfx.env(0.9, 1));
+  assert.ok(Math.abs(sfx.sweepFreq(0, 1, 100, 400) - 100) < 1e-9 && Math.abs(sfx.sweepFreq(1, 1, 100, 400) - 400) < 1e-9 && Math.abs(sfx.sweepFreq(0.5, 1, 100, 400) - 200) < 1e-9);
+  assert.equal(sfx.config().engine, false, 'motor sesi varsayılan kapalı');
+  sfx.configure({ volume: 2 }); assert.equal(sfx.config().volume, 1);
+  // geçiş: FLIP keyframe + süre sınırı
+  const tr = await import(join(APP, 'ui/transition.js'));
+  const kf = tr.flipKeyframes({ x: 100, y: 200, w: 300, h: 150 }, 1200, 600);
+  assert.equal(kf.length, 2); assert.ok(kf[0].transform.includes('translate(100px, 200px)') && kf[0].transform.includes('scale(0.25, 0.25)')); assert.equal(kf[1].transform, 'translate(0px, 0px) scale(1, 1)');
+  assert.equal(tr.clampDuration(100), 400); assert.equal(tr.clampDuration(2000), 700); assert.equal(tr.clampDuration(520), 520); assert.equal(tr.clampDuration(520, true), 150);
+  // menü: 6 kart ikonu animasyonlu SVG parçaları; eğilme hesabı simetrik ve sınırlı
+  const icons = readFileSync(join(APP, 'menu/icons.js'), 'utf8');
+  for (const [k, cls] of [['hangar', 'door'], ['crew', 'eye'], ['tracks', 'flag'], ['missions', 'route'], ['fly', 'plane'], ['ops', 'hand']]) assert.ok(new RegExp(`${k}: \`[^\`]*class="${cls}`).test(icons), `ikon ${k}: .${cls}`);
+  const menuSrc = readFileSync(join(APP, 'menu/index.js'), 'utf8');
+  assert.ok(/getGamepads/.test(menuSrc) && /rememberOrigin\(card\)/.test(menuSrc) && /sfx\.select\(\)/.test(menuSrc), 'menü: gamepad, FLIP kaynağı, seçim sesi');
+  const fx = readFileSync(join(APP, 'fx.css'), 'utf8');
+  assert.ok(/prefers-reduced-motion/.test(fx) && /\.flip-ghost/.test(fx) && /\.mcard-border/.test(fx) && /\.land-dust/.test(fx) && /\.wind-fx/.test(fx) && /\.stamp/.test(fx) && /\.radar-dish/.test(fx) && /max-width: 480px/.test(fx) && /\[dir="rtl"\]/.test(fx), 'fx.css: efekt sınıfları + mobil + RTL + reduced-motion');
+  assert.ok(/fx\.css/.test(html), 'index.html fx.css bağlar');
+  for (const f of files) { const s = readFileSync(f, 'utf8'); assert.ok(!/https?:\/\/(cdn|unpkg|cdnjs)|gsap/i.test(s), `${f}: CDN/GSAP yok`); }
+}
+ok('oyun kabuğu: uçuş yolu/kamera/kalite yöneticisi, ses tablosu, FLIP geçiş, animasyonlu ikonlar, fx.css');
+
 console.log(`\n${n} denetim geçti`);

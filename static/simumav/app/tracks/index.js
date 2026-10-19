@@ -44,10 +44,11 @@ export async function mount(root, ctx) {
         miniBtn(svg('0 0 24 24', STAR_SVG), () => setDefault(tr), '', t('common.default')),
         miniBtn(svg('0 0 24 24', EDIT_SVG), () => openEditor(tr), '', t('common.edit')),
         miniBtn(svg('0 0 24 24', TRASH_SVG), () => remove(tr), 'danger', t('common.delete'))),
-      thumb, h('b', {}, tr.name),
+      thumb, h('span', { class: 'wind-fx', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')), h('b', {}, tr.name),   // rüzgâr çizgileri (fx.css; hız --ws)
       h('div', { class: 'meta-row' }, h('span', { class: 'badge accent' }, t(`world.${tr.world_mode || 'google3d'}`)), tr.gates?.length ? h('span', { class: 'badge' }, `${tr.gates.length} ${t('tracks.gates_short')}`) : null, tr.is_default ? h('span', { class: 'badge ok' }, t('common.default')) : null),
       h('small', {}, `${Number(tr.lat).toFixed(4)}, ${Number(tr.lon).toFixed(4)} · ${tr.radius_m} m · ${t('tracks.wind')} ${tr.wind?.speed_ms ?? 0} m/s · ${t(`weather.${tr.weather || 'clear'}`)}`));
     c.addEventListener('click', e => { if (!e.target.closest('.row-actions')) openEditor(tr); });
+    c.style.setProperty('--ws', `${Math.max(1.2, 6 - Math.min(12, Number(tr.wind?.speed_ms) || 0) * 0.4).toFixed(1)}s`);   // rüzgâr hızı → çizgi akış süresi
     const g = gen;
     if (idx < MAX_VIEWERS) terrainViewer(thumb).then(v => { if (dead || g !== gen) { v.dispose(); return; } viewers.push(v); v.setTrack(tr); }).catch(() => thumb.append(h('img', { src: `/api/tracks/${tr.id}/preview.png`, alt: '' })));
     else thumb.append(h('img', { src: `/api/tracks/${tr.id}/preview.png`, alt: '' }));

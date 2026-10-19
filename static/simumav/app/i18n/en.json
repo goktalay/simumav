@@ -195,5 +195,17 @@
   "settings.version": "Version",
   "settings.logout": "Log out",
   "settings.logout_q": "Log out of the session?",
-  "settings.bye": "See you, pilot!"
+  "settings.bye": "See you, pilot!",
+  "settings.volume": "Volume",
+  "settings.volume_sub": "UI effects and engine sound",
+  "settings.engine": "Engine sound",
+  "settings.engine_sub": "Soft engine hum in the main menu flight scene",
+  "settings.bgfx": "Background flight",
+  "settings.bgfx_sub": "Live 3D flight scene in the main menu (turn off on low-end devices)",
+  "menu.hint": "Click to select · Navigate with arrow keys or gamepad",
+  "menu.live": "Live flight",
+  "menu.live_real": "Real terrain · TR TEST Kalecik",
+  "menu.live_proc": "Procedural terrain",
+  "menu.live_loading": "Preparing scene",
+  "common.loading_scene": "Loading scene"
 }

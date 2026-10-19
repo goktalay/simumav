@@ -1,117 +1,105 @@
-// Ana menü: tam ekran, three.js hafif 3B arka plan (dönen dünya + yıldız parçacıkları + fare parallax), 6 büyük kart.
+// Ana menü (AAA oyun menüsü): arka planda CANLI UÇUŞ SAHNESİ (menu/flight.js; ayardan kapatılabilir → eski yıldızlı dünya yok, sade vinyet),
+// 6 modül kartı: kademeli yükselme + ışıma, fareye göre 3B eğilme (perspective tilt), gezen parlak kenar, animasyonlu SVG ikonlar,
+// tıklamada basılma + ses + FLIP sahne geçişi (kart tam ekrana açılır), klavye/gamepad gezinme vurgusu.
 import { h, clear } from '../core/dom.js';
 import { t } from '../i18n/i18n.js';
-import { bigCard } from '../ui/components.js';
-import { stagger } from '../ui/transition.js';
-import { loadThree, makeStage, cssColor } from '../core/three.js';
+import { stagger, rememberOrigin, reduced } from '../ui/transition.js';
+import { icon } from './icons.js';
+import * as sfx from '../ui/sfx.js';
 
 const CARDS = [
-  { key: 'hangar', icon: 'hangar' },
-  { key: 'crew', icon: 'crew' },
-  { key: 'tracks', icon: 'tracks' },
-  { key: 'missions', icon: 'missions' },
-  { key: 'fly', icon: 'fly' },
-  { key: 'ops', icon: 'ops' },
+  { key: 'hangar', accent: '#38bdf8' },
+  { key: 'crew', accent: '#f472b6' },
+  { key: 'tracks', accent: '#34d399' },
+  { key: 'missions', accent: '#a78bfa' },
+  { key: 'fly', accent: '#fbbf24' },
+  { key: 'ops', accent: '#fb923c' },
 ];
+export const bgEnabled = () => localStorage.getItem('sm:bgfx') !== '0';
+
+/** Kart eğilme hesabı (saf): fare konumu (0..1) → rotateX/rotateY derece. */
+export const tiltFor = (px, py, max = 9) => ({ rx: (0.5 - py) * 2 * max, ry: (px - 0.5) * 2 * max });
+
+function menuCard(c, onPick) {
+  const card = h('button', { class: 'card big-card mcard', type: 'button', dataset: { key: c.key } },
+    h('span', { class: 'mcard-glow' }), h('span', { class: 'mcard-border' }),
+    h('span', { class: 'ico' }, icon(c.key)),
+    h('span', { class: 'name' }, t(`menu.${c.key}`)), h('span', { class: 'desc' }, t(`menu.${c.key}_desc`)),
+    h('span', { class: 'mcard-cta' }, '▶'));
+  card.style.setProperty('--ac', c.accent);
+  // 3B eğilme + ışık noktası
+  card.addEventListener('pointermove', e => {
+    if (reduced()) return;
+    const r = card.getBoundingClientRect(), px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+    const { rx, ry } = tiltFor(px, py);
+    card.style.setProperty('--rx', `${rx.toFixed(2)}deg`); card.style.setProperty('--ry', `${ry.toFixed(2)}deg`);
+    card.style.setProperty('--mx', `${(px * 100).toFixed(1)}%`); card.style.setProperty('--my', `${(py * 100).toFixed(1)}%`);
+  });
+  card.addEventListener('pointerenter', () => { card.classList.add('hot'); sfx.hover(); });
+  card.addEventListener('pointerleave', () => { card.classList.remove('hot'); card.style.setProperty('--rx', '0deg'); card.style.setProperty('--ry', '0deg'); });
+  card.addEventListener('focus', () => sfx.tick());
+  card.addEventListener('click', () => {
+    card.classList.add('pressed'); sfx.select();
+    rememberOrigin(card);
+    setTimeout(() => onPick(c.key), reduced() ? 0 : 110);
+  });
+  return card;
+}
 
 export async function mount(root, ctx) {
-  const sc = h('div', { class: 'screen' });
+  const sc = h('div', { class: 'screen menu-screen' });
   const logo = h('img', { src: '/brand/simumav.svg', alt: 'SIMUMAV' });
   logo.addEventListener('error', () => { logo.src = '/app/img/icons/logo.svg'; }, { once: true });
   sc.append(h('div', { class: 'menu-logo' }, logo, h('h1', { class: 'title' }, 'SIMU', h('span', {}, 'MAV'))));
   const grid = h('div', { class: 'menu-grid', role: 'menu' });
-  const cards = CARDS.map(c => bigCard({ name: t(`menu.${c.key}`), desc: t(`menu.${c.key}_desc`), icon: `/brand/icons/${c.icon}.svg`, iconFallback: `/app/img/icons/${c.icon}.svg`, onClick: () => ctx.go(c.key) }));
-  grid.append(...cards); stagger(cards, 60);
-  sc.append(grid);
+  const cards = CARDS.map(c => menuCard(c, key => ctx.go(key)));
+  grid.append(...cards); stagger(cards, 70, { rise: true });
+  const live = h('div', { class: 'menu-live', hidden: true }, h('i', { class: 'dot' }), h('b', {}, t('menu.live')), h('small', {}, t('menu.live_loading')));
+  const hint = h('p', { class: 'menu-hint' }, t('menu.hint'));
+  sc.append(grid, live, hint);
   clear(root, sc);
 
-  // Klavye: ok tuşları + Enter
+  // Klavye: ok tuşları + Enter; Gamepad: d-pad / sol çubuk + A
   let focus = -1;
+  // masaüstü: tek sıra 6 kart (fx.css); mobil 2 sütun
+  const moveFocus = d => { const cols = window.innerWidth < 900 ? 2 : 6; const map = { r: 1, l: -1, d: cols, u: -cols }; focus = focus < 0 ? 0 : (focus + map[d] + cards.length) % cards.length; cards[focus].focus(); cards[focus].classList.add('hot'); cards.forEach((c, i) => i !== focus && c.classList.remove('hot')); };
   const onKey = e => {
-    const cols = window.innerWidth < 900 ? 2 : 3;
-    const map = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols };
-    if (e.key in map) { focus = (focus < 0 ? 0 : (focus + map[e.key] + cards.length) % cards.length); cards[focus].focus(); e.preventDefault(); }
-    else if (e.key === 'Enter' && focus >= 0 && document.activeElement === cards[focus]) ctx.go(CARDS[focus].key);
+    const map = { ArrowRight: 'r', ArrowLeft: 'l', ArrowDown: 'd', ArrowUp: 'u' };
+    if (e.key in map) { moveFocus(map[e.key]); e.preventDefault(); }
+    else if (e.key === 'Enter' && focus >= 0 && document.activeElement === cards[focus]) cards[focus].click();
   };
   document.addEventListener('keydown', onKey);
   cards.forEach((c, i) => c.addEventListener('focus', () => { focus = i; }));
+  let padRaf = 0, padLast = 0, padHeld = false;
+  const pollPad = () => {
+    padRaf = requestAnimationFrame(pollPad);
+    const gp = navigator.getGamepads?.()?.find(Boolean); if (!gp) return;
+    const now = performance.now(), ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
+    const dir = gp.buttons[15]?.pressed || ax > 0.6 ? 'r' : gp.buttons[14]?.pressed || ax < -0.6 ? 'l' : gp.buttons[13]?.pressed || ay > 0.6 ? 'd' : gp.buttons[12]?.pressed || ay < -0.6 ? 'u' : null;
+    if (dir && now - padLast > 220) { padLast = now; moveFocus(dir); document.body.classList.add('gamepad'); }
+    const a = gp.buttons[0]?.pressed;
+    if (a && !padHeld && focus >= 0) cards[focus].click();
+    padHeld = !!a;
+  };
+  if (navigator.getGamepads) padRaf = requestAnimationFrame(pollPad);
 
-  // 3B arka plan
+  // Arka plan: canlı uçuş sahnesi
   const canvas = document.getElementById('stage');
-  canvas.hidden = false;
-  let stage = null, mouse = { x: 0, y: 0 }, target = { x: 0, y: 0 };
-  const onMove = e => { target.x = (e.clientX / window.innerWidth - 0.5) * 2; target.y = (e.clientY / window.innerHeight - 0.5) * 2; };
-  window.addEventListener('pointermove', onMove);
-  let themeHandler = null;
-  try {
-    const lib = await loadThree();
-    const { THREE } = lib;
-    let earth, stars, ring, glowMesh;
-    stage = makeStage(lib, canvas, {
-      fov: 45, env: false, pixelRatioMax: 1.25,
-      onFrame: (dt, tm) => {
-        mouse.x += (target.x - mouse.x) * 0.05; mouse.y += (target.y - mouse.y) * 0.05;
-        earth.rotation.y += dt * 0.08; ring.rotation.z += dt * 0.03;
-        stars.rotation.y += dt * 0.006;
-        stage.camera.position.x = mouse.x * 0.9; stage.camera.position.y = -mouse.y * 0.6 + 0.3;
-        stage.camera.lookAt(0, 0.2, 0);
-        earth.position.y = Math.sin(tm * 0.4) * 0.05;
-      },
-    });
-    const { scene, camera } = stage;
-    camera.position.set(0, 0.3, 7);
-    scene.add(new THREE.HemisphereLight(0xaaccff, 0x080a12, 0.5));
-    const sun = new THREE.DirectionalLight(0xfff2dd, 2.2); sun.position.set(-6, 3, 4); scene.add(sun);
-    const rim = new THREE.DirectionalLight(0x38bdf8, 1.2); rim.position.set(6, -2, -3); scene.add(rim);
-
-    // Dünya: prosedürel doku (kıta benzeri gürültü) — dosya/CDN yok
-    const tex = earthTexture(THREE);
-    earth = new THREE.Mesh(new THREE.SphereGeometry(2.6, 64, 48), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.75, metalness: 0.05 }));
-    earth.position.set(3.4, -3.0, -1.5); earth.rotation.z = 0.35; scene.add(earth);
-    glowMesh = new THREE.Mesh(new THREE.SphereGeometry(2.72, 48, 32), new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.12, side: THREE.BackSide }));
-    earth.add(glowMesh);
-    // Yörünge halkası (uçuş yolu hissi)
-    ring = new THREE.Mesh(new THREE.TorusGeometry(3.4, 0.012, 8, 160), new THREE.MeshBasicMaterial({ color: 0xa78bfa, transparent: true, opacity: 0.45 }));
-    ring.position.copy(earth.position); ring.rotation.x = Math.PI / 2.4; scene.add(ring);
-    // Yıldızlar
-    const n = 1400, pos = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) { const r = 18 + Math.random() * 30, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1); pos.set([r * Math.sin(ph) * Math.cos(th), r * Math.sin(ph) * Math.sin(th), r * Math.cos(ph) - 10], i * 3); }
-    const sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    stars = new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xffffff, size: 0.09, transparent: true, opacity: 0.85, sizeAttenuation: true })); scene.add(stars);
-    const applyTheme = () => { const light = document.documentElement.dataset.theme === 'light'; stars.material.opacity = light ? 0.25 : 0.85; glowMesh.material.opacity = light ? 0.06 : 0.12; sun.intensity = light ? 3 : 2.2; scene.fog = null; };
-    applyTheme(); themeHandler = applyTheme; window.addEventListener('sm:theme', themeHandler);
-    stage.start();
-  } catch (e) { console.warn('3B arka plan açılamadı', e); }
+  let flight = null;
+  if (bgEnabled()) {
+    canvas.hidden = false; document.body.classList.add('bg-flight');
+    const { mountFlightScene } = await import('./flight.js');
+    flight = mountFlightScene(canvas, { onStatus: s => {
+      if (s === 'ready') { live.hidden = false; const st = flight.stats(); live.querySelector('small').textContent = st.real ? t('menu.live_real') : t('menu.live_proc'); live.classList.add('on'); }
+      if (s === 'error') { live.hidden = true; }
+    } });
+  } else { canvas.hidden = true; document.body.classList.remove('bg-flight'); }
 
   return () => {
-    // Menü arka planı görünmezken durur ve kapanır: görünüm silinir (paylaşılan çizici boşta kalınca bağlamı bırakır)
     document.removeEventListener('keydown', onKey);
-    window.removeEventListener('pointermove', onMove);
-    if (themeHandler) window.removeEventListener('sm:theme', themeHandler);
-    stage?.dispose(); stage = null;
+    cancelAnimationFrame(padRaf);
+    flight?.dispose(); flight = null;
     (document.getElementById('stage') || canvas).hidden = true;
+    document.body.classList.remove('bg-flight');
   };
-}
-
-// Değer gürültüsü ile kıta/okyanus dokusu
-function earthTexture(THREE) {
-  const W = 512, H = 256, c = document.createElement('canvas'); c.width = W; c.height = H;
-  const g = c.getContext('2d'), img = g.createImageData(W, H), d = img.data;
-  const rnd = seed => { let s = seed; return () => { s = (s * 16807) % 2147483647; return s / 2147483647; }; };
-  const r = rnd(1337), grid = [];
-  const G = 24; for (let i = 0; i <= G; i++) { grid[i] = []; for (let j = 0; j <= G * 2; j++) grid[i][j] = r(); }
-  const lerp = (a, b, k) => a + (b - a) * (k * k * (3 - 2 * k));
-  const noise = (x, y, f) => { const gx = x * f, gy = y * f, x0 = Math.floor(gx) % (G * 2), y0 = Math.floor(gy) % G, fx = gx - Math.floor(gx), fy = gy - Math.floor(gy); const a = grid[y0][x0], b = grid[y0][(x0 + 1) % (G * 2)], cc = grid[(y0 + 1) % G][x0], dd = grid[(y0 + 1) % G][(x0 + 1) % (G * 2)]; return lerp(lerp(a, b, fx), lerp(cc, dd, fx), fy); };
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const u = x / W, v = y / H;
-    const n = noise(u, v, 6) * 0.55 + noise(u, v, 14) * 0.3 + noise(u, v, 30) * 0.15;
-    const land = n > 0.52, polar = Math.abs(v - 0.5) > 0.42;
-    let cr, cg, cb;
-    if (polar) { cr = 225; cg = 235; cb = 245; }
-    else if (land) { const k = (n - 0.52) * 5; cr = 60 + k * 80; cg = 110 + k * 40; cb = 50; }
-    else { const k = n * 1.5; cr = 10 + k * 20; cg = 50 + k * 60; cb = 120 + k * 80; }
-    const i = (y * W + x) * 4; d[i] = cr; d[i + 1] = cg; d[i + 2] = cb; d[i + 3] = 255;
-  }
-  g.putImageData(img, 0, 0);
-  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; return tex;
 }

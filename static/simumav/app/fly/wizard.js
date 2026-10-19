@@ -54,12 +54,15 @@ export const startCameraFor = t => (t === 'fpv' ? 'fpv' : 'follow');
 export const audioTypeFor = t => (t === 'interceptor' ? 'interceptor' : simType(t));
 export const INTERCEPTOR_AUDIO = { kind: 'plane', cylinders: 2, blades: 3, idleRpm: 4200, maxRpm: 19000 };
 
-// Dron → HEPGO 3B model tanımı: model_key 'proc:<şablon>' → dahili ('builtin:quad|hexa|heli|caymaz|delta'); kütüphane anahtarı + preview (GLB yolu) → {id, glb_url}
+// Dron → HEPGO 3B model tanımı: 'builtin:*' dahili; sunucu `preview` (GLB) + `orient` vermişse gerçekçi GLB (flightsim3d buildLibrary: 'glb:*' anahtarları ve
+// MODEL_YUKSELT ile yükseltilmiş eski 'proc:*' kayıtları; pervane `rotor_*`/`propeller` düğümleri, kontrol yüzeyleri adıyla); 'proc:<şablon>' → dahili
+// ('builtin:quad|hexa|heli|caymaz|delta'); kütüphane anahtarı + preview (orient'siz) → {id, glb_url}
 const PROC_MAP = { quad250: 'builtin:quad', quad: 'builtin:quad', hexa: 'builtin:hexa', heli: 'builtin:heli', caymaz: 'builtin:caymaz', plane: 'builtin:caymaz', delta: 'builtin:delta', interceptor: 'builtin:delta', vtol: 'builtin:caymaz' };
 export function modelFor(drone) {
   const key = String(drone?.model_key || '');
-  if (key.startsWith('proc:')) return { id: PROC_MAP[key.slice(5)] || (needsLaunch(drone?.type) ? 'builtin:caymaz' : drone?.type === 'heli' ? 'builtin:heli' : 'builtin:quad') };
   if (key.startsWith('builtin:')) return { id: key };
+  if (drone?.preview && drone?.orient) return { id: key || 'glb', glb_url: drone.preview, orient: drone.orient, has_prop: drone.has_prop !== false };
+  if (key.startsWith('proc:')) return { id: PROC_MAP[key.slice(5)] || (needsLaunch(drone?.type) ? 'builtin:caymaz' : drone?.type === 'heli' ? 'builtin:heli' : 'builtin:quad') };
   if (key && drone?.preview) return { id: key, glb_url: drone.preview, orient: drone?.orient || undefined };
   return { id: drone?.type === 'heli' ? 'builtin:heli' : needsLaunch(drone?.type) ? (drone?.type === 'interceptor' ? 'builtin:delta' : 'builtin:caymaz') : 'builtin:quad' };
 }

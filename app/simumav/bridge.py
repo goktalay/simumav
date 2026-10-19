@@ -30,7 +30,15 @@ TIP_ESLEME = {'multirotor': 'multirotor', 'fpv': 'multirotor', 'plane': 'sabit_k
 TYPES = tuple(TIP_ESLEME)
 LAUNCHES = ('wheels', 'ramp', 'vehicle', 'hand')
 LAUNCH_CEKIRDEK = {'wheels': 'wheels', 'ramp': 'ramp', 'vehicle': 'vehicle', 'hand': 'ramp'}   # elden atış: düşük ivmeli mancınık kalıbı (SITL'de özel model yok)
-MODEL_ESLEME = {'proc:quad250': 'builtin:quad', 'proc:interceptor': 'builtin:delta'}        # prosedürel şablon → çekirdek dahili görsel model
+# Görsel model anahtarı → çekirdek (flightsim_models) dahili model: prosedürel şablonlar ve gerçekçi GLB'ler (`glb:`) çekirdekte yalnız tip/fizik
+# seçimi için dahili modele eşlenir; GLB'nin kendisi ön yüzde (flightsim3d buildLibrary: glb_url + orient) çizilir.
+MODEL_ESLEME = {'proc:quad250': 'builtin:quad', 'proc:interceptor': 'builtin:delta',
+                'glb:iris_fpv': 'builtin:quad', 'glb:iris': 'builtin:quad', 'glb:x500': 'builtin:quad', 'glb:typhoon_h480': 'builtin:quad',
+                'glb:rc_cessna': 'builtin:caymaz', 'glb:believer': 'builtin:caymaz', 'glb:standard_vtol': 'builtin:caymaz',
+                'glb:jet': 'builtin:delta', 'glb:zephyr': 'builtin:delta', 'glb:heli': 'builtin:heli'}
+# Eski kayıtların model_key'i (prosedürel/dahili) → aynı sınıfın gerçekçi GLB'si: kayıt değişmez, görsel (preview/orient) yükseltilir
+MODEL_YUKSELT = {'proc:quad250': 'glb:iris_fpv', 'proc:interceptor': 'glb:jet', 'builtin:quad': 'glb:iris', 'builtin:hexa': 'glb:typhoon_h480',
+                 'builtin:heli': 'glb:heli', 'builtin:delta': 'glb:zephyr'}
 KINDS = ('corridor', 'free', 'spray', 'fpv_flags', 'fpv_gates', 'survey')
 WORLD_MODES = ('real', 'google3d', 'procedural')
 # tracks.world: HEPGO WORLD_DEFAULTS alt kümesi (flightsim3d.js ile aynı anahtarlar); rüzgâr/saat/hava ayrı sütunlardan gelir
@@ -147,13 +155,42 @@ PROC_MODELS = {
                          'core_model': 'builtin:delta'},
 }
 TYPE_LABELS = {'multirotor': 'Multikopter', 'fpv': 'FPV', 'plane': 'Sabit kanat', 'interceptor': 'Interceptor', 'heli': 'Helikopter', 'vtol': 'VTOL'}
+# Gerçekçi GLB modeller (static/simumav/models/<ad>.glb; kaynak/lisans: static/simumav/models/LICENSES.md; üretim: tools/simumav_models_build.py).
+# Hepsi glTF Y yukarı, burun +X, sağ +Z, metre; pervaneler `rotor_*`/`propeller` düğümleri (flightsim3d PROP_RE), kontrol yüzeyleri CTRL_RE adlarıyla.
+GLB_URL = '/static/simumav/models/{ad}.glb'
+GLB_ORIENT = {'forward': '+x', 'up': '+y', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}}
+GLB_MODELS = {
+    'glb:iris_fpv': {'type': 'fpv', 'label': 'Iris FPV', 'file': 'iris_fpv', 'defaults': QUAD250_PARAMS,
+                     'desc': '3DR Iris (PX4) + FPV kamera ve antenler; 0,5 m; akro/hız ağırlıklı oran döngüleri'},
+    'glb:iris': {'type': 'multirotor', 'label': '3DR Iris', 'file': 'iris', 'defaults': {}, 'desc': '3DR Iris quadrotor (PX4 Gazebo modeli, 0,5 m)'},
+    'glb:x500': {'type': 'multirotor', 'label': 'X500', 'file': 'x500', 'defaults': {}, 'desc': 'NXP HoverGames X500 karbon çerçeve quad (PX4, 0,6 m)'},
+    'glb:typhoon_h480': {'type': 'multirotor', 'label': 'Typhoon H480 (hexa)', 'file': 'typhoon_h480', 'defaults': {},
+                         'desc': 'Yuneec Typhoon H altı rotor + gimbal kamera (PX4 Gazebo modeli, 0,7 m)'},
+    'glb:rc_cessna': {'type': 'plane', 'label': 'RC Cessna', 'file': 'rc_cessna', 'defaults': {}, 'desc': 'RC Cessna 172 (PX4 Gazebo modeli, 1,1 m açıklık)'},
+    'glb:believer': {'type': 'plane', 'label': 'Believer', 'file': 'believer', 'defaults': {}, 'desc': 'MakeFlyEasy Believer çift motorlu haritalama uçağı (PX4, 1,9 m)'},
+    'glb:standard_vtol': {'type': 'vtol', 'label': 'Standard VTOL', 'file': 'standard_vtol', 'defaults': {},
+                          'desc': 'PX4 standart VTOL: X8 kanat + 4 dikey rotor + itici (2,2 m açıklık)'},
+    'glb:jet': {'type': 'interceptor', 'label': 'Interceptor (jet)', 'file': 'jet', 'defaults': INTERCEPTOR_PARAMS,
+                'desc': 'Yüksek hızlı önleyici jet: 170 m/s (~610 km/h), tam gaz, sert manevra'},
+    'glb:zephyr': {'type': 'interceptor', 'label': 'Zephyr (delta kanat)', 'file': 'zephyr', 'defaults': INTERCEPTOR_PARAMS,
+                   'desc': 'Zephyr delta uçan kanat (Gazebo modeli, 1,5 m açıklık); önleyici parametreleri'},
+    'glb:heli': {'type': 'heli', 'label': 'Tek rotorlu heli', 'file': 'heli', 'defaults': {}, 'desc': 'Tek ana rotor + kuyruk rotoru helikopter (1,75 m)'},
+}
+VARSAYILAN_MODEL = {'fpv': 'glb:iris_fpv', 'multirotor': 'glb:iris', 'plane': 'glb:rc_cessna', 'interceptor': 'glb:jet', 'heli': 'glb:heli', 'vtol': 'glb:standard_vtol'}
+
+
+def glb_model_api(key):
+    g = GLB_MODELS[key]
+    return {'key': key, 'label': g['label'], 'type': g['type'], 'glb': GLB_URL.format(ad=g['file']), 'thumb': None, 'defaults': g['defaults'], 'proc': False,
+            'desc': g['desc'], 'orient': json.loads(json.dumps(GLB_ORIENT)), 'has_prop': True}
 
 
 def katalog():
-    """{types:[{key,label,models:[{key,label,glb,thumb,defaults,proc,desc}]}]} — flightsim_models dahili modeller + prosedürel şablonlar."""
+    """{types:[{key,label,models:[{key,label,glb,thumb,defaults,proc,desc,orient?,has_prop?}]}]} — gerçekçi GLB'ler önce (ilk = tipin varsayılanı),
+    sonra flightsim_models dahili modeller + prosedürel şablonlar (yedek)."""
     out = []
     for t in TYPES:
-        models = []
+        models = [glb_model_api(k) for k, g in GLB_MODELS.items() if g['type'] == t]
         ctip = TIP_ESLEME[t]
         for key, b in flightsim_models.BUILTIN.items():
             if ctip in b['types'] and t not in ('fpv', 'interceptor'):
@@ -170,6 +207,21 @@ def katalog():
 def model_gecerli(tip, model_key):
     """Katalogda bu tip için var mı."""
     return any(m['key'] == model_key for t in katalog()['types'] if t['key'] == tip for m in t['models'])
+
+
+def model_gorsel(model_key):
+    """Kaydın görsel modeli: {preview (GLB url|None), orient|None, has_prop, label, proc}. `glb:` doğrudan; eski prosedürel/dahili anahtarlar
+    MODEL_YUKSELT ile gerçekçi GLB'ye (kayıt değişmez); builtin:caymaz kendi GLB'si; kalanlar prosedürel (preview yok)."""
+    key = str(model_key or '')
+    g = key if key in GLB_MODELS else MODEL_YUKSELT.get(key)
+    if g in GLB_MODELS:
+        m = glb_model_api(g)
+        return {'preview': m['glb'], 'orient': m['orient'], 'has_prop': True, 'label': m['label'], 'proc': False}
+    for t in katalog()['types']:
+        for m in t['models']:
+            if m['key'] == key:
+                return {'preview': m.get('glb'), 'orient': None, 'has_prop': True, 'label': m['label'], 'proc': not m.get('glb')}
+    return {'preview': None, 'orient': None, 'has_prop': True, 'label': key, 'proc': True}
 
 
 def _core_model_id(model_key):
@@ -361,6 +413,28 @@ def launch_dogrula(l):
             raise BridgeHata(422, 'invalid', f'launch.{k} {alt}…{ust} olmalı')
         out[k] = float(v)
     return out
+
+
+HEARTBEAT_WAIT_S = 90.0   # kalp atışı (≈ 5 sn) + EKF/GPS konum oturması (≈ 20–40 sn)
+
+
+async def kalp_atisi_bekle(s, sure=HEARTBEAT_WAIT_S):
+    """Sim yolu kalkış komutu (sabit kanat düzeneği / elden atış: `takeoff{alt}` → flightsim._kalkis_dizisi) HAZIR'dan hemen sonra gelebilir;
+    oturum HAZIR'a SITL TCP bağlanınca geçer, kalp atışı birkaç sn sonra gelir → çekirdek 'SITL henüz kalp atışı göndermedi' derdi; TAKEOFF
+    modu da EKF konumu olmadan 'requires position' ile reddedilir. Kalp atışı + EKF/GPS konumu (drone_hub.kalkis_konum_hazir) `sure`
+    içinde beklenir (sahte kipte hemen). Dönüş: hazır mı."""
+    from .. import drone_hub as hub   # shim (app.drone_hub = app.simumav.shim.drone_hub)
+    hazir = lambda: (s.sahte is not None or getattr(s, '_heartbeat_alindi', False)) and hub.kalkis_konum_hazir(s)   # noqa: E731
+    if hazir():
+        return True
+    s._olay('Kalkış için SITL kalp atışı ve EKF/GPS konumu bekleniyor (otopilot açılıyor)…', 5)
+    bitis = time.time() + sure
+    while time.time() < bitis and s.state == 'HAZIR':
+        if hazir():
+            s._olay('Otopilot kalkışa hazır', 6)
+            return True
+        await asyncio.sleep(0.25)
+    return hazir()
 
 
 def elden_atis_ayarla(s, params):

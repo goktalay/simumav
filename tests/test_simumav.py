@@ -114,7 +114,8 @@ def main():
         me = c.get('/api/session').json(); assert me['user']['id'] == s['user']['id'] and me['active_flight'] is None
         tr = c.get('/api/tracks').json()['tracks'][0]
         assert tr['name'] == 'TRTEST' and abs(tr['lat'] - 40.0990) < 1e-6 and tr['is_default'] and tr['world_mode'] == 'google3d' and tr['gates'] == []
-        d0 = c.get('/api/hangar').json()['drones'][0]; assert d0['name'] == 'FPV-1' and d0['type'] == 'fpv' and d0['model_key'] == 'proc:quad250' and d0['proc']
+        d0 = c.get('/api/hangar').json()['drones'][0]; assert d0['name'] == 'FPV-1' and d0['type'] == 'fpv' and d0['model_key'] == 'glb:iris_fpv' and not d0['proc']
+        assert d0['preview'] == '/static/simumav/models/iris_fpv.glb' and d0['orient']['forward'] == '+x' and d0['model_label'] == 'Iris FPV' and c.get(d0['preview']).status_code == 200
         p0 = c.get('/api/crew').json()['pilots'][0]; assert p0['character'] == 'p01' and p0['name'] == 'ali'
         assert c.get('/api/meta').json()['authenticated'] is True
         # dev login kapalıyken token zorunlu; geçersiz token (hesap servisi erişilemez) → 503
@@ -137,6 +138,8 @@ def main():
         cat = c.get('/api/hangar/catalog').json()['types']
         keys = {t['key']: [m['key'] for m in t['models']] for t in cat}
         assert 'proc:interceptor' in keys['interceptor'] and 'proc:quad250' in keys['fpv'] and 'builtin:caymaz' in keys['plane'] and 'builtin:quad' in keys['multirotor']
+        assert keys['fpv'][0] == 'glb:iris_fpv' and keys['interceptor'][0] == 'glb:jet' and keys['heli'][0] == 'glb:heli' and keys['vtol'][0] == 'glb:standard_vtol' and 'glb:typhoon_h480' in keys['multirotor']
+        assert all(c.get(m['glb']).status_code == 200 for t in cat for m in t['models'] if m['key'].startswith('glb:'))   # gerçekçi GLB'ler sunuluyor
         inter = next(m for t in cat for m in t['models'] if m['key'] == 'proc:interceptor')
         assert inter['proc'] and inter['defaults']['AIRSPEED_MAX'] == 170 and inter['defaults']['THR_MAX'] == 100 and inter['defaults']['TKOFF_THR_MAX'] == 100
         r = c.post('/api/hangar', json={'name': 'Ok', 'type': 'interceptor', 'model_key': 'proc:interceptor', 'params': inter['defaults'], 'color': '#00ff88'}, headers=H)
@@ -149,6 +152,7 @@ def main():
         assert c.post('/api/hangar', json={'name': 'K', 'type': 'plane', 'model_key': 'proc:quad250'}, headers=H).status_code == 422   # tip/model uyumsuz
         assert c.post('/api/hangar', json={'name': 'K', 'type': 'uzaygemisi', 'model_key': 'builtin:quad'}, headers=H).status_code == 422
         assert c.post('/api/hangar', json={'name': 'x' * 41, 'type': 'plane', 'model_key': 'builtin:delta'}, headers=H).status_code == 422
+        ok = next(d for d in c.get('/api/hangar').json()['drones'] if d['id'] == okid); assert ok['model_key'] == 'proc:interceptor' and ok['preview'] == '/static/simumav/models/jet.glb' and ok['orient'] and not ok['proc']   # eski anahtar → GLB görseli (MODEL_YUKSELT)
         r = c.put(f'/api/hangar/{okid}', json={'name': 'Ok-2', 'is_default': True, 'params': {'THR_MAX': 90}}, headers=H)
         assert r.json()['name'] == 'Ok-2' and r.json()['is_default'] and r.json()['params'] == {'THR_MAX': 90.0}
         for i in range(config.QUOTA['drones']):
@@ -309,6 +313,44 @@ def main():
             while m.get('t') != 'res':
                 m = ws.receive_json()
             assert m['ok'] is True
+            # Kalkış paritesi (HEPGO drone_hub _takeoff_flow): panelin hub yolu takeoff{alt_rel_m, kontrol} → sahte SITL'e giden komut SIRASI
+            # mode GUIDED → arm → takeoff; pilot ARM düğmesine basmaz. Sahte kinematik komutları sarmalanarak kaydedilir.
+            ss = flightsim.MANAGER.sessions[sid]
+            ss.sahte.komut('disarm', {})
+            kayit = []
+            orj = ss.sahte.komut
+            ss.sahte.komut = lambda name, p, _o=orj: (kayit.append((name, dict(p or {}))), _o(name, p))[1]
+            try:
+                kontrol = [{'sira': 0, 'anahtar': 'alan', 'soru': 'Alan boş', 'grup': 'sim', 'cevap': True, 'zorunlu': True, 'kaynak': 'flightsim_panel'}]
+                ws.send_json({'t': 'cmd', 'rid': 'to1', 'bridge_id': -(9000 + sid), 'sysid': 1, 'name': 'takeoff', 'params': {'alt_rel_m': 25, 'kontrol': kontrol}})
+                m = ws.receive_json()
+                while not (m.get('t') == 'res' and m.get('rid') == 'to1'):
+                    m = ws.receive_json()
+                assert m['ok'] is True, m
+                t0 = time.time()
+                while time.time() - t0 < 15 and [k for k, _ in kayit][-1:] != ['takeoff']:
+                    m = ws.receive_json()
+                assert [k for k, _ in kayit] == ['mode', 'arm', 'takeoff'] and kayit[0][1] == {'mode': 'GUIDED'} and kayit[2][1]['alt'] == 25.0, kayit
+                assert ss.sahte.armed and ss.sahte.hedef_alt == 25.0
+                # zorunlu madde onaysız → kalkış gönderilmez
+                ws.send_json({'t': 'cmd', 'rid': 'to2', 'bridge_id': -(9000 + sid), 'sysid': 1, 'name': 'takeoff', 'params': {'alt_rel_m': 25, 'kontrol': [{**kontrol[0], 'cevap': False}]}})
+                m = ws.receive_json()
+                while not (m.get('t') == 'res' and m.get('rid') == 'to2'):
+                    m = ws.receive_json()
+                assert m['ok'] is False, m
+                # sanal kumanda: WS rc → sahte SITL RC override (ch5 2000); 8×0 → serbest (varsayılan kanallar)
+                ws.send_json({'t': 'rc', 'ch': [1600, 1400, 1900, 1500, 2000, 0, 0, 0]})
+                t0 = time.time()
+                while time.time() - t0 < 5 and not (kayit and kayit[-1][0] == 'rc'):
+                    m = ws.receive_json()
+                assert kayit[-1] == ('rc', {'ch': [1600, 1400, 1900, 1500, 2000, 0, 0, 0]}) and ss.sahte.rc[4] == 2000 and ss.sahte.rc[2] == 1900, (kayit[-1], ss.sahte.rc)
+                ws.send_json({'t': 'rc', 'ch': [0] * 8})
+                t0 = time.time()
+                while time.time() - t0 < 5 and ss.sahte.rc[4] != 1500:
+                    m = ws.receive_json()
+                assert list(ss.sahte.rc) == list(flightsim.SahteKinematik.RC_VARSAYILAN), ss.sahte.rc
+            finally:
+                ss.sahte.komut = orj
         # başkası (geçerli oturum, sahibi değil) → {'t':'error','error':'not_found'} + 4404; çerezsiz → auth
         with c.websocket_connect(f'/ws/fly/{sid}', headers=HV) as ws:
             assert ws.receive_json() == {'t': 'error', 'error': 'not_found'}

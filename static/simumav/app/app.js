@@ -7,6 +7,7 @@ installGlCounter();   // teşhis: window.__smGl() → canlı WebGL bağlam sayı
 import { setLang, detectLang, t } from './i18n/i18n.js';
 import { sweep } from './ui/transition.js';
 import { toast, toastErr } from './ui/components.js';
+import * as sfx from './ui/sfx.js';
 
 // Rota tablosu: modül `mount(root, ctx)` (oyun arayüzü modülleri) YA DA `render(view, params, ctx)` (fly/index.js) dışa aktarır; router ikisini de destekler.
 export const ROUTES = {
@@ -47,6 +48,8 @@ async function loadSession() {
   }
   try { Object.assign(state.settings, await api.get('/api/settings')); } catch { /* varsayılanlar */ }
   try { state.meta = await api.get('/api/meta'); } catch { state.meta = {}; }
+  // Ses: sunucu ayarı (sound, volume) + cihaz tercihi (motor sesi; varsayılan kapalı)
+  sfx.configure({ sound: state.settings.sound !== false, volume: state.settings.volume ?? 0.8, engine: localStorage.getItem('sm:engine') === '1' });
   return true;
 }
 function renderChip() {
@@ -106,8 +109,8 @@ async function route(force = false) {
       } else throw new Error(t('shell.module_missing', { name }));
       state.unmount = typeof r === 'function' ? r : r?.unmount || r?.dispose || (typeof mod.unmount === 'function' ? () => mod.unmount() : null);
       if (name !== 'menu' && back.hidden && name !== 'fly') ctx.setBack(t('common.menu'));
-    } catch (e) { console.error(e); toastErr(e); }
-  }, { dir, duration: prev ? 450 : 350 });
+    } catch (e) { console.error(e); toastErr(e); sfx.error(); }
+  }, { dir, duration: prev ? (dir === 'back' ? 480 : 620) : 400 });
   routing = false;
 }
 
@@ -121,8 +124,9 @@ async function boot() {
   if (!localStorage.getItem('sm:theme') && state.settings.theme) applyTheme(state.settings.theme);
   if (state.settings.lang && !localStorage.getItem('sm:lang')) await setLang(state.settings.lang, { silent: true });
   renderChip();
-  gear.addEventListener('click', () => ctx.go('settings'));
-  chip.addEventListener('click', () => ctx.go('crew'));
+  gear.addEventListener('click', () => { sfx.select(); ctx.go('settings'); });
+  chip.addEventListener('click', () => { sfx.select(); ctx.go('crew'); });
+  back.addEventListener('pointerenter', () => sfx.hover()); gear.addEventListener('pointerenter', () => sfx.hover()); chip.addEventListener('pointerenter', () => sfx.hover());
   window.addEventListener('hashchange', () => route());
   window.addEventListener('sm:session', () => ctx.refreshSession());
   if (!location.hash) location.hash = '#/menu'; else route();

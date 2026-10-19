@@ -28,7 +28,7 @@ log = logging.getLogger('simumav')
 CSP = ("default-src 'self'; "
        "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://static.cloudflareinsights.com https://maps.googleapis.com https://maps.gstatic.com https://cdn.jsdelivr.net https://*.cesium.com; "
        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-       "connect-src 'self' https://mastertool.download https://maps.googleapis.com https://*.googleapis.com https://*.gstatic.com https://*.ggpht.com "
+       "connect-src 'self' blob: https://mastertool.download https://maps.googleapis.com https://*.googleapis.com https://*.gstatic.com https://*.ggpht.com "
        "https://tile.googleapis.com https://cdn.jsdelivr.net https://*.cesium.com https://*.arcgisonline.com https://*.amazonaws.com "
        "wss://simumav.com wss://www.simumav.com ws://127.0.0.1:8600 ws://localhost:8600; "
        "img-src 'self' data: blob: https:; media-src 'self' blob: data:; font-src 'self' data:; worker-src 'self' blob: https://cdn.jsdelivr.net; "
@@ -147,6 +147,7 @@ def _mount(path, directory, html=False):
 
 _mount('/static/vendor', config.STATIC_DIR / 'vendor')
 _mount('/static/models', config.STATIC_DIR / 'models')
+_mount('/static/simumav/models', config.SM_STATIC / 'models')   # gerçekçi dron GLB'leri (bridge.GLB_MODELS)
 _mount('/vendor', config.STATIC_DIR / 'vendor')
 _mount('/sim', config.STATIC_DIR / 'js' / 'modules')
 _mount('/brand', config.SM_STATIC / 'brand')

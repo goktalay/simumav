@@ -1,14 +1,19 @@
 // Oyun bileşenleri: büyük kart, devasa "+", yatay seçici, kadran, modal, toast, segment, anahtar, özellik çubukları.
 import { h, clear, svg, PLUS_SVG, glow } from '../core/dom.js';
 import { t } from '../i18n/i18n.js';
+import { splitTitle } from './transition.js';
+import * as sfx from './sfx.js';
 
-// ---------- Ekran iskeleti ----------
+// ---------- Ekran iskeleti (başlık harf harf sinematik giriş) ----------
 export function screen({ title, sub, cls = '' } = {}) {
   const sc = h('div', { class: `screen ${cls}` });
-  if (title) sc.append(h('header', { class: 'screen-head' }, h('h1', { class: 'title lg' }, title), sub ? h('p', { class: 'sub' }, sub) : null));
+  if (title) sc.append(h('header', { class: 'screen-head' }, splitTitle(h('h1', { class: 'title lg' }, title)), sub ? h('p', { class: 'sub sub-in' }, sub) : null));
   return sc;
 }
-export const loading = text => h('div', { class: 'loading' }, text || t('common.loading'));
+// Oyun tarzı yükleme: radar süpürmesi + ilerleyen çubuk
+export const loading = text => h('div', { class: 'loading radar' }, h('span', { class: 'radar-dish' }, h('i')), h('span', { class: 'ldr-bar' }, h('i')), h('span', { class: 'ldr-text' }, text || t('common.loading')));
+// Kart hover sesleri (liste kartları): bir kez bağla
+export function hoverSfx(card, kind = 'hover') { card.addEventListener('pointerenter', () => sfx[kind]?.()); return card; }
 export const errBox = msg => h('div', { class: 'err-box' }, msg);
 
 // ---------- Büyük kart ----------

@@ -513,13 +513,20 @@ async def _sim_ws(ws, sid):
                         continue
                 sim_yolu = name in SIM_KOMUT and (name not in ('arm', 'disarm') or b is None) and not (name == 'takeoff' and 'alt_rel_m' in params and 'alt' not in params)
                 if sim_yolu:
-                    try:
-                        if name == 'takeoff' and params.get('launch') == 'hand':
-                            bridge.elden_atis_ayarla(s, params)
-                        res = await s.komut(name, params, kaynak=user['id'])
-                        yanit(rid=rid, name=name, **res)
-                    except flightsim.SimHata as e:
-                        yanit(rid=rid, name=name, ok=False, error=str(e))
+                    async def run_sim(rid=rid, name=name, params=params):
+                        try:
+                            if name == 'takeoff' and s.state == 'HAZIR':
+                                await bridge.kalp_atisi_bekle(s)   # HAZIR = TCP bağlandı; kalp atışı gelmeden kalkış dizisi reddedilirdi (ARM'siz kalkış paritesi)
+                            if name == 'takeoff' and params.get('launch') == 'hand':
+                                bridge.elden_atis_ayarla(s, params)
+                            res = await s.komut(name, params, kaynak=user['id'])
+                            yanit(rid=rid, name=name, **res)
+                        except flightsim.SimHata as e:
+                            yanit(rid=rid, name=name, ok=False, error=str(e))
+                    if name == 'takeoff':
+                        asyncio.get_running_loop().create_task(run_sim())   # kalp atışı beklemesi WS döngüsünü (ping/rc) bloke etmesin
+                    else:
+                        await run_sim()
                     continue
                 if b is None:
                     yanit(rid=rid, name=name, ok=False, error='Oturum paneli henüz hazır değil')

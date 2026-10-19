@@ -31,17 +31,15 @@ def kota(conn, table, user, request=None):
 
 
 def drone_api(d):
-    return {**d, 'params': db.j(d.get('params')), 'is_default': bool(d.get('is_default')),
-            'proc': str(d.get('model_key', '')).startswith('proc:') or d.get('model_key') in ('builtin:quad', 'builtin:hexa', 'builtin:heli', 'builtin:delta'),
-            'preview': d.get('preview') or _glb(d.get('model_key'))}
+    """Dron kaydı + görsel model: preview (GLB url), orient/has_prop (flightsim3d kütüphane modeli), model_label; proc = GLB yok (prosedürel çizim).
+    Eski kayıtların prosedürel/dahili anahtarları bridge.MODEL_YUKSELT ile gerçekçi GLB'ye yükseltilir (model_key değişmez)."""
+    g = bridge.model_gorsel(d.get('model_key'))
+    return {**d, 'params': db.j(d.get('params')), 'is_default': bool(d.get('is_default')), 'proc': g['proc'],
+            'preview': d.get('preview') or g['preview'], 'orient': g['orient'], 'has_prop': g['has_prop'], 'model_label': g['label']}
 
 
 def _glb(model_key):
-    for t in bridge.katalog()['types']:
-        for m in t['models']:
-            if m['key'] == model_key:
-                return m.get('glb')
-    return None
+    return bridge.model_gorsel(model_key)['preview']
 
 
 # Pilot karakter SVG'leri: static/simumav/app/img/pilots/p01..p10.svg (/app mount'u) — crew/characters ve pilot kayıtları aynı yolu verir
@@ -70,7 +68,8 @@ def flight_api(f, kisa=False):
         out['summary'] = db.j(f['summary'], None)
     snap = out['snapshot']
     out['track'] = {**(snap.get('track') or {}), 'preview_png': f"/api/tracks/{(snap.get('track') or {}).get('id')}/preview.png" if snap.get('track') else None}
-    out['drone'] = {**(snap.get('drone') or {}), 'preview': _glb((snap.get('drone') or {}).get('model_key'))}
+    gd = bridge.model_gorsel((snap.get('drone') or {}).get('model_key'))
+    out['drone'] = {**(snap.get('drone') or {}), 'preview': gd['preview'], 'orient': gd['orient'], 'has_prop': gd['has_prop'], 'model_label': gd['label']}
     out['pilot'] = snap.get('pilot')
     out['mission'] = snap.get('mission')
     for k in ('bin_path', 'params_path', 'replay_cache', 'video_path', 'core_log_id', 'core_run_id'):   # iç yollar dışa verilmez
