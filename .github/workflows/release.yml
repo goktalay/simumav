@@ -1,0 +1,105 @@
+# SIMUMAV yayını.
+# - "v1.2.3" etiketi gönderilince: testler → simumav-1.2.3.tar.gz + sha256 → GitHub Release → mastertool.download'a yükleme
+#   (sunucuda hepgo-simumav-deploy.path paketi görür ve deploy/simumav/deploy.sh ile otomatik yayımlar).
+# - Actions sekmesinden elle (workflow_dispatch): yalnız paketler ve artifact olarak saklar; "upload" girdisi işaretliyse
+#   mastertool.download'a da yükler (VERSION dosyasındaki sürümle).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "mastertool.download'a da yükle (VERSION dosyasındaki sürümle)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Sürümü belirle (etiket → VERSION)
+        id: v
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+            echo "$V" > VERSION
+          else
+            V="$(tr -d '[:space:]' < VERSION)"
+          fi
+          [[ "$V" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}([.-][0-9A-Za-z.-]{1,20})?$ ]] || { echo "::error::Sürüm geçersiz: $V"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Sürüm: $V"
+
+      - name: Bağımlılıklar
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyflakes
+
+      - name: Statik denetim (pyflakes + node --check)
+        run: |
+          pyflakes app tools 2>/dev/null || pyflakes app
+          find static -name '*.js' -not -path 'static/vendor/*' -print0 | xargs -0 -n1 node --check
+
+      - name: Testler (SITL yok)
+        env:
+          HEPGO_SITL: '0'
+          SIMUMAV_DEV_LOGIN: '1'
+          SIMUMAV_DATA_DIR: /tmp/simumav-data
+        run: |
+          if [ -f tests/test_simumav.py ]; then python -m tests.test_simumav; else echo "::warning::tests/test_simumav.py yok; testler atlandı"; fi
+          if [ -f tests/test_simumav_ui.mjs ]; then node tests/test_simumav_ui.mjs; fi
+
+      - name: Paketle
+        id: pkg
+        shell: bash
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          mkdir -p dist
+          # Çalışır ağaç: yayın deposunun kendi dosyaları (.git, .github, scripts, dist) ve geçici dosyalar dışında her şey
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 2020-01-01' \
+              --exclude-vcs --exclude='./.github' --exclude='./scripts' --exclude='./dist' --exclude='__pycache__' \
+              --exclude='*.pyc' --exclude='./.venv' --exclude='./.env*' --exclude='*.db' \
+              -czf "dist/simumav-$V.tar.gz" -C . .
+          (cd dist && sha256sum "simumav-$V.tar.gz" > "simumav-$V.tar.gz.sha256")
+          SIZE=$(stat -c %s "dist/simumav-$V.tar.gz")
+          echo "Paket: $SIZE bayt"; cat "dist/simumav-$V.tar.gz.sha256"
+          [ "$SIZE" -le $((95 * 1024 * 1024)) ] || { echo "::error::Paket 95 MB'den büyük ($SIZE); vendor/büyük dosyaları gözden geçir"; exit 1; }
+          echo "sha256=$(cut -d' ' -f1 "dist/simumav-$V.tar.gz.sha256")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simumav-${{ steps.v.outputs.version }}
+          path: dist/*
+          retention-days: 14
+
+      - name: GitHub Release'e ekle
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/simumav-${{ steps.v.outputs.version }}.tar.gz
+            dist/simumav-${{ steps.v.outputs.version }}.tar.gz.sha256
+          generate_release_notes: true
+
+      # Anahtar depo secret'ı SIMUMAV_RELEASE_KEY; tanımlı değilse betik uyarı verip çıkar.
+      - name: mastertool.download'a yükle
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.upload
+        shell: bash
+        env:
+          SIMUMAV_RELEASE_KEY: ${{ secrets.SIMUMAV_RELEASE_KEY }}
+          V: ${{ steps.v.outputs.version }}
+        run: bash scripts/upload-mastertool.sh "$V" "dist/simumav-$V.tar.gz"

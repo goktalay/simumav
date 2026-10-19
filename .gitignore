@@ -1,0 +1,12 @@
+# SIMUMAV yayın deposu — tools/simumav_export.py üretir; elle düzenleme HEPGO deposunda yapılır.
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+/data/
+/dist/
+*.tar.gz
