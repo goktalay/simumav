@@ -128,6 +128,8 @@ test('analitik: harici modül; gtag.js yalnız rıza "granted" iken yüklenir; r
   assert.deepEqual(AN.decide({ consent: 'denied', gaId: 'G-1' }), { load: false, banner: false });
   assert.deepEqual(AN.decide({ consent: 'granted', gaId: 'G-1' }), { load: true, banner: false });
   assert.deepEqual(AN.decide({ consent: 'granted', gaId: '' }), { load: false, banner: false });
+  assert.deepEqual(AN.decide({ consent: 'granted', gaId: '', adsId: 'AW-1' }), { load: true, banner: false });   // yalnız Google Ads etiketi
+  assert.deepEqual(AN.decide({ consent: 'denied', gaId: '', adsId: 'AW-1' }), { load: false, banner: false });
   const mem = new Map(), storage = { getItem: k => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v), removeItem: k => mem.delete(k) };
   assert.equal(AN.getConsent(storage), null); AN.storeConsent('granted', storage); assert.equal(AN.getConsent(storage), 'granted');
   AN.storeConsent('denied', storage); assert.equal(AN.getConsent(storage), 'denied'); mem.set('simumav.consent', 'bozuk'); assert.equal(AN.getConsent(storage), null);

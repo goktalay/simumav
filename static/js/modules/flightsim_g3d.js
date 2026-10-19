@@ -117,7 +117,9 @@ export async function createGoogleTiles(opts) {
   let time = opts.time || 'day', shadows = !!opts.shadows;
   const tint = () => (time === 'night' ? 0x4c5670 : time === 'dusk' ? 0xe8b898 : 0xffffff);
   const retint = () => tiles.group.traverse(o => { if (o.isMesh && o.userData.g3d) { o.material.color.setHex(tint()); o.receiveShadow = shadows; } });
-  const onLoadModel = ({ scene }) => {
+  const sceneTile = new WeakMap();   // karo sahnesi → karo (geometricError / yaprak: ışın örneğinin "inceliği", §13 surfaceAt)
+  const onLoadModel = ({ scene, tile }) => {
+    if (tile) sceneTile.set(scene, tile);
     scene.traverse(o => {
       if (!o.isMesh) return;
       const old = o.material;
@@ -170,6 +172,32 @@ export async function createGoogleTiles(opts) {
   // İnce örnekleme (önbelleksiz, tam noktaya ışın): kalkış düzeneğinin 4 temas noktası (±3 m) aynı 25 m hücreye düştüğünden eğim için gerekir (§13);
   // karo yoksa hücre önbelleğine düşer
   const heightFine = (x, y) => { const v = sampleRaw(x, y); return v == null ? height(x, y) : v; };
+  // Ölçümün çarptığı karo: ışın nesnesinden karo sahnesine (tiles.group'un doğrudan çocuğu) çıkılır → load-model eşlemesi, yoksa activeTiles taraması
+  const tileOf = obj => {
+    let o = obj;
+    while (o && o.parent && o.parent !== tiles.group) o = o.parent;
+    if (!o) return null;
+    let t = sceneTile.get(o);
+    if (!t) { for (const a of tiles.activeTiles) if (a.engineData?.scene === o) { t = a; sceneTile.set(o, t); break; } }
+    return t || null;
+  };
+  // Nitelikli örnek (§13 düzenek yüzeyi): { z, fine, err, leaf } ya da null (karo yok). Işın YALNIZ karo grubuna (tiles.raycast → activeTiles
+  // sahneleri) atılır: uçak, düzenek ve kamera yardımcıları hiç denenmez. fine: karonun geometricError'ı ≤ fineErr ya da yaprak karo (daha ince LOD
+  // yok); kaba/kök karo (onlarca m hata) fine=false → düzenek önceki kabul edilmiş değerini korur (yedek yüksekliği çağıran verir).
+  const surfaceAt = (x, y, fineErr = 2) => {
+    if (!tiles.root) return null;
+    hits.length = 0;
+    from.set(x, y, RAY_TOP);
+    ray.set(from, down);
+    tiles.raycast(ray, hits);
+    if (!hits.length) return null;
+    let best = null;
+    for (const h of hits) if (!best || h.point.z > best.point.z) best = h;
+    const t = tileOf(best.object);
+    const err = t && Number.isFinite(t.geometricError) ? t.geometricError : Infinity;
+    const leaf = !!t && Array.isArray(t.children) && t.children.length === 0;
+    return { z: best.point.z, fine: err <= fineErr || leaf, err: Number.isFinite(err) ? err : null, leaf };
+  };
   const hasSurface = (x, y) => sampleRaw(x, y) != null;   // dronun altında yüklü karo var mı (çarpışma denetimi; yoksa height() komşu/0 verir → güvenilmez)
 
   // ---- kök tileset yüklemesi (anahtar/ağ hatası → reject); havuzdan gelen örnekte kök zaten yüklü ----
@@ -232,7 +260,7 @@ export async function createGoogleTiles(opts) {
   }
 
   return {
-    group, tiles, height, heightFine, hasSurface, update, attribution, dispose,
+    group, tiles, height, heightFine, hasSurface, surfaceAt, update, attribution, dispose,
     get rootRequests() { return entry.rootRequests; },
     setTime(t) { time = t || 'day'; retint(); },
     setShadows(v) { shadows = !!v; retint(); },

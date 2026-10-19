@@ -1,4 +1,4 @@
-// SIMUMAV — Google Analytics 4 + çerez rızası (Consent Mode v2). Harici dosya: CSP inline script yok.
+// SIMUMAV — Google Analytics 4 + Google Ads etiketi (AW-…) + çerez rızası (Consent Mode v2). Harici dosya: CSP inline script yok.
 // Tasarım (docs/simumav.md §5.2): rıza localStorage 'simumav.consent' ∈ {granted, denied}; rıza yoksa alt bant (Kabul / Reddet / Ayarlar).
 //   gtag.js YALNIZ rıza 'granted' iken yüklenir (reddedilirse hiç yüklenmez); yüklenirken consent default analytics_storage=denied → update granted;
 //   config {anonymize_ip:true}. Ölçüm kimliği /api/meta.ga_id (env SIMUMAV_GA_ID; boş → yüklenmez). Olaylarda kişisel veri yok.
@@ -16,13 +16,15 @@ export function storeConsent(value, storage = globalThis.localStorage) {
   try { if (value) storage?.setItem(CONSENT_KEY, value); else storage?.removeItem(CONSENT_KEY); } catch { /* özel mod */ }
 }
 /** Saf karar: gtag yüklensin mi, bant gösterilsin mi. */
-export function decide({ consent, gaId }) {
-  return { load: consent === 'granted' && !!gaId, banner: consent == null };
+export function decide({ consent, gaId, adsId = '' }) {
+  return { load: consent === 'granted' && !!(gaId || adsId), banner: consent == null };
 }
 /** /api/meta.ga_id (oturumsuz da döner). */
-export async function fetchGaId() {
-  try { const r = await fetch('/api/meta', { credentials: 'same-origin' }); if (r.ok) return String((await r.json()).ga_id || '').trim(); } catch { /* statik önizleme */ }
-  return '';
+export async function fetchGaId() { return (await fetchIds()).gaId; }
+/** /api/meta → { gaId (GA4 G-…), adsId (Google Ads AW-…) }. */
+export async function fetchIds() {
+  try { const r = await fetch('/api/meta', { credentials: 'same-origin' }); if (r.ok) { const m = await r.json(); return { gaId: String(m.ga_id || '').trim(), adsId: String(m.ads_id || '').trim() }; } } catch { /* statik önizleme */ }
+  return { gaId: '', adsId: '' };
 }
 
 function ensureCss() {
@@ -50,7 +52,7 @@ function clearGaCookies() {
  *   t         : anahtar → metin (cookie.* anahtarları); i18nAttr=true ise bant öğelerine data-i18n yazılır (site.js setLang yeniden çevirir)
  *   spa       : true → config send_page_view:false; pageView(path) ile hash rotaları gönderilir
  */
-export function createAnalytics({ gaId = '', t = k => k, privacyHref = '/legal/gizlilik.html', spa = false, i18nAttr = false, storage = globalThis.localStorage } = {}) {
+export function createAnalytics({ gaId = '', adsId = '', t = k => k, privacyHref = '/legal/gizlilik.html', spa = false, i18nAttr = false, storage = globalThis.localStorage } = {}) {
   let loaded = false, bar = null;
   const w = globalThis;
   w.dataLayer = w.dataLayer || [];
@@ -58,13 +60,15 @@ export function createAnalytics({ gaId = '', t = k => k, privacyHref = '/legal/g
   if (typeof w.gtag !== 'function') w.gtag = gtag;
 
   function load() {
-    if (loaded || !gaId) return;
+    if (loaded || !(gaId || adsId)) return;
     loaded = true;
     w.gtag('consent', 'default', { analytics_storage: 'denied', ad_storage: 'denied', ad_user_data: 'denied', ad_personalization: 'denied', wait_for_update: 500 });
-    w.gtag('consent', 'update', { analytics_storage: 'granted' });
+    // Tek rıza: analitik + reklam dönüşüm ölçümü (Google Ads etiketi varsa); kişiselleştirme sinyalleri yine kapalı
+    w.gtag('consent', 'update', { analytics_storage: 'granted', ...(adsId ? { ad_storage: 'granted', ad_user_data: 'granted', ad_personalization: 'granted' } : {}) });
     w.gtag('js', new Date());
-    w.gtag('config', gaId, { anonymize_ip: true, send_page_view: !spa, allow_google_signals: false, allow_ad_personalization_signals: false });
-    const s = document.createElement('script'); s.async = true; s.src = `${GTAG_SRC}?id=${encodeURIComponent(gaId)}`; s.dataset.ga = '1';
+    if (gaId) w.gtag('config', gaId, { anonymize_ip: true, send_page_view: !spa, allow_google_signals: false, allow_ad_personalization_signals: false });
+    if (adsId) w.gtag('config', adsId);   // Google Ads (AW-…): dönüşüm/yeniden pazarlama etiketi — kullanıcı verdiği kod
+    const s = document.createElement('script'); s.async = true; s.src = `${GTAG_SRC}?id=${encodeURIComponent(gaId || adsId)}`; s.dataset.ga = '1';
     document.head.append(s);
     if (spa) pageView();
   }
@@ -72,7 +76,7 @@ export function createAnalytics({ gaId = '', t = k => k, privacyHref = '/legal/g
     storeConsent(value, storage);
     hideBanner();
     if (value === 'granted') load();
-    else if (loaded) { w.gtag('consent', 'update', { analytics_storage: 'denied' }); clearGaCookies(); }
+    else if (loaded) { w.gtag('consent', 'update', { analytics_storage: 'denied', ad_storage: 'denied', ad_user_data: 'denied', ad_personalization: 'denied' }); clearGaCookies(); }
     document.dispatchEvent(new CustomEvent('simumav:consent', { detail: value }));
   }
   const L = (key, tag = 'span', attrs = {}) => el(tag, { ...attrs, 'data-i18n': i18nAttr ? key : null }, t(key));
@@ -104,9 +108,9 @@ export function createAnalytics({ gaId = '', t = k => k, privacyHref = '/legal/g
     if (loaded) w.gtag('event', 'page_view', { page_path: path, page_location: location.origin + path, page_title: document.title });
   }
 
-  const d = decide({ consent: getConsent(storage), gaId });
+  const d = decide({ consent: getConsent(storage), gaId, adsId });
   if (d.load) load();
-  if (d.banner && gaId) openBanner();
+  if (d.banner && (gaId || adsId)) openBanner();
   // "Çerez tercihlerini değiştir" bağlantıları (yasal sayfalar, ayarlar)
   document.addEventListener('click', e => { const a = e.target.closest('[data-consent="manage"]'); if (a) { e.preventDefault(); openBanner({ settings: true }); } });
   return { track, pageView, setConsent, openBanner, get loaded() { return loaded; }, keys: KEYS };
@@ -114,6 +118,6 @@ export function createAnalytics({ gaId = '', t = k => k, privacyHref = '/legal/g
 
 /** Kısa yol: ölçüm kimliğini /api/meta'dan alıp başlatır. */
 export async function initAnalytics(opts = {}) {
-  const gaId = opts.gaId ?? await fetchGaId();
-  return createAnalytics({ ...opts, gaId });
+  const ids = (opts.gaId == null || opts.adsId == null) ? await fetchIds() : null;
+  return createAnalytics({ ...opts, gaId: opts.gaId ?? ids.gaId, adsId: opts.adsId ?? ids.adsId });
 }

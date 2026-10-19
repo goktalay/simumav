@@ -132,7 +132,7 @@ async function boot() {
   if (state.settings.lang && !hasDeviceLang()) await setLang(detectLang({ stored: state.settings.lang }), { silent: true, remember: false });
   renderChip();
   try {
-    analytics = await initAnalytics({ gaId: state.meta?.ga_id || '', t, spa: true, privacyHref: '/legal/gizlilik.html' });
+    analytics = await initAnalytics({ gaId: state.meta?.ga_id || '', adsId: state.meta?.ads_id || '', t, spa: true, privacyHref: '/legal/gizlilik.html' });
     window.__smAnalytics = analytics;
   } catch (e) { console.warn('analitik başlatılamadı', e); }
   gear.addEventListener('click', () => { sfx.select(); ctx.go('settings'); });

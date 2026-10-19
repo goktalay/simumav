@@ -5,6 +5,7 @@
 //   Aşamalar (setPhase): idle → launch (rampa: kızak 6 m'yi 0,5 sn'de ivmelenir; araç: SITL uçağını taşır) → released (uçak SITL konumuna yumuşak
 //   geçiş; rampa kızağı geri döner, araç frenler) → free. update(dt, ctx) her karede: ctx = { planeLocal:{x,y} (SITL uçağının rig yerel konumu, m), speed }.
 //   Düzenek pist başında sabittir (anchor bir kez; needsAnchor > 2 m sıçramada yeniden); uçak released'a dek kızağa kilitlidir (SITL konumu yok sayılır).
+//   Yüzeye oturma: anchor/resurface(surf, offset) 4 temas noktasını örnekler; surfaceLock (aşağıda) karo niteliğiyle kabul eder ve kilitler; diag ile teşhis.
 // • Kayıttan oynatma (§8): sunucu `launch` olayı yaymaz; aşamalar log karelerinden türetilir (`replayLaunchTimeline` → `replayLaunchPhaseAt`),
 //   oynatıcı zamanına göre (atlama/baştan ile yeniden hesaplanır).
 const DEG = Math.PI / 180;
@@ -24,6 +25,45 @@ export const launchHud = l => (l?.method === 'ramp' ? `LAUNCH RAMP ${Math.round(
   : l?.method === 'vehicle' ? `LAUNCH VEH · ${Math.round(l.release_kmh ?? 70)} km/h` : 'LAUNCH RWY');
 
 const GEAR_RE = /gear|wheel|teker|landing/i;
+
+// ---------- yüzey kilidi (§13 "Yüzeye oturma"): 4 temas noktasının yükseklikleri karo niteliğiyle kabul edilir ----------
+// Google 3B'de aşağı ışın önce KABA karoya (kök/ara LOD; onlarca m hata) çarpar, ince karo sonra gelir; LOD kamera ile kabalaşıp incelebilir.
+// Eski "|h| > 8 m → 0" eşiği eğimli merkezlerde gerçek yüksekliği de atıyordu (düzenek z = 0'da yüzeyin üstünde/içinde). Artık her örnek
+// { z, fine, err, dem } taşır: fine = ışının çarptığı karo ince (geometricError ≤ RIG_FINE_ERR ya da yaprak karo; gerçek arazi/prosedürelde her
+// zaman), err = karonun geometrik hatası (m), dem = karo yoksa/kaba ise yedek yükseklik (DEM terrainHeight). Kural (surfaceLock, saf):
+//   • 4 nokta da ince ve kilit yok → KİLİTLE (değerler alınır); kilit varken daha ince karo (err küçüldü) → yeniden kilitle;
+//   • kilitliyken 4 nokta ince → nokta başına |Δ| ≤ RIG_LOCK_DELTA küçük düzeltme uygulanır, büyük sıçrama YOK SAYILIR (LOD kabalaşması);
+//   • herhangi bir nokta ince değil → önceki kabul edilmiş değerler korunur (kilit düşmez); daha önce hiç değer yoksa ince olanlar alınır,
+//     kaba olanlar DEM yedeğiyle doldurulur (kök/kaba karo yüksekliği ASLA kullanılmaz);
+//   • `offset` (Google yer ofseti; karolar toptan kaydığında) değişirse saklı değerler aynı miktarda kaydırılır.
+export const RIG_FINE_ERR = 2.0;     // m: karo geometricError eşiği ("ince")
+export const RIG_LOCK_DELTA = 0.35;  // m: kilitliyken kabul edilen en büyük nokta düzeltmesi
+export const isFineSample = s => !!s && Number.isFinite(s.z) && s.fine === true;
+export function surfaceLock(prev, samples, offset = 0) {
+  const p = prev || { hs: null, locked: false, err: Infinity, offset: 0 };
+  const n = samples.length;
+  let hs = p.hs ? p.hs.slice() : null;
+  if (hs && Number.isFinite(p.offset) && Number.isFinite(offset) && offset !== p.offset) { const d = offset - p.offset; hs = hs.map(h => h + d); }
+  const allFine = n > 0 && samples.every(isFineSample);
+  if (allFine) {
+    const err = Math.max(0, ...samples.map(s => (Number.isFinite(s.err) ? s.err : 0)));
+    if (!p.locked || !hs || err < p.err - 1e-3) return { hs: samples.map(s => s.z), locked: true, err, offset, event: p.locked ? 'relock' : 'lock', ignored: 0 };
+    let ignored = 0;
+    const out = samples.map((s, i) => { const d = s.z - hs[i]; if (Math.abs(d) <= RIG_LOCK_DELTA) return s.z; ignored++; return hs[i]; });
+    return { hs: out, locked: true, err: p.err, offset, event: ignored ? 'ignore' : 'adjust', ignored };
+  }
+  if (hs) return { hs, locked: p.locked, err: p.err, offset, event: 'hold', ignored: 0 };
+  const dem = s => (s && Number.isFinite(s.dem) ? s.dem : 0);
+  return { hs: samples.map(s => (isFineSample(s) ? s.z : dem(s))), locked: false, err: Infinity, offset, event: 'init', ignored: 0 };
+}
+// Düzlem oturması (saf): 4 yükseklikten (sol-arka, sağ-arka, sol-ön, sağ-ön) ortalama z, pitch (ileri yükseliyorsa +), roll (sağ yükseliyorsa −); ≤ lim
+export function surfaceFit(hs, Lx, Ly, limDeg = 20) {
+  const lim = limDeg * DEG;
+  const z = (hs[0] + hs[1] + hs[2] + hs[3]) / 4;
+  const p = Math.atan2((hs[2] + hs[3] - hs[0] - hs[1]) / 2, Ly || 1);
+  const r = -Math.atan2((hs[1] + hs[3] - hs[0] - hs[2]) / 2, Lx || 1);
+  return { z, p: Math.max(-lim, Math.min(lim, p)), r: Math.max(-lim, Math.min(lim, r)) };
+}
 
 // ---------- iniş takımı (tekerlekli kalkış) ----------
 // built: { grp } gövde çerçevesinde (burun +Y, metre). bb: Box3 (gerçek boyut). Dönüş: { wheels, radius } ya da null (modelde iniş takımı var).
@@ -223,38 +263,47 @@ export function createLaunchRig(T, cfg) {
   const ANCHOR_RESEAT = 2.0;   // m
   const yaw = -(Number(cfg.heading) || 0) * DEG;
   const SURF = { tz: 0, tp: 0, tr: 0, z: 0, p: 0, r: 0, set: false };   // hedef (t*) ve gösterilen yüzey oturması
-  const contacts = () => {   // temas noktaları, root yerel (ölçekli, yaw'sız): [x, y]
+  // Yüzey kilidi (surfaceLock): kabul edilmiş 4 yükseklik + kilit durumu; teşhis için son örnekler ve olay sayaçları (window.__fsRig)
+  let lock = null;
+  const diag = { samples: null, event: null, locks: 0, ignored: 0, holds: 0, fits: 0, fineAll: false, geomErr: null, offset: 0 };
+  const contacts = () => {   // temas noktaları, root yerel (ölçekli, yaw'sız): [x, y] — sol-arka, sağ-arka, sol-ön, sağ-ön
     const s = scale, by = built.body ? built.body.position.y : 0;
     return method === 'ramp' ? [[-0.95, -1.3], [0.95, -1.3], [-0.95, 1.3], [0.95, 1.3]].map(([x, y]) => [x * s, y * s])
       : [[-0.92, -1.6], [0.92, -1.6], [-0.92, 1.85], [0.92, 1.85]].map(([x, y]) => [x * s, (y + by) * s]);
   };
   const applySurf = () => { root.position.z = SURF.z; root.rotation.set(SURF.p, SURF.r, yaw, 'ZXY'); };
-  function fit(surf) {
+  // surf(x, y) → sayı (her zaman ince: gerçek arazi/prosedürel) ya da { z, fine, err, dem } (Google 3B karo ışını; bkz. surfaceLock). offset: Google yer ofseti.
+  const normSample = v => (v == null ? null : typeof v === 'number' ? (Number.isFinite(v) ? { z: v, fine: true, err: 0, dem: v } : null)
+    : { z: Number(v.z), fine: v.fine !== false && Number.isFinite(Number(v.z)), err: Number.isFinite(v.err) ? v.err : 0, dem: Number.isFinite(v.dem) ? v.dem : 0 });
+  function fit(surf, offset = 0) {
     if (typeof surf !== 'function') return;
     const c = Math.cos(yaw), s = Math.sin(yaw), pts = contacts();
-    const hs = pts.map(([x, y]) => { const wx = c * x - s * y + root.position.x, wy = s * x + c * y + root.position.y; const h = surf(wx, wy); return Number.isFinite(h) ? h : 0; });
+    const samples = pts.map(([x, y]) => { const wx = c * x - s * y + root.position.x, wy = s * x + c * y + root.position.y; return normSample(surf(wx, wy)); });
+    lock = surfaceLock(lock, samples, offset);
+    diag.samples = samples; diag.event = lock.event; diag.fits++; diag.fineAll = samples.every(isFineSample); diag.offset = offset;
+    diag.geomErr = samples.some(Boolean) ? Math.max(...samples.filter(Boolean).map(q => q.err || 0)) : null;
+    if (lock.event === 'lock' || lock.event === 'relock') diag.locks++;
+    if (lock.event === 'hold') diag.holds++;
+    diag.ignored += lock.ignored || 0;
     const Lx = Math.abs(pts[1][0] - pts[0][0]) || 1, Ly = Math.abs(pts[2][1] - pts[0][1]) || 1;
-    const tz = (hs[0] + hs[1] + hs[2] + hs[3]) / 4;
-    const tp = Math.atan2((hs[2] + hs[3] - hs[0] - hs[1]) / 2, Ly);     // ileri yükseliyorsa burun yukarı (+X dönüşü)
-    const tr = -Math.atan2((hs[1] + hs[3] - hs[0] - hs[2]) / 2, Lx);    // sağ yükseliyorsa sağ yukarı (−Y dönüşü)
-    const lim = 20 * DEG;
-    SURF.tz = tz; SURF.tp = Math.max(-lim, Math.min(lim, tp)); SURF.tr = Math.max(-lim, Math.min(lim, tr));
+    const f = surfaceFit(lock.hs, Lx, Ly, 20);
+    SURF.tz = f.z; SURF.tp = f.p; SURF.tr = f.r;
     if (!SURF.set) { SURF.set = true; SURF.z = SURF.tz; SURF.p = SURF.tp; SURF.r = SURF.tr; applySurf(); }
   }
-  function anchor(p, surf) {
+  function anchor(p, surf, offset = 0) {
     root.position.set(0, 0, 0); root.rotation.set(0, 0, yaw, 'ZXY');
     root.updateMatrixWorld(true);
     built.attach.getWorldPosition(anchorTmp);
     root.position.set(p.x - anchorTmp.x, p.y - anchorTmp.y, 0);
     if (surf) {
-      SURF.set = false; fit(surf);   // yeni demirde yüzeye hemen otur
+      SURF.set = false; lock = null; fit(surf, offset);   // yeni demirde yüzeye hemen otur (kilit sıfırdan)
       root.updateMatrixWorld(true); built.attach.getWorldPosition(anchorTmp);   // eğimden doğan attach XY kaymasını düzelt (SITL uçağı kızakta kalsın)
       root.position.x += p.x - anchorTmp.x; root.position.y += p.y - anchorTmp.y;
     } else applySurf();
     anchorLast.set(p.x, p.y, 0); anchorSet = true;
   }
   const needsAnchor = p => !anchorSet || Math.hypot(p.x - anchorLast.x, p.y - anchorLast.y) > ANCHOR_RESEAT;
-  const resurface = surf => { if (anchorSet) fit(surf); };
+  const resurface = (surf, offset = 0) => { if (anchorSet) fit(surf, offset); };
   // Her kare. ctx: { speed (m/s) uçağın yer hızı (kızaktayken düzeneğin hızı) }
   function update(dt, ctx) {
     const sp = ctx?.speed || 0;
@@ -292,6 +341,12 @@ export function createLaunchRig(T, cfg) {
   return {
     group: root, method, attach: built.attach, attachWorld, planeQuat, setPhase, update, anchor, needsAnchor, resurface,
     get surface() { return { z: SURF.z, pitch_deg: SURF.p / DEG, roll_deg: SURF.r / DEG }; },   // teşhis: düzeneğin yüzey oturması
+    // Teşhis (§13, window.__fsRig): h gösterilen yükseklik, hedef, kilit/incelik, son 4 örnek, kabul edilmiş yükseklikler, olay sayaçları
+    get diag() {
+      return { h: SURF.z, target: SURF.tz, pitch: SURF.p / DEG, roll: SURF.r / DEG, fine: diag.fineAll, geomErr: diag.geomErr, locked: !!lock?.locked, lockErr: lock ? lock.err : null,
+        accepted: lock ? lock.hs.slice() : null, samples: diag.samples ? diag.samples.map(s => (s ? { z: +s.z.toFixed(3), fine: s.fine, err: s.err, dem: +s.dem.toFixed(2) } : null)) : null,
+        event: diag.event, locks: diag.locks, ignored: diag.ignored, holds: diag.holds, fits: diag.fits, offset: diag.offset, phase: S.phase, x: root.position.x, y: root.position.y };
+    },
     // Demir ne zaman atılır: araç `launch`ta her kare (SITL yer koşusunu taşır); idle/armed'da yalnız gerekiyorsa (ilk kez ya da > 2 m sıçrama)
     get anchored() { return S.phase === 'idle' || S.phase === 'armed' || (S.phase === 'launch' && method === 'vehicle'); },
     get tracking() { return S.phase === 'launch' && method === 'vehicle'; },   // her kare izleme

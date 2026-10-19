@@ -5,10 +5,11 @@
 // • Canlı oturumda göstergeler sunucunun tele.fuel / tele.elec / tele.speedup alanlarından; KAYITTAN OYNATMADA aynı model (createPowerSim) karelerden
 //   (yer hızı, gaz, armed, servo) oynatıcı zamanıyla hesaplanır (session.power = kaydın canlı oturumundaki ayarlar; atlamada baştan yeniden entegre).
 // • Simülasyon hızı kapsülü (createSpeedPill): 1×/2×/4×/8× → cmd speed {factor} (SITL SIM_SPEEDUP); seçili düğme tele.speedup ile eşitlenir.
-// • Güç paneli (§23.6, createPowerGauges): her kamera kipinde sahne üstünde, panelden bağımsız iki SVG kadran (YAKIT · BATARYA; 270° yay, yeşil → sarı
-//   < 30 % → kırmızı < 15 % + nabız; bitince rozet); FPV OSD / gimbal HUD açıkken kendi çizimleri (fs-osd-on / fs-mhud-on gizler); tıklanınca ayrıntı.
+// • Güç paneli (§23.6, createPowerGauges): takip/serbest/yer kiplerinde alt çubuğun üstünde YATAYDA ORTADA, panelden bağımsız dört otomobil tarzı analog
+//   kadran (YAKIT küçük · HIZ büyük · MOTOR büyük · BATARYA küçük; 240° süpürme, siyah ibre, kırmızı/mavi bölge, dijital değer); kritikte kırmızı nabız,
+//   bitince rozet; FPV OSD / gimbal HUD açıkken kendi çizimleri (fs-osd-on / fs-mhud-on gizler); tıklanınca ayrıntı kutusu.
 // Saf yardımcılar (tests/test_flightsim_power.mjs): fuelLpm, batteryWh, servoJoule, measuredKmPerL, avgW, createPowerSim, powerWarnings, fuelText, elecText, rangeText,
-//   gaugeLevel/gaugeArc/fuelGauge/elecGauge/gaugeModels, createPowerAcc, powerDetailRows.
+//   gaugeLevel/gaugeArc/fuelGauge/elecGauge/gaugeModels, needleAngle/niceScaleMax/scaleTicks/zoneArc/arcPath/easeNeedle, speedGauge/engineGauge/dashModels, createPowerAcc, powerDetailRows.
 // ui.js içe aktarılmaz (Node testinde çalışır): DOM üreten fonksiyonlar `h` ve `tr`'yi parametre alır.
 
 export const HUCRE_V = 3.7, SERVO_J_PER_US = 0.0005, W_PENCERE_S = 30, FUEL_MIN_KM = 0.3, FUEL_MIN_L = 0.02, ELEC_MIN_S = 60;
@@ -115,11 +116,15 @@ export const fuelText = f => (!f ? '—' : `${num(f.l, 0).toFixed(2)} L · %${Ma
 export const elecText = e => (!e ? '—' : `%${Math.round(num(e.pct, 0))} · ${num(e.v, 0).toFixed(2)} V${e.min_left != null ? ` · ${Math.round(e.min_left)} dk` : ''}`);
 export const minText = m => (m == null || !Number.isFinite(m) ? '—' : m >= 90 ? `${Math.floor(m / 60)} sa ${Math.round(m % 60)} dk` : `${Math.round(m)} dk`);
 
-// ---------- §23.6 güç paneli: yakıt ve batarya kadranları (her kamera kipinde, panelden bağımsız) ----------
-// Saf kısım (tests/test_flightsim_power.mjs): seviye eşikleri (yeşil ≥ 30 % · sarı < 30 % · kırmızı < 15 % · bitti), 270° yay uzunluğu (SVG pathLength
-// 100 → 75 birim), kadran modelleri (ana değer / ikincil / anlık tüketim / rozet), SITL pili yedeği, mesafe-süre toplayıcısı, ayrıntı satırları.
-export const GAUGE_LOW_PCT = 30, GAUGE_CRIT_PCT = 15, GAUGE_ARC = 75;   // 270° / 360° × pathLength 100
+// ---------- §23.6 güç paneli: otomobil tarzı analog kadranlar (YAKIT · HIZ · MOTOR · BATARYA; alt çubuğun üstünde, yatayda ortada) ----------
+// Saf kısım (tests/test_flightsim_power.mjs): seviye eşikleri (yeşil ≥ 30 % · sarı < 30 % · kırmızı < 15 % · bitti), 240° süpürme ibre açısı (needleAngle),
+// ölçek üst sınırı (niceScaleMax: azami × 1,2 → 20/50/100 katına yuvarlanır), çentikler (scaleTicks), kırmızı/mavi bölge yayı (zoneArc), SVG yay yolu (arcPath),
+// ibre yumuşatma (easeNeedle; üstel yaklaşım), dört kadran modeli (fuelGauge / speedGauge / engineGauge / elecGauge → dashModels), SITL pili yedeği,
+// mesafe-süre toplayıcısı, ayrıntı satırları. Eski 270° yay değerleri (gaugeArc, GAUGE_ARC) FPV OSD / HUD çubukları için korunur.
+export const GAUGE_LOW_PCT = 30, GAUGE_CRIT_PCT = 15, GAUGE_ARC = 75;   // 270° / 360° × pathLength 100 (OSD/HUD çubukları)
 export const GAUGE_COLORS = { ok: '#22c55e', low: '#fbbf24', crit: '#ef4444', empty: '#ef4444' };
+export const GAUGE_SWEEP = 240, GAUGE_R = 46, GAUGE_CX = 50, GAUGE_CY = 50;   // ibre −120° … +120° (saat 7 → saat 5); viewBox 100 × 100
+export const ENGINE_RED_PCT = 90, FUEL_RED_FRAC = 0.125, ELEC_BLUE_PCT = 90, NEEDLE_TAU = 0.22, NEEDLE_SNAP = 0.04;
 export function gaugeLevel(pct, empty = false) {
   if (empty || pct == null || !Number.isFinite(Number(pct)) || Number(pct) <= 0) return 'empty';
   const p = Number(pct);
@@ -130,28 +135,98 @@ export const gaugeArc = pct => Math.round(clamp(num(pct, 0), 0, 100) * GAUGE_ARC
 export const lphText = lpm => `${(num(lpm, 0) * 60).toFixed(2)} L/sa`;
 export const wattText = w => (w == null ? '—' : `${Math.round(num(w, 0))} W`);
 export const voltText = v => (v == null || !(num(v, 0) > 0) ? '—' : `${num(v, 0).toFixed(1)} V`);
-// Yakıt kadranı modeli: ana "4.82 L", ikincil "%96 · ≈ 113 km", anlık "0.41 L/sa"; biterse rozet
+// İbre açısı (derece, dikeyden saat yönü): min → −sweep/2, max → +sweep/2; aralık dışı kırpılır; geçersiz → min
+export function needleAngle(v, min = 0, max = 100, sweep = GAUGE_SWEEP) {
+  const x = num(v, min);
+  if (!(max > min)) return -sweep / 2;
+  return Math.round((clamp((x - min) / (max - min), 0, 1) - 0.5) * sweep * 100) / 100;
+}
+// Ölçek üst sınırı: azami × 1,2 → "güzel" adıma (ana bölme 20 / 25 / 50 / 100 …) yukarı yuvarlanmış; ana bölme sayısı 4–6 arasında
+export function niceScaleMax(vmax, factor = 1.2) {
+  const want = Math.max(1, Math.round(num(vmax, 0) * factor * 1e6) / 1e6);
+  const mag = 10 ** Math.floor(Math.log10(want));
+  for (const m of [1, 2, 2.5, 5, 10, 20]) { const step = m * mag / 10; if (step < 1 && mag <= 10) continue; const top = Math.ceil(want / step) * step; if (top / step <= 6 && top / step >= 4) return { max: Math.round(top * 100) / 100, step: Math.round(step * 100) / 100 }; }
+  const step = mag; return { max: Math.ceil(want / step) * step, step };
+}
+// Çentikler: ana (değer etiketli) ve ara (ana aralık minor'a bölünür); her biri {v, a (derece), major}
+export function scaleTicks(max, step, minor = 2, min = 0, sweep = GAUGE_SWEEP) {
+  const out = [];
+  if (!(step > 0) || !(max > min)) return out;
+  const n = Math.round((max - min) / step), sub = Math.max(1, Math.round(minor));
+  for (let i = 0; i <= n * sub; i++) { const v = Math.round((min + i * step / sub) * 1e6) / 1e6; if (v > max + 1e-9) break; out.push({ v, a: needleAngle(v, min, max, sweep), major: i % sub === 0 }); }
+  return out;
+}
+// Renkli bölge: [from, to] değer aralığının açıları (derece); boşsa null
+export function zoneArc(from, to, min, max, sweep = GAUGE_SWEEP) {
+  if (from == null || to == null || !(max > min)) return null;
+  const a = clamp(num(from, min), min, max), b = clamp(num(to, max), min, max);
+  if (b - a <= 1e-9) return null;
+  return { a0: needleAngle(a, min, max, sweep), a1: needleAngle(b, min, max, sweep) };
+}
+// SVG yay yolu: merkez (cx, cy), yarıçap r, a0 → a1 derece (dikeyden saat yönü); > 180° ise büyük yay bayrağı
+export function arcPath(a0, a1, r, cx = GAUGE_CX, cy = GAUGE_CY) {
+  const P = a => { const t = (a - 90) * Math.PI / 180; return [cx + r * Math.cos(t), cy + r * Math.sin(t)]; };
+  const [x0, y0] = P(a0), [x1, y1] = P(a1), big = Math.abs(a1 - a0) > 180 ? 1 : 0;
+  return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${big} ${a1 >= a0 ? 1 : 0} ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+}
+// İbre yumuşatma: üstel yaklaşım (zaman sabiti tau sn); fark NEEDLE_SNAP altındaysa hedefe oturur (titreme yok)
+export function easeNeedle(cur, target, dtSec, tau = NEEDLE_TAU) {
+  const c = num(cur, target), d = target - c;
+  if (Math.abs(d) <= NEEDLE_SNAP || !(dtSec > 0)) return target;
+  return c + d * (1 - Math.exp(-dtSec / tau));
+}
+// Yakıt kadranı modeli: ibre 0…1 (¼ ½ ¾ 1), boş uç kırmızı (0…⅛); dijital "4.82 L" + "≈ 113 km"; ikincil "%96", anlık "0.41 L/sa"; biterse rozet
 export function fuelGauge(f) {
   if (!f) return null;
   const pct = clamp(num(f.pct, 0), 0, 100), empty = !!f.empty || num(f.l, 0) <= 0, level = gaugeLevel(pct, empty);
-  return { kind: 'fuel', pct, level, color: GAUGE_COLORS[level], empty, arc: gaugeArc(pct), main: `${num(f.l, 0).toFixed(2)} L`, pctText: `%${Math.round(pct)}`,
-    sub: empty ? '0 km' : `≈ ${rangeText(num(f.range_km, 0))}`, rate: lphText(f.lpm), badge: empty ? 'YAKIT BİTTİ' : null };
+  return { kind: 'fuel', pct, level, color: GAUGE_COLORS[level], empty, arc: gaugeArc(pct), angle: needleAngle(pct / 100, 0, 1), main: `${num(f.l, 0).toFixed(num(f.l, 0) >= 10 ? 1 : 2)} L`, unit: '', pctText: `%${Math.round(pct)}`,
+    sub: empty ? '0 km' : `≈ ${rangeText(num(f.range_km, 0))}`, rate: lphText(f.lpm), badge: empty ? 'YAKIT BİTTİ' : null, warn: level === 'crit' || empty };
 }
-// Batarya kadranı modeli (tele.elec; yoksa SITL pili batt_v/batt_pct → sitl: true): ana "%99", ikincil "16.8 V · ≈ 5 sa 14 dk", anlık "31 W · 4S"
+// Batarya kadranı modeli (tele.elec; yoksa SITL pili batt_v/batt_pct → sitl: true): ibre 0…100 %, düşük uç kırmızı, üst uç mavi; dijital "%99" + "16.8 V · 5 sa 14 dk"
 export function elecGauge(e, sitl = null) {
   if (e) {
     const pct = clamp(num(e.pct, 0), 0, 100), empty = !!e.empty || num(e.wh, 0) <= 0, level = gaugeLevel(pct, empty);
-    return { kind: 'elec', pct, level, color: GAUGE_COLORS[level], empty, arc: gaugeArc(pct), main: `%${Math.round(pct)}`, pctText: voltText(e.v),
-      sub: empty ? voltText(e.v) : `${voltText(e.v)} · ≈ ${minText(e.min_left)}`, rate: `${wattText(e.w)}${e.cells ? ` · ${Math.round(e.cells)}S` : ''}`, badge: empty ? 'BATARYA BİTTİ' : null, sitl: false };
+    return { kind: 'elec', pct, level, color: GAUGE_COLORS[level], empty, arc: gaugeArc(pct), angle: needleAngle(pct, 0, 100), main: `%${Math.round(pct)}`, unit: '', pctText: voltText(e.v),
+      sub: empty ? voltText(e.v) : `${voltText(e.v)} · ≈ ${minText(e.min_left)}`, rate: `${wattText(e.w)}${e.cells ? ` · ${Math.round(e.cells)}S` : ''}`, badge: empty ? 'BATARYA BİTTİ' : null, sitl: false, warn: level === 'crit' || empty };
   }
   if (sitl && (num(sitl.batt_pct, null) != null || num(sitl.batt_v, 0) > 0)) {   // SITL pili (elektronik batarya tanımsız): yüzde telemetriden, yoksa gerilimden kaba kestirim
     const v = num(sitl.batt_v, null), pct = clamp(num(sitl.batt_pct, v != null && v > 0 ? (v / Math.max(1, Math.round(v / 3.8)) - 3.5) / 0.7 * 100 : 0), 0, 100), level = gaugeLevel(pct, false);
-    return { kind: 'elec', pct, level, color: GAUGE_COLORS[level], empty: false, arc: gaugeArc(pct), main: `%${Math.round(pct)}`, pctText: voltText(v), sub: voltText(v), rate: 'SITL pili', badge: null, sitl: true };
+    return { kind: 'elec', pct, level, color: GAUGE_COLORS[level], empty: false, arc: gaugeArc(pct), angle: needleAngle(pct, 0, 100), main: `%${Math.round(pct)}`, unit: '', pctText: voltText(v), sub: voltText(v), rate: 'SITL pili', badge: null, sitl: true, warn: level === 'crit' };
   }
   return null;
 }
-// Telemetri karesinden iki kadran: yakıt 0 L (elektrikli dron) → yalnız batarya; batarya tanımsızsa yalnız yakıt; ikisi de yoksa {null,null}
+// Hız kadranı: yer hızı km/h; ölçek 0 … niceScaleMax(azami × 1,2); azami hız üstü kırmızı bölge; uçakta hava hızı ikinci okuma (IAS);
+// uyarı üçgeni: çarpışma, aşırı hız (> azami) ya da stall (uçak, armed, havada > 10 m AGL, IAS < azami × 0,25). Azami yoksa (kopter) 100 km/h ölçek, kırmızı bölge yok.
+export function speedGauge(t, settings = null, { plane = false, collision = false } = {}) {
+  if (!t) return null;
+  const gs = Math.max(0, num(t.groundspeed ?? t.gs, 0)) * 3.6, air = t.airspeed != null ? Math.max(0, num(t.airspeed, 0)) * 3.6 : null;
+  const vmax = num(settings?.max_speed_ms, null), maxKmh = vmax ? vmax * 3.6 : null;
+  const sc = niceScaleMax(maxKmh || 100 / 1.2);
+  const airborne = !!t.armed && num(t.alt_rel, 0) > 10;
+  const over = maxKmh != null && gs > maxKmh * 1.02, stall = plane && airborne && air != null && maxKmh != null && air < maxKmh * 0.25;
+  const warn = !!collision || over || stall;
+  return { kind: 'speed', min: 0, max: sc.max, step: sc.step, value: gs, angle: needleAngle(gs, 0, sc.max), red: maxKmh != null ? zoneArc(maxKmh, sc.max, 0, sc.max) : null, blue: null,
+    main: String(Math.round(gs)), unit: 'KM/H', sub: air != null && plane ? `IAS ${Math.round(air)}` : '', level: warn ? 'crit' : over ? 'low' : 'ok', warn, warnKind: collision ? 'crash' : over ? 'over' : stall ? 'stall' : null };
+}
+// Motor kadranı: gaz kolu % 0…100 (dijital "72" + "% GAZ"); SITL rpm varsa ×1000 RPM ölçeği (0 … niceScaleMax(azami rpm)); kırmızı bölge % 90+
+export function engineGauge(t, { rpmMax = 8000 } = {}) {
+  if (!t) return null;
+  const rpm = num(t.rpm, null);
+  if (rpm != null && rpm > 0) {
+    const sc = niceScaleMax(rpmMax / 1000, 1), v = rpm / 1000;
+    return { kind: 'engine', min: 0, max: sc.max, step: sc.step, value: v, angle: needleAngle(v, 0, sc.max), red: zoneArc(sc.max * ENGINE_RED_PCT / 100, sc.max, 0, sc.max), blue: null, main: v.toFixed(1), unit: '×1000 RPM', sub: `${Math.round(clamp(num(t.throttle, 0), 0, 100))} %`, level: v >= sc.max * ENGINE_RED_PCT / 100 ? 'low' : 'ok', warn: false };
+  }
+  const thr = clamp(num(t.throttle, 0), 0, 100);
+  return { kind: 'engine', min: 0, max: 100, step: 20, value: thr, angle: needleAngle(thr, 0, 100), red: zoneArc(ENGINE_RED_PCT, 100, 0, 100), blue: null, main: String(Math.round(thr)), unit: '% GAZ', sub: '', level: thr >= ENGINE_RED_PCT ? 'low' : 'ok', warn: false };
+}
+// Telemetri karesinden yakıt + batarya: yakıt 0 L (elektrikli dron) → yalnız batarya; batarya tanımsızsa yalnız yakıt; ikisi de yoksa {null,null}
 export const gaugeModels = t => ({ fuel: fuelGauge(t?.fuel || null), elec: elecGauge(t?.elec || null, t || null) });
+// Dört kadran: yakıt (0 L → null, "ELEKTRİK" rozeti), hız, motor, batarya. Güç kaynağı hiç yoksa (fuel + elec null) hız/motor da gizlenir (kapsayıcı kapalı)
+export function dashModels(t, settings = null, opts = {}) {
+  const { fuel, elec } = gaugeModels(t);
+  if (!fuel && !elec) return { fuel: null, speed: null, engine: null, elec: null };
+  return { fuel, speed: speedGauge(t, settings, opts), engine: engineGauge(t, opts), elec };
+}
 // Mesafe / süre toplayıcısı (canlı oturum: sunucu tele'de mesafe yok): kare zamanı t (kayıt sn) → tbm (SITL ms) → ts (ms); > 5 sn boşluk atlanır
 export function createPowerAcc() {
   const st = { last: null, dist: 0, time: 0, armedS: 0 };
@@ -186,39 +261,69 @@ export function powerDetailRows(t, settings, sum, tr = s => s) {
   ];
 }
 
-// DOM: güç paneli (sağ alt; CSS .fs-power). deps { h, tr, getSettings, getSummary, replay }. Dönüş { el, update(t), reset(), dispose() }.
-// Yapı: iki .fs-gauge düğmesi (SVG 270° yay + ortada büyük değer + altta ikincil; altında anlık tüketim; bitince rozet; mobilde yatay çubuk .fs-gauge-c)
-// + tıklanınca .fs-power-pop ayrıntı kutusu (powerDetailRows). Görünür kaynak yoksa kapsayıcı hidden; stage'e .fs-power-on sınıfı (atıf metni sola kayar).
-const GAUGE_SVG = `<svg viewBox="0 0 100 100" aria-hidden="true"><defs><filter id="fsgGlow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
-<circle class="fs-gauge-track" cx="50" cy="50" r="41" pathLength="100" stroke-dasharray="${GAUGE_ARC} 100" transform="rotate(135 50 50)"/>
-<circle class="fs-gauge-fill" cx="50" cy="50" r="41" pathLength="100" stroke-dasharray="0 100" transform="rotate(135 50 50)" filter="url(#fsgGlow)"/></svg>`;
+// DOM: güç paneli (alt çubuğun üstünde, yatayda ortada; CSS .fs-gauges). deps { h, tr, getSettings, getSummary, plane, getCollision }.
+// Dönüş { el, update(t), reset(), dispose() }. Yapı: dört .fs-gauge düğmesi (data-g = fuel | speed | engine | elec; büyük: speed, engine), her biri bir SVG
+// otomobil kadranı: açık yüzey, ince dış halka, ana/ara çentikler + rakamlar, kırmızı (ve mavi) bölge yayı, siyah ibre + merkez pimi, kadranın alt
+// yarısında dijital değer + birim, ikon (pompa / pil / uyarı üçgeni); bitince rozet kadranın üstünde. İbre rAF ile yumuşatılır (easeNeedle).
+// Tıklanınca .fs-power-pop ayrıntı kutusu (powerDetailRows). Görünür kaynak yoksa kapsayıcı hidden; stage'e .fs-power-on sınıfı.
 const GAUGE_ICO = {
-  fuel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M4 21h12"/><path d="M7 7h6v4H7z"/><path d="M15 9h2a2 2 0 0 1 2 2v5a1.5 1.5 0 0 0 3 0V9l-2-2"/></svg>',
-  elec: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="8" width="16" height="8" rx="1.6"/><path d="M21 11v2"/><path d="M11.5 9.5 9 12.5h3l-1.5 2.5"/></svg>',
+  fuel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M4 21h12"/><path d="M7 7h6v4H7z"/><path d="M15 9h2a2 2 0 0 1 2 2v5a1.5 1.5 0 0 0 3 0V9l-2-2"/></svg>',
+  elec: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="8" width="16" height="8" rx="1.6"/><path d="M21 11v2"/><path d="M11.5 9.5 9 12.5h3l-1.5 2.5"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 9v5"/><path d="M12 17.5v.5"/></svg>',
 };
-export function createPowerGauges(stage, { h, tr, getSettings = () => null, getSummary = () => null }) {
+const FRAC_LBL = { 0: 'E', 0.25: '¼', 0.5: '½', 0.75: '¾', 1: 'F' };
+const SPEC = {
+  fuel: { min: 0, max: 1, step: 0.25, minor: 2, big: false, red: { a0: needleAngle(0, 0, 1), a1: needleAngle(FUEL_RED_FRAC, 0, 1) }, blue: null, lbl: v => FRAC_LBL[v] ?? '' },
+  speed: { min: 0, max: 100, step: 20, minor: 2, big: true, red: null, blue: null, lbl: v => String(v) },
+  engine: { min: 0, max: 100, step: 20, minor: 2, big: true, red: zoneArc(ENGINE_RED_PCT, 100, 0, 100), blue: null, lbl: v => String(v) },
+  elec: { min: 0, max: 100, step: 25, minor: 2, big: false, red: zoneArc(0, GAUGE_CRIT_PCT, 0, 100), blue: zoneArc(ELEC_BLUE_PCT, 100, 0, 100), lbl: v => String(v) },
+};
+const P = (a, r) => { const t = (a - 90) * Math.PI / 180; return [GAUGE_CX + r * Math.cos(t), GAUGE_CY + r * Math.sin(t)]; };
+// Çentik + rakam katmanı (ölçek değişince yeniden üretilir: hız kadranının azami hızı, motor rpm)
+function ticksSvg(min, max, step, minor, lbl) {
+  let s = '';
+  for (const t of scaleTicks(max, step, minor, min)) {
+    const [x0, y0] = P(t.a, t.major ? 38.5 : 41), [x1, y1] = P(t.a, 44.5);
+    s += `<line class="fs-gauge-tick${t.major ? ' major' : ''}" x1="${x0.toFixed(2)}" y1="${y0.toFixed(2)}" x2="${x1.toFixed(2)}" y2="${y1.toFixed(2)}"/>`;
+    if (t.major) { const [tx, ty] = P(t.a, 31.5); s += `<text class="fs-gauge-num" x="${tx.toFixed(2)}" y="${(ty + 2.2).toFixed(2)}">${lbl(t.v)}</text>`; }
+  }
+  return s;
+}
+function dialSvg(kind) {
+  const sp = SPEEP(kind);
+  return `<svg viewBox="0 0 100 100" aria-hidden="true">
+<path class="fs-gauge-ring" d="${arcPath(-GAUGE_SWEEP / 2 - 6, GAUGE_SWEEP / 2 + 6, 47.5)}"/>
+<circle class="fs-gauge-face" cx="${GAUGE_CX}" cy="${GAUGE_CY}" r="${GAUGE_R}"/>
+<path class="fs-gauge-zone red" d="${sp.red ? arcPath(sp.red.a0, sp.red.a1, 42.5) : ''}"${sp.red ? '' : ' hidden'}/>
+<path class="fs-gauge-zone blue" d="${sp.blue ? arcPath(sp.blue.a0, sp.blue.a1, 42.5) : ''}"${sp.blue ? '' : ' hidden'}/>
+<g class="fs-gauge-ticks">${ticksSvg(sp.min, sp.max, sp.step, sp.minor, sp.lbl)}</g>
+<g class="fs-gauge-warn" hidden><path d="M50 27.5 44.2 37.5h11.6z"/><path class="w" d="M50 31v3.4M50 35.6v.3"/></g>
+<g class="fs-gauge-needle" transform="rotate(${-GAUGE_SWEEP / 2} ${GAUGE_CX} ${GAUGE_CY})"><path d="M48.2 55 L51.8 55 L50.8 14.5 L49.2 14.5 Z"/></g>
+<circle class="fs-gauge-pin" cx="${GAUGE_CX}" cy="${GAUGE_CY}" r="4.2"/><circle class="fs-gauge-pin2" cx="${GAUGE_CX}" cy="${GAUGE_CY}" r="1.5"/>
+</svg>`;
+}
+const SPEEP = kind => SPEC[kind];
+export function createPowerGauges(stage, { h, tr, getSettings = () => null, getSummary = () => null, plane = false, getCollision = () => false }) {
   const acc = createPowerAcc();
-  let last = null, lastAt = 0, popOpen = false, disposed = false;
-  const LABEL = { fuel: 'YAKIT', elec: 'BATARYA' };
+  let last = null, lastAt = 0, popOpen = false, disposed = false, raf = 0, rafAt = 0;
+  const LABEL = { fuel: 'YAKIT', speed: 'HIZ', engine: 'MOTOR', elec: 'BATARYA' };
   const mk = kind => {
-    const g = {
-      fill: null, main: h('b', { class: 'fs-gauge-main' }, '—'), pct: h('span', { class: 'fs-gauge-pct' }, ''), sub: h('span', { class: 'fs-gauge-sub' }, '—'), rate: h('span', { class: 'fs-gauge-rate' }, ''),
-      badge: h('span', { class: 'fs-gauge-badge', hidden: true }, ''), cMain: h('b', { class: 'fs-gauge-cv' }, '—'), cSub: h('span', { class: 'fs-gauge-cs' }, ''), cBar: h('i'),
-    };
-    const dial = h('span', { class: 'fs-gauge-dial', html: GAUGE_SVG });
-    g.fill = dial.querySelector('.fs-gauge-fill');
-    dial.append(h('span', { class: 'fs-gauge-ico', html: GAUGE_ICO[kind] }), g.main, g.pct, g.sub, g.badge);
-    g.el = h('button', { class: 'fs-gauge', type: 'button', 'data-g': kind, title: tr('Güç paneli: ayrıntı için tıklayın'), onclick: () => togglePop() },
-      h('span', { class: 'fs-gauge-lbl' }, tr(LABEL[kind])), dial, g.rate,
-      h('span', { class: 'fs-gauge-c' }, h('span', { class: 'fs-gauge-cbar' }, g.cBar), g.cMain, g.cSub));   // kompakt (mobil) satır: CSS ile gösterilir
+    const big = SPEC[kind].big;
+    const g = { kind, cur: -GAUGE_SWEEP / 2, target: -GAUGE_SWEEP / 2, scale: null, main: h('b', { class: 'fs-gauge-main' }, '—'), unit: h('span', { class: 'fs-gauge-unit' }, ''), sub: h('span', { class: 'fs-gauge-sub' }, ''),
+      badge: h('span', { class: 'fs-gauge-badge', hidden: true }, '') };
+    const dial = h('span', { class: 'fs-gauge-dial', html: dialSvg(kind) });
+    g.needle = dial.querySelector('.fs-gauge-needle'); g.warn = dial.querySelector('.fs-gauge-warn'); g.ticks = dial.querySelector('.fs-gauge-ticks'); g.red = dial.querySelector('.fs-gauge-zone.red');
+    g.ico = h('span', { class: 'fs-gauge-ico', html: GAUGE_ICO[kind] || '' , hidden: !GAUGE_ICO[kind] });
+    dial.append(g.ico, h('span', { class: 'fs-gauge-digits' }, g.main, g.unit), g.sub, g.badge);
+    g.el = h('button', { class: `fs-gauge ${big ? 'big' : 'small'}`, type: 'button', 'data-g': kind, title: `${tr(LABEL[kind])} · ${tr('Güç paneli: ayrıntı için tıklayın')}`, onclick: () => togglePop() }, dial, h('span', { class: 'fs-gauge-lbl' }, tr(LABEL[kind])));
     return g;
   };
-  const G = { fuel: mk('fuel'), elec: mk('elec') };
+  const G = { fuel: mk('fuel'), speed: mk('speed'), engine: mk('engine'), elec: mk('elec') };
   const popBody = h('div', { class: 'fs-power-rows' });
   const pop = h('div', { class: 'fs-power-pop', hidden: true, role: 'dialog' },
     h('div', { class: 'fs-power-pop-h' }, h('b', null, tr('Güç ve yakıt')), h('button', { class: 'fs-power-x', type: 'button', title: tr('Kapat'), onclick: () => togglePop(false) }, '×')),
     popBody, h('div', { class: 'fs-power-foot small' }, tr('Yakıt: mesafe + gaz kolu · Batarya: saatlik W + servo · Biterse yalnız uyarı, uçuş sürer')));
-  const el = h('div', { class: 'fs-gauges', hidden: true }, G.fuel.el, G.elec.el, pop);
+  const el = h('div', { class: 'fs-gauges', hidden: true, 'data-nofuel': tr('ELEKTRİK') }, G.fuel.el, G.speed.el, G.engine.el, G.elec.el, pop);
   const onDocClick = e => { if (popOpen && !el.contains(e.target)) togglePop(false); };
   document.addEventListener('click', onDocClick, true);
   const togglePop = v => { popOpen = v == null ? !popOpen : !!v; pop.hidden = !popOpen; el.classList.toggle('open', popOpen); if (popOpen) drawPop(); };
@@ -231,28 +336,52 @@ export function createPowerGauges(stage, { h, tr, getSettings = () => null, getS
       : h('div', { class: 'fs-power-row' }, h('span', null, lbl), h('span', { hidden: !showF }, a), h('span', { hidden: !showE }, b)));
     popBody.replaceChildren(...kids);
   };
+  // İbre animasyonu: hedef açıya üstel yaklaşım; tüm ibreler hedefteyse döngü durur
+  const tick = now => {
+    raf = 0;
+    const dt = rafAt ? Math.min(0.1, (now - rafAt) / 1000) : 0.016; rafAt = now;
+    let busy = false;
+    for (const g of Object.values(G)) {
+      if (g.cur === g.target) continue;
+      g.cur = easeNeedle(g.cur, g.target, dt);
+      g.needle.setAttribute('transform', `rotate(${g.cur.toFixed(2)} ${GAUGE_CX} ${GAUGE_CY})`);
+      if (g.cur !== g.target) busy = true;
+    }
+    if (busy && !disposed) raf = requestAnimationFrame(tick); else rafAt = 0;
+  };
+  const setNeedle = (g, a) => { if (a == null || !Number.isFinite(a)) return; g.target = a; if (!raf && g.cur !== g.target) raf = requestAnimationFrame(tick); };
+  const setScale = (g, m) => {   // ölçek (hız azami / rpm) değişince çentikler ve kırmızı bölge yeniden
+    const key = `${m.min}|${m.max}|${m.step}|${m.red ? `${m.red.a0}:${m.red.a1}` : ''}|${m.unit}`;
+    if (g.scale === key) return;
+    g.scale = key;
+    g.ticks.innerHTML = ticksSvg(m.min, m.max, m.step, SPEC[g.kind].minor, SPEC[g.kind].lbl);
+    g.red.hidden = !m.red; if (m.red) g.red.setAttribute('d', arcPath(m.red.a0, m.red.a1, 42.5));
+  };
   const apply = (g, m) => {
     g.el.hidden = !m;
     if (!m) return;
     g.el.dataset.level = m.level;
-    g.fill.setAttribute('stroke-dasharray', `${m.arc} 100`); g.fill.style.stroke = m.color;
-    g.main.textContent = m.main; g.pct.textContent = m.pctText; g.sub.textContent = m.sub; g.rate.textContent = m.sitl ? tr(m.rate) : m.rate;
+    if (m.kind === 'speed' || m.kind === 'engine') setScale(g, m);
+    g.main.textContent = m.main; g.unit.textContent = m.unit ? tr(m.unit) : ''; g.unit.hidden = !m.unit;
+    g.sub.textContent = m.kind === 'fuel' ? `${m.sub} · ${m.pctText}` : m.kind === 'elec' ? (m.sitl ? `${m.sub} · ${tr(m.rate)}` : m.sub) : m.sub; g.sub.hidden = !g.sub.textContent;
     g.badge.hidden = !m.badge; if (m.badge) g.badge.textContent = tr(m.badge);
-    g.cMain.textContent = `${m.main} · ${m.pctText}`; g.cSub.textContent = m.badge ? tr(m.badge) : m.sub; g.cBar.style.width = `${m.pct}%`; g.cBar.style.background = m.color;
+    g.warn.hidden = !m.warn; g.el.classList.toggle('warn', !!m.warn);
+    setNeedle(g, m.angle);
   };
   const update = t => {
     if (disposed || !t) return;
     acc.step(t); last = t;
     const now = performance.now();
-    if (now - lastAt < 100) return;   // ≤ 10 Hz DOM yazımı
+    if (now - lastAt < 100) return;   // ≤ 10 Hz DOM yazımı (ibre rAF ile aradaki kareleri doldurur)
     lastAt = now;
-    const m = gaugeModels(t);
-    apply(G.fuel, m.fuel); apply(G.elec, m.elec);
+    const m = dashModels(t, getSettings(), { plane, collision: !!getCollision() });
+    apply(G.fuel, m.fuel); apply(G.speed, m.speed); apply(G.engine, m.engine); apply(G.elec, m.elec);
     const on = !!(m.fuel || m.elec);
     el.hidden = !on; stage.classList.toggle('fs-power-on', on);
+    el.classList.toggle('no-fuel', on && !m.fuel);   // elektrikli dron: yakıt kadranı yerine ELEKTRİK rozeti (CSS ::before)
     if (popOpen) drawPop();
   };
-  return { el, update, reset: () => acc.reset(), get open() { return popOpen; }, togglePop, dispose() { disposed = true; document.removeEventListener('click', onDocClick, true); stage.classList.remove('fs-power-on'); el.remove(); } };
+  return { el, update, reset: () => acc.reset(), get open() { return popOpen; }, togglePop, dispose() { disposed = true; if (raf) cancelAnimationFrame(raf); document.removeEventListener('click', onDocClick, true); stage.classList.remove('fs-power-on'); el.remove(); } };
 }
 
 // ---------- sihirbaz bölümü ----------

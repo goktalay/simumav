@@ -99,6 +99,9 @@ LANGS = ('tr', 'en', 'de', 'fr', 'es', 'ru', 'ar')
 GA_ID = os.environ.get('SIMUMAV_GA_ID', '').strip()
 if GA_ID and not re.fullmatch(r'G-[A-Z0-9]{6,14}', GA_ID):
     GA_ID = ''
+ADS_ID = os.environ.get('SIMUMAV_ADS_ID', '').strip()   # Google Ads etiketi (AW-…): dönüşüm ölçümü; analytics.js aynı gtag yükleyicisiyle
+if ADS_ID and not re.fullmatch(r'AW-[0-9]{6,14}', ADS_ID):
+    ADS_ID = ''
 # Kotalar (§7)
 QUOTA = {'drones': 20, 'pilots': 20, 'tracks': 20, 'missions': 50, 'flights': 100, 'disk_bytes': 1024 ** 3}
 RATE = {'session': (10, 60), 'write': (60, 60), 'read': (300, 60), 'ws': (100, 1),

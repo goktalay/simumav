@@ -15,7 +15,7 @@ def meta(request: Request):
         with db.connect() as conn:
             u = auth.kullanici_cozumle(conn, tok, dokun=False)
     out = {'version': config.VERSION, 'mt_url': config.MT_URL, 'mt_app': config.MT_APP, 'lang_list': list(config.LANGS), 'dev_login': config.DEV_LOGIN,
-           'ga_id': config.GA_ID or None,   # GA4 ölçüm kimliği (SIMUMAV_GA_ID); None → analytics.js gtag yüklemez, rıza bandı çıkmaz
+           'ga_id': config.GA_ID or None, 'ads_id': config.ADS_ID or None,   # GA4 ölçüm kimliği (SIMUMAV_GA_ID); None → analytics.js gtag yüklemez, rıza bandı çıkmaz
            'limits': {'max_flights': config.MAX_FLIGHTS, 'flight_minutes': config.FLIGHT_MINUTES, **config.QUOTA},
            'sitl': config.SITL_ENABLED, 'google3d': bool(config.GOOGLE_KEY), 'types': list(bridge.TYPES), 'launches': list(bridge.LAUNCHES),
            'mission_kinds': list(bridge.KINDS), 'weather': list(bridge.WEATHER), 'time_of_day': list(bridge.TIME_OF_DAY), 'world_modes': list(bridge.WORLD_MODES),

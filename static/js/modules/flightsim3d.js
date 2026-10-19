@@ -28,7 +28,7 @@
 //        buffered, deadReckoning, drEnters, drPerMin, rate}, motionStats(reset) → {frames, angMean, angMax, angJerk, posMean, drEnters, …},
 //        setKeyboardLock(bool) (sanal kumanda açıkken WASD/QE/ok/boşluk tuşları 3B'ye gitmez) }. opts: { type, airframe, preview, origin, onProgress, onFallback, … }
 
-import { addLandingGear, createLaunchRig } from './flightsim_launch.js';   // sabit kanat kalkış yöntemi (§13): iniş takımı, rampa, pickup
+import { addLandingGear, createLaunchRig, RIG_FINE_ERR } from './flightsim_launch.js';   // sabit kanat kalkış yöntemi (§13): iniş takımı, rampa, pickup
 import { createTimeline } from './flightsim_interp.js';   // telemetri zaman çizgisi: uyarlanır gecikme tamponlu enterpolasyon (§5)
 import { createMissionLayer } from './flightsim_mission.js';   // §18: görev çizimi (tüp bacaklar, WP etiketleri, ikonlar) + iniş dairesi H
 
@@ -526,7 +526,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     // Ana kare dışında yükseklik uzak araziden (kamera zemin kısıtı, çarpışma, rota çubukları); uzak arazi yoksa kenar değeri (sample kırpar)
     const height = far ? (x, y) => (Math.abs(x) > half || Math.abs(y) > half ? far.sample(x, y) : mainH(x, y)) : mainH;
     const H = Math.max(1, real.hmax - real.hmin);
-    terrain = { W: Wn, size, H, height, waterZ: -Infinity, rand, real: true, homeElev: real.homeElev, hmin: real.hmin, hmax: real.hmax, osm: real.osm, farSize: far ? far.size : 0 };
+    terrain = { W: Wn, size, H, height, waterZ: -Infinity, rand, real: true, homeElev: real.homeElev, hmin: real.hmin, hmax: real.hmax, osm: real.osm, farSize: far ? far.size : 0 };   // .mesh aşağıda: ana arazi örgüsü (düzenek ışını, §13)
     W = Wn;
     const { night, dusk } = skyAndLights(size, far ? far.size / 2 : 0);
     const osm = real.osm || { buildings: [], forests: [], water: [], runways: [] };
@@ -552,6 +552,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     ground.receiveShadow = true;
     ground.name = 'arazi';
     gWorld.add(ground);
+    terrain.mesh = ground;   // düzenek yüzeyi için örgüye ışın (ızgara interpolasyonu ile görünen üçgenler arasındaki fark giderilir; §13)
 
     // --- uzak arazi halkası (§9): ufka dek kaba ızgara (48 km, terrarium z 10 + uydu z 12). Ana kare içinde ana arazinin 2 m altında saklı;
     // kenardan 1,5 km dışarıya dek ana kenar değeriyle karışır (dikişsiz), sonra tamamen uzak veri. Sis ufku far.size/2'ye bağlı (skyAndLights).
@@ -1228,9 +1229,28 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const COLL_HOLD_S = 0.4, COLL_HOLD_BUILDING_S = 0.1, COLL_SPEED_MIN = 2, COLL_ARM_GRACE_MS = 3000, COLL_JUMP_M = 20, COLL_COOLDOWN_MS = 4000, COLL_AGL_DISAGREE_M = 30;
   const coll = { below: 0, kind: null, lastH: null, armedAt: -Infinity, prevArmed: false, hitAt: -Infinity, skipped: 0, checks: 0 };
   const terrainHeight = (x, y) => (terrain ? terrain.height(x, y) : 0);
-  // Düzenek temas noktaları: Google'da önbelleksiz ince ışın (eğim için). Düzenek merkezden ≤ 20 m uzakta ve merkez yüzeyi 0'a oturtulduğundan
-  // gerçek fark birkaç m'dir; |h| > 8 m ölçüm kaba kök karodandır (e2e'de ilk 2,5 sn'de −280 m görüldü) → 0 sayılır, ince karo gelince yeniden örneklenir
-  const rigSurf = (x, y) => { if (!g3d) return terrainHeight(x, y); const h = g3d.heightFine(x, y); return Math.abs(h) > 8 ? 0 : h; };
+  // Düzenek temas noktaları (§13 "Yüzeye oturma"): örnek { z, fine, err, dem } → flightsim_launch surfaceLock karo niteliğiyle kabul eder/kilitler.
+  // • Google 3B: g3d.surfaceAt — ışın YALNIZ karo grubuna (tiles.raycast; uçak/düzenek/kamera yardımcıları hariç); fine = çarpılan karonun
+  //   geometricError ≤ RIG_FINE_ERR ya da yaprak karo. Kaba/kök karo (ilk saniyelerde −280 m görülmüştü) fine=false → değer kullanılmaz; yedek (dem)
+  //   0'dır (merkez yüzeyi groundOffset ile 0'a oturur; eski "|h| > 8 m → 0" eşiği eğimli merkezlerde gerçek yükseklikleri de atıyordu — kaldırıldı).
+  // • Gerçek arazi: arazi ÖRGÜSÜNE ışın (yalnız terrain.mesh; görünen üçgenler) → ızgara interpolasyonundan doğru; örgü dışı/ışın yoksa terrain.height.
+  // • Prosedürel: analitik terrain.height (her zaman ince).
+  const rigRay = new T.Raycaster(); rigRay.firstHitOnly = true; rigRay.far = 50000;
+  const rigFrom = new T.Vector3(), rigDown = new T.Vector3(0, 0, -1), rigHits = [];
+  const rigSurf = (x, y) => {
+    if (g3d) {
+      const q = g3d.surfaceAt(x, y, RIG_FINE_ERR);
+      return q ? { z: q.z, fine: q.fine, err: q.err ?? 0, dem: 0 } : { z: 0, fine: false, err: Infinity, dem: 0 };
+    }
+    const hz = terrainHeight(x, y);
+    if (terrain?.mesh) {
+      rigHits.length = 0; rigFrom.set(x, y, 20000); rigRay.set(rigFrom, rigDown);
+      rigRay.intersectObject(terrain.mesh, false, rigHits);
+      if (rigHits.length) return { z: rigHits[0].point.z, fine: true, err: 0, dem: hz };
+    }
+    return { z: hz, fine: true, err: 0, dem: hz };
+  };
+  const rigOffset = () => (g3d ? g3d.groundOffset : 0);   // Google yer ofseti: karolar toptan kayarsa kilitli değerler de kayar (surfaceLock)
   function checkCollision(now, dt) {
     if (!tele.has) return;
     if (tele.armed && !coll.prevArmed) coll.armedAt = now;
@@ -1359,8 +1379,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (rig) {
       if (tele.has && rig.carrying && rig.phase !== 'launch' && (cur.pos.z > 3 || (tele.armed && tele.speed > 8))) rig.setPhase('released');   // dizi dışı kalkış (MP ile): serbest bırak
       // Düzenek pist başında SABİT: demir bir kez (ilk telemetri) ya da SITL konumu > 2 m sıçrarsa (reset/set_home); araç yer koşusunda her kare izler (§13)
-      if (tele.has && rig.anchored && (rig.tracking || rig.needsAnchor(cur.pos))) { rig.anchor(cur.pos, rigSurf); rigSurfT = now; }
-      else if (now - rigSurfT > RIG_SURF_MS) { rigSurfT = now; rig.resurface(rigSurf); }
+      if (tele.has && rig.anchored && (rig.tracking || rig.needsAnchor(cur.pos))) { rig.anchor(cur.pos, rigSurf, rigOffset()); rigSurfT = now; }
+      else if (now - rigSurfT > RIG_SURF_MS) { rigSurfT = now; rig.resurface(rigSurf, rigOffset()); }
       rig.update(dt, { speed: tele.speed });
       if (rig.carrying) {
         rig.attachWorld(rigPos); rigPos.z += drone.ground || 0;
@@ -1613,6 +1633,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     collisionState: () => { const p = cur.pos, hz = terrainHeight(p.x, p.y); return { z: p.z, h: hz, dz: p.z - hz, sitlAgl: tele.terrainAgl, below: coll.below, kind: coll.kind, skipped: coll.skipped, checks: coll.checks, armed: tele.armed, speed: tele.speed, noTile: !!(terrain?.google && g3d && !g3d.hasSurface(p.x, p.y)), grounded: gLock.on, rel: rel.on, rig: rig ? rig.phase : null }; },   // teşhis (§18 e2e): her karede z−h
     get terrainInfo() { return terrain ? { real: !!terrain.real, google: !!terrain.google, homeElev: terrain.homeElev ?? null, hmin: terrain.hmin ?? null, hmax: terrain.hmax ?? null, counts: terrain.counts || null, osmError: realCache?.data?.osmError || null, farSize: terrain.farSize || 0 } : null; },
     rigState: () => (rig ? { phase: rig.phase, surface: rig.surface, x: rig.group.position.x, y: rig.group.position.y } : null),   // teşhis (§13 e2e): düzenek yüzey oturması
+    rigDiag: () => (rig ? { ...rig.diag, google: !!g3d, real: !!terrain?.real, mesh: !!terrain?.mesh, g3dOffset: g3d ? g3d.groundOffset : null, g3dLoading: g3d ? g3d.loading : null, shownZ: drone.group.position.z - (drone.ground || 0), rel: rel.on ? { t: rel.t, kz: rel.kz, offz: rel.off.z } : null } : null),   // teşhis (§13, window.__fsRig): kilit/incelik/örnekler
     setFreeView: (x, y, z, yawDeg, pitchDeg) => { setCamera('free'); camera.position.set(x, y, z); free.yaw = num(yawDeg, 0); free.pitch = num(pitchDeg, 0); },   // teşhis (§9 e2e): serbest kamerayı ufka yönelt (yaw: 0 kuzey, + batıya)
     get releaseBlend() { return rel.on ? { t: rel.t, kz: rel.kz, off: rel.off.toArray() } : null; },   // teşhis: released ofset sönümü
     shownZ: () => drone.group.position.z - (drone.ground || 0),   // teşhis: gösterilen uçak z'si (kızak/ofset dahil), alt_rel ölçeğinde

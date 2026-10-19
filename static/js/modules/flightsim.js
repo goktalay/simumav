@@ -92,7 +92,7 @@ export async function render(view, params, ctx, extra = {}) {
   const canWrite = !!(ctx.user?.master || extra.m?.can?.command || (ctx.user?.write_modules || []).includes('drone'));
   const backend = mock ? mockBackend(ctx) : restBackend();
   const head = extra.head || (sub => h('div', { class: 'page-head' }, h('div', { class: 'page-head-t' }, h('h1', null, 'Uçuş Simülatörü'), sub ? h('div', { class: 'sub' }, sub) : null)));
-  if (sid) return renderSession(view, ctx, backend, sid, { mock, canWrite, netsim: parseNetsim(sp.get('netsim')) });
+  if (sid) return renderSession(view, ctx, backend, sid, { mock, canWrite, netsim: parseNetsim(sp.get('netsim')), rigdiag: sp.get('rigdiag') === '1' });   // ?rigdiag=1: düzenek yüzey teşhis kutusu (§13; konsolda her zaman window.__fsRig())
   return renderWizard(view, ctx, backend, head, { mock, canWrite, openNew: sp.get('new') === '1', tab: sp.get('tab') });   // ?new=1: "Yeni Simülasyon Başlat" penceresi açık gelir · ?tab=runs|open|clients
 }
 
@@ -685,7 +685,7 @@ const randomSeed = () => Math.floor(Math.random() * 2147483646) + 1;
 // ======================================================================
 // Oturum ekranı: tam alan 3B + HUD + Mission Planner kutusu + araç çubuğu + olaylar + çarpışma bandı
 // ======================================================================
-async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null }) {
+async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null, rigdiag = false }) {
   let session;
   try { session = await be.session(sid); } catch (err) {
     clear(view, h('div', { class: 'card empty' }, h('p', null, h('b', null, 'Oturum bulunamadı.')), h('p', { class: 'small muted' }, err.message),
@@ -853,11 +853,16 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const g3dMode = world.mode === 'google3d';
   const attribTxt = h('span', null, g3dMode ? 'Google' : ATTRIBUTION);
   const attrib = world.mode === 'real' || g3dMode ? h('div', { class: `fs-attrib ${g3dMode ? 'fs-attrib-g3d' : ''}` }, g3dMode ? h('img', { class: 'fs-g3d-logo', src: G3D_LOGO, alt: 'Google' }) : null, attribTxt) : null;
-  // §23.6 güç paneli: sağ altta iki SVG kadran (YAKIT · BATARYA), her kamera kipinde ve panelden bağımsız; FPV OSD / gimbal HUD açıkken onlar çizer (CSS gizler).
+  // §23.6 güç paneli: alt çubuğun üstünde ortada dört otomobil tarzı kadran (YAKIT · HIZ · MOTOR · BATARYA), takip/serbest/yer kiplerinde ve panelden bağımsız;
+  // FPV OSD / gimbal HUD açıkken onlar çizer (CSS gizler). Hız kadranı azami hızı session.power'dan; uyarı üçgeni çarpışma bandından (getCollision).
   // Ayrıntı kutusu kayıt/sahte kipte istemci modelinin özetinden (mesafe, harcanan, ölçülen), canlıda kendi mesafe toplayıcısından.
-  const gauges = createPowerGauges(stage, { h, tr, getSettings: () => session.power || null, getSummary: () => clientPower?.summary() || null });
+  const gauges = createPowerGauges(stage, { h, tr, getSettings: () => session.power || null, getSummary: () => clientPower?.summary() || null, plane: isPlane(type), getCollision: () => !crash.hidden });
   stage.append(mount, msg, crash, hud, ...(mp ? [mp] : []), events, sticks, gauges.el, bar, nav, ended);
   if (attrib) stage.append(attrib);
+  // §13 düzenek yüzey teşhisi: ?rigdiag=1 → sol üstte canlı kutu (h, eğim, kilit, karo inceliği/geometricError, örnekler); window.__fsRig() her oturumda
+  const rigDiagEl = rigdiag ? h('pre', { class: 'fs-rigdiag' }) : null;
+  if (rigDiagEl) stage.append(rigDiagEl);
+  window.__fsRig = () => (sim?.rigDiag ? sim.rigDiag() : null);
   ops = createOpsPanel(stage, { sid, session, type, modes, launch, canWrite, hub: !replay && !mock, mp: mpOpts, getSim: () => sim, cmdSim: (name, params) => cmd(name, params), onReset: () => reset(), onToggle: on => opsBtn.classList.toggle('primary', on),
     speed: replay ? null : { onPick: f => cmd('speed', { factor: f }) } });   // §23: panel "Sim" grubunda hız seçici
   opsBtn.classList.toggle('primary', ops.enabled);
@@ -1258,6 +1263,11 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     addEvent(tr('Sanal kumanda açık (RC override)'));
   };
   const netTick = setInterval(() => {
+    if (rigDiagEl) {
+      const d = sim?.rigDiag?.();
+      const f = (v, n = 2) => (v == null || !Number.isFinite(v) ? '—' : Number(v).toFixed(n));
+      rigDiagEl.textContent = d ? `RIG ${d.phase} · h ${f(d.h)} m (hedef ${f(d.target)}) · pitch ${f(d.pitch, 1)}° roll ${f(d.roll, 1)}°\nkilit ${d.locked ? 'EVET' : 'hayır'} (err ${f(d.lockErr, 1)}) · ince ${d.fine ? 'evet' : 'HAYIR'} · geomErr ${f(d.geomErr, 2)} · olay ${d.event}\nkilit ${d.locks} · yoksayılan ${d.ignored} · bekletme ${d.holds} · örnekleme ${d.fits} · ofset ${f(d.g3dOffset ?? d.offset, 2)} · karo %${d.g3dLoading ?? '—'}\nörnek ${d.samples ? d.samples.map(q => (q ? `${f(q.z)}${q.fine ? '' : '?'}` : '∅')).join(' ') : '—'} · kabul ${d.accepted ? d.accepted.map(v => f(v)).join(' ') : '—'} · uçak z ${f(d.shownZ)}` : 'RIG: düzenek yok';
+    }
     if (!sim || replay) { netLbl.hidden = true; return; }   // kayıt kipinde ağ akışı yok
     const n = sim.netStats();
     netLbl.textContent = tr('net: {hz} Hz · jitter {j} ms · tampon {d} ms', { hz: n.hz, j: n.jitter, d: n.delay }) + (n.deadReckoning ? ' · DR' : '');
@@ -1276,6 +1286,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     audio.dispose(); ops?.dispose(); gauges.dispose();
     sim?.dispose();
     if (window.__fsSim === sim) delete window.__fsSim;
+    delete window.__fsRig;
     view.classList.remove('ops-view');
     scroller?.classList.remove('ops-scroll');
     document.removeEventListener('fullscreenchange', onFullChange);

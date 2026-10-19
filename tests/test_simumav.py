@@ -16,7 +16,7 @@ import time
 D = tempfile.mkdtemp(prefix='simumav-test-')
 os.environ.update(SIMUMAV_DATA_DIR=D, SIMUMAV_DEV_LOGIN='1', HEPGO_SITL='0', SIMUMAV_UDP_BASE='24750', SIMUMAV_MAX_FLIGHTS='2', SIMUMAV_MP_PORT_BASE='25600',
                   SIMUMAV_MP_PORT_COUNT='40', SIMUMAV_SECURE_COOKIE='0', SIMUMAV_ENV_FILE=os.path.join(D, 'yok.env'), SIMUMAV_MP_IDLE_S='4',
-                  SIMUMAV_MT_INTERNAL='http://127.0.0.1:1', GOOGLE_MAPS_API_KEY='', SIMUMAV_GA_ID='G-8946D4RPGK')
+                  SIMUMAV_MT_INTERNAL='http://127.0.0.1:1', GOOGLE_MAPS_API_KEY='', SIMUMAV_GA_ID='G-8946D4RPGK', SIMUMAV_ADS_ID='AW-18523043628')
 for k in [k for k in sys.modules if k == 'app' or k.startswith('app.')]:   # temiz başlangıç: çekirdek shim ile yüklenmeli
     del sys.modules[k]
 
@@ -97,6 +97,7 @@ def main():
         assert "'unsafe-inline'" not in r.headers['content-security-policy'].split('script-src')[1].split(';')[0]
         # GA4: meta.ga_id (SIMUMAV_GA_ID) + CSP alanları (gtag.js script-src; collect beacon'ları connect-src); analytics.js harici dosya, HTML'de gtag yok
         assert r.json()['ga_id'] == 'G-8946D4RPGK'
+        assert r.json()['ads_id'] == 'AW-18523043628'   # Google Ads etiketi (SIMUMAV_ADS_ID)
         _csp = r.headers['content-security-policy']
         _scr = _csp.split('script-src')[1].split(';')[0]; _con = _csp.split('connect-src')[1].split(';')[0]
         assert 'https://www.googletagmanager.com' in _scr and 'google-analytics.com' not in _scr
