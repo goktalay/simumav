@@ -28,7 +28,7 @@ class ApiError extends Error { constructor(code, status, retry) { super(code); t
 async function call(url, body, headers = {}) {
   let res;
   try {
-    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-sshm': '1', ...headers }, body: JSON.stringify(body), credentials: 'include' });
+    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-sshm': '1', ...headers }, body: JSON.stringify(body), credentials: 'omit' });
   } catch (e) { throw new ApiError('network', 0); }
   let data = null; try { data = await res.json(); } catch (e) { /* gövdesiz */ }
   if (!res.ok) {
