@@ -58,6 +58,8 @@ async def login(body: SessionIn, request: Request):
         db.audit(conn, 'login', u['id'], ip, 'dev' if body.dev_user else 'mt')
         out = _ozet(conn, u)
         conn.commit()
+    if not body.dev_user:
+        bridge.profil_ozeti_arka_plan(u['id'])   # hesap servisi özeti (Merkez › Mastertool: pilot/dron/uçuş/saat, sürüm)
     resp = JSONResponse(out)
     auth.cerez_yaz(resp, tok)
     return resp
@@ -77,6 +79,7 @@ def logout(request: Request, body: Optional[LogoutIn] = None, user=User):
         conn.commit()
     if body and body.token and not config.DEV_LOGIN:
         auth.hesap_cikis(body.token)   # hesap servisi oturumu da kapanır (çıkış ikisini de kapatır)
+    bridge.profil_ozeti_arka_plan(user['id'])   # çıkışta güncel özet (dev girişinde mt_user_id < 0 → gönderilmez)
     resp = JSONResponse({'ok': True})
     auth.cerez_sil(resp)
     return resp

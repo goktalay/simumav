@@ -473,6 +473,52 @@ def main():
         # dosya yolu denetimi: kök dışı yollar reddedilir
         assert bridge.dosya_yolu('../simumav.db') is None and bridge.dosya_yolu('/etc/passwd') is None and bridge.dosya_yolu('') is None
 
+        # ---- hesap servisi özeti (Merkez › Mastertool): sahte hesap servisine PUT /api/sv/profile X-Simumav-Secret ile
+        # {pilot, pilots, drones, flights, hours, last_flight_at, version, updated_at}; dev kullanıcı (mt_user_id < 0) göndermez; gizli yoksa göndermez
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+        gelen = []
+
+        class Sahte(BaseHTTPRequestHandler):
+            def do_PUT(self):
+                gelen.append((self.path, self.headers.get('X-Simumav-Secret'), json.loads(self.rfile.read(int(self.headers['Content-Length'])))))
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *a):
+                pass
+        srv = HTTPServer(('127.0.0.1', 0), Sahte)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        eski = (config.MT_INTERNAL, config.MT_SHARED_SECRET)
+        ali_id = s['user']['id']
+        with sdb_connect() as conn:
+            dev_mt_id = conn.execute('SELECT mt_user_id FROM users WHERE id = ?', (ali_id,)).fetchone()[0]
+        try:
+            assert dev_mt_id < 0 and bridge.profil_ozeti(ali_id) is False and not gelen   # dev kullanıcı: mt_user_id negatif
+            with sdb_connect() as conn:
+                conn.execute('UPDATE users SET mt_user_id = 4242 WHERE id = ?', (ali_id,)); conn.commit()
+            config.MT_INTERNAL = f'http://127.0.0.1:{srv.server_address[1]}'
+            config.MT_SHARED_SECRET = ''
+            assert bridge.profil_ozeti(ali_id) is False and not gelen   # paylaşılan gizli tanımsız → gönderim yok
+            config.MT_SHARED_SECRET = 'sv-gizli'
+            assert bridge.profil_ozeti(ali_id) is True and len(gelen) == 1
+            yol, gizli, govde = gelen[0]
+            assert yol == '/api/sv/profile' and gizli == 'sv-gizli' and govde['user_id'] == 4242, gelen
+            p = govde['profile']
+            assert p['flights'] == 3 and p['hours'] >= 0 and p['pilots'] >= 1 and p['drones'] >= 1 and p['last_flight_at'] and p['version'] == config.VERSION and p['pilot'], p
+            assert set(p) == {'pilot', 'pilots', 'drones', 'flights', 'hours', 'last_flight_at', 'version', 'updated_at'}, set(p)
+            # çıkış yolu da arka planda gönderir
+            c.delete('/api/session', headers=H)
+            t0 = time.time()
+            while len(gelen) < 2 and time.time() - t0 < 3:
+                time.sleep(0.05)
+            assert len(gelen) == 2 and gelen[1][2]['profile']['flights'] == 3, len(gelen)
+        finally:
+            config.MT_INTERNAL, config.MT_SHARED_SECRET = eski
+            srv.shutdown(); srv.server_close()
+            with sdb_connect() as conn:
+                conn.execute('UPDATE users SET mt_user_id = ? WHERE id = ?', (dev_mt_id, ali_id)); conn.commit()
+        c.cookies.clear(); giris(c, 'ali'); s_tok = c.cookies.get('smsid')   # aynı users satırı (dev mt_user_id geri yazıldı)
+
         # ---- oran sınırı: /api/session 10/dk/IP → 429 + Retry-After
         from app.simumav import auth as sauth
         sauth.oran_sifirla()

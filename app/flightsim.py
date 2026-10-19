@@ -505,8 +505,13 @@ class SimSession:
         self.drone = dict(drone) if drone else None
         # Kalıcı parametreler (drone_params; yalnız dron kaydı seçiliyse): panel param_set + Mission Planner PARAM_SET yankıları kaydedilir,
         # açılışta kayıtlılar varsayilan.parm + ilk kalp atışında PARAM_SET ile yüklenir
-        self.param_izleyici = drone_params.Izleyici(self.drone['id'], self._olay) if self.drone and self.drone.get('id') else None
+        self.param_izleyici = drone_params.Izleyici(self.drone['id'], self._olay, srv_rev_yaz=self._srv_rev_yaz, tip=tip) if self.drone and self.drone.get('id') else None
         self.kayitli_params = []
+        # Montaj parametreleri (SERVOn_REVERSED; drone_params modül açıklaması §20.1): SITL'e aynen + SIM_SRV_REV maskesi (sanal montaj = gerçek montaj);
+        # ikili SIM_SRV_REV tanımıyorsa (drone_sitl.sanal_montaj_destegi) nötr 0 + sarı uyarı
+        self.sanal_montaj = drone_sitl.sanal_montaj_destegi(self.type)   # ikili dosya taraması (önbellekli; sahte kipte ikili yok → False)
+        self.montaj = {'virtual_mount': self.sanal_montaj, 'mask': 0, 'neutral': [], 'reversed': [], 'motor_skipped': []}   # sitl_kayitlari bilgisi (son açılış)
+        self.srv_rev_sitl = None         # SITL'den gözlenen SIM_SRV_REV (PARAM_VALUE); eski ikilide hiç gelmez
         self.route = []
         self.komutcu = flightsim_hub.MavKomut(self)
         self.gorev = flightsim_mission.GorevIzleyici(self)   # §18: görev izleme (MP yüklemesi algılama), iz, çarpışma/özet kayıtları
@@ -584,7 +589,10 @@ class SimSession:
                 'drone': dict(self.drone) if self.drone else None, 'route': list(self.route), 'mission': self.gorev.yayin_alanlari(),
                 'rec': {**self.rec, 'bin_log': dict(self.bin_sonuc) if self.bin_sonuc else None},
                 'params': {'tracked': self.param_izleyici is not None, 'loaded': len(self.kayitli_params),
-                           'saved': self.param_izleyici.kayit_sayisi if self.param_izleyici else 0},
+                           'saved': self.param_izleyici.kayit_sayisi if self.param_izleyici else 0,
+                           # montaj parametreleri (SERVOn_REVERSED; §20.1): sanal montaj desteği, SIM_SRV_REV maskesi (yazılan / SITL'de gözlenen), nötrlenen adlar
+                           'virtual_mount': bool(self.montaj['virtual_mount']), 'srv_rev_mask': int(self.montaj['mask']), 'srv_rev_sitl': self.srv_rev_sitl,
+                           'mount_neutral': list(self.montaj['neutral']), 'mount_reversed': list(self.montaj['reversed']), 'motor_skipped': list(self.montaj.get('motor_skipped') or [])},
                 'terrain': {**self.arazi, 'report': dict(self.arazi['report']) if self.arazi['report'] else None}}   # §18 arazi sunumu sayaçları + son TERRAIN_REPORT
 
     # ---- §14: bekleyici kuyrukları (MavKomut) ----
@@ -692,7 +700,7 @@ class SimSession:
             await self._kayitli_oku()
             port, err = await ex(None, lambda: drone_sitl.YONETICI.baslat(self.kimlik, self.type, c['lat'], c['lon'], sysid=1,
                                                                           irtifa=c.get('alt') or EV_IRTIFA, konsol=self._konsol, model=sitl_model,
-                                                                          log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params)))
+                                                                          log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type)))
             if port and self.rec['bin']:
                 self._olay('DataFlash kaydı açık: uçuş logu (.bin) oturum kapanışında Uçuş Logları\'na kaydedilir', 6)
             if not port:
@@ -728,23 +736,42 @@ class SimSession:
 
     async def _kayitli_oku(self):
         """Dron kaydının kalıcı parametreleri (drone_sitl_params) → `kayitli_params` (SITL açılışından önce; okunamazsa boş)."""
-        self.kayitli_params = []
+        self.kayitli_params, self.srv_rev_sitl = [], None
+        self.montaj = {'virtual_mount': self.sanal_montaj, 'mask': 0, 'neutral': [], 'reversed': [], 'motor_skipped': []}
         if self.param_izleyici is None:
             return
         try:
             self.kayitli_params = await self.loop.run_in_executor(None, drone_params.yukle, self.param_izleyici.drone_id)
         except Exception as e:   # noqa: BLE001
             self._olay(f'Kayıtlı parametreler okunamadı: {e}'[:200], 4)
+        # ikili SIM_SRV_REV tanıyor mu (dosya taraması; sahte kipte ikili yok → False → nötr yol)
+        self.sanal_montaj = await self.loop.run_in_executor(None, drone_sitl.sanal_montaj_destegi, self.type)
+        self.param_izleyici.sanal_montaj = self.sanal_montaj
+        _, self.montaj = drone_params.sitl_kayitlari(self.kayitli_params, self.sanal_montaj, self.type)
 
     def _kayitli_yaz(self):
         """İlk kalp atışında kayıtlı parametreleri PARAM_SET ile yeniden yazar (eeprom'daki eski değer parm dosyasını ezebilir); yankılar
-        tabana işlenir (yeniden kaydedilmez). Olay: "N kayıtlı parametre yüklendi"."""
+        tabana işlenir (yeniden kaydedilmez). Montaj parametreleri (SERVOn_REVERSED) aynen + SIM_SRV_REV maskesi (sanal montaj); ikili
+        desteklemiyorsa 0 gider → sarı olay. Olay: "N kayıtlı parametre yüklendi"."""
         if not self.kayitli_params or self.param_izleyici is None:
             return
-        self.param_izleyici.yukleme_isaretle([r['name'] for r in self.kayitli_params])
-        for r in self.kayitli_params:
+        sitl, self.montaj = drone_params.sitl_kayitlari(self.kayitli_params, self.sanal_montaj, self.type)
+        self.param_izleyici.yukleme_isaretle([r['name'] for r in sitl])
+        self.param_izleyici.srv_rev_mask = self.montaj['mask'] if self.sanal_montaj else None
+        for r in sitl:
             self._gonder(self.mav.param_set_encode(self.sysid, self.comp, str(r['name']).encode(), float(r['value']), int(r.get('ptype') or 9)))
-        self._olay(f'{len(self.kayitli_params)} kayıtlı parametre yüklendi ({self.drone.get("code") or self.drone.get("name") or ""})'.replace(' ()', ''), 6)
+        kayit = [r for r in sitl if r['name'] != drone_params.SIM_SRV_REV]
+        self._olay(f'{len(kayit)} kayıtlı parametre yüklendi ({self.drone.get("code") or self.drone.get("name") or ""})'.replace(' ()', ''), 6)
+        olay = drone_params.montaj_olayi(self.montaj)
+        if olay:
+            self._olay(*olay)
+
+    def _srv_rev_yaz(self, mask):
+        """İzleyici geri çağrısı: oturum sırasında SERVOn_REVERSED değişti → SIM_SRV_REV maskesi SITL'e anında (PARAM_SET INT32)."""
+        self.montaj['mask'] = int(mask)
+        if self.mav is None or self._tcp_w is None:
+            return
+        self._gonder(self.mav.param_set_encode(self.sysid, self.comp, drone_params.SIM_SRV_REV.encode(), float(mask), drone_params.SIM_SRV_REV_PTYPE))
 
     def _param_value_gozlendi(self, m):
         """SITL'den PARAM_VALUE (gerçek SITL `_isle`; sahte kipte `_sahte_param_ayristir`): tip önbelleği + kalıcı izleyici."""
@@ -756,6 +783,11 @@ class SimSession:
                 self._param_count = int(m.param_count)
         except (TypeError, ValueError):
             pass
+        if ad == drone_params.SIM_SRV_REV:   # sanal montaj maskesi SITL'de gerçekten var (yamalı ikili): params.srv_rev_sitl
+            try:
+                self.srv_rev_sitl = int(round(float(m.param_value)))
+            except (TypeError, ValueError):
+                pass
         if ad.startswith('SERVO') and ad.endswith('_FUNCTION') and ad[5:-9].isdigit() and 1 <= int(ad[5:-9]) <= 8:
             try:
                 self.tele['servo_fn'][int(ad[5:-9]) - 1] = int(round(float(m.param_value)))

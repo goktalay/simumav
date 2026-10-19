@@ -79,6 +79,34 @@ def _elf_mi(yol):
 
 
 _indir_kilit = threading.Lock()
+# HEPGO yaması (tools/sitl/0001-sim-srv-rev.patch): SITL parametresi SIM_SRV_REV — "sanal montaj" bit maskesi (bit n-1 = SERVOn ters monteli);
+# fizik ilgili kanalın PWM'ini 1500 ekseninde yansıtır → gerçek uçağın SERVOn_REVERSED=1 kaydı SITL'e aynen yazılır ve uçak düzgün uçar.
+# Resmi firmware.ardupilot.org ikilisi bu parametreyi tanımaz → `sanal_montaj_destegi` False → drone_params nötr (0) yoluna düşer.
+SANAL_MONTAJ_IMZA = b'\x00SRV_REV\x00'   # AP_Param tablo adı (null sonlu); resmi 4.7.2 ikilisinde geçmez (ölçüldü)
+_yetenek_cache = {}
+
+
+def sanal_montaj_destegi(tip):
+    """İkili SIM_SRV_REV (sanal servo montajı) parametresini tanıyor mu? İkili dosyasında parametre adı aranır (ELF .rodata; 7 MB, ~10 ms;
+    yol+mtime+boyut ile önbellek). İkili yoksa (ilk kullanımda indirilecek resmi sürüm) False."""
+    yol = ikili_yolu(tip)
+    try:
+        st = yol.stat()
+    except OSError:
+        return False
+    anahtar = (str(yol), st.st_mtime_ns, st.st_size)
+    with _indir_kilit:
+        if anahtar in _yetenek_cache:
+            return _yetenek_cache[anahtar]
+    try:
+        with open(yol, 'rb') as f:
+            destek = SANAL_MONTAJ_IMZA in f.read()
+    except OSError:
+        destek = False
+    with _indir_kilit:
+        _yetenek_cache.clear()
+        _yetenek_cache[anahtar] = destek
+    return destek
 
 
 def indir(tip, konsol=None):

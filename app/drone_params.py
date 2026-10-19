@@ -19,6 +19,18 @@ HARİÇ (hiç kaydedilmez): STAT_*, LOG_*, SIM_WIND_*, SIM_GPS1_*, TKOFF_*, MAV1
   PLANE_YER_PARAMLARI / launch_parametreleri — `oturum_adlari`). Diğer SIM_* (ör. SIM_BATT_VOLTAGE) kaydedilir.
 YÜKLEME: `yukle` → `parm_satirlari` varsayilan.parm'a (HEPGO varsayılanlarından sonra) eklenir; ayrıca ilk kalp atışında PARAM_SET ile
   yeniden yazılır (eeprom.bin'deki eski değer defaults dosyasını ezebilir) ve olay şeridine "N kayıtlı parametre yüklendi" düşer.
+MONTAJ PARAMETRELERİ (`montaj_mi`: SERVO1..16_REVERSED): gerçek uçakta servo montaj yönünü düzeltir; ArduPilot SITL'in stok uçak fiziği ise
+  servo PWM'ini doğrudan kontrol yüzeyi açısına çevirir (sanal montaj hep "düz") → REVERSED=1 stok SITL'de yüzeyi gerçekten ters çalıştırır ve
+  kontrol tersine döner (CAYMAZ: SERVO1_REVERSED=1 ile uçak simülasyonda düzgün uçmuyordu). Kullanıcı kararı: "sanal uçak gerçek uçağın servo
+  MONTAJINI da taklit etmeli; SERVO1_REVERSED=1 / SERVO2_REVERSED=0 ile düzgün uçmalı". Çözüm HEPGO'nun SITL yaması (tools/sitl/, parametre
+  `SIM_SRV_REV` bit maskesi: bit n-1 = SERVOn ters monteli; fizik ilgili kanalın PWM'ini 1500 ekseninde yansıtır): kayıtlı SERVOn_REVERSED
+  SITL'e AYNEN yazılır ve `srv_rev_mask` ile üretilen SIM_SRV_REV de yazılır (varsayilan.parm + ilk kalp atışı PARAM_SET) → ArduPlane'in ters
+  çevirdiği sinyali sanal montaj geri çevirir, net yüzey hareketi gerçek uçakla aynı. SIM_SRV_REV kalıcı kayda GİRMEZ (HARIC_ADLAR). Oturum
+  sırasında SERVOn_REVERSED değişirse (MP/panel) izleyici kaydeder ve `srv_rev_yaz` ile SIM_SRV_REV'i anında günceller.
+  ESKİ İKİLİ (resmi firmware.ardupilot.org; `drone_sitl.sanal_montaj_destegi` False): nötr yola düşer — SITL'e 0 yazılır, kayıt/dışa aktarım
+  gerçek değeri korur, sarı uyarı "SITL ikilisi sanal montaj desteklemiyor; servo ters çevirme nötr uygulandı".
+  RCn_REVERSED'e DOKUNULMAZ: RC girişleri kumanda tarafıdır; SITL'de de sanal kumanda / Mission Planner joystick aynı gerçek kumanda yönüyle
+  çalışmalı (RC ters çevirme SITL fiziğinde değil, pilot girişinde anlamlıdır) — nötrlenirse kumanda yönü gerçek uçaktan sapar.
 """
 import re
 import threading
@@ -36,11 +48,27 @@ HARIC_ONEKLER = ('STAT_', 'LOG_', 'SIM_WIND_', 'SIM_GPS1_', 'TKOFF_', 'MAV1_', '
                  'INS_GYROFFS_', 'INS_GYR2OFFS_', 'INS_GYR3OFFS_')
 HARIC_ADLAR = frozenset({'MIS_TOTAL', 'FENCE_TOTAL', 'RALLY_TOTAL', 'FORMAT_VERSION', 'SYSID_THISMAV', 'MAV_SYSID', 'SIM_SPEEDUP', 'SIM_RC_FAIL',
                          'FS_THR_ENABLE', 'THR_FAILSAFE', 'RC_OVERRIDE_TIME', 'SERVO3_MIN', 'SERVO3_TRIM', 'TKOFF_THR_MINACC',
-                         'BARO1_GND_PRESS', 'BARO2_GND_PRESS', 'BARO3_GND_PRESS', 'GND_ABS_PRESS', 'ARSPD_OFFSET', 'ARSPD2_OFFSET'})
+                         'BARO1_GND_PRESS', 'BARO2_GND_PRESS', 'BARO3_GND_PRESS', 'GND_ABS_PRESS', 'ARSPD_OFFSET', 'ARSPD2_OFFSET',
+                         'SIM_SRV_REV'})   # SIM_SRV_REV: sanal montaj maskesi, kayıtlı SERVOn_REVERSED'den üretilir (kalıcı kayda girmez)
 TABAN_TAM_ORAN = 0.9      # param_count'un bu oranı görülünce "ilk tam param listesi" alınmış sayılır (niyetsiz fark kaydı bundan sonra)
 # Ön ek hariç olsa da KAYDEDİLEN adlar: flap yüzdeleri dron yapılandırmasıdır (flightsim.FLAP_PARAMLARI oturum başlangıcı; kullanıcı değiştirirse kalıcı)
 HARIC_DEGIL = frozenset({'TKOFF_FLAP_PCNT', 'LAND_FLAP_PERCNT'})
 AD_DESENI = re.compile(r'^[A-Z][A-Z0-9_]{0,15}$')
+# Donanım montaj parametreleri (modül açıklaması): SITL'e aynen gider + SIM_SRV_REV maskesi (sanal montaj); eski ikilide nötr (0). RCn_REVERSED bilerek dışarıda.
+MONTAJ_DESENI = re.compile(r'^SERVO([1-9]|1[0-6])_REVERSED$')
+MONTAJ_ACIKLAMA = 'SERVO1..16_REVERSED'
+MONTAJ_ROZET = 'montaj (sanal uçakta aynen uygulanır)'
+MONTAJ_ROZET_NOTR = 'montaj (simülasyonda nötr)'   # SITL ikilisi SIM_SRV_REV tanımıyorsa
+MONTAJ_UYARI = 'Simülasyonda servo ters çevirme montaj parametresidir; sanal uçakta nötr uygulanır'
+MONTAJ_DESTEK_YOK = 'SITL ikilisi sanal montaj desteklemiyor; servo ters çevirme nötr uygulandı'
+SIM_SRV_REV = 'SIM_SRV_REV'       # HEPGO SITL yaması: sanal montaj bit maskesi (bit n-1 = SERVOn ters monteli)
+SIM_SRV_REV_PTYPE = 6             # MAV_PARAM_TYPE_INT32
+# Motor (ESC) kanallarına sanal montaj biti KONMAZ: ArduPilot motor çıkışını ham yazar (AP_Motors::rc_write → SRV_Channels::set_output_pwm;
+# SERVOn_REVERSED uygulanmaz) → gerçek araçta etkisiz olan REVERSED fizikte ters çevrilse çok rotorlu düşerdi. Kayıtlı SERVOn_FUNCTION motor
+# koduysa ya da kayıt yokken araç tipinin varsayılan motor kanalıysa bit atlanır. Helikopterde swash/kuyruk (motor1..4 fonksiyonları) set_output_pwm_trimmed /
+# set_output_scaled ile yazılır → REVERSED etkili → dışlama yok. Uçak gazı (70) da scaled → etkili.
+MOTOR_FONKSIYONLARI = frozenset(range(33, 41)) | frozenset(range(82, 86)) | frozenset(range(120, 140))   # motor1..8, motor9..12, motor13..32
+VARSAYILAN_MOTOR_KANALLARI = {'multirotor': frozenset(range(1, 9)), 'hexarotor': frozenset(range(1, 9)), 'vtol': frozenset(range(5, 9))}
 KAYNAKLAR = {'hepgo': 'HEPGO', 'mp': 'Mission Planner', 'sitl': 'SITL (araç)'}
 MAX_PARAM = 2000          # dron başına kayıt üst sınırı (içe aktarma)
 _oturum_cache = None
@@ -79,7 +107,89 @@ def haric_mi(name):
 
 
 def haric_listesi():
-    return {'prefixes': list(HARIC_ONEKLER), 'names': sorted(set(HARIC_ADLAR) | set(oturum_adlari()))}
+    return {'prefixes': list(HARIC_ONEKLER), 'names': sorted(set(HARIC_ADLAR) | set(oturum_adlari())), 'mount': MONTAJ_ACIKLAMA,
+            'mount_badge': MONTAJ_ROZET, 'mount_badge_neutral': MONTAJ_ROZET_NOTR}
+
+
+def montaj_mi(name):
+    """Donanım montaj parametresi mi (SERVOn_REVERSED, n=1..16): SITL'e aynen gider + SIM_SRV_REV biti (eski ikilide 0)."""
+    return bool(MONTAJ_DESENI.match(str(name or '').upper()))
+
+
+def montaj_kanal(name):
+    """SERVOn_REVERSED → n (1..16); montaj değilse None."""
+    m = MONTAJ_DESENI.match(str(name or '').upper())
+    return int(m.group(1)) if m else None
+
+
+def motor_kanali_mi(n, fonksiyonlar, tip=None):
+    """SERVOn motor (ESC) kanalı mı: kayıtlı SERVOn_FUNCTION motor koduysa; kayıt yoksa araç tipinin varsayılan motor kanalı (helikopterde hiç)."""
+    fn = fonksiyonlar.get(n)
+    if fn is not None:
+        return fn in MOTOR_FONKSIYONLARI
+    return n in VARSAYILAN_MOTOR_KANALLARI.get(str(tip or ''), ())
+
+
+def srv_rev_mask(rows, tip=None, atlanan=None):
+    """Kayıtlı satırlardan SIM_SRV_REV bit maskesi: SERVOn_REVERSED ≠ 0 → bit n-1 (rows: {name, value} dizisi ya da ad→değer sözlüğü).
+    Motor kanalları atlanır (`motor_kanali_mi`; `tip` araç tipi — varsayılan fonksiyonlar); atlanan adlar `atlanan` listesine eklenir."""
+    cift = list(rows.items()) if isinstance(rows, dict) else [(r['name'], r['value']) for r in rows]
+    fonksiyonlar = {}
+    for ad, deger in cift:
+        a = str(ad or '').upper()
+        if a.startswith('SERVO') and a.endswith('_FUNCTION') and a[5:-9].isdigit():
+            try:
+                fonksiyonlar[int(a[5:-9])] = int(round(float(deger)))
+            except (TypeError, ValueError):
+                continue
+    mask = 0
+    for ad, deger in cift:
+        n = montaj_kanal(ad)
+        try:
+            if n is None or float(deger) == 0.0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        if motor_kanali_mi(n, fonksiyonlar, tip):
+            if atlanan is not None:
+                atlanan.append(str(ad).upper())
+            continue
+        mask |= 1 << (n - 1)
+    return mask
+
+
+def sitl_kayitlari(rows, sanal_montaj=True, tip=None):
+    """Kayıtlı satırların SITL'e gidecek biçimi (varsayilan.parm + ilk kalp atışı PARAM_SET).
+    `sanal_montaj` True (ikili SIM_SRV_REV tanır; `drone_sitl.sanal_montaj_destegi`): satırlar aynen + sonuna SIM_SRV_REV = `srv_rev_mask`
+    (0 dahil: eski oturumdan eeprom'da kalan maske silinsin). False (eski ikili): montaj parametreleri 0'a çekilir (sanal montaj düz).
+    `tip`: araç tipi (motor kanalı dışlaması; `srv_rev_mask`). Dönüş: ([{name, value, ptype}],
+    {'virtual_mount': bool, 'mask': int, 'neutral': [adlar], 'reversed': [adlar], 'motor_skipped': [adlar]})."""
+    out, notr, ters, motor = [], [], [], []
+    for r in rows:
+        v = float(r['value'])
+        if montaj_mi(r['name']) and v != 0.0:
+            if sanal_montaj:
+                ters.append(str(r['name']))
+            else:
+                v = 0.0
+                notr.append(str(r['name']))
+        out.append({'name': r['name'], 'value': v, 'ptype': r.get('ptype')})
+    mask = srv_rev_mask(rows, tip, motor) if sanal_montaj else 0
+    if sanal_montaj:
+        out.append({'name': SIM_SRV_REV, 'value': float(mask), 'ptype': SIM_SRV_REV_PTYPE})
+    return out, {'virtual_mount': bool(sanal_montaj), 'mask': mask, 'neutral': notr, 'reversed': [a for a in ters if a not in motor], 'motor_skipped': motor}
+
+
+def montaj_olayi(bilgi):
+    """Oturum açılışı olay şeridi metni + önem (6 bilgi / 4 sarı uyarı); montaj kaydı yoksa None."""
+    if bilgi['neutral']:
+        return f"{', '.join(bilgi['neutral'])}: {MONTAJ_DESTEK_YOK} (SITL'e 0 yazıldı; kayıt ve .param dışa aktarımı gerçek değeri korur)", 4
+    if bilgi['reversed']:
+        ek = f" ({', '.join(bilgi['motor_skipped'])}: motor kanalı, ArduPilot REVERSED uygulamaz → bit yok)" if bilgi.get('motor_skipped') else ''
+        return f"{', '.join(bilgi['reversed'])}: sanal uçakta servo montajı da ters (SIM_SRV_REV = {bilgi['mask']}) — gerçek uçakla aynı davranış{ek}", 6
+    if bilgi.get('motor_skipped'):
+        return f"{', '.join(bilgi['motor_skipped'])}: motor (ESC) kanalında servo ters çevirme etkisizdir (ArduPilot ham PWM yazar) — sanal montaj biti konmadı (SIM_SRV_REV = {bilgi['mask']})", 6
+    return None
 
 
 def _ad(name):
@@ -99,6 +209,7 @@ def yukle(drone_id, conn=None):
             rows = db.rows(c.execute(sql, (int(drone_id),)))
     for r in rows:
         r['source_text'] = KAYNAKLAR.get(r['source'], r['source'])
+        r['mount'] = montaj_mi(r['name'])   # montaj parametresi: UI rozeti (MONTAJ_ROZET / ikili desteklemiyorsa MONTAJ_ROZET_NOTR)
     return rows
 
 
@@ -142,6 +253,9 @@ def sil(drone_id, name=None, conn=None):
 def param_metni(rows, baslik=None):
     """Mission Planner `.param` biçimi: `AD,DEĞER` satırları (# yorum). Tam sayı değerler ondalıksız yazılır."""
     out = [f'#NOTE: {baslik}'] if baslik else []
+    montaj = [str(r['name']) for r in rows if montaj_mi(r['name'])]
+    if montaj and baslik:   # gerçek uçağa giden dosyada montaj değeri korunur; yorum satırı MP tarafından yok sayılır
+        out.append(f"#NOTE: {', '.join(montaj)}: montaj parametresi — gerçek uçak değeri; sanal uçakta aynen uygulanır (SIM_SRV_REV)")
     for r in rows:
         v = float(r['value'])
         out.append(f"{r['name']},{int(v) if v == int(v) and abs(v) < 1e15 else repr(v)}")
@@ -195,9 +309,11 @@ def ice_aktar(drone_id, text, user_id=None, conn=None):
     return {'imported': len(gecerli), 'skipped': atlanan[:50], 'skipped_count': len(atlanan), 'count': toplam}
 
 
-def parm_satirlari(rows):
-    """varsayilan.parm'a eklenecek `AD DEĞER` satırları (drone_sitl.parm_metni `ekstra`)."""
-    return [f"{r['name']} {float(r['value']):g}" for r in rows if not haric_mi(r['name'])]
+def parm_satirlari(rows, sanal_montaj=True, tip=None):
+    """varsayilan.parm'a eklenecek `AD DEĞER` satırları (drone_sitl.parm_metni `ekstra`); `sitl_kayitlari` biçimi (SIM_SRV_REV dahil;
+    eski ikilide montaj 0). Hariç adlar (haric_mi) yazılmaz; SIM_SRV_REV hariç olsa da yazılır (kayıt değil, üretilen maske)."""
+    sitl, _ = sitl_kayitlari(rows, sanal_montaj, tip)
+    return [f"{r['name']} {float(r['value']):g}" for r in sitl if r['name'] == SIM_SRV_REV or not haric_mi(r['name'])]
 
 
 # ---------------- canlı izleme ----------------
@@ -205,9 +321,13 @@ class Izleyici:
     """Bir dronun (drone_id) çalışan SITL'i için PARAM_VALUE izleyicisi. Olay döngüsünde çağrılır (kısa sqlite yazımı).
     `bildir(metin, severity)`: olay şeridi/konsol (isteğe bağlı)."""
 
-    def __init__(self, drone_id, bildir=None):
+    def __init__(self, drone_id, bildir=None, sanal_montaj=True, srv_rev_yaz=None, tip=None):
         self.drone_id = int(drone_id)
         self.bildir = bildir
+        self.tip = tip                           # araç tipi (drone_sitl.TIP_ESLEME anahtarı): motor kanalı dışlaması (srv_rev_mask)
+        self.sanal_montaj = bool(sanal_montaj)   # SITL ikilisi SIM_SRV_REV tanır: montaj kaydında maske anında güncellenir (srv_rev_yaz(mask))
+        self.srv_rev_yaz = srv_rev_yaz           # callable(mask:int) → SITL'e SIM_SRV_REV PARAM_SET (oturum sağlar); None → yalnız bildirim
+        self.srv_rev_mask = None                 # son yazılan/gözlenen maske
         self.taban = {}       # ad → son bilinen değer (SITL'den öğrenilen)
         self.bekleyen = {}    # ad → (source, user_id, hedef, zaman): PARAM_SET gönderildi, yankı bekleniyor
         self.yukleme = set()  # açılışta bizim yazdığımız kayıtlılar: yankı yalnız tabana işlenir
@@ -321,7 +441,36 @@ class Izleyici:
         self.kayit_sayisi += 1
         self.son_kayit = {'name': n, 'value': v, 'source': source}
         self._bildir(f'Parametre kalıcı kaydedildi: {n} = {v:g} ({KAYNAKLAR.get(source, source)})', 6)
+        if montaj_mi(n):   # montaj parametresi değişti: sanal montaj maskesini SITL'de anında güncelle (ikili destekliyorsa), yoksa sarı uyarı
+            self._montaj_degisti(n, v)
         return self.son_kayit
+
+    def _montaj_degisti(self, n, v):
+        if not self.sanal_montaj:
+            if v != 0.0:
+                self._bildir(self.montaj_uyarisi(n), 4)
+            return
+        try:
+            motor = []
+            mask = srv_rev_mask(yukle(self.drone_id), self.tip, motor)   # kayıt az önce güncellendi → tüm kanalların güncel maskesi
+        except Exception as e:   # noqa: BLE001
+            self._bildir(f'SIM_SRV_REV hesaplanamadı: {e}'[:200], 4)
+            return
+        self.srv_rev_mask = mask
+        if self.srv_rev_yaz is not None:
+            try:
+                self.srv_rev_yaz(mask)
+            except Exception as e:   # noqa: BLE001
+                self._bildir(f'SIM_SRV_REV yazılamadı: {e}'[:200], 4)
+                return
+        if n in motor:
+            self._bildir(f'{n} = {v:g}: motor (ESC) kanalında servo ters çevirme etkisizdir (ArduPilot ham PWM yazar) — sanal montaj biti konmadı (SIM_SRV_REV = {mask})', 6)
+        else:
+            self._bildir(f'{n} = {v:g}: sanal uçakta servo montajı güncellendi (SIM_SRV_REV = {mask}) — gerçek uçakla aynı davranış', 6)
+
+    def montaj_uyarisi(self, n):
+        """Eski ikili (SIM_SRV_REV yok): REVERSED≠0 bu oturumda SITL'de etkili (kontrol tersine döner), yeni oturumda 0 yazılır."""
+        return f'{n}: {MONTAJ_UYARI}. Kayıt korunur (dışa aktarımda gerçek değer); bu oturumda SITL\'de etkili, yeni oturumda 0 yazılır ({MONTAJ_DESTEK_YOK})'
 
     def _bildir(self, metin, sev):
         if self.bildir is not None:

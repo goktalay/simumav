@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import socket
+import threading
 import time
 from pathlib import Path
 
@@ -712,21 +713,33 @@ def _ucus_kapanis(fid, s):
         db.audit(conn, 'fly_stop', f['user_id'], None, f'flight {fid} {sure}s {s.end_reason}')
         kota_uygula(conn, f['user_id'])
         conn.commit()
-    _profil_ozeti(f['user_id'])
+    profil_ozeti(f['user_id'])
 
 
-def _profil_ozeti(user_id):
-    """Hesap servisine özet (pilot adı, toplam uçuş/saat) — arka plan; hata yutulur."""
+def profil_ozeti(user_id):
+    """Hesap servisine (sv_profiles) kullanım özeti: {pilot, pilots, drones, flights, hours, last_flight_at, version, updated_at} —
+    Merkez › Mastertool bunu okur. Uçuş bitiminde (fly_stop) ve giriş/çıkışta çağrılır; hata yutulur. Geliştirici girişi (mt_user_id < 0)
+    göndermez. Dönüş: gönderildi mi."""
     try:
         with db.connect() as conn:
             u = db.row(conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)))
-            p = db.row(conn.execute('SELECT name, flights, hours FROM pilots WHERE user_id = ? ORDER BY is_default DESC, id LIMIT 1', (user_id,)))
-            n = conn.execute('SELECT COUNT(*), COALESCE(SUM(duration_s), 0) FROM flights WHERE user_id = ? AND ended_at IS NOT NULL', (user_id,)).fetchone()
-        if u and u['mt_user_id'] > 0:
-            from .auth import profil_yaz
-            profil_yaz(u['mt_user_id'], {'pilot': p['name'] if p else u['display_name'], 'flights': int(n[0]), 'hours': round(n[1] / 3600.0, 2), 'updated_at': db.now()})
+            if not u or u['mt_user_id'] <= 0:
+                return False
+            p = db.row(conn.execute('SELECT name FROM pilots WHERE user_id = ? ORDER BY is_default DESC, id LIMIT 1', (user_id,)))
+            n = conn.execute('SELECT COUNT(*), COALESCE(SUM(duration_s), 0), MAX(ended_at) FROM flights WHERE user_id = ? AND ended_at IS NOT NULL',
+                             (user_id,)).fetchone()
+            say = lambda t: conn.execute(f'SELECT COUNT(*) FROM {t} WHERE user_id = ?', (user_id,)).fetchone()[0]   # noqa: E731
+            ozet = {'pilot': p['name'] if p else u['display_name'], 'pilots': say('pilots'), 'drones': say('drones'), 'flights': int(n[0]),
+                    'hours': round(n[1] / 3600.0, 2), 'last_flight_at': n[2], 'version': config.VERSION, 'updated_at': db.now()}
+        from .auth import profil_yaz
+        return profil_yaz(u['mt_user_id'], ozet)
     except Exception:   # noqa: BLE001
-        pass
+        return False
+
+
+def profil_ozeti_arka_plan(user_id):
+    """Giriş/çıkış yolunda isteği bekletmeden gönder (hesap servisi zaman aşımı 4 sn)."""
+    threading.Thread(target=profil_ozeti, args=(user_id,), daemon=True).start()
 
 
 def dosya_yolu(rel):
