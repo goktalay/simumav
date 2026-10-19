@@ -58,7 +58,20 @@ os.environ.setdefault('SIM_REC_MAX_MB', '300')                                  
 os.environ.setdefault('SIM_REC_KEEP_DAYS', '3650')                                      # videolar flights kaydıyla yaşar (kota silince gider)
 os.environ.setdefault('SIM_PUBLIC_HOST', os.environ.get('SIMUMAV_PUBLIC_HOST', ''))
 
-VERSION = '0.1.0'
+def _surum():
+    """Sürüm: dışa aktarılan ağaçtaki VERSION dosyası (yayın etiketi); HEPGO deposunda dosya yoksa geliştirme sürümü."""
+    try:
+        from pathlib import Path
+        for kok in (Path(__file__).resolve().parents[2], Path.cwd()):
+            v = (kok / 'VERSION')
+            if v.is_file():
+                return v.read_text(encoding='utf-8').strip() or '0.0.0-dev'
+    except OSError:
+        pass
+    return '0.0.0-dev'
+
+
+VERSION = _surum()
 SITL_ENABLED = os.environ.get('HEPGO_SITL', '1') != '0'
 DEV_LOGIN = os.environ.get('SIMUMAV_DEV_LOGIN', '0') == '1'
 SECRET = os.environ.get('SIMUMAV_SECRET', '') or secrets.token_hex(32)   # dev login imzası vb.; PROD'da .env'den
