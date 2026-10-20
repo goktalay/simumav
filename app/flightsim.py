@@ -138,6 +138,14 @@ LAYOUT_PARAMLARI = {
               ('SERVO1_REVERSED', 0.0), ('SERVO2_REVERSED', 1.0), ('SERVO4_REVERSED', 0.0), ('MIXING_GAIN', 0.5)),
 }
 LAYOUT_SITL_EKI = {'elevon': '-elevon', 'vtail': '-vtail'}
+# SITL modelinin NÖTR montajı: autotest .parm setlerinin REVERSED değerleri (fizik bu değerlerle doğru yöne uçar). Kullanıcının kalıcı kaydındaki
+# gerçek REVERSED farklıysa (ör. CAYMAZ 78/77 + REVERSED 0/0) SIM_SRV_REV o kanalı yansıtır → gerçek yapılandırmayla sanal uçak düzgün uçar.
+SITL_NOTR_REV = {'-elevon': (1, 2), '-vtail': (2,)}
+
+
+def sitl_notr_mask(ek):
+    """SITL model son eki → nötr montaj maskesi (bit n-1 = kanal n REVERSED 1 bekler)."""
+    return sum(1 << (n - 1) for n in SITL_NOTR_REV.get(ek or '', ()))
 ARDUPLANE_VARSAYILAN_FN = {1: 4, 2: 19, 3: 70, 4: 21}   # SERVOn_FUNCTION fabrika değerleri (kanal 1..4)
 _FN_RE = re.compile(r'^SERVO([1-9]|1[0-6])_FUNCTION$')
 
@@ -601,6 +609,7 @@ class SimSession:
         # Montaj parametreleri (SERVOn_REVERSED; drone_params modül açıklaması §20.1): SITL'e aynen + SIM_SRV_REV maskesi (sanal montaj = gerçek montaj);
         # ikili SIM_SRV_REV tanımıyorsa (drone_sitl.sanal_montaj_destegi) nötr 0 + sarı uyarı
         self.sanal_montaj = drone_sitl.sanal_montaj_destegi(self.type)   # ikili dosya taraması (önbellekli; sahte kipte ikili yok → False)
+        self.montaj_arg = {'notr': 0, 'varsayilan': None}   # _montaj_baglami (SITL modelinin nötr montajı)
         self.montaj = {'virtual_mount': self.sanal_montaj, 'mask': 0, 'neutral': [], 'reversed': [], 'motor_skipped': []}   # sitl_kayitlari bilgisi (son açılış)
         self.srv_rev_sitl = None         # SITL'den gözlenen SIM_SRV_REV (PARAM_VALUE); eski ikilide hiç gelmez
         self.route = []
@@ -803,7 +812,7 @@ class SimSession:
             sitl_model = self._sitl_modeli()   # sabit kanat: plane[-elevon|-vtail][-catapult] (düzen §13.1 + rampa §13); diğer tipler None (TIP_ESLEME)
             port, err = await ex(None, lambda: drone_sitl.YONETICI.baslat(self.kimlik, self.type, c['lat'], c['lon'], sysid=1,
                                                                           irtifa=c.get('alt') or EV_IRTIFA, konsol=self._konsol, model=sitl_model,
-                                                                          log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type)
+                                                                          log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type, **self.montaj_arg)
                                                                           + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]]))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir)
             if port and self.rec['bin']:
                 self._olay('DataFlash kaydı açık: uçuş logu (.bin) oturum kapanışında Uçuş Logları\'na kaydedilir', 6)
@@ -852,7 +861,18 @@ class SimSession:
         # ikili SIM_SRV_REV tanıyor mu (dosya taraması; sahte kipte ikili yok → False → nötr yol)
         self.sanal_montaj = await self.loop.run_in_executor(None, drone_sitl.sanal_montaj_destegi, self.type)
         self.param_izleyici.sanal_montaj = self.sanal_montaj
-        _, self.montaj = drone_params.sitl_kayitlari(self.kayitli_params, self.sanal_montaj, self.type)
+        self._montaj_baglami()
+        _, self.montaj = drone_params.sitl_kayitlari(self.kayitli_params, self.sanal_montaj, self.type, **self.montaj_arg)
+
+    def _montaj_baglami(self):
+        """Sanal montaj maskesinin SITL modeline göre nötr noktası (`montaj_arg`: notr + düzen setinin REVERSED değerleri); izleyiciye de verilir."""
+        notr, var = 0, None
+        if self.type == 'sabit_kanat':
+            notr = sitl_notr_mask(sitl_model_eki(layout_etkin_fn(self.layout, self.kayitli_params)))
+            var = {a: v for a, v in LAYOUT_PARAMLARI.get(self.layout or 'classic', ()) if drone_params.montaj_mi(a)}
+        self.montaj_arg = {'notr': notr, 'varsayilan': var}
+        if self.param_izleyici is not None:
+            self.param_izleyici.notr_mask, self.param_izleyici.varsayilan_rev = notr, var
 
     def _kayitli_yaz(self):
         """İlk kalp atışında kayıtlı parametreleri PARAM_SET ile yeniden yazar (eeprom'daki eski değer parm dosyasını ezebilir); yankılar
@@ -860,7 +880,7 @@ class SimSession:
         desteklemiyorsa 0 gider → sarı olay. Olay: "N kayıtlı parametre yüklendi"."""
         if not self.kayitli_params or self.param_izleyici is None:
             return
-        sitl, self.montaj = drone_params.sitl_kayitlari(self.kayitli_params, self.sanal_montaj, self.type)
+        sitl, self.montaj = drone_params.sitl_kayitlari(self.kayitli_params, self.sanal_montaj, self.type, **self.montaj_arg)
         self.param_izleyici.yukleme_isaretle([r['name'] for r in sitl])
         self.param_izleyici.srv_rev_mask = self.montaj['mask'] if self.sanal_montaj else None
         for r in sitl:

@@ -131,10 +131,16 @@ def motor_kanali_mi(n, fonksiyonlar, tip=None):
     return n in VARSAYILAN_MOTOR_KANALLARI.get(str(tip or ''), ())
 
 
-def srv_rev_mask(rows, tip=None, atlanan=None):
+def srv_rev_mask(rows, tip=None, atlanan=None, notr=0, varsayilan=None):
     """Kayıtlı satırlardan SIM_SRV_REV bit maskesi: SERVOn_REVERSED ≠ 0 → bit n-1 (rows: {name, value} dizisi ya da ad→değer sözlüğü).
-    Motor kanalları atlanır (`motor_kanali_mi`; `tip` araç tipi — varsayılan fonksiyonlar); atlanan adlar `atlanan` listesine eklenir."""
+    Motor kanalları atlanır (`motor_kanali_mi`; `tip` araç tipi — varsayılan fonksiyonlar); atlanan adlar `atlanan` listesine eklenir.
+    `notr`: SITL fizik modelinin NÖTR montaj maskesi (ör. `plane-elevon` kanal 1/2 REVERSED 1 ile düz uçar → 0b11; `plane-vtail` kanal 2 → 0b10;
+    düz plane 0). Bit = (etkin REVERSED ≠ 0) XOR nötr — kullanıcının gerçek değeri modelin beklediğinden farklıysa fizik o kanalı yansıtır.
+    `varsayilan`: kayıtta olmayan REVERSED adlarının oturumda SITL'e giden değeri (düzen seti; ad → değer) — etkin değer kayıt ?? varsayılan ?? 0."""
     cift = list(rows.items()) if isinstance(rows, dict) else [(r['name'], r['value']) for r in rows]
+    if varsayilan:
+        var = {str(a).upper() for a, _ in cift}
+        cift = cift + [(a, v) for a, v in dict(varsayilan).items() if str(a).upper() not in var]
     fonksiyonlar = {}
     for ad, deger in cift:
         a = str(ad or '').upper()
@@ -156,15 +162,16 @@ def srv_rev_mask(rows, tip=None, atlanan=None):
                 atlanan.append(str(ad).upper())
             continue
         mask |= 1 << (n - 1)
-    return mask
+    return mask ^ (int(notr or 0) & 0xFFFF)
 
 
-def sitl_kayitlari(rows, sanal_montaj=True, tip=None):
+def sitl_kayitlari(rows, sanal_montaj=True, tip=None, notr=0, varsayilan=None):
     """Kayıtlı satırların SITL'e gidecek biçimi (varsayilan.parm + ilk kalp atışı PARAM_SET).
     `sanal_montaj` True (ikili SIM_SRV_REV tanır; `drone_sitl.sanal_montaj_destegi`): satırlar aynen + sonuna SIM_SRV_REV = `srv_rev_mask`
     (0 dahil: eski oturumdan eeprom'da kalan maske silinsin). False (eski ikili): montaj parametreleri 0'a çekilir (sanal montaj düz).
     `tip`: araç tipi (motor kanalı dışlaması; `srv_rev_mask`). Dönüş: ([{name, value, ptype}],
     {'virtual_mount': bool, 'mask': int, 'neutral': [adlar], 'reversed': [adlar], 'motor_skipped': [adlar]})."""
+    notr_mask = notr
     out, notr, ters, motor = [], [], [], []
     for r in rows:
         v = float(r['value'])
@@ -175,7 +182,7 @@ def sitl_kayitlari(rows, sanal_montaj=True, tip=None):
                 v = 0.0
                 notr.append(str(r['name']))
         out.append({'name': r['name'], 'value': v, 'ptype': r.get('ptype')})
-    mask = srv_rev_mask(rows, tip, motor) if sanal_montaj else 0
+    mask = srv_rev_mask(rows, tip, motor, notr_mask, varsayilan) if sanal_montaj else 0
     if sanal_montaj:
         out.append({'name': SIM_SRV_REV, 'value': float(mask), 'ptype': SIM_SRV_REV_PTYPE})
     return out, {'virtual_mount': bool(sanal_montaj), 'mask': mask, 'neutral': notr, 'reversed': [a for a in ters if a not in motor], 'motor_skipped': motor}
@@ -188,6 +195,8 @@ def montaj_olayi(bilgi):
     if bilgi['reversed']:
         ek = f" ({', '.join(bilgi['motor_skipped'])}: motor kanalı, ArduPilot REVERSED uygulamaz → bit yok)" if bilgi.get('motor_skipped') else ''
         return f"{', '.join(bilgi['reversed'])}: sanal uçakta servo montajı da ters (SIM_SRV_REV = {bilgi['mask']}) — gerçek uçakla aynı davranış{ek}", 6
+    if bilgi.get('mask'):
+        return f"Sanal montaj: SITL uçuş modelinin nötr servo yönü kayıtlı yapılandırmadan farklı → SIM_SRV_REV = {bilgi['mask']} (gerçek yapılandırmayla düzgün uçar)", 6
     if bilgi.get('motor_skipped'):
         return f"{', '.join(bilgi['motor_skipped'])}: motor (ESC) kanalında servo ters çevirme etkisizdir (ArduPilot ham PWM yazar) — sanal montaj biti konmadı (SIM_SRV_REV = {bilgi['mask']})", 6
     return None
@@ -376,10 +385,10 @@ def guc_onerisi(drone_id, conn=None):
     return {alan: s[k] for k, alan in esleme.items() if k in s}
 
 
-def parm_satirlari(rows, sanal_montaj=True, tip=None):
+def parm_satirlari(rows, sanal_montaj=True, tip=None, notr=0, varsayilan=None):
     """varsayilan.parm'a eklenecek `AD DEĞER` satırları (drone_sitl.parm_metni `ekstra`); `sitl_kayitlari` biçimi (SIM_SRV_REV dahil;
     eski ikilide montaj 0). Hariç adlar (haric_mi) yazılmaz; SIM_SRV_REV hariç olsa da yazılır (kayıt değil, üretilen maske)."""
-    sitl, _ = sitl_kayitlari(rows, sanal_montaj, tip)
+    sitl, _ = sitl_kayitlari(rows, sanal_montaj, tip, notr, varsayilan)
     return [f"{r['name']} {float(r['value']):g}" for r in sitl if r['name'] == SIM_SRV_REV or not haric_mi(r['name'])]
 
 
@@ -395,6 +404,8 @@ class Izleyici:
         self.sanal_montaj = bool(sanal_montaj)   # SITL ikilisi SIM_SRV_REV tanır: montaj kaydında maske anında güncellenir (srv_rev_yaz(mask))
         self.srv_rev_yaz = srv_rev_yaz           # callable(mask:int) → SITL'e SIM_SRV_REV PARAM_SET (oturum sağlar); None → yalnız bildirim
         self.srv_rev_mask = None                 # son yazılan/gözlenen maske
+        self.notr_mask = 0                       # SITL modelinin nötr montaj maskesi (srv_rev_mask notr; oturum düzeni belirler)
+        self.varsayilan_rev = None               # kayıtta olmayan REVERSED adlarının oturum değeri (düzen seti)
         self.taban = {}       # ad → son bilinen değer (SITL'den öğrenilen)
         self.bekleyen = {}    # ad → (source, user_id, hedef, zaman): PARAM_SET gönderildi, yankı bekleniyor
         self.yukleme = set()  # açılışta bizim yazdığımız kayıtlılar: yankı yalnız tabana işlenir
@@ -519,7 +530,7 @@ class Izleyici:
             return
         try:
             motor = []
-            mask = srv_rev_mask(yukle(self.drone_id), self.tip, motor)   # kayıt az önce güncellendi → tüm kanalların güncel maskesi
+            mask = srv_rev_mask(yukle(self.drone_id), self.tip, motor, self.notr_mask, self.varsayilan_rev)   # kayıt az önce güncellendi → tüm kanalların güncel maskesi
         except Exception as e:   # noqa: BLE001
             self._bildir(f'SIM_SRV_REV hesaplanamadı: {e}'[:200], 4)
             return
