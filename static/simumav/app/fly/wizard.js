@@ -1,6 +1,7 @@
 // SIMUMAV › Uç — sihirbaz adım makinesi ve tip eşlemeleri (saf; DOM yok; node ile test edilir: tests/test_simumav_fly.mjs).
 // Adımlar: drone → track → launch (yalnız sabit kanat / VTOL) → power (güç ve yakıt + simülasyon hızı, §10) → mission (isteğe bağlı)
-// → targets (HEDEFLER, isteğe bağlı; HEPGO §24) → pilot (+ kayıt seçenekleri) → BAŞLA.
+// → site (YER KONTROL: radar / istasyon / EO + "Yer kontrolünü koru"; HEPGO §26, isteğe bağlı) → targets (HEDEFLER, isteğe bağlı; HEPGO §24)
+// → pilot (+ kayıt seçenekleri) → BAŞLA.
 // Çıktı: `payload()` → POST /api/fly/start gövdesi (docs/simumav.md §4): {drone_id, pilot_id, track_id, mission_id?, launch, record:{video,bin},
 // power? (power.js createPowerState.body()), speedup? (> 1 ise)}.
 // Tip eşlemesi: SIMUMAV dron türleri (§3 drones.type) → HEPGO simülatör tipleri (flightsim*.js): plane → sabit_kanat, interceptor → interceptor
@@ -8,8 +9,8 @@
 // Eski sabit kanat jetleri (glb:jet / glb:zephyr / proc:interceptor) artık 'plane' tipindedir (sunucu göçü v2): hız ölçeği 600 km/h ve jet sesi model
 // anahtarına göre (speedScale / audioTypeFor ikinci argümanı). FPV: başlangıç kamerası FPV.
 
-export const STEPS = ['drone', 'track', 'launch', 'power', 'mission', 'targets', 'pilot'];
-export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', targets: 'targets.step', pilot: 'Pilot ve kayıt' };
+export const STEPS = ['drone', 'track', 'launch', 'power', 'mission', 'site', 'targets', 'pilot'];
+export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', site: 'site.step', targets: 'targets.step', pilot: 'Pilot ve kayıt' };
 
 // SIMUMAV türü → HEPGO simülatör tipi
 export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'interceptor', vtol: 'vtol' };
@@ -122,6 +123,8 @@ export function createWizard(data = {}, init = {}) {
     power: init.power ?? null,          // §10: güç gövdesi (power.js body()); dron değişince sıfırlanır (adım yeniden kurar)
     speedup: init.speedup ?? 1,         // §10: başlangıç simülasyon hızı
     targets: init.targets ?? null,      // HEPGO §24 hedefler: {items, radius_m} | null (targets.js)
+    site: init.site ?? null,            // HEPGO §26 yer kontrol sahası: {station, radar, radar_km, eo, eo_km} | null (flightsim_gcs_ui createSiteSection)
+    defend: init.defend ?? null,        // HEPGO §26 "Yer kontrolünü koru" (sihirbazdan; yalnız INTERCEPTOR) | null — görev kaydı kind='defend' ise sunucu plandan alır
   };
   let i = 0;
   const drone = () => (data.drones || []).find(d => d.id === S.drone_id) || null;
@@ -142,7 +145,7 @@ export function createWizard(data = {}, init = {}) {
   const set = (k, v) => {
     if (k === 'launch') S.launch = normLaunch({ ...S.launch, ...(v || {}) });
     else if (k === 'record') S.record = { ...S.record, ...(v || {}) };
-    else if (k === 'drone_id') { if (v !== S.drone_id) S.power = null; S.drone_id = v; i = Math.min(i, steps().length - 1); if (S.mission_id != null) { /* görev parkura bağlı; dron değişince korunur */ } }
+    else if (k === 'drone_id') { if (v !== S.drone_id) S.power = null; S.drone_id = v; if (type() !== 'interceptor') S.defend = null; i = Math.min(i, steps().length - 1); if (S.mission_id != null) { /* görev parkura bağlı; dron değişince korunur */ } }
     else if (k === 'speedup') S.speedup = [1, 2, 4, 8].includes(Number(v)) ? Number(v) : 1;
     else if (k === 'track_id') { if (v !== S.track_id) S.mission_id = null; S.track_id = v; }   // parkur değişti → görev sıfırlanır (§3 missions.track_id)
     else if (k in S) S[k] = v;
@@ -156,6 +159,9 @@ export function createWizard(data = {}, init = {}) {
     if (S.power) body.power = { ...S.power };
     if (S.speedup > 1) body.speedup = S.speedup;
     if (S.targets?.items?.length) body.targets = { items: S.targets.items.map(x => ({ ...x })), radius_m: S.targets.radius_m };
+    if (S.site && (S.site.station || S.site.radar || S.site.eo)) body.site = { ...S.site };   // HEPGO §26
+    const mk = (data.missions || []).find(m => m.id === S.mission_id)?.kind;
+    if (S.defend && type() === 'interceptor' && mk !== 'defend') body.defend = { ...S.defend };   // görev kaydı defend ise sunucu planı kullanır
     return body;
   };
   const missionsFor = () => (data.missions || []).filter(m => S.track_id == null || m.track_id === S.track_id);

@@ -26,7 +26,7 @@ console.log('wizard.js');
 test('varsayılanlar: varsayılan dron/parkur/pilot seçili; adımlar kopterde 5 (kalkış yok), sabit kanatta 6 (güç ve yakıt her tipte)', () => {
   const W = createWizard(DATA);
   assert.equal(W.state.drone_id, 1); assert.equal(W.state.track_id, 10); assert.equal(W.state.pilot_id, 100);
-  assert.deepEqual(W.steps(), ['drone', 'track', 'power', 'mission', 'targets', 'pilot']);
+  assert.deepEqual(W.steps(), ['drone', 'track', 'power', 'mission', 'site', 'targets', 'pilot']);
   W.set('drone_id', 2); assert.deepEqual(W.steps(), STEPS);
   W.set('drone_id', 3); assert.ok(needsLaunch('plane') && !needsLaunch('interceptor')); assert.equal(simType('interceptor'), 'interceptor'); assert.equal(simType('plane'), 'sabit_kanat');   // HEPGO §25: INTERCEPTOR tailsitter, dikey kalkış (kalkış adımı yok)
   assert.equal(simType('fpv'), 'multirotor'); assert.equal(simType('heli'), 'helikopter'); assert.equal(simType('vtol'), 'vtol');
@@ -38,7 +38,7 @@ test('ileri/geri: canNext, isLast, goto yalnız geriye; parkur değişince göre
   assert.deepEqual(W.missionsFor().map(m => m.id), [7]);
   W.set('mission_id', 7); assert.equal(W.mission().name, 'Halka turu');
   W.set('track_id', 11); assert.equal(W.state.mission_id, null, 'parkur değişti → görev sıfır'); assert.deepEqual(W.missionsFor().map(m => m.id), [8]);
-  assert.ok(W.next()); assert.equal(W.step(), 'targets'); assert.ok(W.next()); assert.equal(W.step(), 'pilot'); assert.ok(W.isLast()); assert.equal(W.next(), false);
+  assert.ok(W.next()); assert.equal(W.step(), 'site'); assert.ok(W.next()); assert.equal(W.step(), 'targets'); assert.ok(W.next()); assert.equal(W.step(), 'pilot'); assert.ok(W.isLast()); assert.equal(W.next(), false);
   assert.equal(W.goto('track'), true); assert.equal(W.step(), 'track'); assert.equal(W.goto('pilot'), false, 'ileriye atlanamaz');
   assert.ok(W.prev()); assert.equal(W.step(), 'drone'); assert.equal(W.prev(), false);
 });
@@ -207,5 +207,18 @@ test('kamera türü seçimi (camera_pick.js): day|thermal|night; varsayılan dro
   assert.equal(cameraDefault({ camera: 'night' }, 'thermal', 'day'), 'night'); assert.equal(cameraDefault(null, 'thermal'), 'thermal'); assert.equal(cameraDefault(null, null, 'x'), 'day');
   const t = camTr(k => ({ 'camera.night': 'Night vision' }[k] ?? k));
   assert.equal(t('Gece görüşü'), 'Night vision'); assert.equal(t('Termal kamera'), 'Termal kamera');
+});
+test('HEPGO §26 yer kontrol sahası + "Yer kontrolünü koru": site adımı gövdesi; defend yalnız INTERCEPTOR ve defend görevi seçili değilken', () => {
+  const D2 = { ...DATA, drones: [...DATA.drones, { id: 9, name: 'Av', type: 'interceptor', model_key: 'glb:icept_x4' }], missions: [...DATA.missions, { id: 12, track_id: 10, name: 'Savunma', kind: 'defend', plan: { kind: 'defend', defend: { seed: 5 } } }] };
+  const W = createWizard(D2, { drone_id: 9 });
+  assert.ok(W.steps().includes('site'));
+  W.set('site', { station: true, radar: true, radar_km: 12, eo: false, eo_km: 5 }); W.set('defend', { seed: 3, waves: 2 });
+  let b = W.payload();
+  assert.deepEqual(b.site, { station: true, radar: true, radar_km: 12, eo: false, eo_km: 5 }); assert.deepEqual(b.defend, { seed: 3, waves: 2 });
+  W.set('mission_id', 12); b = W.payload();
+  assert.equal(b.mission_id, 12); assert.equal(b.defend, undefined, 'görev kaydı defend → sunucu planı');
+  W.set('mission_id', null); W.set('drone_id', 1); b = W.payload();
+  assert.equal(b.defend, undefined, 'kopter → görev yok'); assert.equal(W.state.defend, null);
+  W.set('site', { station: false, radar: false, eo: false }); assert.equal(W.payload().site, undefined);
 });
 console.log(`\n${n} test geçti`);

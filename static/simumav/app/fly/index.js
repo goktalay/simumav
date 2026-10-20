@@ -51,7 +51,7 @@ async function resumeFlight(view, fid, ctx) {
   try {
     const f = await net.get(`/api/fly/${encodeURIComponent(fid)}`);
     if (!f || f.ended_at || f.state === 'KAPANDI') { toast(tr('Uçuş bitmiş; Operasyon\'da raporu görebilirsiniz')); return (ctx.go || (h => { location.hash = h; }))('#/ops'); }
-    const start = { flight_id: f.flight_id ?? f.id ?? fid, sim_id: f.sim_id, mp: f.mp, ws: f.ws, session: f.session, drone: f.drone, track: f.track, pilot: f.pilot, mission: f.mission, launch: f.launch, record: f.record, power: f.snapshot?.power, speedup: f.snapshot?.speedup };
+    const start = { flight_id: f.flight_id ?? f.id ?? fid, sim_id: f.sim_id, mp: f.mp, ws: f.ws, session: f.session, drone: f.drone, track: f.track, pilot: f.pilot, mission: f.mission, launch: f.launch, record: f.record, power: f.snapshot?.power, speedup: f.snapshot?.speedup, site: f.session?.site || null };
     return openSession(view, start, { drone: f.drone, track: f.track, pilot: f.pilot, mission: f.mission, launch: f.launch, record: f.record, power: f.snapshot?.power, speedup: f.snapshot?.speedup }, ctx);
   } catch (err) { toastError(err); clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Uçuş açılamadı: {e}', { e: err.message })), h('button', { class: 'btn primary', type: 'button', onclick: () => (ctx.go || (h => { location.hash = h; }))('#/fly') }, 'Sihirbaza dön'))); }
 }
@@ -122,7 +122,9 @@ async function renderWizard(view, ctx) {
     const pw = W.state.power || (d ? powerOf(d) : null);
     const pwTxt = pw ? `⚡ ${pw.engine === 'fuel' ? `${pw.fuel_l} L` : tr('power.engine_electric')} · ${Math.round(pw.elec_cells)}S${W.state.speedup > 1 ? ` · ${W.state.speedup}×` : ''}` : null;
     const tg = W.state.targets?.items?.length ? `◎ ${W.state.targets.items.length}` : null;   // HEPGO §24 hedef sayısı
-    clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : null, pwTxt, m ? m.name : null, tg, p ? p.name : null].filter(Boolean).join(' · '));
+    const st = W.state.site, sv = [st?.radar ? `R${st.radar_km}` : null, st?.station ? 'GKS' : null, st?.eo ? `EO${st.eo_km}` : null].filter(Boolean).join('·');
+    const siteTxt = sv ? `◈ ${sv}${W.state.defend || m?.kind === 'defend' ? ` · ${tr('site.defend')}` : ''}` : null;   // HEPGO §26
+    clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : null, pwTxt, m ? m.name : null, siteTxt, tg, p ? p.name : null].filter(Boolean).join(' · '));
   };
   // ---------- §10 güç ve yakıt adımı (dron değişince ön ayar sıfırlanır) ----------
   let powerPreset = null;
@@ -236,7 +238,25 @@ async function renderWizard(view, ctx) {
     dropTargetsUi(); tgUi = ui;
     clear(holder, ui.el);
   };
-  const drawFoot2 = () => { const last = W.isLast(); if (!last) nextBtn.disabled = !W.canNext() || !!tgErr; drawFoot(); if (tgErr) { nextBtn.disabled = true; startBtn.disabled = true; } };
+  // ---------- YER KONTROL (HEPGO §26; isteğe bağlı): radar / istasyon / EO + "Yer kontrolünü koru" (yalnız INTERCEPTOR; defend görev kaydı seçiliyse
+  // senaryo kayıttan) — çekirdek modül /sim/flightsim_gcs_ui.js (keyed: site.* i18n anahtarları, 7 dil) ----------
+  let siteErr = null, siteVisited = false;
+  const stepSite = async () => {
+    const holder = h('div', { class: 'sm-site-holder' }, h('p', { class: 'muted' }, tr('common.loading')));
+    body.append(holder);
+    let M;
+    try { M = await import('/sim/flightsim_gcs_ui.js'); } catch (err) { clear(holder, h('p', { class: 'muted' }, String(err?.message || err))); return; }
+    if (W.step() !== 'site' || destroyed) return;
+    const m = W.mission();
+    const ui = M.createSiteSection({ tr, keyed: true, card: false, getType: () => W.drone()?.type, initial: siteVisited ? { site: W.state.site, defend: W.state.defend } : null,
+      missionDefend: m?.kind === 'defend' ? m.name : null,
+      onChange: (v, e) => { W.set('site', v.site); W.set('defend', v.defend); siteErr = e; drawFoot2(); } });
+    siteVisited = true;
+    const v0 = ui.values(); W.set('site', v0.site); W.set('defend', v0.defend); siteErr = ui.error();
+    clear(holder, h('div', { class: 'sm-site-head' }, h('h2', null, '◈ ', tr('site.title'))), ui.el);
+    drawFoot2();
+  };
+  const drawFoot2 = () => { const last = W.isLast(); const err = tgErr || (W.step() === 'site' ? siteErr : null); if (!last) nextBtn.disabled = !W.canNext() || !!err; drawFoot(); if (err) { nextBtn.disabled = true; startBtn.disabled = true; } };
   const stepPilot = () => {
     const list = h('div', { class: 'sm-cards sm-cards-pilots' });
     const drawList = () => clear(list, data.pilots.map(p => card(p.id === W.state.pilot_id, { icon: p.svg ? h('i', { class: 'sm-ico sm-ico-pilot', html: p.svg }) : h('i', { class: 'sm-ico sm-ico-pilot', html: '<svg viewBox="0 0 48 48"><circle cx="24" cy="16" r="9"/><path d="M8 42c2-10 8-14 16-14s14 4 16 14z"/></svg>' }), title: p.name, sub: `${p.flights || 0} uçuş · ${(Number(p.hours) || 0).toFixed(1)} sa`, badge: p.is_default ? 'Varsayılan' : null, onClick: () => { W.set('pilot_id', p.id); drawList(); drawFoot(); } })));
@@ -251,7 +271,7 @@ async function renderWizard(view, ctx) {
     if (k !== 'drone' && preview) { preview.dispose(); preview = null; previewBox = null; }   // 3B döngüsü yalnız dron adımında (diğer adımlarda CPU/GPU boşa dönmesin)
     dropTargetsUi();   // hedef adımına dönülürse yeniden kurulur
     body.dataset.step = k;
-    ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, power: stepPower, mission: stepMission, targets: stepTargets, pilot: stepPilot })[k]?.();
+    ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, power: stepPower, mission: stepMission, site: stepSite, targets: stepTargets, pilot: stepPilot })[k]?.();
     drawSteps(); drawFoot();
     root.classList.remove('sm-anim'); void root.offsetWidth; root.classList.add('sm-anim');
   };
@@ -281,7 +301,7 @@ async function renderWizard(view, ctx) {
     preview?.dispose(); preview = null; destroyed = true; dropTargetsUi();
     runLeave();
     ctx.track?.('flight_start', { drone_type: W.drone()?.type || 'unknown', launch: payload.launch?.method || payload.launch || 'wheels', world_mode: W.track()?.world_mode || 'unknown', mission: W.mission() ? 1 : 0 });
-    await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.state.launch, record: W.state.record, power: s.power || W.state.power, speedup: s.speedup || W.state.speedup, targets: W.state.targets }, { ...ctx, meta: data.meta });
+    await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.state.launch, record: W.state.record, power: s.power || W.state.power, speedup: s.speedup || W.state.speedup, targets: W.state.targets, site: s.site || null }, { ...ctx, meta: data.meta });
   };
   onLeave(() => { destroyed = true; preview?.dispose(); preview = null; dropTargetsUi(); });
   drawOpen();

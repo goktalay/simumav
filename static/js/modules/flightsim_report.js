@@ -7,6 +7,7 @@
 
 import { clear, fmtDateTime, fmtDuration, h, modal, toast, toastError } from '../ui.js';
 import { layoutLabel } from './flightsim_airframe.js';   // §13.1 kontrol düzeni satırı
+import { defendReportBody } from './flightsim_gcs_ui.js';   // §26 "Yer kontrolünü koru" görev sonu raporu
 
 const REASON = { terrain: 'arazi', water: 'su', building: 'bina', sitl_hit: 'SITL yer teması (fizik)', sitl: 'SITL (otopilot çarpışma algısı)', manual: 'el ile' };
 const SOURCE = { mp: 'Mission Planner', hepgo: 'HEPGO paneli' };
@@ -41,6 +42,8 @@ export function buildReportText(sum, tr) {
   if (pw) out.push(`${tr('Güç ve yakıt')}: ${pw}`);
   const tg = targetLines(sum, tr);   // §24
   if (tg) out.push(`${tr('Hedefler')}: ${tg}`);
+  const dv = sum.defend;   // §26
+  if (dv) out.push(`${tr('Yer kontrolünü koru')}: ${tr(dv.ended ? (dv.success ? 'BAŞARILI' : 'BAŞARISIZ') : 'SÜRÜYOR')} · ${tr('Önlenen / doğan')} ${(dv.kills || []).length}/${dv.spawned ?? 0} · ${tr('İstasyon sağlığı')} %${Math.round(dv.health ?? 100)} · ${tr('Puan')} ${dv.score ?? 0} · ${tr({ colonel: 'Albay', major: 'Binbaşı', captain: 'Yüzbaşı', lieutenant: 'Teğmen', sergeant: 'Çavuş', corporal: 'Onbaşı', private: 'Er' }[dv.rank] || 'Er')}`);
   const sn = safetyText(sum, tr);
   if (sn) out.push(`${tr('Güvenlik notu')}: ${sn}`);
   return out.join('\n');
@@ -225,6 +228,7 @@ export function reportBody(sum, tr, { canWrite = false, be = null } = {}) {
     h('div', { class: 'fs-rp-cols' }, h('div', null, basic, mission), h('div', { class: 'fs-rp-mapwrap' }, canvas, legend, dev)),
     powerSection(sum, tr),   // §23
     targetsSection(sum, tr),   // §24
+    sum.defend ? h('div', { class: 'fs-rp-sec fs-rp-defend' }, h('h4', null, '◈ ', tr('Görev raporu — Yer kontrolünü koru')), defendReportBody(sum.defend, { tr })) : null,   // §26
     crash, safety);
   requestAnimationFrame(() => { try { drawMiniMap(canvas, sum, tr); } catch { /* harita hatası raporu bozmasın */ } });
   return body;

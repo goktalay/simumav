@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from .. import auth, bridge, config, db
+from ... import flightsim_gcs
 from ...flightsim_mission import mesafe_m
 from .common import User, kota, mission_api, sahip
 
@@ -46,9 +47,18 @@ def plan_dogrula(plan, kind, track, request, user):
         db.audit_bagimsiz('plan_reject', user['id'], auth.client_ip(request), msg)
         raise auth.hata(422, 'plan_rejected', msg)
     if kind not in bridge.KINDS:
-        red('kind corridor | free | spray | fpv_flags | fpv_gates | survey olmalı')
+        red('kind corridor | free | spray | fpv_flags | fpv_gates | survey | defend olmalı')
     if not isinstance(plan, dict):
         red('plan bir nesne olmalı')
+    if kind == 'defend':   # HEPGO §26 "Yer kontrolünü koru": rota yok; plan.defend parametreleri (tohum kayda sabitlenir → aynı görev aynı senaryo)
+        fazla = [k for k in plan if k not in ('kind', 'defend', 'params', 'shape', 'order', 'laps', 'route')]
+        if fazla:
+            red('defend planında bilinmeyen alan')
+        try:
+            d = flightsim_gcs.savunma_dogrula(plan.get('defend') if isinstance(plan.get('defend'), dict) else {}, None)
+        except flightsim_gcs.GcsHata as e:
+            red(str(e))
+        return {'kind': 'defend', 'defend': d}
     if len(json.dumps(plan)) > PLAN_BYTES:
         red('plan çok büyük (256 KB)')
     items = plan_ogeleri(plan)

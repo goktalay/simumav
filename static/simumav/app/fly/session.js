@@ -62,8 +62,8 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
 export const hepgoLaunchFor = (droneType, launch) => (needsLaunch(droneType) ? launchBody(launch) : null);
@@ -149,6 +149,7 @@ export function patchMpBox(stage, mp) {
   return addr;
 }
 
+let MSiteRef = null;   // HEPGO §26 arayüz modülü (loadSim sonrası; rapor kartı)
 // Özet rapor: HEPGO reportBody + SIMUMAV halka istatistiği bloğu → modal (Promise, kapanınca)
 export function showFlightReport(MReport, sum, gates, { pilot, drone, track, flightId = null, ctx = null } = {}) {
   return new Promise(resolve => {
@@ -158,6 +159,7 @@ export function showFlightReport(MReport, sum, gates, { pilot, drone, track, fli
     if (tgCard) body.append(tgCard);
     const pwCard = sum?.power ? powerReportCard({ h, t: tr, pw: sum.power }) : null;   // §10 oyun tarzı güç kartı (HEPGO .fs-rp-power bölümü CSS'te gizli; çift olmasın)
     if (pwCard) body.append(pwCard);
+    if (sum?.defend && MSiteRef) body.append(h('div', { class: 'sm-def-card' }, h('h3', null, '◈ ', tr('site.report')), MSiteRef.defendReportBody(sum.defend, { tr, keyed: true })));   // §12 (HEPGO §26; .fs-rp-defend gizli)
     try { body.append(MReport.reportBody(sum || {}, tr, { canWrite: false, be: null })); } catch { body.append(h('p', { class: 'muted' }, tr('Özet alınamadı.'))); }
     if (gates) {
       const clock = s => (s == null ? '—' : `${String(Math.floor(s / 60)).padStart(2, '0')}:${(s % 60).toFixed(1).padStart(4, '0')}`);
@@ -180,7 +182,8 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite } = await loadSim();
+  MSiteRef = MSite;
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
   const drone = picked.drone || start.drone || { name: 'Dron', type: 'multirotor' }, track = picked.track || start.track || {}, pilot = picked.pilot || start.pilot || null, mission = picked.mission || start.mission || null;
   const dType = drone.type || 'multirotor', type = simType(dType), modes = modesFor(type);
@@ -234,6 +237,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   document.addEventListener('fullscreenchange', onFullChange); onFullChange();
 
   let sim = null, milHud = null, osd = null, ops = null, hand = null, overlay = null, gateLayer = null, last = null, destroyed = false, socket = null, rec = null, sceneError = null;
+  let siteUi = null, defHud = null, defResult = null;   // HEPGO §26 radar/EO ekranları + "Yer kontrolünü koru" şeridi
   const camBtns = M3D.CAMERA_MODES.map(([k, label], i) => h('button', { class: 'btn sm', type: 'button', 'data-cam': k, title: tr('{label} (tuş {n})', { label, n: i + 1 }), onclick: () => sim?.setCamera(k) }, `${i + 1} `, label));
   const gimbalLbl = h('span', { class: 'small fs-gimbal', hidden: true }, '');
   const mhudBtn = h('button', { class: 'btn sm fs-mhud-btn', type: 'button', hidden: true, title: tr('Askeri HUD aç/kapa (H) · Shift+H renk'), onclick: () => { milHud?.toggle(); mhudBtn.classList.toggle('primary', !!milHud?.enabled); } }, 'HUD');
@@ -396,6 +400,7 @@ export async function openSession(view, start, picked, ctx = {}) {
       type, model: session.model, launch, origin: { lat: session.center.lat, lon: session.center.lon, alt: session.center.alt },
       camera: cam0, pilotFov: fpvPrefs.fov, fpvAnalog: fpvPrefs.analog, fpvNose: fpvPrefs.nose, onPilotFov: v => { fpvPrefs.setFov(v); drawFpv(); },
       camType: camType0, thermalPalette: camPrefs.palette, onGimbalZoom: () => camPip?.redraw(),
+      site: picked.site || start.site || start.session?.site || null,   // HEPGO §26 (dünya kurulurken saha çevresi açık alan)
       onCameraChange: onCamChange, onCollision: info => cmd('crash', { kind: info.kind, speed: info.speed, dz: info.dz }).catch(() => {}),
       onProgress: progMsg, g3dKey: async () => meta?.maps_key || '',
       onFallback: e => { const t = g3dMode ? tr('Google 3B verisi alınamadı: {e} → prosedürele düşüldü', { e }) : tr('Gerçek veri alınamadı, prosedürele düşüldü: {e}', { e }); addEvent(t, 'warning'); toast(t, 'err'); attrib.hidden = true; },
@@ -501,7 +506,31 @@ export async function openSession(view, start, picked, ctx = {}) {
     addEvent(m.phase === 'released' && m.speed_kmh != null ? `${tr(txt)} · ${f0(m.speed_kmh)} km/h` : tr(txt), m.phase === 'released' || m.phase === 'launch' ? 'warning' : 'info');
   };
   // ---------- HEPGO §24 hedefler: 3B katmanı (sim.setTargets), önleme olayı → halka parlaması + şerit + skor rozeti + ses ----------
-  const applyTargets = () => { const tgc = session.targets; if (tgc?.items?.length && sim && !sim.__tgSet) { sim.setTargets(tgc); sim.__tgSet = true; scoreBadge.update(session.targets_state || { count: tgc.items.length, hit_targets: 0, score: 0 }); } };
+  const applyTargets = () => { const tgc = session.targets; if (tgc?.items?.length && sim && !sim.__tgSet) { sim.setTargets(tgc); sim.__tgSet = true; scoreBadge.update(session.targets_state || { count: tgc.items.length, hit_targets: 0, score: 0 }); } applySite(); };
+  // ---------- HEPGO §26 yer kontrol sahası (hello'daki session.site / session.defend): 3B modeller, sol altta radar + EO ekranları, görev şeridi ----------
+  const applySite = () => {
+    if (!sim || !session.site || sim.__siteSet) return;
+    sim.__siteSet = true;
+    const D = session.defend, I = D?.state?.icept;
+    sim.setSite(session.site, { rack: D ? (D.config?.interceptors || 10) : 0, show: I ? Math.max(0, I.total - I.used) : (D?.config?.interceptors || 10) - 1 });
+    if (D) sim.setDefend(D);
+    siteUi = MSite.createSiteScreens(stage, { tr, keyed: true, getSim: () => sim, site: session.site, mount, onToggle: () => camPip?.layout() });
+    if (siteUi.buttons.length) bar.insertBefore(h('div', { class: 'pill-group fs-site-btns' }, siteUi.buttons), opsBtn.nextSibling);
+    siteUi.applyPrefs();
+    if (D) {
+      defHud = MSite.createDefendHud({ stage, tr, keyed: true, defend: D, getSim: () => sim, holder: siteUi.stripHolder, canWrite: true,
+        onNext: async () => {
+          if (!await confirmDialog(tr('site.next_btn'), tr('site.next_confirm'), { okLabel: tr('site.next_btn') })) return;
+          pwAlert.hidden = true; crash.hidden = true; sim?.clearCollision(); sim?.resetCamera();
+          await cmd('defend', { action: 'next' });
+        },
+        onEnd: result => { defResult = result; sfx.alarm?.(); MSite.showDefendReport(result, { tr, keyed: true, modal, plan: D.plan, onFinish: () => endFlight(), finishLabel: tr('Uçuşu Bitir') }); },
+        onReport: () => { if (defResult) MSite.showDefendReport(defResult, { tr, keyed: true, modal, plan: D.plan, onFinish: () => endFlight(), finishLabel: tr('Uçuşu Bitir') }); },
+        onEvent: (text, sev) => { addEvent(text, sev || 'info', 'GÖREV'); if (sev === 'error') sfx.caution?.(); } });
+      siteUi.layout();
+    }
+    camPip?.layout();
+  };
   const onTarget = m => {
     if (m.kind && m.kind !== 'intercept') return;
     sim?.flashTarget(m.i);
@@ -528,6 +557,7 @@ export async function openSession(view, start, picked, ctx = {}) {
         case 'event': return addEvent(m.text, m.severity, 'STATUS');
         case 'launch': return onLaunch(m);
         case 'target': return onTarget(m);   // HEPGO §24 önleme
+        case 'defend': if (m.state && session.defend) session.defend.state = m.state; return defHud?.event(m);   // HEPGO §26 görev olayları
         case 'state': if (m.center) session.center = { ...session.center, ...m.center }; return setState(m.state);
         case 'res': { const p = pending.get(m.rid); if (p) { clearTimeout(p.timer); pending.delete(m.rid); p.resolve(m); } return; }
         case 'end': setState('KAPANDI'); showEnded(m.reason); socket?.close(); return;
@@ -599,7 +629,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();
-    safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => camPip?.dispose()); safe(() => camCtl.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose());
+    safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => camPip?.dispose()); safe(() => camCtl.dispose()); safe(() => siteUi?.dispose()); safe(() => defHud?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose());
     safe(() => hand?.dispose()); safe(() => gateLayer?.dispose()); safe(() => overlay?.dispose()); safe(() => sim?.dispose());
     safe(restoreWs);
     if (window.__smSim === sim) delete window.__smSim; if (window.__fsSim === sim) delete window.__fsSim; delete window.__smHand; delete window.__smGates; if (window.__smSession === api) delete window.__smSession;

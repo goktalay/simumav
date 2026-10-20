@@ -214,7 +214,7 @@ export function pipObstacleInsets(stage, mount, side) {
     const hit = side === 'l' ? r.left - m.left < (out.left ?? 12) + col : m.right - r.right < (out.right ?? 12) + col;
     if (hit) out.bottom = Math.max(out.bottom || 0, Math.round(m.bottom - r.top + 8));
   }
-  if (side === 'l') for (const e of stage?.querySelectorAll?.('.fs-pn-yuzen, .fs-mp, .fs-speed-gauge, .sm-fly-stage .fs-net') || []) {
+  if (side === 'l') for (const e of stage?.querySelectorAll?.('.fs-pn-yuzen, .fs-mp, .fs-speed-gauge, .sm-fly-stage .fs-net, .fs-site-dock') || []) {   // §26 radar/EO doku
     if (!vis(e)) continue;
     const r = e.getBoundingClientRect();
     if (r.left - m.left < m.width / 3 && r.bottom > m.top + m.height * 0.55) out.bottom = Math.max(out.bottom || 0, Math.round(m.bottom - r.top + 10));

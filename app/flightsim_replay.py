@@ -17,6 +17,7 @@ Kare biçimi (`fields` ile aynı sırada dizi; `rc` ve `servo` 8 kanallı iç di
 - Alanlar ArduPilot sürümüne göre değişir (NKF1/XKF1, ThO/ThrOut, BAT.RemPct…); okuma toleranslıdır (flightlog.analyze kalıbı).
 """
 import asyncio
+import contextlib
 import gzip
 import json
 import math
@@ -566,11 +567,14 @@ class ReplaySession:
         # §24/§25: kaydın canlı oturumu hedefliyse aynı yörüngeler (tt = t0 + t) ve tip INTERCEPTOR ise gövde `body` ile çizilir
         self.hedefler = None
         self.sim_tip = None
+        self.site = None
+        self.savunma_kayit = None
+        self.site_heading = None
         try:
             with db.connect() as conn:
                 r = db.row(conn.execute('SELECT power FROM drone_sim_runs WHERE bin_log_id = ? AND power IS NOT NULL ORDER BY id DESC LIMIT 1', (int(log['id']),)))
                 c = db.row(conn.execute('SELECT camera FROM drone_sim_runs WHERE bin_log_id = ? AND camera IS NOT NULL ORDER BY id DESC LIMIT 1', (int(log['id']),)))
-                h = db.row(conn.execute('SELECT type, targets FROM drone_sim_runs WHERE bin_log_id = ? AND mode = ? ORDER BY id DESC LIMIT 1', (int(log['id']), 'sitl')))
+                h = db.row(conn.execute('SELECT type, targets, world FROM drone_sim_runs WHERE bin_log_id = ? AND mode = ? ORDER BY id DESC LIMIT 1', (int(log['id']), 'sitl')))
             if r and r.get('power'):
                 self.power = (json.loads(r['power']) or {}).get('settings') or None
             if c and c.get('camera') in flightsim.KAMERA_TURLERI:
@@ -578,7 +582,12 @@ class ReplaySession:
             if h:
                 self.sim_tip = h.get('type') if h.get('type') in flightsim.TIP_ADLARI else None
                 if h.get('targets'):
-                    self.hedefler = (json.loads(h['targets']) or {}).get('config') or None
+                    tj = json.loads(h['targets']) or {}
+                    self.hedefler = tj.get('config') or None
+                    self.site = tj.get('site') or None                       # §26 yer kontrol sahası
+                    self.savunma_kayit = tj.get('defend') or None            # §26 {config, result}: plan tohumdan yeniden üretilir
+                    with contextlib.suppress(Exception):
+                        self.site_heading = float((json.loads(h.get('world') or '{}') or {}).get('runway_heading') or 0)   # canlı oturumun pist yönü (yerleşim)
             if self.sim_tip == 'interceptor':
                 self.type = 'interceptor'
                 self.model = flightsim._model_eski(self.type, None)
@@ -593,7 +602,31 @@ class ReplaySession:
                 'client': dict(self.client) if self.client else None,
                 'gcs': {'connected': False, 'addr': None, 'since': None}, 'sitl': dict(self.sitl), 'replay': dict(self.replay),
                 'power': dict(self.power) if self.power else None, 'camera': self.camera or 'day',
-                'targets': self._fs.flightsim_targets.zenginlestir(self.hedefler) if self.hedefler else None, 'vertical': self.type in self._fs.DIKEY_TIPLER}
+                'targets': self._fs.flightsim_targets.zenginlestir(self.hedefler) if self.hedefler else None, 'vertical': self.type in self._fs.DIKEY_TIPLER,
+                **self._site_dict()}
+
+    def _site_dict(self):
+        """§26: kaydın canlı oturumundaki yer kontrol sahası + görev (plan tohumdan, sonuç önleme/sızma zamanlarıyla; görev saati = kayıt saati,
+        ilk SITL bölümü — yeniden konuşlandırma sonrası bölümler ayrı .bin'dedir)."""
+        from . import flightsim_gcs as GC
+        out = {'site': None, 'defend': None}
+        try:
+            heading = self.site_heading if self.site_heading is not None else (self.world or {}).get('runway_heading', 0)
+            sv = self.savunma_kayit
+            site = self.site or ({'station': True, 'radar': True, 'radar_km': GC.RADAR_KM_VARSAYILAN, 'eo': True, 'eo_km': GC.EO_KM_VARSAYILAN} if sv else None)
+            if site:
+                yer = GC.yerlesim(heading)
+                out['site'] = {**site, 'layout': yer}
+                if sv and sv.get('config'):
+                    r = sv.get('result') or {}
+                    ist = {'x': yer['station']['x'], 'y': yer['station']['y'], 'z': GC.ISTASYON_Z}
+                    out['defend'] = {'config': sv['config'], 'plan': GC.savunma_plani(sv['config']), 'station': ist, 'result': r, 'replay': True,
+                                     'state': {'base': 0, 'health': r.get('health'), 'killed': [[k['k'], k['t']] for k in r.get('kills') or []],
+                                               'leaked': [[k['k'], k['t']] for k in r.get('leaks') or []], 'icept': r.get('icept'), 'ended': r.get('ended'),
+                                               'waves': (sv['config'] or {}).get('waves'), 'total': r.get('total')}}
+        except Exception:   # noqa: BLE001 — eski/bozuk kayıt: saha gösterilmez
+            return {'site': None, 'defend': None}
+        return out
 
     def _yay(self, obj):
         txt = json.dumps(obj, ensure_ascii=False)

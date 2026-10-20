@@ -25,7 +25,7 @@ from pathlib import Path
 from . import config, db  # noqa: F401 — config önce: çekirdek yollarını yönlendirir
 from .. import config as core_config  # noqa: E402
 from .. import db as core_db  # noqa: E402
-from .. import drone_sitl, flightsim, flightsim_models, flightsim_power, flightsim_replay, flightsim_targets  # noqa: E402
+from .. import drone_sitl, flightsim, flightsim_gcs, flightsim_models, flightsim_power, flightsim_replay, flightsim_targets  # noqa: E402
 from . import power as guc  # noqa: E402
 
 # INTERCEPTOR (HEPGO §25): 4 pervaneli tailsitter — çekirdek `interceptor` (ArduPlane quadplane-copter_tailsitter; dikey kalkış, yatay uçuş, ~400 km/h).
@@ -44,7 +44,7 @@ MODEL_ESLEME = {'proc:quad250': 'builtin:quad', 'proc:interceptor': 'builtin:del
 # Eski kayıtların model_key'i (prosedürel/dahili) → aynı sınıfın gerçekçi GLB'si: kayıt değişmez, görsel (preview/orient) yükseltilir
 MODEL_YUKSELT = {'proc:quad250': 'glb:iris_fpv', 'proc:interceptor': 'glb:jet', 'builtin:quad': 'glb:iris', 'builtin:hexa': 'glb:typhoon_h480',
                  'builtin:heli': 'glb:heli', 'builtin:delta': 'glb:zephyr'}
-KINDS = ('corridor', 'free', 'spray', 'fpv_flags', 'fpv_gates', 'survey')
+KINDS = ('corridor', 'free', 'spray', 'fpv_flags', 'fpv_gates', 'survey', 'defend')   # defend: HEPGO §26 "Yer kontrolünü koru" (plan.defend; rota yok)
 WORLD_MODES = ('real', 'google3d', 'procedural')
 # tracks.world: HEPGO WORLD_DEFAULTS alt kümesi (flightsim3d.js ile aynı anahtarlar); rüzgâr/saat/hava ayrı sütunlardan gelir
 WORLD_KEYS = ('seed', 'size_m', 'tree_density', 'mountain_height', 'mountain_count', 'building_count', 'runway', 'runway_heading', 'water', 'fog', 'landing_circle_m')
@@ -209,6 +209,21 @@ def hedef_katalogu():
                     'type': g['type'], 'glb_url': GLB_URL.format(ad=g['file']), 'orient': json.loads(json.dumps(GLB_ORIENT)), 'has_prop': True,
                     'cruise_ms': round(c / 3.6, 2), 'max_ms': round(x / 3.6, 2), 'desc': g['desc'], 'source': 'builtin'})
     return out
+
+
+def saha_dogrula(site, defend, drone_type, mission=None):
+    """HEPGO §26 yer kontrol sahası + "Yer kontrolünü koru" (docs/simumav.md §12). `site` sihirbazdan; görev ya sihirbazdan (`defend`) ya da
+    kind='defend' görev kaydının planından (plan.defend; tohum kayıtta sabit → aynı görev aynı senaryo). Görev yalnız INTERCEPTOR ile (422).
+    Dönüş (site, defend) çekirdek biçiminde; hatalı → BridgeHata 422."""
+    if mission and mission.get('kind') == 'defend':
+        plan = db.j(mission.get('plan')) if isinstance(mission.get('plan'), str) else (mission.get('plan') or {})
+        defend = (plan or {}).get('defend') or {}
+    try:
+        site = flightsim_gcs.gcs_dogrula(site)
+        defend = flightsim_gcs.savunma_dogrula(defend, TIP_ESLEME.get(drone_type, drone_type) if defend is not None else None)
+    except flightsim_gcs.GcsHata as e:
+        raise BridgeHata(422, 'invalid', str(e))
+    return site, defend
 
 
 def hedefler_dogrula(t):
@@ -560,13 +575,14 @@ def speedup_dogrula(f):
     return int(f)
 
 
-async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None, power=None, speedup=None, camera=None, targets=None):
+async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None, power=None, speedup=None, camera=None, targets=None, site=None, defend=None):
     """Kotalar → çekirdek oturum → flights satırı → MP köprüsü. Dönüş: {flight_id, sim_id, mp, ws, power, speedup}. Hatalar BridgeHata.
     `power` (§10): sihirbaz gövdesi — hangar ayarının üstüne power.dogrula ile (sınırlar, yakıt yalnız uçakta); çekirdeğe TAM power sözlüğü gider.
     `speedup`: başlangıç simülasyon hızı (≤ MAX_SPEEDUP); SITL hazır olunca `speed` komutuyla yazılır.
     `camera` (HEPGO §22.3): day | thermal | night — çekirdek oturuma ve flights.snapshot'a."""
     launch = launch_dogrula(launch)
     hedefler = hedefler_dogrula(targets)   # HEPGO §24 hedefler (isteğe bağlı)
+    site, defend = saha_dogrula(site, defend, drone['type'], mission)   # HEPGO §26 yer kontrol sahası + görev (isteğe bağlı)
     try:
         camera = flightsim.kamera_dogrula(camera)
     except flightsim.SimHata as e:
@@ -616,7 +632,7 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         core_drone = {'id': drone['id'], 'code': drone['name'], 'name': drone['name'], 'model': drone['model_key'], 'protocol': 'sanal'}
         try:
             s = await flightsim.MANAGER.ac(ctip, center, world, owner, None, mdl, core_drone, {'bin': bool((record or {}).get('bin', True))}, power=core_power,
-                                          layout=drone_airframe(drone), camera=camera, targets=hedefler, targets_katalog=hedef_katalogu())
+                                          layout=drone_airframe(drone), camera=camera, targets=hedefler, targets_katalog=hedef_katalogu(), site=site, defend=defend)
         except flightsim.SimHata as e:
             kod = {'invalid': 422, 'limit': 429, 'sitl': 503}.get(e.kod, 400)
             raise BridgeHata(kod, e.kod, str(e))
@@ -629,7 +645,8 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
                           'wind': db.j(track.get('wind')) if isinstance(track.get('wind'), str) else (track.get('wind') or {}), 'time_of_day': track.get('time_of_day'), 'weather': track.get('weather')},
                 'mission': {'id': mission['id'], 'name': mission['name'], 'kind': mission['kind'], 'plan': db.j(mission.get('plan'))} if mission else None,
                 'launch': launch, 'record': {'bin': bool((record or {}).get('bin', True)), 'video': bool((record or {}).get('video'))},
-                'power': power_ayar, 'speedup': speedup, 'camera': camera, 'targets': hedefler}
+                'power': power_ayar, 'speedup': speedup, 'camera': camera, 'targets': hedefler,
+                'site': s.gcs, 'defend': dict(s.savunma.cfg) if getattr(s, 'savunma', None) is not None else None}   # §12 (HEPGO §26)
         with db.connect() as conn:
             fid = conn.execute('INSERT INTO flights (user_id, pilot_id, drone_id, track_id, mission_id, launch, started_at, mp_port, snapshot, created_at, updated_at) '
                                'VALUES (?,?,?,?,?,?,?,?,?,?,?)', (user['id'], pilot['id'], drone['id'], track['id'], mission['id'] if mission else None, launch['method'],
@@ -651,10 +668,11 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         a['task'] = loop.create_task(_izle(fid, s, mp))
         a['orphan'] = loop.create_task(_yetim_denetim(fid, a))
         a['guard'] = loop.create_task(_guc_bekci(s, speedup))
-    if mission and mission.get('plan'):
+    if mission and mission.get('plan') and mission.get('kind') != 'defend':
         loop.create_task(_gorev_yukle(s, mission))
     return {'flight_id': fid, 'sim_id': s.id, 'mp': {'host': host_adi(request), 'port': port, 'proto': 'tcp'} if mp else None,
-            'ws': f'/ws/fly/{s.id}', 'state': s.state, 'power': power_ayar, 'speedup': speedup}
+            'ws': f'/ws/fly/{s.id}', 'state': s.state, 'power': power_ayar, 'speedup': speedup,
+            'site': {**s.gcs, 'layout': s.gcs_yer} if s.gcs else None}   # HEPGO §26: sahne kurulurken saha çevresi açık alan (oturumun tamamı hello'da)
 
 
 GUC_BEKCI_S = 1.0       # bekçi aralığı (sn)
@@ -867,6 +885,16 @@ def _ucus_kapanis(fid, s):
     if g_ozet is not None:
         ozet = dict(ozet or {'v': 1})
         ozet['power'] = g_ozet
+    # HEPGO §26 yer kontrol sahası + "Yer kontrolünü koru" sonucu (önlenen/sızan, sağlık, interceptor, puan/rütbe) — Operasyon raporu ve replay
+    if getattr(s, 'gcs', None):
+        ozet = dict(ozet or {'v': 1})
+        ozet['site'] = dict(s.gcs)
+    if getattr(s, 'savunma', None) is not None:
+        try:
+            ozet = dict(ozet or {'v': 1})
+            ozet['defend'] = s.savunma.ozet()
+        except Exception:   # noqa: BLE001
+            pass
     # HEPGO §24 hedefler: önleme özeti (puan, rozetler) görev özeti boş olsa da
     if getattr(s, 'hedef_iz', None) is not None:
         try:

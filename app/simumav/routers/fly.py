@@ -17,7 +17,7 @@ from typing import Any, List, Optional, Union
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import auth, bridge, config, db
 from ... import drone_hub, flightsim, flightsim_hub, flightsim_models, flightsim_rec, sim_terrain
@@ -46,6 +46,27 @@ class TargetsIn(BaseModel):
     radius_m: Optional[float] = Field(None, ge=5, le=200)
 
 
+class SiteIn(BaseModel):
+    """HEPGO §26 yer kontrol sahası (katı tipler: dünyaya açık; menzil sınırları çekirdekte de denetlenir)."""
+    model_config = ConfigDict(extra='forbid', strict=True)
+    station: bool = False
+    radar: bool = False
+    radar_km: Optional[float] = Field(None, ge=1, le=50)
+    eo: bool = False
+    eo_km: Optional[float] = Field(None, ge=0.5, le=15)
+
+
+class DefendIn(BaseModel):
+    """HEPGO §26 "Yer kontrolünü koru" (yalnız INTERCEPTOR). Sınırlar flightsim_gcs.SAVUNMA_SINIR ile aynı."""
+    model_config = ConfigDict(extra='forbid', strict=True)
+    seed: Optional[int] = Field(None, ge=0, le=2147483647)
+    waves: Optional[int] = Field(None, ge=1, le=10)
+    interceptors: Optional[int] = Field(None, ge=1, le=20)
+    difficulty: Optional[str] = Field(None, max_length=8)
+    radius_m: Optional[float] = Field(None, ge=10, le=100)
+    prep_s: Optional[float] = Field(None, ge=15, le=300)
+
+
 class StartIn(BaseModel):
     drone_id: int
     pilot_id: int
@@ -57,6 +78,8 @@ class StartIn(BaseModel):
     speedup: Any = None                            # §10 (bool/dize zorlaması yok: bridge.speedup_dogrula) başlangıç simülasyon hızı 1 | 2 | 4 | 8 (≤ SIMUMAV_MAX_SPEEDUP)
     camera: Optional[str] = Field(None, max_length=8)   # HEPGO §22.3 kamera türü: day | thermal | night
     targets: Optional[TargetsIn] = None             # HEPGO §24 hedefler: {items ≤ 8, radius_m}; içerik bridge.hedefler_dogrula
+    site: Optional[SiteIn] = None                   # HEPGO §26 yer kontrol sahası (istasyon + EO/radar kulesi)
+    defend: Optional[DefendIn] = None               # HEPGO §26 "Yer kontrolünü koru" (sihirbazdan; görev kaydı kind='defend' ise plandan)
 
 
 class RecStartIn(BaseModel):
@@ -93,7 +116,9 @@ async def start(body: StartIn, request: Request, user=User):
     try:
         out = await bridge.ucus_baslat(user, pilot, drone, track, mission, launch, body.record.model_dump() if body.record else None, request,
                                        power=body.power, speedup=body.speedup, camera=body.camera,
-                                       targets=body.targets.model_dump(exclude_none=True) if body.targets else None)
+                                       targets=body.targets.model_dump(exclude_none=True) if body.targets else None,
+                                       site=body.site.model_dump(exclude_none=True) if body.site else None,
+                                       defend=body.defend.model_dump(exclude_none=True) if body.defend else None)
     except bridge.BridgeHata as e:
         if e.error == 'invalid' and str(e.message).startswith(('power', 'Yakıt')):
             db.audit_bagimsiz('power_reject', user['id'], auth.client_ip(request), e.message[:200])

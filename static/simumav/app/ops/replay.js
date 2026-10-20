@@ -27,9 +27,13 @@ export async function openReplay(root, ctx, id) {
   sc.append(stage);
   clear(root, sc);
   ctx.setBack(t('ops.title'), 'ops');
-  let flight, data;
+  let flight = null, data;
   try { [flight, data] = await Promise.all([api.get(`/api/ops/${id}`), api.get(`/api/ops/${id}/replay`)]); }
-  catch (e) { clear(stage, h('div', { class: 'center-stack' }, h('div', { class: 'err-box' }, e.message), btn(t('common.back'), () => ctx.go('ops'), 'ghost'))); return () => {}; }
+  catch (e) {
+    clear(stage, h('div', { class: 'center-stack' }, h('div', { class: 'err-box' }, e.message), btn(t('common.back'), () => ctx.go('ops'), 'ghost')));
+    try { flight = flight || await api.get(`/api/ops/${id}`); const dc = await defendCard(flight); if (dc) sc.append(dc); } catch { /* rapor yok */ }   // HEPGO §26: .bin yoksa da görev raporu
+    return () => {};
+  }
   const F = data.fields || [], frames = data.frames || [];
   const ix = Object.fromEntries(F.map((f, i) => [f, i]));
   const get = (fr, k) => fr?.[ix[k]];
@@ -96,6 +100,9 @@ export async function openReplay(root, ctx, id) {
     sc.append(box);
   }
 
+  // HEPGO §26 "Yer kontrolünü koru": görev sonu raporu — katlanır kart
+  try { const dc = await defendCard(flight); if (dc) sc.append(dc); } catch (e) { console.warn('görev raporu yok:', e.message); }
+
   const loop = now => {
     const dt = (now - last) / 1000; last = now;
     if (playing) { tcur += dt * speed; if (tcur > T1) tcur = T0; }
@@ -158,4 +165,15 @@ function canvasView(stage, data, frames, ix) {
     },
     dispose: () => ro.disconnect(),
   };
+}
+
+// HEPGO §26 "Yer kontrolünü koru": görev sonu raporu kartı (puan, rütbe, önlenen/kaçan, sağlık, önleme süreleri, zaman çizelgesi); başlığa tıklama katlar
+async function defendCard(flight) {
+  if (!flight?.summary?.defend) return null;
+  const MS = await import('/sim/flightsim_gcs_ui.js');
+  const bodyEl = MS.defendReportBody(flight.summary.defend, { tr: t, keyed: true });
+  const card = h('div', { class: 'replay-defend-card', style: 'position:absolute;top:80px;inset-inline-start:20px;width:min(460px,calc(100vw - 40px));max-height:calc(100% - 210px);overflow:auto;z-index:3;padding:10px 12px;border-radius:14px;background:linear-gradient(150deg,rgba(10,18,34,.9),rgba(30,14,20,.86));backdrop-filter:blur(10px);color:#e8eefb' },
+    h('h3', { style: 'cursor:pointer;user-select:none;margin:0 0 8px' }, '◈ ', t('site.report')), bodyEl);
+  card.querySelector('h3')?.addEventListener('click', () => { bodyEl.hidden = !bodyEl.hidden; });
+  return card;
 }

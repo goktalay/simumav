@@ -21,7 +21,7 @@ import os
 import re
 import time
 
-from . import db, drone_params, drone_sitl, flightsim_hub, flightsim_icept, flightsim_mission, flightsim_power, flightsim_targets
+from . import db, drone_params, drone_sitl, flightsim_gcs, flightsim_hub, flightsim_icept, flightsim_mission, flightsim_power, flightsim_targets
 
 SITL_ENABLED = os.environ.get('HEPGO_SITL', '1') != '0'
 UDP_BASE = int(os.environ.get('SIM_UDP_BASE', '14550'))
@@ -57,7 +57,7 @@ TIP_ADLARI = {'multirotor': 'Multikopter', 'hexarotor': 'Hexakopter', 'helikopte
               'interceptor': 'INTERCEPTOR'}
 PLANE_TIPLERI = ('sabit_kanat', 'vtol', 'interceptor')   # ArduPlane ikilisi (interceptor = quadplane tailsitter, §25)
 DIKEY_TIPLER = ('interceptor',)   # §25: dikey kalkış/iniş yapan uçak tipi (pist/rampa yok; GUIDED VTOL kalkışı, RTL → dikey iniş)
-KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}
+KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}; defend: §26 {action: 'next'}
 # §22.3 kamera türü (gimbal/FPV kamerası ve PiP): sunucu yalnız enum doğrular; oturumda/kayıt satırında saklanır, kayıttan oynatma aynı türü açar
 KAMERA_TURLERI = ('day', 'thermal', 'night')
 
@@ -606,8 +606,16 @@ class _UdpProto(asyncio.DatagramProtocol):
 # ======================================================================
 class SimSession:
     def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None,
-                 targets=None):
+                 targets=None, gcs=None, defend=None):
         self.id = int(sid)
+        # §26 yer kontrol merkezi + EO/radar kulesi (doğrulanmış flightsim_gcs.gcs_dogrula) ve "Yer kontrolünü koru" görevi (SavunmaGorevi; yalnız INTERCEPTOR).
+        # Görev istasyonu gerektirir: gcs yoksa istasyon + radar + EO varsayılanlarla açılır, istasyon kapalı seçildiyse açılır.
+        if defend and (not gcs or not gcs.get('station')):
+            gcs = {**(gcs or {'radar': True, 'radar_km': flightsim_gcs.RADAR_KM_VARSAYILAN, 'eo': True, 'eo_km': flightsim_gcs.EO_KM_VARSAYILAN}), 'station': True}
+        self.gcs = gcs or None
+        self.gcs_yer = flightsim_gcs.yerlesim((world or {}).get('runway_heading', 0)) if self.gcs else None
+        self.savunma = flightsim_gcs.SavunmaGorevi(defend, self.gcs_yer) if defend else None
+        self._savunma_crash = 0
         # §24 hedefler: doğrulanmış {items, radius_m} (flightsim_targets.dogrula) — SITL'siz kinematik yörüngeler; önleme izleyicisi; MP'ye ADSB_VEHICLE
         self.hedefler = targets or None
         self.hedef_iz = flightsim_targets.HedefIzleyici(self.hedefler) if self.hedefler else None
@@ -744,7 +752,15 @@ class SimSession:
                                 'thr_mul_sitl': self.thr_mul_sitl, 'stock_ms': round(flightsim_power.stok_hiz(self.type), 1)},
                 # §24 hedefler (model görsel bilgisiyle) + önleme durumu; §25 dikey kalkış tipi
                 'targets': flightsim_targets.zenginlestir(self.hedefler), 'targets_state': self.hedef_iz.ozet() if self.hedef_iz else None,
-                'vertical': self.type in DIKEY_TIPLER}
+                'vertical': self.type in DIKEY_TIPLER,
+                # §26 yer kontrol merkezi (yerleşimiyle) + "Yer kontrolünü koru" görevi (yapılandırma, deterministik plan, anlık durum)
+                'site': {**self.gcs, 'layout': self.gcs_yer} if self.gcs else None,   # ('gcs' anahtarı Mission Planner bağlantısıdır)
+                'defend': self.savunma_dict()}
+
+    def savunma_dict(self):
+        if self.savunma is None:
+            return None
+        return {'config': dict(self.savunma.cfg), 'plan': self.savunma.plan, 'station': dict(self.savunma.ist), 'state': self.savunma.durum()}
 
     # ---- §14: bekleyici kuyrukları (MavKomut) ----
     @contextlib.contextmanager
@@ -1428,11 +1444,18 @@ class SimSession:
                 self._hedef_adim(t)
             except Exception:   # noqa: BLE001 — hedef izleme telemetriyi bozmasın
                 pass
+        if self.savunma is not None and t is not None:
+            try:
+                self._savunma_adim(t)
+            except Exception:   # noqa: BLE001 — görev izleme telemetriyi bozmasın
+                pass
         try:
             biten = self.guc.adim(self.tele, t)
         except Exception:   # noqa: BLE001 — gösterge hatası telemetriyi bozmasın
             return
         for k in biten:
+            if k == 'elec' and self.savunma is not None:
+                self._savunma_dustu('battery')
             if k == 'fuel':
                 metin = f'YAKIT BİTTİ — {self.guc.fuel_l0:g} L tükendi ({self.guc.dist_m / 1000:.1f} km); motor gerçek uçakta dururdu, simülasyon sürüyor'
             else:
@@ -1453,6 +1476,66 @@ class SimSession:
             self._yay({'t': 'target', 'kind': 'intercept', **o, 'tt': round(float(tbm) / 1000.0, 3), 'ts': round(time.time(), 3),
                        'state': self.hedef_iz.ozet()})
             self._olay(f"ÖNLEME · {o['name']} · {o['dist_m']:g} m{ek}", 5)
+
+    # ---- §26 "Yer kontrolünü koru" ----
+    def _savunma_adim(self, tbm):
+        """Görev saati (taban + tbm/1000) ile tehditler: doğuş, dalga, önleme (yarıçap içinde ARM'lı interceptor), sızma (istasyon hasarı), bitiş.
+        Her olay WS `{t:'defend', kind, …, state}` + olay şeridi (Türkçe; ön yüz kendi dilinde yazar)."""
+        te = self.tele
+        if te.get('lat') is None:
+            return
+        c = self.center
+        x, y = flightsim_targets.yerel(float(c['lat']), float(c['lon']), te['lat'], te['lon'])
+        sv = self.savunma
+        for o in sv.adim(tbm, x, y, float(te.get('alt_rel') or 0), bool(te.get('armed'))):
+            k = o['kind']
+            ev = dict(o)
+            if 't' in ev:   # kayıt zamanı (görev saati) → `tt`; `t` WS çerçeve türüdür
+                ev['tt'] = ev.pop('t')
+            self._yay({**ev, 't': 'defend', 'ts': round(time.time(), 3), 'state': sv.durum()})
+            if k == 'wave':
+                self._olay(f"DALGA {o['wave']}/{o['waves']} — {o['count']} tehdit yer kontrol istasyonuna yöneldi", 4)
+            elif k == 'kill':
+                self._olay(f"TEHDİT ÖNLENDİ · {o['name']} · istasyona {o['station_m'] / 1000:.2f} km · {o['ttk_s']:g} sn", 5)
+            elif k == 'leak':
+                self._olay(f"İSTASYON VURULDU · {o['name']} · −{o['damage']:g} · sağlık %{o['health']:g}", 2)
+            elif k == 'end':
+                r = o['result']
+                self._olay(f"GÖREV {'BAŞARILI' if o['success'] else 'BAŞARISIZ'} · önlenen {len(r['kills'])}/{r['spawned']} · sağlık %{r['health']:g} · "
+                           f"{r['score']} puan · {r['rank_name']}", 5 if o['success'] else 2)
+        n = len(getattr(self.gorev, 'crashes', None) or [])
+        if n > self._savunma_crash:
+            self._savunma_crash = n
+            self._savunma_dustu('crash')
+
+    def _savunma_dustu(self, neden):
+        sv = self.savunma
+        if sv is None or not sv.dustu(neden):
+            return
+        kalan = sv.icept['total'] - sv.icept['used']
+        metin = (f"INTERCEPTOR {'DÜŞTÜ' if neden == 'crash' else 'BATARYASI BİTTİ'} — "
+                 + (f'sıradakini fırlatın ({kalan} kaldı)' if kalan > 0 else 'rafta interceptor kalmadı'))
+        self._olay(metin, 2)
+        self._yay({'t': 'defend', 'kind': 'down', 'reason': neden, 'remaining': kalan, 'ts': round(time.time(), 3), 'state': sv.durum()})
+
+    async def _savunma_konuslandir(self):
+        """Sıradaki interceptor: aynı SITL aracı yeniden başlatılır (pad'de doğar); ARM edilmiş olan harcanır; yeni araç için güç durumu taze
+        (batarya dolu, seçili simülasyon hızı korunur). Görev saati SavunmaGorevi.zaman tabanıyla sürer."""
+        sv = self.savunma
+        try:
+            harcandi = sv.konuslandir()
+        except flightsim_gcs.GcsHata as e:
+            raise SimHata('invalid', str(e))
+        sp = self.guc.speedup
+        self.guc = flightsim_power.GucDurumu(self.power)
+        self.guc.hiz_ayarla(sp)
+        self._savunma_crash = len(getattr(self.gorev, 'crashes', None) or [])
+        kalan = sv.icept['total'] - sv.icept['used']
+        self._olay(f"Sıradaki interceptor konuşlandırıldı: #{sv.icept['used']}/{sv.icept['total']} ({kalan} rafta)" if harcandi
+                   else 'Interceptor pad\'e yeniden konuşlandırıldı (uçmadığı için harcanmadı)', 6)
+        self._yay({'t': 'defend', 'kind': 'next', 'spent': harcandi, 'ts': round(time.time(), 3), 'state': sv.durum()})
+        await self.reset()
+        return harcandi
 
     def _adsb_gonder(self):
         """Hedefleri Mission Planner haritasına trafik olarak (ADSB_VEHICLE, kaynak sysid 1 / comp 156 MAV_COMP_ID_ADSB; yalnız GCS'ye — SITL'e gitmez)."""
@@ -1483,6 +1566,9 @@ class SimSession:
         elif self._heartbeat_alindi:
             self._gonder(self.mav.command_long_encode(self.sysid, self.comp, 400, 0, 0, 21196, 0, 0, 0, 0, 0))
         self._olay('ÇARPIŞMA — araç zorla disarm edildi', 2)
+        if self.savunma is not None:
+            self._savunma_crash = len(getattr(self.gorev, 'crashes', None) or [])
+            self._savunma_dustu('crash')
 
     # ---- komutlar ----
     async def komut(self, name, params, kaynak=None):
@@ -1514,7 +1600,17 @@ class SimSession:
                 raise SimHata('invalid', 'camera.type gerekir')
             self.camera = kamera_dogrula(p.get('type'))
             return {'ok': True, 'camera': self.camera}
+        if name == 'defend':   # §26: {action: 'next'} → sıradaki interceptor (aynı SITL aracı yeniden konuşlandırılır)
+            if self.savunma is None:
+                raise SimHata('invalid', 'Bu oturumda "Yer kontrolünü koru" görevi yok')
+            if p.get('action') != 'next':
+                raise SimHata('invalid', "defend.action 'next' olmalı")
+            harcandi = await self._savunma_konuslandir()
+            return {'ok': True, 'spent': harcandi, 'defend': self.savunma.durum()}
         if name == 'reset':
+            if self.savunma is not None:   # §26: görevde "Sıfırla" = yeniden konuşlandırma (uçmuş interceptor harcanır; kalmadıysa 400)
+                await self._savunma_konuslandir()
+                return {'ok': True}
             await self.reset()
             return {'ok': True}
         if self.state != 'HAZIR':
@@ -1988,7 +2084,7 @@ class SimManager:
         return len([s for s in self.sessions.values() if s.state != 'KAPANDI'])
 
     async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None, targets=None,
-                 targets_katalog=None):
+                 targets_katalog=None, site=None, defend=None):
         """Yeni oturum: doğrulama (400) → limit (409) → SITL ikilisi (503) → UDP port (503, oturum içinde HATA) → görev.
         `model`: flightsim_models.coz ile çözülmüş kütüphane nesnesi (router); yoksa `airframe` ile dahili model.
         `drone` (§14, isteğe bağlı): Dron Envanteri kaydı {id, code, name, model} — harekât panelinde telemetri bu adla akar.
@@ -2013,6 +2109,11 @@ class SimManager:
         try:
             targets = flightsim_targets.dogrula(targets, targets_katalog)   # §24 hedefler (≤ 8; irtifa, çap, hız ≤ model azami; 400) — SIMUMAV kendi kataloğunu verir
         except flightsim_targets.HedefHata as e:
+            raise SimHata('invalid', str(e))
+        try:   # §26 yer kontrol merkezi + "Yer kontrolünü koru" (yalnız INTERCEPTOR)
+            site = flightsim_gcs.gcs_dogrula(site)
+            defend = flightsim_gcs.savunma_dogrula(defend, tip)
+        except flightsim_gcs.GcsHata as e:
             raise SimHata('invalid', str(e))
         if not center or center.get('lat') is None or center.get('lon') is None:
             raise SimHata('invalid', 'Merkez bulunamadı')
@@ -2047,7 +2148,8 @@ class SimManager:
         sid = self._next
         self._next += 1
         s = SimSession(sid, tip, {'id': center.get('id'), 'name': center.get('name'), 'lat': float(center['lat']), 'lon': float(center['lon']),
-                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout, camera, targets)
+                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout, camera, targets,
+                       site, defend)
         s.alt_not = alt_not
         self.sessions[sid] = s
         s.task = asyncio.get_running_loop().create_task(s.run())

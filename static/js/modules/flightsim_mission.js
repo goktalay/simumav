@@ -229,5 +229,6 @@ export function createMissionLayer(T, ctx) {
     get data() { return data ? { ...data, points: data.points.slice() } : null; },
     get points() { return data ? data.points.slice() : []; },
     get objectCount() { return g.children.length; },   // teşhis (e2e)
+    get group() { return g; },   // §26 radar/EO geçişlerinde geçici gizleme
   };
 }

@@ -201,7 +201,15 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = 
     if (lay.n++ % 30 === 0) {
       const bar = stage.querySelector('.fs-bar'), mp = stage.querySelector('.fs-mp'), nav = stage.querySelector('.fs-nav');
       lay.bar = bar ? bar.offsetHeight : 54;
-      lay.mp = mp && !mp.hidden && getComputedStyle(mp).display !== 'none' ? mp.offsetHeight + 10 : 0;
+      // sol alttaki kutular (MP / kayıt bilgisi kutusu, §26 radar/EO doku): en yükseğinin üstü — sol alt satırlar onların üstüne çıkar
+      lay.mp = 0;
+      const sr = stage.getBoundingClientRect();
+      for (const e of stage.querySelectorAll('.fs-mp, .fs-site-dock')) {
+        if (e.hidden || !e.offsetParent || getComputedStyle(e).display === 'none') continue;
+        const r = e.getBoundingClientRect();
+        if (r.width >= 1 && r.left - sr.left < sr.width / 3) lay.mp = Math.max(lay.mp, Math.round(sr.bottom - lay.bar - r.top + 10));
+      }
+      void mp;
       lay.nav = nav ? nav.offsetTop + nav.offsetHeight : 0;
     }
     const t0 = performance.now();

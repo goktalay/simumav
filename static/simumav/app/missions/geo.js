@@ -59,6 +59,7 @@ export function buildRoute(home, pts, { alt = 50, takeoff = true, land = true, a
 export function drawPreview(canvas, plan, track) {
   const ctx = canvas.getContext('2d'), W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
+  if (plan?.kind === 'defend' || plan?.defend) { drawDefendPreview(ctx, W, H, plan.defend || {}); return; }   // HEPGO §26 "Yer kontrolünü koru" (rota yok)
   const pts = (plan?.route?.points || []).filter(p => Number.isFinite(p.lat));
   const poly = plan?.shape || [];
   const all = [...pts, ...poly, ...(plan?.gates || [])];
@@ -73,4 +74,27 @@ export function drawPreview(canvas, plan, track) {
   if (pts.length) { ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(X(p), Y(p)) : ctx.moveTo(X(p), Y(p)))); ctx.strokeStyle = '#38bdf8'; ctx.shadowColor = '#38bdf8'; ctx.shadowBlur = 8; ctx.stroke(); ctx.shadowBlur = 0; }
   for (const p of pts) { ctx.beginPath(); ctx.arc(X(p), Y(p), p.cmd === 22 ? 5 : p.cmd === 21 ? 5 : 3, 0, Math.PI * 2); ctx.fillStyle = p.cmd === 22 ? '#34d399' : p.cmd === 21 ? '#f87171' : '#fff'; ctx.fill(); }
   for (const g of plan?.gates || []) { ctx.beginPath(); ctx.arc(X(g), Y(g), 6, 0, Math.PI * 2); ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2.5; ctx.stroke(); }
+}
+
+// HEPGO §26: savunma görevi kartı — istasyon + radar halkaları + dört yönden dalan tehdit okları (tohumdan deterministik açılar), dalga/zorluk etiketi
+export function drawDefendPreview(ctx, W, H, d) {
+  const cx = W / 2, cy = H / 2 + 6, R = Math.min(W, H) * 0.42;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(61,255,138,.55)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 5]);
+  for (const f of [0.45, 0.75, 1]) { ctx.beginPath(); ctx.arc(cx, cy, R * f, 0, Math.PI * 2); ctx.stroke(); }
+  ctx.setLineDash([]);
+  const g = ctx.createConicGradient ? ctx.createConicGradient(-Math.PI / 2, cx, cy) : null;
+  if (g) { g.addColorStop(0, 'rgba(61,255,138,.35)'); g.addColorStop(0.08, 'rgba(61,255,138,0)'); g.addColorStop(1, 'rgba(61,255,138,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill(); }
+  let a = (Number(d.seed) || 7) % 360;
+  for (let k = 0; k < Math.min(8, 2 + (Number(d.waves) || 5)); k++) {
+    a = (a * 137.508 + 61) % 360;
+    const r = a * Math.PI / 180, x0 = cx + Math.sin(r) * R * 0.95, y0 = cy - Math.cos(r) * R * 0.95, x1 = cx + Math.sin(r) * R * 0.22, y1 = cy - Math.cos(r) * R * 0.22;
+    ctx.strokeStyle = '#ff5a46'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    ctx.fillStyle = '#ff5a46'; ctx.beginPath(); ctx.arc(x0, y0, 3.5, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.fillStyle = '#94a3b8'; ctx.fillRect(cx - 9, cy - 6, 18, 12);
+  ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx + 14, cy + 6); ctx.lineTo(cx + 14, cy - 16); ctx.stroke();
+  ctx.fillStyle = '#e8eefb'; ctx.font = '700 13px system-ui,sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText(`#${d.seed ?? '—'}`, 10, 18);
+  ctx.restore();
 }

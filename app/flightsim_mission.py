@@ -424,6 +424,9 @@ class GorevIzleyici:
             'power': s.guc.ozet() if getattr(s, 'guc', None) is not None else None,
             # §24 hedefler: önleme sayısı / ilk önleme süresi / en yakın geçiş + puan ve rozetler (kayıttan oynatmada istemci yeniden hesaplar)
             'targets': s.hedef_iz.ozet() if getattr(s, 'hedef_iz', None) is not None else None,
+            # §26 yer kontrol sahası + "Yer kontrolünü koru" sonucu (önlenen/sızan, sağlık, interceptor, önleme süreleri, isabet, puan/rütbe)
+            'site': dict(s.gcs) if getattr(s, 'gcs', None) else None,
+            'defend': s.savunma.ozet() if getattr(s, 'savunma', None) is not None else None,
         }
         out['safety_note'] = guvenlik_notu(out)
         return out

@@ -36,6 +36,8 @@ import { createTimeline } from './flightsim_interp.js';   // telemetri zaman çi
 import { createMissionLayer } from './flightsim_mission.js';   // §18: görev çizimi (tüp bacaklar, WP etiketleri, ikonlar) + iniş dairesi H
 import { targetState, targetsRelative, drawRadar, drawLabel, RADIUS_DEFAULT as TARGET_RADIUS } from './flightsim_targets.js';   // §24 hedefler (kinematik, radar, etiket)
 import { boxCorners, selectTarget, lockedIndex } from './flightsim_tgthud.js';   // §24.5 HUD hedef sembolojisi (prizma köşeleri, kilit)
+import { EO_FOV_MAX, EO_FOV_MIN, STATION_Z, SWEEP_S, TOWER_EO_Z, TOWER_RADAR_Z, autoRadarRange, bearingFrom, eoLook, eoStatus, eoZoom, fallState, radarCovers, siteLayout, sweepAngle, sweepGlow, threatGeometry, threatPhase, threatState } from './flightsim_gcs.js';   // §26 yer kontrol sahası + görev (saf)
+import { EO_POST, buildRackPad, buildRadarPrism, buildRangeRings, buildStation, buildSweep, buildTower } from './flightsim_gcs3d.js';   // §26 prosedürel modeller + radar katmanı
 import { attitudeQuat } from './flightsim_interp.js';
 import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
 
@@ -369,8 +371,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     }
   };
   // Gölgelendirici tekdüzeleri: kaynak kip (balıkgözü yalnız FPV), tür, palet, gece kazancı, düşük çözünürlük (termal), hedef boyutu
-  const setCamUniforms = (mat, mode, w, h, small) => {
-    const u = mat.uniforms, type = camFxApplies(mode) ? camFx.type : 'day', pilot = mode === 'pilot';
+  const setCamUniforms = (mat, mode, w, h, small, typeOverride = null) => {   // typeOverride: §26 EO ekranının kendi türü
+    const u = mat.uniforms, type = typeOverride || (camFxApplies(mode) ? camFx.type : 'day'), pilot = mode === 'pilot';
     u.k.value = pilot ? POST_K : 0; u.scale.value = pilot ? 1 / (1 + POST_K * 0.5) : 1;
     u.vignette.value = pilot ? 0.28 : 0; u.analog.value = pilot && fpv.analog ? 1 : 0;
     u.camType.value = camTypeIndex(type); u.palette.value = paletteIndex(camFx.palette);
@@ -497,6 +499,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       const z = height(x, y);
       if (z < waterZ + 2 || (!terrain.real && z > relH * 0.72) || (W.runway !== false && inRunway(x, y, hdg, 60)) || inWater(x, y, z)) continue;
       if (buildingsAABB.some(b => x > b.x1 - 3 && x < b.x2 + 3 && y > b.y1 - 3 && y < b.y2 + 3)) continue;
+      if (nearSite(x, y, 30)) continue;   // §26 yer kontrol sahası açık alan
       const hh = 6 + rand() * 9, rr = 1.8 + rand() * 2.2;
       p.set(x, y, z - 0.3); sc.set(1, 1, hh * 0.35 + 0.3);
       trunk.setMatrixAt(placed, m4.compose(p, q, sc));
@@ -1381,10 +1384,13 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // ---------- §24 hedefler: dairesel yörüngede sürekli uçan kinematik hedefler (flightsim_targets.js; sunucu eşleniği app/flightsim_targets.py) ----------
   // Zaman: canlıda zaman çizgisinin oynatma başı (kaynak = SITL time_boot_ms → t = play/1000; dron ile aynı gecikme), kayıtta karenin `tt`'si
   // (t0 + kare t). Modeller dron gibi ×MODEL_SCALE; yatış (koordineli dönüş) + yön; pervaneler döner; ad/uzaklık etiketi (ekran boyutlu sprite),
-  // yörünge çizgisi (soluk), önlemede genişleyen halka; radar (2B canvas, sağ üst köşe altı; setRadarVisible).
+  // yörünge çizgisi (soluk), önlemede genişleyen halka; radar (2B canvas, sol üst; setRadarVisible — §26 radar ekranı açıkken gizli).
   // §24.5 HUD sembolojisi (flightsim_tgthud.js): targetsHud() son render edilen kameranın pozu + hedeflerin yönlendirilmiş sınır kutusu köşeleri (dünya);
   // tg.sel kilit durumu (oto = en yakın; Tab / Shift+Tab döngü). HUD/OSD son 3 sn'de sembolojiyi çizdiyse (tg.hudAt) araç kameralarında sahne etiketleri gizlenir.
-  const tg = { cfg: null, items: [], group: new T.Group(), seq: 0, rel: [], lastRel: 0, radar: null, radarOn: !preview, flash: new Map(), shown: false, sel: { i: null, auto: true }, hudAt: -Infinity };
+  // §26 "Yer kontrolünü koru" tehditleri AYNI listede (`it.dyn`): plan (sunucu, tohumdan) + durum (önleme/sızma zamanları, görev saati tabanı) →
+  // stateOf: doğmadı / bitti → null (çizilmez, HUD/radar/kilit listesine girmez); seyir + dalış (flightsim_gcs.threatState); önlenince düşüş (fallState).
+  // Modeller yalnız etkinken TEMBEL kurulur (≤ ~10 eşzamanlı; plan 60 tehdide kadar). i = yörünge hedefi sayısı + k (etiket sırası kesintisiz).
+  const tg = { cfg: null, items: [], group: new T.Group(), seq: 0, rel: [], lastRel: 0, radar: null, radarOn: !preview, radarHide: false, flash: new Map(), shown: false, sel: { i: null, auto: true }, hudAt: -Infinity, def: null };
   scene.add(tg.group);
   heatRoots.push(tg.group);   // termal: hedefler sıcak görünsün (§22.3)
   const targetTime = () => {
@@ -1413,43 +1419,86 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     ln.computeLineDistances();
     return ln;
   };
+  // Tek hedef girdisinin 3B parçaları: model (×MODEL_SCALE) + ekran boyutlu etiket + önleme halkası + HUD prizma köşeleri
+  async function buildEntry(it) {
+    const M = MAT();
+    let built;
+    try { built = await buildTargetModel(it, M); } catch { built = buildDelta(M); }
+    built.grp.traverse(o => { if (o.isMesh) o.castShadow = false; });
+    const root = new T.Group(), body = new T.Group();
+    built.grp.scale.setScalar(MODEL_SCALE); body.add(built.grp); root.add(body);
+    const bb = new T.Box3().setFromObject(built.grp);
+    const cv = document.createElement('canvas'); cv.width = 256; cv.height = 84;
+    const tex = new T.CanvasTexture(cv); tex.colorSpace = T.SRGBColorSpace;
+    const spr = new T.Sprite(new T.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false, toneMapped: false, fog: false }));
+    spr.center.set(0.5, 0); spr.scale.set(0.2, 0.066, 1); spr.renderOrder = 20;   // ekran boyutlu (sizeAttenuation kapalı): uzakta da okunur
+    spr.position.set(0, 0, Math.max(bb.max.z, 0.4) + 1.5);
+    root.add(spr);
+    const flash = new T.Sprite(new T.SpriteMaterial({ map: ringTexture(), color: 0xffd23f, transparent: true, opacity: 0, depthWrite: false, fog: false, toneMapped: false, blending: T.AdditiveBlending }));
+    flash.visible = false; flash.renderOrder = 19; root.add(flash);   // önleme: hedefte genişleyen parlak halka (billboard)
+    const lc = boxCorners(bb.min.toArray(), bb.max.toArray()).map(c => new T.Vector3(...c));   // gövde çerçevesinde sınır kutusu köşeleri (×MODEL_SCALE; HUD prizması)
+    return { root, body, props: built.props || [], spr, cv, tex, flash, lc, size: Math.max(0.5, bb.getSize(new T.Vector3()).length()), key: '' };
+  }
+  const dropEntry = x => { if (x.root) { disposeGroup(x.root); tg.group.remove(x.root); x.root = null; } if (x.ring) { disposeGroup(x.ring); tg.group.remove(x.ring); x.ring.geometry?.dispose(); x.ring = null; } };
+  const orbitCount = () => tg.items.filter(x => !x.it.dyn).length;
+  const reindexThreats = () => { const n = orbitCount(); for (const x of tg.items) if (x.it.dyn) x.it.i = n + x.it.k; };
+  const ensureCfg = () => { if (!tg.cfg && tg.def) tg.cfg = { items: [], radius_m: tg.def.R }; if (tg.cfg && !tg.cfg.items.length && !tg.def) tg.cfg = null; };
   async function setTargets(cfg) {
     const seq = ++tg.seq;
-    disposeGroup(tg.group); tg.items = []; tg.rel = []; tg.flash.clear(); tg.sel = { i: null, auto: true };
+    tg.items.filter(x => !x.it.dyn).forEach(dropEntry);
+    tg.items = tg.items.filter(x => x.it.dyn); tg.rel = []; tg.flash.clear(); tg.sel = { i: null, auto: true };
     tg.cfg = cfg && Array.isArray(cfg.items) && cfg.items.length ? { ...cfg, radius_m: num(cfg.radius_m, TARGET_RADIUS) } : null;
-    if (tg.radar) tg.radar.style.display = tg.radarOn && tg.cfg ? '' : 'none';
-    if (!tg.cfg) return;
-    for (const it of tg.cfg.items) {
-      const M = MAT();
-      let built;
-      try { built = await buildTargetModel(it, M); } catch { built = buildDelta(M); }
-      if (seq !== tg.seq || disposed) { disposeGroup(built.grp); return; }
-      built.grp.traverse(o => { if (o.isMesh) o.castShadow = false; });
-      const root = new T.Group(), body = new T.Group();
-      built.grp.scale.setScalar(MODEL_SCALE); body.add(built.grp); root.add(body);
-      const bb = new T.Box3().setFromObject(built.grp);
-      const cv = document.createElement('canvas'); cv.width = 256; cv.height = 84;
-      const tex = new T.CanvasTexture(cv); tex.colorSpace = T.SRGBColorSpace;
-      const spr = new T.Sprite(new T.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false, toneMapped: false, fog: false }));
-      spr.center.set(0.5, 0); spr.scale.set(0.2, 0.066, 1); spr.renderOrder = 20;   // ekran boyutlu (sizeAttenuation kapalı): uzakta da okunur
-      spr.position.set(0, 0, Math.max(bb.max.z, 0.4) + 1.5);
-      root.add(spr);
-      const flash = new T.Sprite(new T.SpriteMaterial({ map: ringTexture(), color: 0xffd23f, transparent: true, opacity: 0, depthWrite: false, fog: false, toneMapped: false, blending: T.AdditiveBlending }));
-      flash.visible = false; flash.renderOrder = 19; root.add(flash);   // önleme: hedefte genişleyen parlak halka (billboard)
+    ensureCfg();
+    syncSmallRadar();
+    if (!tg.cfg || !cfg?.items?.length) { reindexThreats(); return; }
+    const orbit = [];
+    for (const it of cfg.items) {
+      const e = await buildEntry(it);
+      if (seq !== tg.seq || disposed) { disposeGroup(e.root); orbit.forEach(dropEntry); return; }
       const ring = orbitLine(it);
-      tg.group.add(root, ring);
-      const lc = boxCorners(bb.min.toArray(), bb.max.toArray()).map(c => new T.Vector3(...c));   // gövde çerçevesinde sınır kutusu köşeleri (×MODEL_SCALE; HUD prizması)
-      tg.items.push({ it, root, body, props: built.props || [], spr, cv, tex, flash, ring, key: '', lc });
+      tg.group.add(e.root, ring);
+      orbit.push({ it, ...e, ring, R: tg.cfg.radius_m });
     }
-    if (!tg.radar && !preview) {
-      tg.radar = document.createElement('canvas');
-      tg.radar.className = 'fs-radar';
-      tg.radar.width = 280; tg.radar.height = 280;
-      tg.radar.style.cssText = 'position:absolute;left:12px;top:118px;width:150px;height:150px;pointer-events:none;z-index:4;border-radius:50%';   // sol üst: sağda harekât paneli / askeri HUD göstergeleri
-      mountEl.appendChild(tg.radar);
-    }
-    if (tg.radar) tg.radar.style.display = tg.radarOn ? '' : 'none';
+    tg.items = [...orbit, ...tg.items.filter(x => x.it.dyn)];
+    reindexThreats();
+    ensureSmallRadar();
   }
+  // §26 görev tehditleri: def = {config, plan, station, state} (sunucu oturumu ya da kayıt) — mevcut tehdit girdileri bırakılır, yenileri tembel kurulur
+  function setDefend(def) {
+    tg.items.filter(x => x.it.dyn).forEach(dropEntry);
+    tg.items = tg.items.filter(x => !x.it.dyn);
+    tg.def = null;
+    if (def && Array.isArray(def.plan) && def.plan.length && def.station) {
+      const st = { x: num(def.station.x, 0), y: num(def.station.y, 0), z: num(def.station.z, STATION_Z) };
+      tg.def = { plan: def.plan, st, G: def.plan.map(th => threatGeometry(th, st)), killed: new Map(), leaked: new Map(), base: 0, R: num(def.config?.radius_m, 30) };
+      const n = orbitCount();
+      for (const th of def.plan) {
+        const mdl = THREAT_MODEL_NAME(th);
+        tg.items.push({ it: { dyn: true, k: th.k, i: n + th.k, name: mdl, model: th.model, glb_url: th.glb_url, orient: th.orient, has_prop: th.has_prop !== false, th }, root: null, building: false, R: tg.def.R, key: '' });
+      }
+      setDefendState(def.state);
+    }
+    ensureCfg();
+    syncSmallRadar();
+    if (tg.def) ensureSmallRadar();
+  }
+  const THREAT_MODEL_NAME = th => th.model_name || String(th.name || '').split(' · ')[0] || th.model;
+  function setDefendState(s) {
+    if (!tg.def || !s) return;
+    tg.def.base = num(s.base, tg.def.base);
+    for (const [k, t] of s.killed || []) tg.def.killed.set(Number(k), Number(t));
+    for (const [k, t] of s.leaked || []) tg.def.leaked.set(Number(k), Number(t));
+  }
+  // Girdinin t (hedef saati) anındaki durumu; çizilmeyecekse null. Tehditlerde görev saati = t + taban.
+  const stateOf = (x, t) => {
+    if (!x.it.dyn) return targetState(x.it, t);
+    const d = tg.def; if (!d) return null;
+    const k = x.it.k, th = x.it.th, tm = t + d.base, kt = d.killed.get(k), lt = d.leaked.get(k);
+    const ph = threatPhase(th, tm, kt, lt, d.G[k]);
+    if (ph === 'pending' || ph === 'gone') return null;
+    if (ph === 'killed') { const s0 = threatState(th, kt, d.st, d.G[k]); return s0 ? fallState(s0, tm - kt, terrainHeight(s0.x, s0.y)) : null; }
+    return threatState(th, tm, d.st, d.G[k]);
+  };
   let ringTex = null;
   const ringTexture = () => {
     if (ringTex) return ringTex;
@@ -1461,6 +1510,25 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     return ringTex;
   };
   function flashTarget(i) { tg.flash.set(Number(i), performance.now()); }
+  const flashThreat = k => { const x = tg.items.find(e => e.it.dyn && e.it.k === Number(k)); if (x) flashTarget(x.it.i); };
+  // Küçük hedef radarı (§24; sol üst 150 px): hedef varken ve §26 radar ekranı açık değilken
+  const syncSmallRadar = () => { if (tg.radar) tg.radar.style.display = tg.radarOn && !tg.radarHide && tg.cfg ? '' : 'none'; };
+  const ensureSmallRadar = () => {
+    if (!tg.radar && !preview) {
+      tg.radar = document.createElement('canvas');
+      tg.radar.className = 'fs-radar';
+      tg.radar.width = 280; tg.radar.height = 280;
+      tg.radar.style.cssText = 'position:absolute;left:12px;top:118px;width:150px;height:150px;pointer-events:none;z-index:4;border-radius:50%';   // sol üst: sağda harekât paneli / askeri HUD göstergeleri
+      mountEl.appendChild(tg.radar);
+    }
+    syncSmallRadar();
+  };
+  // Etkin (çizilen) girdiler + durumları: HUD / radar / kilit listesi bunları kullanır
+  const activeEntries = t => {
+    const out = [];
+    for (const x of tg.items) { const st = stateOf(x, t); if (st && x.root) out.push({ x, st }); }
+    return out;
+  };
   // §24.5 HUD sembolojisi verisi (flightsim_tgthud.symbology girişi). Kamera: SON render edilen ana kamera (matrixWorld); FPV ('pilot') kipinde balıkgözü
   // katsayıları (CAM_FRAG k/scale) da verilir. Hedef yoksa / zaman yoksa null. Her çağrı tg.hudAt'i günceller (sahne etiketleri gizlenir).
   const hudV = new T.Vector3();
@@ -1473,23 +1541,27 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     const e = camera.matrixWorld.elements, pilot = camMode === 'pilot';
     const view = { pos: [e[12], e[13], e[14]], right: [e[0], e[1], e[2]], up: [e[4], e[5], e[6]], fwd: [-e[8], -e[9], -e[10]], tanV: Math.tan(camera.fov * DEG / 2), aspect: camera.aspect,
       k: pilot ? POST_K : 0, scale: pilot ? 1 / (1 + POST_K * 0.5) : 1 };
-    const P = cur.pos, R = tg.cfg.radius_m, now = performance.now();
-    const items = tg.items.map(x => {
-      const st = targetState(x.it, t), c = [x.root.position.x, x.root.position.y, x.root.position.z];
+    const P = cur.pos, now = performance.now();
+    const items = activeEntries(t).filter(({ st }) => st.phase !== 'fall').map(({ x, st }) => {
+      const c = [x.root.position.x, x.root.position.y, x.root.position.z];
       x.body.updateWorldMatrix(true, false);
       const corners = x.lc.map(v => hudV.copy(v).applyMatrix4(x.body.matrixWorld).toArray());
       const dist = Math.hypot(c[0] - P.x, c[1] - P.y, c[2] - P.z), f0 = tg.flash.get(x.it.i);
-      return { i: x.it.i, name: x.it.name, center: c, corners, vel: [st.vx, st.vy, 0], dist, dz: c[2] - P.z, inside: dist <= R, flash: f0 != null && now - f0 < 2000 };
+      return { i: x.it.i, name: x.it.name, center: c, corners, vel: [st.vx || 0, st.vy || 0, st.vz || 0], dist, dz: c[2] - P.z, inside: dist <= x.R, flash: f0 != null && now - f0 < 2000 };
     });
-    return { view, radius: R, sel: { ...tg.sel }, player: { pos: [P.x, P.y, P.z], vel: [cur.vel.x, cur.vel.y, cur.vel.z] }, items };
+    if (!items.length) return null;
+    return { view, radius: tg.cfg.radius_m, sel: { ...tg.sel }, player: { pos: [P.x, P.y, P.z], vel: [cur.vel.x, cur.vel.y, cur.vel.z] }, items };
   }
-  // Tab / Shift+Tab: kilitli hedef döngüsü (oto → en yakının bir sonrakine); 0 → doğrula
+  // Tab / Shift+Tab: kilitli hedef döngüsü (oto → en yakının bir sonrakine); 0 → doğrula. Yalnız etkin hedefler.
+  const lockList = () => { const t = targetTime(); if (t == null) return []; const P = cur.pos; return activeEntries(t).filter(({ st }) => st.phase !== 'fall').map(({ x }) => ({ i: x.it.i, dist: x.root.position.distanceTo(P) })); };
   function cycleTarget(step = 1) {
     if (!tg.cfg) return null;
-    const P = cur.pos, list = tg.items.map(x => ({ i: x.it.i, dist: x.root.position.distanceTo(P) }));
+    const list = lockList();
     tg.sel = selectTarget(list, tg.sel, step);
     return lockedIndex(list, tg.sel);
   }
+  // §26 radar ekranına tıklama: belirli hedefe kilit (null → oto)
+  function lockTarget(i) { tg.sel = i == null ? { i: null, auto: true } : { i: Number(i), auto: false }; return tg.sel.i; }
   const tgQ = new T.Quaternion();
   function updateTargets(now, rawDt) {
     if (!tg.items.length) return;
@@ -1497,37 +1569,52 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     const has = t != null;
     tg.group.visible = has;
     if (!has) return;
-    const R = tg.cfg.radius_m;
     const rate = 70;   // rad/s pervane (sabit seyir devri)
     const hudLabelsOff = now - tg.hudAt < 3000;   // yavaş karede (yazılım WebGL) de kararlı
+    const rel = [];
+    const hdg = num(tele.last?.heading, 0);
     for (const x of tg.items) {
-      const st = targetState(x.it, t);
+      const st = stateOf(x, t);
+      if (!st) { if (x.root) x.root.visible = false; continue; }
+      if (!x.root) {   // §26 tehdit: ilk görünüşte tembel kurulum
+        if (!x.building) {
+          x.building = true;
+          buildEntry(x.it).then(e => { if (disposed || !tg.items.includes(x)) { disposeGroup(e.root); return; } Object.assign(x, e); tg.group.add(x.root); }).catch(() => { x.building = false; });
+        }
+        continue;
+      }
+      x.root.visible = true;
       x.root.position.set(st.x, st.y, st.z);
-      x.body.quaternion.copy(attitudeQuat(T, st.roll, 0, st.yaw, tgQ));
+      x.body.quaternion.copy(attitudeQuat(T, st.roll, st.pitch || 0, st.yaw, tgQ));
       for (const p of x.props) {
         const ax = p.userData.axis || 'z';
         p.rotation[ax] = (p.rotation[ax] + rate * Math.min(0.5, rawDt) * (p.userData.dir || 1)) % (2 * Math.PI);
         if (p.userData.disc) p.userData.disc.material.opacity = 0.4;
         if (p.userData.blades) for (const b of p.userData.blades) b.visible = false;
       }
-      x.spr.visible = !(hudLabelsOff && (camMode === 'fpv' || camMode === 'pilot'));   // HUD/OSD prizması çiziliyorsa sahne etiketi tekrar etmesin
+      x.spr.visible = st.phase !== 'fall' && !(hudLabelsOff && (camMode === 'fpv' || camMode === 'pilot'));   // HUD/OSD prizması çiziliyorsa sahne etiketi tekrar etmesin
       const f0 = tg.flash.get(x.it.i);
       if (f0 != null) {
         const u = (now - f0) / 2000;
         if (u >= 1) { tg.flash.delete(x.it.i); x.flash.visible = false; }
-        else { x.flash.visible = true; x.flash.scale.setScalar(Math.max(1, 2 * R * (0.15 + 0.85 * u))); x.flash.material.opacity = 0.9 * (1 - u) ** 1.5; }
+        else { x.flash.visible = true; x.flash.scale.setScalar(Math.max(1, 2 * x.R * (0.15 + 0.85 * u))); x.flash.material.opacity = 0.9 * (1 - u) ** 1.5; }
+      }
+      if (st.phase !== 'fall') {
+        const dx = st.x - cur.pos.x, dy = st.y - cur.pos.y, dz = st.z - cur.pos.z, horiz = Math.hypot(dx, dy), dist = Math.hypot(horiz, dz);
+        const bearing = ((Math.atan2(dx, dy) * 180 / Math.PI) + 360) % 360;
+        let rr = bearing - hdg; while (rr > 180) rr -= 360; while (rr < -180) rr += 360;
+        rel.push({ i: x.it.i, name: x.it.name, model: x.it.model, dist, horiz, dz, bearing, rel: rr, inside: dist <= x.R, state: st, dyn: !!x.it.dyn, x });
       }
     }
     if (now - tg.lastRel > 100) {   // 10 Hz: göreli durum (etiket, radar, targetsInfo)
       tg.lastRel = now;
-      const hdg = num(tele.last?.heading, 0);
-      tg.rel = targetsRelative(tg.cfg.items, t, cur.pos.x, cur.pos.y, cur.pos.z, hdg, R);
-      tg.rel.forEach((r, k) => {
-        const x = tg.items[k]; if (!x) return;
-        const key = `${x.it.name}|${Math.round(r.dist / (r.dist > 1000 ? 100 : 5))}|${Math.round(r.dz / 5)}|${r.inside}`;
+      tg.rel = rel;
+      for (const r of rel) {
+        const x = r.x;
+        const key = `${x.it.name}|${x.it.i}|${Math.round(r.dist / (r.dist > 1000 ? 100 : 5))}|${Math.round(r.dz / 5)}|${r.inside}`;
         if (key !== x.key) { x.key = key; drawLabel(x.cv.getContext('2d'), x.cv.width, x.cv.height, { name: `${x.it.i + 1} · ${x.it.name}`, dist: r.dist, dz: r.dz, inside: r.inside }); x.tex.needsUpdate = true; }
-      });
-      if (tg.radar && tg.radarOn) drawRadar(tg.radar.getContext('2d'), tg.radar.width, tg.radar.height, tg.rel, { radius: R });
+      }
+      if (tg.radar && tg.radarOn && !tg.radarHide) drawRadar(tg.radar.getContext('2d'), tg.radar.width, tg.radar.height, rel, { radius: tg.cfg?.radius_m ?? TARGET_RADIUS });
     }
   }
 
@@ -1738,7 +1825,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       if (p.userData.blades) for (const b of p.userData.blades) b.visible = blur < 0.85;
     }
     if (drone.ctrl.length) updateCtrl(pdt);   // kontrol yüzeyleri (servo/rc → hedef açı → servo hızı sınırı)
-    if (tg.items.length) updateTargets(now, rawDt);   // §24 hedefler
+    if (tg.items.length) updateTargets(now, rawDt);   // §24 hedefler (+ §26 tehditler)
+    if (site.cfg) updateSite(now, rawDt);              // §26 radar anteni, EO başlığı, isabet/duman
     // Seyir ışıkları: kırmızı/yeşil 1 Hz çift flaş üzerine sabit; kuyruk beyaz strobe 1 Hz (gece halo büyür)
     const tt = now / 1000, ph = tt % 1, navOn = ph < 0.08 || (ph > 0.16 && ph < 0.24), strobeOn = ph > 0.5 && ph < 0.58;
     const night = W.time === 'night', dusk = W.time === 'dusk', haloBase = night ? 0.55 : dusk ? 0.4 : 0.22;   // sprite ölçeği model ölçeğiyle çarpılır
@@ -1796,6 +1884,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       renderer.render(scene, camera);
     }
     if (pip.on && !preview) renderPip(now);
+    if (!preview && site.cfg) { renderRadarView(now); renderEoView(now); }   // §26 radar + EO ekranları (aynı bağlam; viewport kopyası)
     if (frameHooks.size) frameHooks.forEach(fn => { try { fn(canvas); } catch { /* kanca hatası kareyi bozmaz */ } });   // §17: render SONRASI (aynı rAF turu; preserveDrawingBuffer gerekmez)
   }
   // Araç kamera pozları (ana kamera ve PiP aynı fonksiyonlar)
@@ -1859,6 +1948,277 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     renderer.setScissorTest(false); renderer.setViewport(0, 0, Wc, Hc);
     pipStats.blits++;
   }
+  // ---------- §26 yer kontrol sahası: istasyon + EO/radar kulesi + interceptor rafı (flightsim_gcs3d.js; yerleşim flightsim_gcs.siteLayout = sunucu yerlesim) ----------
+  // Sahne nesneleri yerde (terrainHeight; Google karoları yüklendikçe saniyede bir yeniden oturur), pist yönüne döner, termalde ılık (userData.heat).
+  // Radar anteni SWEEP_S periyotla döner (ekrandaki tarama hüzmesiyle aynı açı); EO başlığı seçili hedefe en çok 90°/sn ile döner/eğilir.
+  // RADAR EKRANI ve EO EKRANI aynı renderer'da (İKİNCİ WebGL BAĞLAMI YOK; PiP kalıbı): küçük render hedefi → viewport/scissor kopyası.
+  //  • Radar: kule merkezli eğik (52°) bakış; sahne (arazi/bina; sis kapalı, hedef etiketleri gizli) → render hedefi → taktik ton gölgelendiricisi;
+  //    üstüne AYRI radar sahnesi (kapsama + ara halkalar, dönen hüzme, prizma ikonlar + yere iniş çubuğu) derinlik temizlenerek çizilir. Kapsama
+  //    dışındaki hedefler çizilmez; seçili hedef sarı + büyük. Ekran menzili otomatik (radarSteps) ya da sabit. Teşhis/2B katman: radarInfo().
+  //  • EO: kuledeki başlıktan seçili hedefe; oto yakınlaştırma (eoZoom), menzil dışında geniş açı; tür gündüz/termal/gece (CAM_FRAG, kendi türü).
+  const site = { cfg: null, L: null, group: new T.Group(), tower: null, station: null, rack: null, rackSlots: [], rackModels: [], rackN: 0, rackShow: 0, placedAt: -Infinity,
+    eo: { az: 0, el: 0, ready: false }, hitAt: -Infinity, health: 100, smoke: [] };
+  scene.add(site.group);
+  heatRoots.push(site.group);
+  const nearSite = (x, y, m = 22) => !!site.L && [site.L.station, site.L.tower, site.L.rack].some(p => Math.hypot(x - p.x, y - p.y) < m);
+  const placeSite = () => {
+    if (!site.L) return;
+    const put = (obj, p) => { if (!obj) return; obj.position.set(p.x, p.y, terrainHeight(p.x, p.y)); obj.rotation.z = -num(p.yaw_deg, 0) * DEG; };
+    put(site.station?.group, site.L.station); put(site.tower?.group, site.L.tower); put(site.rack?.group, site.L.rack);
+    site.smoke.forEach(s => { s.userData.base = site.station?.group.position.clone(); });
+  };
+  async function setSite(cfg, o = {}) {
+    disposeGroup(site.group);
+    site.tower = site.station = site.rack = null; site.rackModels = []; site.rackSlots = []; site.smoke = [];
+    site.cfg = cfg && (cfg.station || cfg.radar || cfg.eo) ? { ...cfg } : null;
+    site.L = site.cfg ? (cfg.layout || siteLayout(num(W.runway_heading, 0))) : null;
+    if (!site.cfg) return;
+    if (site.cfg.station) { site.station = buildStation(T); site.group.add(site.station.group); }
+    if (site.cfg.radar || site.cfg.eo) { site.tower = buildTower(T, { radar: !!site.cfg.radar, eo: !!site.cfg.eo, eoZ: num(site.L.eo_z, TOWER_EO_Z), radarZ: num(site.L.radar_z, TOWER_RADAR_Z) }); site.group.add(site.tower.group); }
+    // istasyon dumanı (§26 görev: sağlık düştükçe yoğunlaşır)
+    if (site.station) {
+      const tex = smokeTexture();
+      for (let k = 0; k < 7; k++) { const s = new T.Sprite(new T.SpriteMaterial({ map: tex, color: 0x2a2a2a, transparent: true, opacity: 0, depthWrite: false })); s.visible = false; s.userData.ph = k / 7; site.group.add(s); site.smoke.push(s); }
+      const hit = new T.Sprite(new T.SpriteMaterial({ map: ringTexture(), color: 0xff7a1a, transparent: true, opacity: 0, depthWrite: false, blending: T.AdditiveBlending, fog: false }));
+      hit.visible = false; site.group.add(hit); site.hitSpr = hit;
+    }
+    const n = Math.max(0, Math.round(num(o.rack, 0)));
+    if (n > 0) {
+      site.rack = buildRackPad(T, n); site.group.add(site.rack.group); site.rackSlots = site.rack.slots; site.rackN = n;
+      const mdl = o.model || (drone.type === 'interceptor' ? drone.model : null) || { id: 'builtin:icept_x4' };
+      for (let i = 0; i < n; i++) {
+        let b;
+        try { b = await buildFor('interceptor', normModel('interceptor', mdl), MAT()); } catch { b = buildIcept(MAT()); }
+        if (disposed || !site.rack) { disposeGroup(b.grp); return; }
+        const holder = new T.Group();
+        b.grp.scale.setScalar(MODEL_SCALE);
+        b.grp.rotation.x = Math.PI / 2;   // tailsitter rafta kuyruk üstünde (burun +Y → yukarı)
+        const bb = new T.Box3().setFromObject(b.grp); b.grp.position.z = -bb.min.z;
+        b.grp.traverse(m => { if (m.isMesh) { m.userData.heat = 0.38; m.castShadow = true; } });   // soğuk (çalışmıyor)
+        holder.add(b.grp);
+        const sl = site.rackSlots[i]; holder.position.set(sl.x, sl.y, sl.z);
+        site.rack.group.add(holder); site.rackModels.push(holder);
+      }
+      setRackCount(o.show ?? n);
+    }
+    placeSite();
+  }
+  function setRackCount(k) { site.rackShow = clamp(Math.round(num(k, 0)), 0, site.rackModels.length); site.rackModels.forEach((m, i) => { m.visible = i < site.rackShow; }); }
+  let smokeTex = null;
+  const smokeTexture = () => {
+    if (smokeTex) return smokeTex;
+    const cv = document.createElement('canvas'); cv.width = cv.height = 64;
+    const g = cv.getContext('2d'), gr = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+    gr.addColorStop(0, 'rgba(255,255,255,0.9)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+    smokeTex = new T.CanvasTexture(cv);
+    return smokeTex;
+  };
+  function siteHit(health) { site.hitAt = performance.now(); if (health != null) site.health = num(health, site.health); }
+  const towerWorld = new T.Vector3();
+  const eoHeadPos = out => {   // EO topunun merkezi (dünya): kule yerelinde EO_POST, pist yönüne döndürülmüş
+    const L = site.L, z = terrainHeight(L.tower.x, L.tower.y), h = num(L.tower.yaw_deg, 0) * DEG, [ex, ey] = EO_POST, c = Math.cos(h), sn = Math.sin(h);
+    return out.set(L.tower.x + ex * c + ey * sn, L.tower.y - ex * sn + ey * c, z + num(L.eo_z, TOWER_EO_Z));
+  };
+  // Seçili (elle kilitlenmiş) etkin hedef: {x, st} ya da null
+  const selectedEntry = t => { if (tg.sel.auto || tg.sel.i == null || t == null) return null; const x = tg.items.find(e => e.it.i === tg.sel.i); if (!x || !x.root) return null; const st = stateOf(x, t); return st && st.phase !== 'fall' ? { x, st } : null; };
+  function updateSite(now, rawDt) {
+    if (!site.cfg) return;
+    if (now - site.placedAt > (now < 30000 ? 1000 : 4000)) { site.placedAt = now; placeSite(); }
+    const sw = sweepAngle(now / 1000, num(site.L.sweep_s, SWEEP_S));
+    if (site.tower?.radar) site.tower.radar.rotation.z = -sw * DEG;
+    if (site.tower?.beacon) site.tower.beacon.visible = (now % 1500) < 160;
+    // EO başlığı: seçili hedefe (yoksa yavaş tarama) — 90°/sn dönüş hızı sınırı
+    if (site.tower?.eoPan) {
+      const t = targetTime(), sel = selectedEntry(t);
+      let az, el;
+      if (sel) { const lk = eoLook(site.L.tower, sel.st.x, sel.st.y, sel.st.z - terrainHeight(site.L.tower.x, site.L.tower.y), num(site.L.eo_z, TOWER_EO_Z)); az = lk.az; el = lk.el; }
+      else { az = (now / 1000 * 8) % 360; el = 1.5; }
+      const dt = Math.min(0.25, rawDt), mx = 90 * dt;
+      let da = az - site.eo.az; while (da > 180) da -= 360; while (da < -180) da += 360;
+      site.eo.az = site.eo.ready ? (site.eo.az + clamp(da, -mx, mx) + 360) % 360 : az;
+      site.eo.el = site.eo.ready ? site.eo.el + clamp(el - site.eo.el, -mx, mx) : el;
+      site.eo.ready = true;
+      site.tower.eoPan.rotation.z = -(site.eo.az - num(site.L.tower.yaw_deg, 0)) * DEG;
+      site.tower.eoTilt.rotation.x = clamp(site.eo.el, -60, 85) * DEG;
+    }
+    // istasyon isabeti: turuncu parlama + duman (sağlık < 100)
+    if (site.hitSpr) {
+      const u = (now - site.hitAt) / 1600, p = site.station.group.position;
+      if (u >= 0 && u < 1) { site.hitSpr.visible = true; site.hitSpr.position.set(p.x, p.y, p.z + 3); site.hitSpr.scale.setScalar(6 + 40 * u); site.hitSpr.material.opacity = 0.95 * (1 - u) ** 1.3; }
+      else site.hitSpr.visible = false;
+      const dmg = clamp((100 - site.health) / 100, 0, 1);
+      for (const s of site.smoke) {
+        if (dmg <= 0.01) { s.visible = false; continue; }
+        const ph = ((now / 1000) * 0.18 + s.userData.ph) % 1;
+        s.visible = true;
+        s.position.set(p.x + Math.sin(ph * 9 + s.userData.ph * 20) * 1.2 + ph * 6, p.y + ph * 3, p.z + 3 + ph * (14 + 20 * dmg));
+        s.scale.setScalar(3 + ph * (8 + 10 * dmg));
+        s.material.opacity = (0.15 + 0.55 * dmg) * Math.sin(ph * Math.PI);
+      }
+    }
+  }
+
+  // ---------- §26 radar ekranı ----------
+  const TINT_FRAG = `uniform sampler2D tDiffuse; uniform float time; varying vec2 vUv;
+    void main() { vec3 c = texture2D(tDiffuse, vUv).rgb; float l = dot(c, vec3(0.299, 0.587, 0.114));
+      vec3 tac = vec3(0.03, 0.09, 0.07) + l * vec3(0.5, 0.92, 0.68);
+      vec3 col = mix(c * 0.8, tac, 0.55);
+      vec2 d = vUv - 0.5; col *= 1.0 - dot(d, d) * 0.9;
+      col *= 0.93 + 0.07 * sin(vUv.y * 420.0);
+      gl_FragColor = vec4(col, 1.0); }`;
+  const rv = { rect: null, rt: null, cam: new T.PerspectiveCamera(36, 1.4, 5, 200000), scene: new T.Scene(), quad: null, mat: null, lastAt: 0, fixedKm: null, rangeM: 2000,
+    rings: null, ringsR: 0, sweep: null, sweepR: 0, icons: new Map(), own: null, info: null, renders: 0 };
+  rv.cam.up.set(0, 0, 1);
+  rv.mat = new T.ShaderMaterial({ uniforms: { tDiffuse: { value: null }, time: { value: 0 } }, depthTest: false, depthWrite: false, vertexShader: CAM_VERT, fragmentShader: TINT_FRAG });
+  rv.quad = new T.Mesh(new T.PlaneGeometry(2, 2), rv.mat); rv.quad.frustumCulled = false;
+  const rvQuadScene = new T.Scene(); rvQuadScene.add(rv.quad);
+  const rvSelRing = (() => { const pts = []; for (let k = 0; k <= 48; k++) { const a = k / 48 * Math.PI * 2; pts.push(new T.Vector3(Math.cos(a), Math.sin(a), 0)); } const l = new T.Line(new T.BufferGeometry().setFromPoints(pts), new T.LineBasicMaterial({ color: 0xffe14a, transparent: true, opacity: 0.95, depthTest: false })); l.renderOrder = 7; l.visible = false; return l; })();
+  rv.scene.add(rvSelRing);
+  const ICON_COLOR = { own: 0x38e8ff, threat: 0xff4433, target: 0xff9d2e, sel: 0xffe14a };
+  const radarIcon = (key, kind) => {
+    let e = rv.icons.get(key);
+    if (!e) {
+      const g = buildRadarPrism(T, ICON_COLOR[kind] || 0xff4433);
+      const stalk = new T.Line(new T.BufferGeometry().setFromPoints([new T.Vector3(0, 0, 0), new T.Vector3(0, 0, -1)]), new T.LineBasicMaterial({ color: ICON_COLOR[kind] || 0xff4433, transparent: true, opacity: 0.55, depthTest: false }));
+      stalk.renderOrder = 4;
+      rv.scene.add(g, stalk);
+      e = { g, stalk, kind, seen: 0 };
+      rv.icons.set(key, e);
+    }
+    return e;
+  };
+  const rvTmp = new T.Vector3();
+  const projRadar = (x, y, z, r) => { rvTmp.set(x, y, z).project(rv.cam); return { x: (rvTmp.x + 1) / 2 * r.w, y: (1 - rvTmp.y) / 2 * r.h, vis: rvTmp.z < 1 && rvTmp.z > -1 }; };
+  function renderRadarView(now) {
+    const r = rv.rect;
+    if (!r || !site.cfg?.radar || r.w < 40 || r.h < 30) return;
+    const L = site.L, tw = L.tower, R = num(site.cfg.radar_km, 20) * 1000, t = targetTime();
+    const zt = terrainHeight(tw.x, tw.y);
+    // görünenler: kendi dron + kapsamadaki etkin hedefler
+    const seen = [];
+    if (tele.has) seen.push({ key: 'own', kind: 'own', x: cur.pos.x, y: cur.pos.y, z: cur.pos.z, hd: num(tele.last?.heading, 0), i: null, name: drone.type === 'interceptor' ? 'INTERCEPTOR' : 'İHA' });
+    if (t != null) for (const { x, st } of activeEntries(t)) if (st.phase !== 'fall' && radarCovers(site.cfg, tw, st.x, st.y)) seen.push({ key: `t${x.it.dyn ? 'd' : 'o'}${x.it.k ?? x.it.i}`, kind: x.it.dyn ? 'threat' : 'target', x: st.x, y: st.y, z: st.z, hd: num(st.heading, 0), i: x.it.i, name: x.it.name, alt: st.z, dyn: !!x.it.dyn, phase: st.phase });
+    const covered = seen.filter(s => s.kind === 'own' ? radarCovers(site.cfg, tw, s.x, s.y) : true);
+    rv.rangeM = rv.fixedKm ? Math.min(rv.fixedKm * 1000, R) : autoRadarRange(covered.map(s => Math.hypot(s.x - tw.x, s.y - tw.y)), R / 1000) * 1000;
+    // eğik kamera (kuzey yukarı, güneyden bakış)
+    const el = 52 * DEG, aspect = r.w / Math.max(1, r.h), vf = rv.cam.fov * DEG / 2, hf = Math.atan(Math.tan(vf) * aspect);
+    const d = Math.max(rv.rangeM * 1.08 / Math.tan(hf), rv.rangeM * Math.sin(el) * 1.28 / Math.tan(vf));
+    rv.cam.aspect = aspect; rv.cam.near = d * 0.05; rv.cam.far = d * 4;
+    rv.cam.position.set(tw.x, tw.y - d * Math.cos(el) * 0.92, zt + d * Math.sin(el)); rv.cam.lookAt(tw.x, tw.y + rv.rangeM * 0.06, zt); rv.cam.updateProjectionMatrix(); rv.cam.updateMatrixWorld();
+    // 1) arazi geçişi (seyrek: 8 fps; yavaş karede 4)
+    const pr = Math.min(renderer.getPixelRatio(), 1.5) * 0.8, rw = Math.max(64, Math.round(r.w * pr)), rh = Math.max(48, Math.round(r.h * pr));
+    if (!rv.rt || rv.rt.width !== rw || rv.rt.height !== rh) { rv.rt?.dispose(); rv.rt = new T.WebGLRenderTarget(rw, rh, { depthBuffer: true, stencilBuffer: false }); rv.lastAt = 0; }
+    if (now - rv.lastAt >= (frameMs > 22 ? 250 : 125)) {
+      rv.lastAt = now;
+      const fog = scene.fog, sh = renderer.shadowMap.autoUpdate, tgv = tg.group.visible, mg = mission.group, mv = mg?.visible, bg = scene.background;
+      scene.fog = null; renderer.shadowMap.autoUpdate = false; tg.group.visible = false; if (mg) mg.visible = false; scene.background = RADAR_BG;
+      try { renderer.setRenderTarget(rv.rt); renderer.render(scene, rv.cam); } finally {
+        renderer.setRenderTarget(null); scene.fog = fog; renderer.shadowMap.autoUpdate = sh; tg.group.visible = tgv; if (mg) mg.visible = mv; scene.background = bg;
+      }
+      rv.renders++;
+    }
+    // 2) halkalar / hüzme (menzil değişince yeniden), ikonlar (ekran boyutu sabit)
+    if (!rv.rings || rv.ringsR !== R) { if (rv.rings) { disposeGroup(rv.rings); rv.scene.remove(rv.rings); } rv.rings = buildRangeRings(T, R); rv.ringsR = R; rv.scene.add(rv.rings); }
+    if (!rv.sweep || rv.sweepR !== R) { if (rv.sweep) { disposeGroup(rv.sweep); rv.scene.remove(rv.sweep); } rv.sweep = buildSweep(T, R); rv.sweepR = R; rv.scene.add(rv.sweep); }
+    rv.rings.position.set(tw.x, tw.y, zt + 0.5); rv.sweep.position.set(tw.x, tw.y, zt + 0.6);
+    const sw = sweepAngle(now / 1000, num(L.sweep_s, SWEEP_S));
+    rv.sweep.rotation.z = -sw * DEG;
+    const pxWorld = dist => dist * 2 * Math.tan(vf) / Math.max(1, r.h);   // 1 ekran pikselinin dünya boyu (o uzaklıkta)
+    const stamp = now;
+    const info = { range_m: rv.rangeM, coverage_m: R, sweep: sw, rect: { ...r }, items: [], own: null, rings: [], north: null, selected: tg.sel.auto ? null : tg.sel.i };
+    for (const s of covered) {
+      const e = radarIcon(s.key, s.kind), sel = s.i != null && !tg.sel.auto && tg.sel.i === s.i;
+      e.seen = stamp;
+      const dCam = rv.cam.position.distanceTo(rvTmp.set(s.x, s.y, s.z));
+      const sc = pxWorld(dCam) * (sel ? 19 : s.kind === 'own' ? 15 : 13);
+      e.g.visible = true; e.g.position.set(s.x, s.y, s.z); e.g.scale.setScalar(sc); e.g.rotation.set(0, 0, -s.hd * DEG);
+      const glow = s.kind === 'own' ? 1 : sweepGlow(bearingFrom(tw, s.x, s.y), sw, num(L.sweep_s, SWEEP_S));
+      e.g.userData.mat.color.setHex(sel ? ICON_COLOR.sel : ICON_COLOR[s.kind]); e.g.userData.mat.opacity = 0.35 + 0.6 * glow; e.g.userData.edgeMat.opacity = 0.4 + 0.6 * glow;
+      const gz = terrainHeight(s.x, s.y);
+      e.stalk.visible = s.z - gz > 2; e.stalk.position.set(s.x, s.y, s.z); e.stalk.scale.set(1, 1, Math.max(0.01, s.z - gz)); e.stalk.material.opacity = 0.25 + 0.35 * glow;
+      if (sel) { rvSelRing.visible = true; rvSelRing.position.set(s.x, s.y, s.z); rvSelRing.scale.setScalar(pxWorld(dCam) * 17); rvSelRing.material.opacity = 0.6 + 0.4 * Math.sin(now / 160); }
+      const p = projRadar(s.x, s.y, s.z, r);
+      const it = { i: s.i, kind: s.kind, name: s.name, x: p.x, y: p.y, alt: Math.round(s.z), dist: Math.hypot(s.x - tw.x, s.y - tw.y), sel, glow, dyn: !!s.dyn, phase: s.phase };
+      if (s.kind === 'own') info.own = it; else info.items.push(it);
+    }
+    if (!covered.some(s => s.i != null && !tg.sel.auto && tg.sel.i === s.i)) rvSelRing.visible = false;
+    for (const [k, e] of rv.icons) if (e.seen !== stamp) { e.g.visible = false; e.stalk.visible = false; if (stamp - e.seen > 20000) { disposeGroup(e.g); rv.scene.remove(e.g, e.stalk); e.stalk.geometry.dispose(); e.stalk.material.dispose(); rv.icons.delete(k); } }
+    for (const f of [0.25, 0.5, 0.75, 1]) { const p = projRadar(tw.x + R * f, tw.y, zt, r); info.rings.push({ x: p.x, y: p.y, m: R * f }); }   // halka etiketleri kulenin doğusunda
+    const np = projRadar(tw.x, tw.y + Math.min(R, rv.rangeM) * 0.98, zt, r); info.north = { x: np.x, y: np.y };
+    const tp = projRadar(tw.x, tw.y, zt, r); info.tower = { x: tp.x, y: tp.y };
+    rv.info = info;
+    // 3) kopya: ton gölgelendiricisi + radar sahnesi (derinlik temizlenir; ikonlar her zaman görünür)
+    const Wc = Math.max(1, mountEl.clientWidth), Hc = Math.max(1, mountEl.clientHeight);
+    rv.mat.uniforms.tDiffuse.value = rv.rt.texture; rv.mat.uniforms.time.value = (now / 1000) % 1000;
+    renderer.setViewport(r.x, Hc - r.y - r.h, r.w, r.h); renderer.setScissor(r.x, Hc - r.y - r.h, r.w, r.h); renderer.setScissorTest(true);
+    renderer.render(rvQuadScene, post.cam);
+    const ac = renderer.autoClear; renderer.autoClear = false; renderer.clearDepth();
+    renderer.render(rv.scene, rv.cam);
+    renderer.autoClear = ac;
+    renderer.setScissorTest(false); renderer.setViewport(0, 0, Wc, Hc);
+  }
+  const RADAR_BG = new T.Color(0x06120e);
+  // Radar ekranında tıklama (CSS px, dikdörtgene göre) → en yakın ikon (≤ 22 px) → i (kendi dron / boş → null)
+  function radarPick(px, py) {
+    const it = (rv.info?.items || []).reduce((b, c) => { const d = Math.hypot(c.x - px, c.y - py); return d < 22 && (!b || d < b.d) ? { d, c } : b; }, null);
+    return it ? it.c.i : null;
+  }
+
+  // ---------- §26 EO ekranı ----------
+  const ev = { rect: null, rt: null, cam: new T.PerspectiveCamera(EO_FOV_MAX, 1.4, 0.5, 60000), mat: camMat(), scene: new T.Scene(), lastAt: 0, type: 'day', info: null, renders: 0, fov: EO_FOV_MAX };
+  ev.cam.up.set(0, 0, 1);
+  { const q = new T.Mesh(new T.PlaneGeometry(2, 2), ev.mat); q.frustumCulled = false; ev.scene.add(q); }
+  const evPos = new T.Vector3(), evTgt = new T.Vector3();
+  function renderEoView(now) {
+    const r = ev.rect;
+    if (!r || !site.cfg?.eo || !site.L || r.w < 40 || r.h < 30) return;
+    const t = targetTime(), sel = selectedEntry(t);
+    eoHeadPos(evPos);
+    const L = site.L, zt = terrainHeight(L.tower.x, L.tower.y);
+    let status = 'idle', range = null, look = null, size = 3;
+    if (sel) {
+      look = eoLook(L.tower, sel.st.x, sel.st.y, sel.st.z - zt, num(L.eo_z, TOWER_EO_Z));
+      range = look.range_m; size = sel.x.size || 3;
+      status = eoStatus(site.cfg, sel.x.it.i, range);
+    }
+    // bakış: başlığın (dönüş hızı sınırlı) az/el'i — iz sürerken hedefin kendisine (ince ayar)
+    const az = site.eo.az * DEG, el = site.eo.el * DEG;
+    evTgt.set(evPos.x + Math.sin(az) * Math.cos(el) * 100, evPos.y + Math.cos(az) * Math.cos(el) * 100, evPos.z + Math.sin(el) * 100);
+    let slewErr = 180;
+    if (sel && look) { let da = look.az - site.eo.az; while (da > 180) da -= 360; while (da < -180) da += 360; slewErr = Math.hypot(da, look.el - site.eo.el); }
+    if (status === 'track' && slewErr < 3) evTgt.set(sel.x.root.position.x, sel.x.root.position.y, sel.x.root.position.z);
+    const z = status === 'track' ? eoZoom(range, size) : { fov: EO_FOV_MAX, zoom: 1 };
+    ev.fov += (z.fov - ev.fov) * (status === 'track' ? 0.5 : 0.25);   // yumuşak zoom (yavaş karede de birkaç karede oturur)
+    const pr = Math.min(renderer.getPixelRatio(), 1.5) * 0.85, rw = Math.max(64, Math.round(r.w * pr)), rh = Math.max(48, Math.round(r.h * pr));
+    if (!ev.rt || ev.rt.width !== rw || ev.rt.height !== rh) { ev.rt?.dispose(); ev.rt = new T.WebGLRenderTarget(rw, rh, { depthBuffer: true, stencilBuffer: false }); ev.lastAt = 0; }
+    if (now - ev.lastAt >= (frameMs > 22 ? 133 : 66)) {
+      ev.lastAt = now;
+      ev.cam.position.copy(evPos).addScaledVector(evTgt.clone().sub(evPos).normalize(), 0.9);   // pencerenin önü: başlığın kendi gövdesi/kolu kadraja girmesin
+      ev.cam.lookAt(evTgt);
+      ev.cam.fov = clamp(ev.fov, EO_FOV_MIN, EO_FOV_MAX); ev.cam.aspect = r.w / Math.max(1, r.h); ev.cam.near = 1.0; ev.cam.far = camera.far; ev.cam.updateProjectionMatrix();
+      const sh = renderer.shadowMap.autoUpdate; renderer.shadowMap.autoUpdate = false;
+      const hidden = tg.items.filter(x => x.spr?.visible); hidden.forEach(x => { x.spr.visible = false; });
+      const mg = mission.group, mv = mg?.visible; if (mg) mg.visible = false;
+      const tw = site.tower?.group, twv = tw?.visible; if (tw) tw.visible = false;   // kamera kulenin üstünde: kendi kafes/direk gövdesi kadrajı kapatmasın
+      // optik yakınlaştırma: hedef menzilde sis/pus örtmesin (oyun okunurluğu) — sis mesafeleri hedef menzilinin ötesine itilir
+      const fg = scene.fog, fn = fg?.near, ff = fg?.far;
+      if (fg && status === 'track' && range > fg.near * 0.8) { const k = Math.max(1, range * 1.6 / Math.max(1, fg.near)); fg.near *= k; fg.far *= k; }
+      try { withHeat(ev.type === 'thermal', now, () => { renderer.setRenderTarget(ev.rt); renderer.render(scene, ev.cam); renderer.setRenderTarget(null); }); }
+      finally { renderer.shadowMap.autoUpdate = sh; hidden.forEach(x => { x.spr.visible = true; }); if (mg) mg.visible = mv; if (tw) tw.visible = twv; if (fg) { fg.near = fn; fg.far = ff; } }
+      ev.renders++;
+    }
+    ev.mat.uniforms.tDiffuse.value = ev.rt.texture;
+    setCamUniforms(ev.mat, 'fpv', rw, rh, true, ev.type);
+    const Wc = Math.max(1, mountEl.clientWidth), Hc = Math.max(1, mountEl.clientHeight);
+    renderer.setViewport(r.x, Hc - r.y - r.h, r.w, r.h); renderer.setScissor(r.x, Hc - r.y - r.h, r.w, r.h); renderer.setScissorTest(true);
+    renderer.render(ev.scene, post.cam);
+    renderer.setScissorTest(false); renderer.setViewport(0, 0, Wc, Hc);
+    ev.info = { status, sel: sel ? sel.x.it.i : null, name: sel ? sel.x.it.name : null, dyn: !!sel?.x.it.dyn, az: site.eo.az, el: site.eo.el, range_m: range, zoom: EO_FOV_MAX / ev.cam.fov, fov: ev.cam.fov,
+      type: ev.type, eo_km: num(site.cfg.eo_km, 5), slewing: !!sel && slewErr >= 3, phase: sel?.st.phase || null, speed: sel ? sel.st.speed : null };
+  }
+  const siteInfo = () => (site.cfg ? { cfg: { ...site.cfg }, layout: site.L, rack: site.rackShow, rackN: site.rackModels.length, eo: { ...site.eo },
+    station: site.station ? site.station.group.position.toArray() : null, tower: site.tower ? site.tower.group.position.toArray() : null } : null);
   const frameHooks = new Set();   // §17 ekran kaydı: her karede render edilen tuvali okuyan kancalar (drawImage → birleşik kayıt tuvali)
 
   // ---------- kurulum ----------
@@ -1867,6 +2227,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     canvas.style.display = 'none';
     return { createModelViewer, dispose, canvas, get studio() { return true; } };
   }
+  if (opts.site?.layout) site.L = opts.site.layout;   // §26: dünya kurulurken saha çevresi açık kalsın (ağaç yok); setSite modelleri kurar
   await buildWorld(world);
   await setType(opts.type, opts.model ?? opts.airframe);
   buildRig();
@@ -1881,6 +2242,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (!tele.has) drone.group.position.set(0, 0, (drone.ground || 0.2) + 0.02);
     if (!preview && camMode === 'follow') resetCamera();
     if (routePts.length) mission.redraw();   // yüzey değişti: rota/iniş dairesi yere göre yeniden
+    if (site.cfg) { site.placedAt = -Infinity; placeSite(); }   // §26
   }
   // §14/§18 görev: setMission({points [{seq, cmd, lat, lon, alt_rel, frame}], source, home, current, end, landing_circle_m}) — flightsim_mission.js çizer
   // (tüp bacaklar: geçilen yeşil / aktif parlak / gelecek amber; WP etiketleri; TAKEOFF/LAND/RTL/LOITER ikonları; ev H; bitiş noktasında iniş dairesi H).
@@ -1916,6 +2278,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     canvas.removeEventListener('wheel', onWheel);
     controls.dispose();
     disposeGroup(gWorld); disposeGroup(drone.group); mission.dispose(); disposeGroup(tg.group); tg.radar?.remove();
+    disposeGroup(site.group); disposeGroup(rv.scene); rv.rt?.dispose(); rv.mat.dispose(); rv.quad.geometry.dispose(); ev.rt?.dispose(); ev.mat.dispose(); smokeTex?.dispose();   // §26
     post.rt?.dispose(); post.mat.dispose(); post.quad.geometry.dispose(); pip.rt?.dispose(); pip.mat.dispose(); pip.quad.geometry.dispose(); heatMats.forEach(m => m.dispose()); heatMats.clear();
     renderer.dispose();
     renderer.forceContextLoss?.();
@@ -1963,7 +2326,14 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     // §24 hedefler
     createModelViewer,   // §24.4 sihirbaz hedef önizlemesi (aynı bağlam)
     setTargets, flashTarget, targetsHud, cycleTarget, get targetLock() { return tg.cfg ? { ...tg.sel } : null; }, targetsInfo: () => tg.rel.map(r => ({ i: r.i, name: r.name, dist: Math.round(r.dist), horiz: Math.round(r.horiz), dz: Math.round(r.dz), bearing: Math.round(r.bearing), rel: Math.round(r.rel), inside: r.inside })),
-    get targetTime() { return targetTime(); }, setRadarVisible: v => { tg.radarOn = !!v; if (tg.radar) tg.radar.style.display = tg.radarOn && tg.cfg ? '' : 'none'; },
+    get targetTime() { return targetTime(); }, setRadarVisible: v => { tg.radarOn = !!v; syncSmallRadar(); },
+    // §26 yer kontrol sahası + radar/EO ekranları + "Yer kontrolünü koru" tehditleri
+    setSite, setRackCount, siteHit, siteInfo, setDefend, setDefendState, flashThreat, lockTarget,
+    setRadarRect: r => { rv.rect = r && r.w > 0 && r.h > 0 ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } : null; tg.radarHide = !!rv.rect; syncSmallRadar(); },
+    setEoRect: r => { ev.rect = r && r.w > 0 && r.h > 0 ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } : null; },
+    setRadarRange: km => { rv.fixedKm = km ? Number(km) : null; }, radarInfo: () => rv.info, radarPick, eoInfo: () => ev.info,
+    setEoType: t => { ev.type = normCamType(t); ev.lastAt = 0; return ev.type; }, getEoType: () => ev.type,
+    siteStats: () => ({ radar: rv.renders, eo: ev.renders, icons: rv.icons.size, threats: tg.items.filter(x => x.it.dyn).length, built: tg.items.filter(x => x.it.dyn && x.root).length }),
     canvas,
     addFrameHook: fn => { frameHooks.add(fn); return () => frameHooks.delete(fn); },   // §17: render sonrası kanca (kayıt birleşimi)
   };

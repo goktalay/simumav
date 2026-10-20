@@ -25,7 +25,7 @@ export async function mount(root, ctx) {
         h('div', { class: 'row-actions' }, miniBtn(svg('0 0 24 24', EDIT_SVG), () => rename(m), '', t('common.rename')), miniBtn(svg('0 0 24 24', TRASH_SVG), () => remove(m), 'danger', t('common.delete'))),
         h('div', { class: 'thumb' }, cv), h('b', {}, m.name),
         h('div', { class: 'meta-row' }, h('span', { class: 'badge accent' }, t(`kinds.${m.kind}`)), h('span', { class: 'badge' }, tr?.name || '—')),
-        h('small', {}, `${m.plan?.route?.points?.length || 0} ${t('missions.points').toLowerCase()}`));
+        h('small', {}, m.kind === 'defend' ? `${t(`site.d_${m.plan?.defend?.difficulty || 'normal'}`)} · ${m.plan?.defend?.waves ?? 5} × ${t('site.waves').toLowerCase()} · ${m.plan?.defend?.interceptors ?? 10} interceptor` : `${m.plan?.route?.points?.length || 0} ${t('missions.points').toLowerCase()}`));   // HEPGO §26 savunma görevi
       c.addEventListener('click', e => { if (!e.target.closest('.row-actions')) edit(m); });
       requestAnimationFrame(() => drawPreview(cv, m.plan, tr));
       return c;

@@ -533,3 +533,25 @@ doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
   bu adımda başka sahne olmadığından tek "stüdyo" WebGL bağlamı (`createFlightSim3D(…, {studio: true})`), adımdan çıkınca kapanır (`index.js dropTargetsUi`).
   Uçuşta gimbal HUD'u ve FPV OSD'si F-16 tarzı prizma + TD kutusu + TLL + ekran dışı yön oku çizer (Tab ile hedef kilidi; önlemede "ÖNLEME" yanıp söner) —
   çekirdek modüller `/sim/flightsim_tgthud.js`, `/sim/flightsim_tgtview.js` (`flightsim*.js` manifest kalıbı). Metinler `targets.pv_*` + "Tab: hedef", "ÖNLEME" (7 dil).
+
+## 12. Yer kontrol sahası + "Yer kontrolünü koru" — HEPGO §26'nın SIMUMAV'a taşınması (`bridge.saha_dogrula`, `fly/index.js` adım `site`, `missions` kind `defend`)
+- **Sihirbaz**: drone → track → (launch) → power → mission → **site** ("Yer kontrol") → targets → pilot. Adım çekirdeğin `createSiteSection`'ını `keyed` kipinde
+  kullanır (`site.*` anahtarları, 7 dil): Radar / İstasyon / EO kartları + menziller, şematik, senaryo (yalnız INTERCEPTOR). Görev adımında **kind='defend'** görev
+  kaydı seçildiyse senaryo kayıttan gelir ("Görev kaydından: ad"), sihirbaz `defend` göndermez. Alt özet "◈ R20·GKS·EO5 · Yer kontrolünü koru".
+- **REST**: `POST /api/fly/start` `site` (`SiteIn`, **katı**: `extra='forbid'`, `strict=True` — "true"/1/"20" reddedilir; radar 1–50, EO 0,5–15 km) ve `defend`
+  (`DefendIn`, katı; sınırlar çekirdekle aynı) → `bridge.saha_dogrula` (görev kaydı kind='defend' ise plan.defend önceliklidir; dron INTERCEPTOR değilse 422) →
+  `MANAGER.ac(site=, defend=)`. Yanıta `site` (yerleşimiyle) eklenir; `flights.snapshot.site/defend`; oturumun tamamı hello'da. WS `cmd defend {action:'next'}`
+  (SIM_KOMUT = çekirdek KOMUTLAR) → sıradaki interceptor. Uçuş sonu `flights.summary.site` + `summary.defend` (puan, rütbe, önleme listesi).
+- **Görevler modülü**: `KINDS` += `defend` (meta `mission_kinds`). Plan `{kind:'defend', defend:{waves, interceptors, difficulty, radius_m, prep_s, seed}}` —
+  `savunma_dogrula` ile; **tohum kayda sabitlenir** (yoksa sunucu üretir) → aynı görev her uçuşta aynı senaryo. Rota/öğe yok (`_gorev_yukle` atlanır); bilinmeyen
+  plan alanı / sınır dışı → 422 + audit `plan_reject`. Editör: araç şeridinde kalkan simgeli tür; harita çizimi yok, istasyon + 1/3 km halkaları; yan panelde zorluk,
+  dalga, interceptor, yarıçap, hazırlık, tohum (+ yeni tohum). Kart önizlemesi (`drawDefendPreview`): radar halkaları + tohumdan tehdit okları + etiket.
+- **Uçuşta** (`fly/session.js applySite`): hello'daki `site`/`defend` → 3B saha (istasyon, kule, raf), sol altta radar + EO ekranları (Y / U), görev şeridi + bant
+  (N: sıradaki interceptor), `sfx` uyarıları; görev bitince rapor penceresi ("Uçuşu Bitir"). Tek WebGL bağlamı korunur (radar/EO ana renderer'ın viewport kopyası;
+  `__smGl ≤ 1`). Uçuş raporu kartı (`.sm-def-card`), **Operasyon** kartında "◈ puan · rütbe" rozeti ve replay'de katlanır görev raporu kartı.
+- **i18n**: `site.*` (134) + `kinds.defend(_desc)`, `missions.hint_defend` 7 dilde; HEPGO sözlüklerine aynı metinler (anahtar = Türkçe metin).
+- **Dışa aktarma**: `app/flightsim_gcs.py` `PY_CEKIRDEK`'e eklendi; JS modülleri `flightsim*.js` kalıbıyla gelir (`flightsim_gcs.js`, `flightsim_gcs3d.js`,
+  `flightsim_gcs_ui.js`).
+- **Testler**: `tests/test_simumav_gcs.py` (katı 422'ler, INTERCEPTOR dışı 422, defend görevi CRUD + tohum sabitliği + kötü plan, görev + saha ile uçuş → çekirdek
+  oturum (görev tohumu öncelikli), başlatma yanıtı yerleşimi, snapshot, GET oturumu, WS hello, WS `defend next`, dalga olayı, stop → summary.defend/site; sihirbaz
+  görevi), `tests/test_simumav_fly.mjs` (site adımı + gövde). Görsel: `tests/gcs_shots_simumav.py` → /tmp/gcs-shots/sm-*.png.

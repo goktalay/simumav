@@ -31,7 +31,8 @@ export async function mount(root, ctx) {
         h('div', { class: 'row-actions' }, miniBtn(svg('0 0 24 24', TRASH_SVG), () => remove(f), 'danger', t('common.delete'))),
         h('b', {}, `${f.drone?.name || t('ops.drone')} · ${f.track?.name || t('ops.track')}`),
         h('small', { class: 'stamp' }, fmtDate(f.started_at, lang())),   // tarih "damga" animasyonu (fx.css .stamp)
-        h('div', { class: 'meta' }, h('span', {}, `${t('crew.pilot')}: ${f.pilot?.name || '—'}`), h('span', {}, fmtDur(f.duration_s)), f.mission?.name ? h('span', {}, `${t('ops.mission')}: ${f.mission.name}`) : null, f.summary?.flight?.max_speed != null ? h('span', {}, `${Math.round(f.summary.flight.max_speed * 3.6)} km/h`) : null)));
+        h('div', { class: 'meta' }, h('span', {}, `${t('crew.pilot')}: ${f.pilot?.name || '—'}`), h('span', {}, fmtDur(f.duration_s)), f.mission?.name ? h('span', {}, `${t('ops.mission')}: ${f.mission.name}`) : null, f.summary?.flight?.max_speed != null ? h('span', {}, `${Math.round(f.summary.flight.max_speed * 3.6)} km/h`) : null,
+          f.summary?.defend ? h('span', { class: `badge ${f.summary.defend.success ? 'ok' : 'crash'}` }, `◈ ${f.summary.defend.score} · ${t(`site.rk_${f.summary.defend.rank || 'private'}`)}`) : null)));   // HEPGO §26 görev sonucu
     const g = gen;
     if (idx < MAX_VIEWERS) modelViewer(d3, { speed: 0.8, env: false }).then(v => { if (dead || g !== gen) { v.dispose(); return; } viewers.push(v); v.setModel({ ...f.drone, preview: f.drone?.preview }); }).catch(() => {});
     return c;
