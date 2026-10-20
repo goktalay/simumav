@@ -4,8 +4,8 @@
 // seçeneği olan tiplerde) → 4 Güç ve yakıt → 5 Kamera → 6 Hedefler (isteğe bağlı) → 7 Yer kontrol (isteğe bağlı) → 8 Kayıt ve özet.
 // Kayıttan oynatma: 1 Uçuş logu (+ model) → Dünya → Kalkış (log aracı sabit kanatsa) → Kamera → Kayıt ve özet.
 // Kalkış seçenekleri VERİDEN: LAUNCH_OPTIONS (anahtar, uygun tipler, ayar alanları, simge anahtarı) + LAUNCH_PARAM_DEFS (kaydırıcı tanımı). Yeni bir
-// fırlatıcı (ör. INTERCEPTOR için 4'lü/8'li fırlatıcı, yerden tekli, el aparatı) eklemek = LAUNCH_OPTIONS'a bir satır (+ gerekiyorsa param tanımı ve
-// flightsim.js LAUNCH_ICON'a simge); adım, tip için en az bir seçenek varsa kendiliğinden görünür.
+// fırlatıcı eklemek = LAUNCH_OPTIONS'a bir satır (+ gerekiyorsa param tanımı ve flightsim.js LAUNCH_ICON'a simge); adım, tip için en az bir seçenek
+// varsa kendiliğinden görünür. §27: INTERCEPTOR için 4'lü / 8'li kutu, yerden tekli tüp, el fırlatıcısı (açıklama metni tipe göre: launchStepDesc).
 import { LAUNCH_METHODS } from './flightsim_launch.js';
 
 export const STEP_DEFS = [
@@ -21,18 +21,38 @@ export const STEP_DEFS = [
 ];
 export const stepDef = key => STEP_DEFS.find(s => s.key === key) || null;
 
-// Kaydırıcı tanımları (ölçek, birim); değerler world.launch'a aynı adla yazılır (sunucu sınırları: angle 10–30°, release 40–110 km/h)
+// Kaydırıcı tanımları (ölçek, birim); değerler world.launch'a `field` (yoksa anahtar) adıyla yazılır (sunucu sınırları: angle 10–30°, release 40–110 km/h;
+// §27 loaded 1…hücre, aim_az_deg 0…360, aim_el_deg 10…85). Aynı alanın yönteme göre farklı sınırı ayrı anahtarla (loaded4 / loaded8 → loaded).
 export const LAUNCH_PARAM_DEFS = {
   angle_deg: { label: 'Fırlatma açısı', min: 10, max: 30, step: 1, unit: '°' },
   release_kmh: { label: 'Bırakma hızı', min: 40, max: 110, step: 5, unit: 'km/h' },
+  loaded4: { field: 'loaded', label: 'Dolu hücre', min: 1, max: 4, step: 1, unit: '/ 4', integer: true },
+  loaded8: { field: 'loaded', label: 'Dolu hücre', min: 1, max: 8, step: 1, unit: '/ 8', integer: true },
+  aim_az_deg: { label: 'Nişan yönü', min: 0, max: 359, step: 1, unit: '°' },
+  aim_el_deg: { label: 'Nişan açısı', min: 10, max: 85, step: 1, unit: '°' },
 };
-// [anahtar, ad, açıklama] LAUNCH_METHODS'tan; types: seçeneğin sunulduğu dron tipleri; params: LAUNCH_PARAM_DEFS anahtarları; note: ek açıklama satırı
+export const paramField = key => LAUNCH_PARAM_DEFS[key]?.field || key;
+// [anahtar, ad, açıklama] LAUNCH_METHODS'tan; types: seçeneğin sunulduğu dron tipleri; params: LAUNCH_PARAM_DEFS anahtarları; note: ek açıklama satırı;
+// badge: kart rozeti (isteğe bağlı)
 const LM = Object.fromEntries(LAUNCH_METHODS.map(([k, name, desc]) => [k, { name, desc }]));
 export const LAUNCH_OPTIONS = [
   { key: 'wheels', types: ['sabit_kanat'], ...LM.wheels, params: [], icon: 'wheels' },
   { key: 'ramp', types: ['sabit_kanat'], ...LM.ramp, params: ['angle_deg'], icon: 'ramp' },
   { key: 'vehicle', types: ['sabit_kanat'], ...LM.vehicle, params: ['release_kmh'], icon: 'vehicle', note: 'Araç tipi: pickup (kasa kızağı). Araç pist boyunca hızlanır; bırakma hızına ulaşınca uçak serbest kalır ve tırmanır.' },
+  // §27 INTERCEPTOR fırlatıcıları (flightsim_launcher.js): kutu/tüp dikey; el fırlatıcısında nişan yönü/açısı (uçuşta da fare/klavye/sanal kumanda ile)
+  { key: 'pod4', types: ['interceptor'], ...LM.pod4, params: ['loaded4'], icon: 'pod4', note: '"Yer kontrolünü koru" görevinde dolu hücre görevin interceptor sayısıdır: ⌈sayı / 4⌉ kutu yan yana kurulur (10\'lu raf yerine).' },
+  { key: 'pod8', types: ['interceptor'], ...LM.pod8, params: ['loaded8'], icon: 'pod8', note: '"Yer kontrolünü koru" görevinde dolu hücre görevin interceptor sayısıdır: ⌈sayı / 8⌉ kutu yan yana kurulur (10\'lu raf yerine).' },
+  { key: 'tube', types: ['interceptor'], ...LM.tube, params: [], icon: 'tube', note: 'Görevde 10\'lu raf yedek deposudur; her "sıradaki interceptor" tüpe yeniden yüklenir.' },
+  { key: 'handheld', types: ['interceptor'], ...LM.handheld, params: ['aim_az_deg', 'aim_el_deg'], icon: 'handheld', badge: 'Nişangâh', note: 'Uçuşta "Nişangâh" penceresi: aparatın baktığı yöne (göğe) kamera ve hedefler; fare sürükleme, I/J/K/L ya da ok düğmeleriyle nişan alın, "Fırlat" ile interceptor nişan yönünde çıkar.' },
 ];
+// Kalkış adımının açıklaması tipe göre (§6; eski metin sabit kanada özgüydü)
+export const LAUNCH_STEP_DESC = {
+  sabit_kanat: { sitl: 'Sabit kanat uçağın nasıl havalanacağı: tekerlekli pist koşusu, pnömatik fırlatma rampası ya da pickup üstünden bırakma. Seçim 3B sahnede ve SITL kalkış parametrelerinde uygulanır.',
+    replay: 'Kayıttaki sabit kanat uçağın kalkış düzeneği: rampa ya da araç 3B sahnede kurulur; ARM, fırlatma ve bırakma aşamaları logdan (ARM anı, ilk hareket, yer hızı/irtifa) türetilir. SITL parametresi yazılmaz.' },
+  interceptor: { sitl: 'INTERCEPTOR\'ın hangi fırlatıcıdan çıkacağı: 4\'lü ya da 8\'li kutu fırlatıcı, yerden tekli tüp veya pilotun elindeki el fırlatıcısı. Tailsitter kuyruk üstünden dikey çıkar (SITL: GUIDED + NAV_TAKEOFF); el fırlatıcısında nişan yönüne yönelir.',
+    replay: 'Kayıttaki INTERCEPTOR\'ın fırlatıcısı 3B sahnede kurulur (kayıt bu simülatörden ise kayıttaki fırlatıcı önerilir); ARM, fırlatma ve çıkış aşamaları logdan türetilir.' },
+};
+export const launchStepDesc = (type, mode = 'sitl') => (LAUNCH_STEP_DESC[type] || LAUNCH_STEP_DESC.sabit_kanat)[mode === 'replay' ? 'replay' : 'sitl'];
 export const launchOptionsFor = (type, options = LAUNCH_OPTIONS) => options.filter(o => o.types.includes(type));
 // Seçili yöntem tipte yoksa ilk seçenek (tip değişince geçersiz kalmasın); seçenek yoksa olduğu gibi
 export const normLaunchMethod = (method, type, options = LAUNCH_OPTIONS) => { const list = launchOptionsFor(type, options); return !list.length || list.some(o => o.key === method) ? method : list[0].key; };

@@ -43,6 +43,9 @@
 .sm-ico { display: inline-grid; place-items: center; width: 52px; height: 52px; border-radius: 14px; background: rgba(255,255,255,.08); }
 .sm-ico svg { width: 34px; height: 34px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 .sm-card.type-interceptor .sm-ico { color: #f87171; } .sm-card.type-fpv .sm-ico { color: #38bdf8; } .sm-card.type-plane .sm-ico, .sm-card.type-vtol .sm-ico { color: #a78bfa; } .sm-card.type-heli .sm-ico { color: #fbbf24; }
+/* HEPGO §27 INTERCEPTOR fırlatıcı kartları */
+.sm-icept-pod4 { color: #a3e635; } .sm-icept-pod8 { color: #86efac; } .sm-icept-tube { color: #fbbf24; } .sm-icept-handheld { color: #f87171; }
+.sm-launch-desc { margin: 0 0 12px; max-width: 760px; }
 .sm-ico-launch { position: relative; }
 .sm-ico-launch::before { content: ""; position: absolute; inset: 10px; border-radius: 6px; background: currentColor; opacity: .85; clip-path: polygon(0 100%, 100% 30%, 100% 45%, 0 100%); }
 .sm-launch-ramp { color: #f2b21a; } .sm-launch-vehicle { color: #60a5fa; } .sm-launch-vehicle::before { clip-path: polygon(0 60%, 20% 30%, 70% 30%, 100% 60%, 100% 85%, 0 85%); } .sm-launch-wheels { color: #cbd5e1; } .sm-launch-wheels::before { clip-path: circle(28% at 30% 70%); box-shadow: 14px 0 0 currentColor; } .sm-launch-hand { color: #f59e0b; } .sm-launch-hand::before { clip-path: polygon(20% 100%, 35% 55%, 60% 40%, 100% 10%, 100% 22%, 65% 55%, 45% 100%); }

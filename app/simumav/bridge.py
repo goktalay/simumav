@@ -25,15 +25,15 @@ from pathlib import Path
 from . import config, db  # noqa: F401 — config önce: çekirdek yollarını yönlendirir
 from .. import config as core_config  # noqa: E402
 from .. import db as core_db  # noqa: E402
-from .. import drone_sitl, flightsim, flightsim_gcs, flightsim_models, flightsim_power, flightsim_replay, flightsim_targets  # noqa: E402
+from .. import drone_sitl, flightsim, flightsim_gcs, flightsim_launcher, flightsim_models, flightsim_power, flightsim_replay, flightsim_targets  # noqa: E402
 from . import power as guc  # noqa: E402
 
 # INTERCEPTOR (HEPGO §25): 4 pervaneli tailsitter — çekirdek `interceptor` (ArduPlane quadplane-copter_tailsitter; dikey kalkış, yatay uçuş, ~400 km/h).
 # Eski "interceptor" sabit kanat jetleri (glb:jet, glb:zephyr, proc:interceptor) 'plane' altına taşındı (db göçü v2; docs/simumav.md §11).
 TIP_ESLEME = {'multirotor': 'multirotor', 'fpv': 'multirotor', 'plane': 'sabit_kanat', 'interceptor': 'interceptor', 'heli': 'helikopter', 'vtol': 'vtol'}
 TYPES = tuple(TIP_ESLEME)
-LAUNCHES = ('wheels', 'ramp', 'vehicle', 'hand')
-LAUNCH_CEKIRDEK = {'wheels': 'wheels', 'ramp': 'ramp', 'vehicle': 'vehicle', 'hand': 'ramp'}   # elden atış: düşük ivmeli mancınık kalıbı (SITL'de özel model yok)
+LAUNCHES = ('wheels', 'ramp', 'vehicle', 'hand') + flightsim_launcher.ICEPT_METHODS   # HEPGO §27 INTERCEPTOR fırlatıcıları: pod4 | pod8 | tube | handheld
+LAUNCH_CEKIRDEK = {'wheels': 'wheels', 'ramp': 'ramp', 'vehicle': 'vehicle', 'hand': 'ramp', **{m: m for m in flightsim_launcher.ICEPT_METHODS}}   # elden atış: düşük ivmeli mancınık kalıbı (SITL'de özel model yok)
 # Görsel model anahtarı → çekirdek (flightsim_models) dahili model: prosedürel şablonlar ve gerçekçi GLB'ler (`glb:`) çekirdekte yalnız tip/fizik
 # seçimi için dahili modele eşlenir; GLB'nin kendisi ön yüzde (flightsim3d buildLibrary: glb_url + orient) çizilir.
 MODEL_ESLEME = {'proc:quad250': 'builtin:quad', 'proc:interceptor': 'builtin:delta',
@@ -487,14 +487,16 @@ HAND_DEFAULTS = {'hand_speed_ms': 7.0, 'hand_pitch_deg': 12.0}
 
 
 def launch_dogrula(l):
-    """fly/start `launch`: {method, angle_deg 10–30, release_kmh 40–110, hand_speed_ms 6–8, hand_pitch_deg 10–15}; dize ise yalnız yöntem."""
+    """fly/start `launch`: {method, angle_deg 10–30, release_kmh 40–110, hand_speed_ms 6–8, hand_pitch_deg 10–15}; dize ise yalnız yöntem.
+    HEPGO §27 fırlatıcı alanları (yalnız sınır denetimi, tip zorlaması yok — çekirdek launch_normalize tipe göre ayıklar): loaded 1…hücre,
+    aim_az_deg 0…360, aim_el_deg 10…85; fırlatıcı yönteminde eksikler varsayılanla dolar."""
     if isinstance(l, str) or l is None:
         l = {'method': l or 'wheels'}
     if not isinstance(l, dict):
         raise BridgeHata(422, 'invalid', 'launch nesne ya da yöntem adı olmalı')
     m = l.get('method') or 'wheels'
     if m not in LAUNCHES:
-        raise BridgeHata(422, 'invalid', 'launch.method wheels | ramp | vehicle | hand olmalı')
+        raise BridgeHata(422, 'invalid', f"launch.method {' | '.join(LAUNCHES)} olmalı")
     out = {'method': m}
     for k, (alt, ust, vars_) in {'angle_deg': (10, 30, 15.0), 'release_kmh': (40, 110, 70.0), 'hand_speed_ms': (6, 8, 7.0), 'hand_pitch_deg': (10, 15, 12.0)}.items():
         v = l.get(k)
@@ -504,6 +506,10 @@ def launch_dogrula(l):
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not (alt <= v <= ust):
             raise BridgeHata(422, 'invalid', f'launch.{k} {alt}…{ust} olmalı')
         out[k] = float(v)
+    try:
+        out.update(flightsim_launcher.ek_alanlar(l, m))
+    except flightsim_launcher.LauncherHata as e:
+        raise BridgeHata(422, 'invalid', str(e).replace('world.launch.', 'launch.'))
     return out
 
 
@@ -557,7 +563,8 @@ def _world(track, drone_type, launch):
     out = {'mode': mode, 'size_m': int(max(500, min(20000, (track.get('radius_m') or 2000) * 2))), 'time': TIME_CEKIRDEK.get(track.get('time_of_day'), 'day'),
            'wind_ms': float(max(0, min(30, w.get('speed_ms') or 0))), 'wind_dir': float(max(0, min(359.99, w.get('dir_deg') or 0))),
            'fog': FOG.get(track.get('weather'), 0.1), 'runway': drone_type == 'plane' and launch.get('method') != 'hand',
-           'launch': {'method': LAUNCH_CEKIRDEK.get(launch.get('method'), 'wheels'), 'angle_deg': launch.get('angle_deg', 15.0), 'release_kmh': launch.get('release_kmh', 70.0)}}
+           'launch': {'method': LAUNCH_CEKIRDEK.get(launch.get('method'), 'wheels'), 'angle_deg': launch.get('angle_deg', 15.0), 'release_kmh': launch.get('release_kmh', 70.0),
+                      **{k: launch[k] for k in ('loaded', 'aim_az_deg', 'aim_el_deg') if launch.get(k) is not None}}}   # §27 fırlatıcı alanları
     out.update({k: tw[k] for k in WORLD_KEYS if k in tw and tw[k] is not None})   # parkurun dünya ayarları (seed, pist yönü, ağaç yoğunluğu …)
     if launch.get('method') == 'hand':
         out['launch'].update(angle_deg=launch.get('hand_pitch_deg', 12.0), release_kmh=40)

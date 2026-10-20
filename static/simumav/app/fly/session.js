@@ -30,7 +30,7 @@
 import { clear, confirmDialog, fmtDateTime, fmtDuration, h, modal, toast, toastError, t as tr, onLeave } from './simui.js';
 import { net, wsUrl } from './net.js';
 import { createScoreBadge, targetsReportCard } from './targets.js';   // HEPGO §24 hedefler: skor rozeti + rapor kartı
-import { JET_AUDIO, TYPE_LABEL, WORLD_MODE_LABEL, audioTypeFor, launchBody, launchLabelSm, modelFor, needsLaunch, simType, speedAngle, speedScale, speedTicks, startCameraFor, worldFromTrack } from './wizard.js';
+import { JET_AUDIO, TYPE_LABEL, WORLD_MODE_LABEL, audioTypeFor, iceptLaunchBody, iceptLaunchLabel, isIceptLaunch, launchBody, launchLabelSm, modelFor, needsLaunch, simType, speedAngle, speedScale, speedTicks, startCameraFor, worldFromTrack } from './wizard.js';
 import { HAND, HAND_PHASES, createHandOverlay, handCfg, handHud, handReleaseTime, shimTelemetry } from './hand_launch.js';
 import { createOverlay3D } from './overlay3d.js';
 import { createGateLayer } from './gates.js';
@@ -54,6 +54,8 @@ const LAUNCH_PHASE_TEXT = {
   launch: { ramp: 'FIRLATMA', vehicle: 'Araç hızlanıyor', wheels: 'Pist koşusu', hand: 'ELDEN ATIŞ' },
   released: { ramp: 'Uçak rampadan ayrıldı', vehicle: 'BIRAKILDI', wheels: 'Uçak havalandı', hand: 'Uçak elden çıktı' },
 };
+// HEPGO §27 INTERCEPTOR fırlatıcıları: aşama metinleri i18n anahtarı (launcher.ph_*)
+const ICEPT_PHASE = { armed: ['launcher.ph_armed', 'Interceptor fırlatıcıda, motor hazır'], launch: ['launcher.ph_launch', 'FIRLATMA'], released: ['launcher.ph_released', 'Interceptor fırlatıcıdan çıktı'] };
 const CRASH_KIND = { terrain: 'Arazi ile temas', water: 'Suya düşüş', building: 'Binaya çarpma', sitl_hit: 'SITL yer teması', sitl: 'Otopilot çarpışma algısı' };
 const END_REASON = { kapatildi: 'Uçuş bitirildi', bosta: 'İzleyici kalmadığından kapatıldı', sure: 'Uçuş süresi doldu (45 dk)', sunucu_kapaniyor: 'Sunucu kapanıyor', yetim: 'Sahne bağlanmadığından uçuş sunucuda kapatıldı', webgl: '3B görünüm açılamadığından uçuş kapatıldı' };
 const safe = fn => { try { const r = fn?.(); if (r && typeof r.catch === 'function') r.catch(() => {}); } catch (e) { console.warn('dispose adımı', e); } };   // dispose zinciri: bir adım fırlatsa da kalanlar çalışır
@@ -62,11 +64,12 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
-export const hepgoLaunchFor = (droneType, launch) => (needsLaunch(droneType) ? launchBody(launch) : null);
+// HEPGO §27: INTERCEPTOR + fırlatıcı (pod4 | pod8 | tube | handheld) → {method, loaded? | aim_*?}; fırlatıcısız INTERCEPTOR → null (pad, eski davranış)
+export const hepgoLaunchFor = (droneType, launch) => (needsLaunch(droneType) ? launchBody(launch) : droneType === 'interceptor' && isIceptLaunch(launch?.method) ? iceptLaunchBody(launch) : null);
 
 // ---------- WS köprüsü: /ws/drone/live → start.ws (yalnız o yol) ----------
 export function installWsBridge(targetUrl, { win = globalThis } = {}) {
@@ -182,13 +185,15 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch } = await loadSim();
   MSiteRef = MSite;
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
   const drone = picked.drone || start.drone || { name: 'Dron', type: 'multirotor' }, track = picked.track || start.track || {}, pilot = picked.pilot || start.pilot || null, mission = picked.mission || start.mission || null;
   const dType = drone.type || 'multirotor', type = simType(dType), modes = modesFor(type);
   const launch = hepgoLaunchFor(dType, picked.launch || start.launch);
   const isHand = launch?.method === 'hand';
+  const isIcept = isIceptLaunch(launch?.method);   // HEPGO §27 fırlatıcı
+  let launcherUi = null;
   const hcfg = isHand ? handCfg(launch) : null;
   const mp = { host: start.mp?.host || location.hostname, port: start.mp?.port ?? '—', proto: 'tcp' };
   const sid = start.sim_id, fid = start.flight_id;
@@ -232,7 +237,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const scoreBadge = createScoreBadge({ h, t: tr }); scoreBadge.update(null);   // HEPGO §24 (hedef yoksa gizli)
   if (!session.targets && start.session?.targets) session.targets = start.session.targets;
   const nav = h('div', { class: 'fs-nav' }, backBtn, h('b', null, 'SIMUMAV'), h('span', { class: 'fs-nav-sub' }, `${TYPE_LABEL[dType] || dType} · ${drone.name || ''} · ${track.name || '—'}${pilot ? ` · ${pilot.name}` : ''} · ${WORLD_MODE_LABEL[world.mode] || world.mode}`), stateBadge, wsBadge,
-    launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, launchLabelSm(launch)) : null, gates.length ? h('span', { class: 'badge purple', title: tr('FPV halkaları') }, `${gates.length} halka`) : null, scoreBadge.el, speedPill.el, fullBtn);   // §10 hız kapsülü üst çubukta (HEPGO nav kalıbı)
+    launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, isIcept ? iceptLaunchLabel(launch, tr) : launchLabelSm(launch)) : null, gates.length ? h('span', { class: 'badge purple', title: tr('FPV halkaları') }, `${gates.length} halka`) : null, scoreBadge.el, speedPill.el, fullBtn);   // §10 hız kapsülü üst çubukta (HEPGO nav kalıbı)
   const onFullChange = () => { const full = !!document.fullscreenElement; stage.classList.toggle('fs-full', full); document.body.classList.toggle('fs-full', full); fullBtn.title = tr(full ? 'Tam ekrandan çık' : 'Tam ekran'); };
   document.addEventListener('fullscreenchange', onFullChange); onFullChange();
 
@@ -268,7 +273,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const rcBtn = h('button', { class: 'btn sm fs-rc-btn', type: 'button', title: tr('Sanal kumanda: iki sanal çubuk + klavye (W/S gaz, A/D yaw, ok tuşları pitch/roll, Q/E mod kanalı, Boşluk gaz orta). RC_CHANNELS_OVERRIDE 20 Hz.'), onclick: () => rcToggle() }, '🎮 ', 'Sanal kumanda');
   const modeSel = h('select', { class: 'input sm fs-modesel', onchange: () => { if (modeSel.value) cmd('mode', { mode: modeSel.value }); } },
     h('option', { value: '' }, 'Mod…'), modes.map(mm => h('option', { value: mm }, mm)));
-  const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış', hand: 'Elden at' };
+  const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış', hand: 'Elden at', pod4: 'Fırlat', pod8: 'Fırlat', tube: 'Fırlat', handheld: 'Fırlat' };
   const bar = h('div', { class: 'fs-bar' }, h('div', { class: 'pill-group' }, camBtns), gimbalLbl, mhudBtn, fpvCtl, camCtl.el, opsBtn, h('span', { class: 'spacer' }),
     h('div', { class: 'pill-group fs-cmds' }, armBtn, modeSel,
       h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
@@ -296,6 +301,11 @@ export async function openSession(view, start, picked, ctx = {}) {
   stage.append(mount, msg, crash, events, sticks, bar, nav, ended, countdown, gauge.el, gauges.el, pwAlert, attrib, netLbl);
   camPip = MCam.createCameraPip(mount, { getSim: () => sim, tr: trc, prefs: camPrefs, insets: side => { const o = MCam.pipObstacleInsets(stage, mount, side); return { top: Math.max(56, Math.round(nav.getBoundingClientRect().bottom - mount.getBoundingClientRect().top) + 10), bottom: Math.max((bar.offsetHeight || 54) + 28, o.bottom || 0), right: o.right ?? 12 }; }, onSwap: () => drawFpv() });
   if (handLbl) stage.append(handLbl);
+  // HEPGO §27 fırlatıcı: hücre envanteri (3B) + el fırlatıcısında NİŞANGÂH penceresi (alt çubukta Nişangâh — G); "Fırlat" → kalkış penceresi
+  if (isIcept) {
+    launcherUi = MScope.createLauncherUi(stage, { tr, keyed: true, getSim: () => sim, launch: session.launch, session, mount, onFire: () => takeoffDialog(), onToggle: () => camPip?.layout() });
+    if (launcherUi.buttons.length) bar.insertBefore(h('div', { class: 'pill-group fs-scope-btns' }, launcherUi.buttons), opsBtn.nextSibling);
+  }
   view.classList.add('sm-fly-session');
   clear(view, stage);
 
@@ -338,7 +348,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     handTimers.push(setTimeout(() => { if (!destroyed && hand && hand.order < 3) { setHandPhase('released'); addEvent(tr(LAUNCH_PHASE_TEXT.released.hand), 'warning'); } }, Math.round(handReleaseTime(hcfg) * 1000)));
     return r;
   };
-  const cmdSim = (name, params = {}) => (name === 'takeoff' && isHand ? handTakeoff(num(params.alt, 60)) : cmd(name, params));
+  const cmdSim = (name, params = {}) => (name === 'takeoff' && isHand ? handTakeoff(num(params.alt, 60)) : cmd(name, name === 'takeoff' && launcherUi ? { ...params, ...launcherUi.takeoffExtra() } : params));   // §27 el fırlatıcısı: canlı nişan
   // Alt çubuk Kalkış (panel kapalıyken; HEPGO takeoffDialog kalıbı): sabit kanat ailesi → sim yolu takeoff{alt} (düzenek dizisi, ARM dâhil);
   // diğerleri → hub akışı takeoff{alt_rel_m} (GUIDED → ARM → NAV_TAKEOFF; kalp atışı/EKF beklenir) — pilot ayrıca ARM etmez
   const takeoffDialog = () => {
@@ -347,6 +357,8 @@ export async function openSession(view, start, picked, ctx = {}) {
     const hint = m === 'ramp' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; 1 sn sonra pnömatik rampa kızağı {a}° açıyla fırlatır (SITL mancınık tetiği).', { a: Math.round(launch.angle_deg) })
       : m === 'vehicle' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; pickup pist boyunca hızlanır, {k} km/h yer hızında uçak bırakılır ve tırmanır.', { k: Math.round(launch.release_kmh) })
       : m === 'hand' ? tr('Geri sayım sonunda pilot uçağı elden atar; motor ARM edilir ve uçak tırmanır.')
+      : m === 'handheld' ? tr('launcher.takeoff_hand')
+      : isIcept ? tr('launcher.takeoff_pod')
       : launch ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; pist boyunca hızlanır.') : tr('GÖKTUNGU akışı: GUIDED → ARM → NAV_TAKEOFF; dron hedef irtifaya yükselir.');
     const label = LAUNCH_BTN[m] || 'Kalkış';
     modal({ title: label, body: h('div', null, h('label', { class: 'field' }, h('span', null, tr('Hedef irtifa (m, AGL)')), alt), h('p', { class: 'small muted' }, hint)),
@@ -372,7 +384,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   osd.setAnalog?.(fpvPrefs.analog);
   const recText = () => ['SIMUMAV', TYPE_LABEL[dType] || dType, drone.name, track.name, pilot?.name, launch ? launchLabelSm(launch) : null, fmtDateTime(session.created_at)].filter(Boolean).join(' · ');
   const wantVideo = !!(picked.record?.video ?? start.record?.video);
-  if (wantVideo && MRec.recSupported()) rec = MRec.createRecorder(stage, { sid: fid, tr, getSim: () => sim, getHudCanvas: () => stage.querySelector('.fs-mhud'), getOsdCanvas: () => stage.querySelector('.fs-osd'), getOverlays: () => [camPip?.overlay()].filter(Boolean), audio, text: recText, share: () => false, rest: recRest(fid), onEvent: (t, sev) => addEvent(t, sev) });
+  if (wantVideo && MRec.recSupported()) rec = MRec.createRecorder(stage, { sid: fid, tr, getSim: () => sim, getHudCanvas: () => stage.querySelector('.fs-mhud'), getOsdCanvas: () => stage.querySelector('.fs-osd'), getOverlays: () => [camPip?.overlay(), launcherUi?.overlay?.()].filter(Boolean), audio, text: recText, share: () => false, rest: recRest(fid), onEvent: (t, sev) => addEvent(t, sev) });
 
   // ---------- 3B (HEPGO renderSession kurulumu: üç kip) ----------
   let worldReady = false;
@@ -407,6 +419,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     });
     if (destroyed) { s3.dispose(); return { dispose() {} }; }
     sim = s3; window.__smSim = sim;
+    launcherUi?.sync();   // §27 hücre envanteri + nişangâh dikdörtgeni
     if (netsim) window.__fsSim = sim;   // HEPGO teşhis adı: Playwright/konsol sim.netStats() · sim.motionStats(true)
     if (sim.terrainInfo && !worldReady) progMsg({ stage: 'done', real: sim.real, google: sim.google, ...sim.terrainInfo });
     msg.hidden = session.state === 'HAZIR';
@@ -501,8 +514,8 @@ export async function openSession(view, start, picked, ctx = {}) {
   };
   const onLaunch = m => {
     if (!launch) return;
-    if (isHand) setHandPhase(m.phase); else { sim?.setLaunchPhase(m.phase); ops?.setLaunchPhase?.(m.phase); }
-    const txt = (LAUNCH_PHASE_TEXT[m.phase] || {})[launch.method] || m.phase;
+    if (isHand) setHandPhase(m.phase); else { sim?.setLaunchPhase(m.phase); ops?.setLaunchPhase?.(m.phase); launcherUi?.onLaunch(m); }
+    const txt = isIcept && ICEPT_PHASE[m.phase] ? ICEPT_PHASE[m.phase][0] : (LAUNCH_PHASE_TEXT[m.phase] || {})[launch.method] || m.phase;
     addEvent(m.phase === 'released' && m.speed_kmh != null ? `${tr(txt)} · ${f0(m.speed_kmh)} km/h` : tr(txt), m.phase === 'released' || m.phase === 'launch' ? 'warning' : 'info');
   };
   // ---------- HEPGO §24 hedefler: 3B katmanı (sim.setTargets), önleme olayı → halka parlaması + şerit + skor rozeti + ses ----------
@@ -512,8 +525,9 @@ export async function openSession(view, start, picked, ctx = {}) {
     if (!sim || !session.site || sim.__siteSet) return;
     sim.__siteSet = true;
     const D = session.defend, I = D?.state?.icept;
-    sim.setSite(session.site, { rack: D ? (D.config?.interceptors || 10) : 0, show: I ? Math.max(0, I.total - I.used) : (D?.config?.interceptors || 10) - 1 });
+    sim.setSite(session.site, { rack: D ? (isIcept ? MLaunch.rackCountFor(launch.method, D.config?.interceptors || 10) : (D.config?.interceptors || 10)) : 0, show: I ? Math.max(0, I.total - I.used) : (D?.config?.interceptors || 10) - 1 });   // §27 kutularda raf yok
     if (D) sim.setDefend(D);
+    launcherUi?.sync();
     siteUi = MSite.createSiteScreens(stage, { tr, keyed: true, getSim: () => sim, site: session.site, mount, onToggle: () => camPip?.layout() });
     if (siteUi.buttons.length) bar.insertBefore(h('div', { class: 'pill-group fs-site-btns' }, siteUi.buttons), opsBtn.nextSibling);
     siteUi.applyPrefs();
@@ -540,7 +554,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     showPwAlert(`◎ ${tr('targets.intercept')}`, m.name, 'low');
   };
   const showCrash = (reason, speed) => { if (!crash.hidden) return; const k = tr(CRASH_KIND[reason] || 'Çarpışma'); crash.hidden = false; crash.querySelector('.fs-crash-sub').textContent = tr('{k} · {v} m/s · "Sıfırla" ile yeniden başlayın', { k, v: f1(speed) }); addEvent(tr('ÇARPIŞMA: {k} ({v} m/s)', { k, v: f1(speed) }), 'error'); };
-  const reset = async () => { pwAlert.hidden = true; crash.hidden = true; sim?.clearCollision(); sim?.setLaunchPhase(null); clearHandTimers(); hand?.setPhase('idle'); countdown.hidden = true; gateLayer?.tracker.reset(); sim?.resetCamera(); await cmd('reset'); };
+  const reset = async () => { pwAlert.hidden = true; crash.hidden = true; sim?.clearCollision(); sim?.setLaunchPhase(null); launcherUi?.reset?.(); clearHandTimers(); hand?.setPhase('idle'); countdown.hidden = true; gateLayer?.tracker.reset(); sim?.resetCamera(); await cmd('reset'); };
   const showEnded = reason => { clear(ended, h('div', { class: 'fs-ended-box' }, h('b', null, 'Uçuş sona erdi'), h('div', { class: 'small muted' }, tr(END_REASON[reason] || reason || '')), h('button', { class: 'btn primary', type: 'button', onclick: () => go('#/ops') }, 'Operasyon\'a git'))); ended.hidden = false; };
   socket = wsClient(wsAddr, {
     status: setWs,
@@ -557,7 +571,7 @@ export async function openSession(view, start, picked, ctx = {}) {
         case 'event': return addEvent(m.text, m.severity, 'STATUS');
         case 'launch': return onLaunch(m);
         case 'target': return onTarget(m);   // HEPGO §24 önleme
-        case 'defend': if (m.state && session.defend) session.defend.state = m.state; return defHud?.event(m);   // HEPGO §26 görev olayları
+        case 'defend': if (m.state && session.defend) session.defend.state = m.state; launcherUi?.sync(); return defHud?.event(m);   // HEPGO §26 görev olayları (§27: sıradaki hücre)
         case 'state': if (m.center) session.center = { ...session.center, ...m.center }; return setState(m.state);
         case 'res': { const p = pending.get(m.rid); if (p) { clearTimeout(p.timer); pending.delete(m.rid); p.resolve(m); } return; }
         case 'end': setState('KAPANDI'); showEnded(m.reason); socket?.close(); return;
@@ -629,7 +643,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();
-    safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => camPip?.dispose()); safe(() => camCtl.dispose()); safe(() => siteUi?.dispose()); safe(() => defHud?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose());
+    safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => camPip?.dispose()); safe(() => camCtl.dispose()); safe(() => siteUi?.dispose()); safe(() => defHud?.dispose()); safe(() => launcherUi?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose());
     safe(() => hand?.dispose()); safe(() => gateLayer?.dispose()); safe(() => overlay?.dispose()); safe(() => sim?.dispose());
     safe(restoreWs);
     if (window.__smSim === sim) delete window.__smSim; if (window.__fsSim === sim) delete window.__fsSim; delete window.__smHand; delete window.__smGates; if (window.__smSession === api) delete window.__smSession;

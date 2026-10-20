@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS flights (
     drone_id INTEGER REFERENCES drones(id) ON DELETE SET NULL,
     track_id INTEGER REFERENCES tracks(id) ON DELETE SET NULL,
     mission_id INTEGER REFERENCES missions(id) ON DELETE SET NULL,
-    launch TEXT NOT NULL DEFAULT 'wheels',      -- wheels | ramp | vehicle | hand
+    launch TEXT NOT NULL DEFAULT 'wheels',      -- wheels | ramp | vehicle | hand | pod4 | pod8 | tube | handheld (HEPGO §27; CHECK yok → göç gerekmez)
     started_at TEXT NOT NULL,
     ended_at TEXT,
     duration_s INTEGER,

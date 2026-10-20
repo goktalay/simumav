@@ -13,16 +13,27 @@ export const LAUNCH_METHODS = [
   ['wheels', 'Tekerlekli kalkış', 'Burun ve ana iniş takımı eklenir; uçak pist boyunca hızlanır, döndürme hızında havalanır (ArduPlane TAKEOFF).'],
   ['ramp', 'Fırlatma rampası', 'Pnömatik 2 eksenli rampa (azimut tablası + eğim silindiri); kızak uçağı 6 m rayda 0,5 sn\'de fırlatır. SITL: plane-catapult, servo 7 tetiği.'],
   ['vehicle', 'Araç üstü kalkış', 'Uçak pickup kasasındaki kızağa oturur; araç pist boyunca hızlanır, seçilen hıza ulaşınca uçağı bırakır.'],
+  // §27 INTERCEPTOR fırlatıcıları (flightsim_launcher.js; 3B flightsim_launcher3d.js createIceptRig)
+  ['pod4', "4'lü fırlatıcı", 'Kutu fırlatıcı, 2×2 dikey hücre. Kapak açılır, interceptor kuyruk üstünden dikey çıkar; dolu/boş hücreler LED ve sayaçta.'],
+  ['pod8', "8'li fırlatıcı", 'Kutu fırlatıcı, 4×2 dikey hücre. Görevde envanter kutulara dağılır (raf yerine).'],
+  ['tube', 'Yerden tekli', 'Üç ayaklı sehpada tek dikey fırlatma tüpü; kapak açılır, interceptor tüpten çıkar.'],
+  ['handheld', 'El fırlatıcısı', 'Pilotun omzundaki silah benzeri aparat; üstündeki küçük ekranda göğe bakan kamera ve havadaki hedefler. Nişan alıp fırlatın.'],
 ];
 export const LAUNCH_DEFAULTS = { method: 'wheels', angle_deg: 15, release_kmh: 70 };
 export const RAMP_RAIL = 6.0, RAMP_TIME = 0.5;   // ray boyu (m) ve kızak süresi (sn) → çıkış hızı 2L/t = 24 m/s
 export const rampExitSpeed = () => 2 * RAMP_RAIL / RAMP_TIME;   // m/s (bilgi amaçlı; açıdan bağımsız)
 export const launchLabel = (l, tr = s => s) => {
   const m = l?.method || 'wheels';
+  if (m === 'pod4' || m === 'pod8') return `${tr(m === 'pod4' ? "4'lü fırlatıcı" : "8'li fırlatıcı")}${l.loaded != null ? ` · ${Math.round(l.loaded)}/${m === 'pod4' ? 4 : 8}` : ''}`;
+  if (m === 'tube') return tr('Yerden tekli');
+  if (m === 'handheld') return `${tr('El fırlatıcısı')} ${Math.round(l.aim_el_deg ?? 55)}°/${Math.round(l.aim_az_deg ?? 0)}°`;
   return m === 'ramp' ? `${tr('Rampa')} ${Math.round(l.angle_deg ?? 15)}°` : m === 'vehicle' ? `${tr('Araç')} ${Math.round(l.release_kmh ?? 70)} km/h` : tr('Tekerlekli');
 };
 export const launchHud = l => (l?.method === 'ramp' ? `LAUNCH RAMP ${Math.round(l.angle_deg ?? 15)}° · ${Math.round(rampExitSpeed() * 3.6)} km/h`
-  : l?.method === 'vehicle' ? `LAUNCH VEH · ${Math.round(l.release_kmh ?? 70)} km/h` : 'LAUNCH RWY');
+  : l?.method === 'vehicle' ? `LAUNCH VEH · ${Math.round(l.release_kmh ?? 70)} km/h`
+  : l?.method === 'pod4' || l?.method === 'pod8' ? `LAUNCH CELL ${l.method === 'pod4' ? 'x4' : 'x8'}` : l?.method === 'tube' ? 'LAUNCH TUBE'
+  : l?.method === 'handheld' ? `LAUNCH HAND AZ ${String(Math.round(l.aim_az_deg ?? 0)).padStart(3, '0')} EL ${Math.round(l.aim_el_deg ?? 55)}` : 'LAUNCH RWY');
+export const ICEPT_LAUNCH = ['pod4', 'pod8', 'tube', 'handheld'];   // §27 (flightsim_launcher.ICEPT_METHODS ile aynı; saf modül döngüsü olmasın diye kopya)
 
 const GEAR_RE = /gear|wheel|teker|landing/i;
 
@@ -361,14 +372,15 @@ export function createLaunchRig(T, cfg) {
 // ---------- kayıttan oynatma: aşamalar logdan (§8) ----------
 // frames: önbellek kareleri (fields sırası), FI: alan → dizin. Her ARM segmenti için { arm, launch, release, disarm }:
 //   arm: `armed` 0→1 anı · launch: ilk hareket (yer hızı > 2 m/s ya da ARM anına göre AGL artışı > 0,5 m) · release: yönteme göre bırakma
-//   (rampa: yer hızı ≥ 8 m/s ya da AGL artışı > 3 m — SITL dizisiyle aynı eşik; araç: yer hızı ≥ %95 bırakma hızı ya da AGL > 3 m; tekerlekli: AGL > 1 m)
+//   (rampa: yer hızı ≥ 8 m/s ya da AGL artışı > 3 m — SITL dizisiyle aynı eşik; araç: yer hızı ≥ %95 bırakma hızı ya da AGL > 3 m; tekerlekli: AGL > 1 m;
+//   §27 INTERCEPTOR fırlatıcıları: AGL > 1,5 m)
 //   · disarm: `armed` 1→0 (yoksa null). Gerçek loglarda kalkış öncesi kalibrasyon ARM'ları hareketsiz segment olur → DISARM'da düzenek `idle`a döner.
-export const REPLAY_MOVE_SPEED = 2, REPLAY_RAMP_RELEASE = 8, REPLAY_RELEASE_AGL = 3, REPLAY_MOVE_CLIMB = 0.5, REPLAY_WHEELS_AGL = 1;
+export const REPLAY_MOVE_SPEED = 2, REPLAY_RAMP_RELEASE = 8, REPLAY_RELEASE_AGL = 3, REPLAY_MOVE_CLIMB = 0.5, REPLAY_WHEELS_AGL = 1, REPLAY_ICEPT_AGL = 1.5;
 export function replayLaunchTimeline(frames, FI, launch) {
   const segs = [];
   const col = (f, k) => (FI?.[k] == null ? null : f[FI[k]]);
   const m = launch?.method || 'wheels', relSpeed = m === 'ramp' ? REPLAY_RAMP_RELEASE : m === 'vehicle' ? 0.95 * (Number(launch?.release_kmh) || 70) / 3.6 : Infinity;
-  const relClimb = m === 'wheels' ? REPLAY_WHEELS_AGL : REPLAY_RELEASE_AGL;
+  const relClimb = m === 'wheels' ? REPLAY_WHEELS_AGL : ICEPT_LAUNCH.includes(m) ? REPLAY_ICEPT_AGL : REPLAY_RELEASE_AGL;   // §27 fırlatıcı: AGL 1,5 m (sunucu RELEASE_AGL_M)
   let cur = null, prevArmed = false, agl0 = null;
   for (const f of frames || []) {
     const t = col(f, 't') ?? f[0], armed = !!col(f, 'armed'), gs = Number(col(f, 'gs')) || 0, agl = col(f, 'alt_rel');

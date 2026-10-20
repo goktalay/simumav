@@ -31,10 +31,12 @@ import { camTypeLabel, pipObstacleInsets, createCamPrefs, createCameraCards, cre
 import { createTargetsSection } from './flightsim_targets_ui.js';   // §24 sihirbaz "Hedefler" bölümü
 import { createTargetPreviews } from './flightsim_tgtview.js';   // §24.4 hedef kartlarında 3B önizleme (aynı WebGL bağlamı)
 import { createInterceptTracker } from './flightsim_targets.js';   // §24 kayıtta önleme olayları (sunucu HedefIzleyici eşleniği)
-import { createDefendHud, createSiteScreens, createSiteSection, defendReportBody, showDefendReport } from './flightsim_gcs_ui.js';   // §26 yer kontrol sahası: sihirbaz, radar/EO ekranları, görev şeridi, rapor
+import { createDefendHud, createSiteScreens, createSiteSection, defendReportBody, showDefendReport } from './flightsim_gcs_ui.js';
+import { aimWaypoint, isIceptLauncher, rackCountFor } from './flightsim_launcher.js';   // §27 INTERCEPTOR fırlatıcıları (saf)
+import { createLauncherUi } from './flightsim_scope_ui.js';   // §27 hücre envanteri + el fırlatıcısı nişangâh penceresi   // §26 yer kontrol sahası: sihirbaz, radar/EO ekranları, görev şeridi, rapor
 import { defendStateAt } from './flightsim_gcs.js';   // §26 kayıtta görev şeridi durumu
 import { createPowerGauges, createPowerSection, createPowerSim, createSpeedPill, elecText, fuelText, rangeText } from './flightsim_power.js';   // §23: güç ve yakıt (sihirbaz bölümü, göstergeler, güç paneli kadranları §23.6, kayıtta istemci modeli, hız kapsülü)
-import { LAUNCH_OPTIONS, LAUNCH_PARAM_DEFS, createStepper, firstInvalid, launchOptionsFor, normLaunchMethod, stepDef, wizardSteps } from './flightsim_wizard.js';   // §6 adım adım sihirbaz (saf: adım listesi, doğrulama geçişleri, veriden kalkış seçenekleri)
+import { LAUNCH_OPTIONS, LAUNCH_PARAM_DEFS, createStepper, firstInvalid, launchOptionsFor, launchStepDesc, normLaunchMethod, paramField, stepDef, wizardSteps } from './flightsim_wizard.js';   // §6 adım adım sihirbaz (saf: adım listesi, doğrulama geçişleri, veriden kalkış seçenekleri)
 import { numSlider } from './fs_inputs.js';   // §6.1 görsel giriş: kaydırıcı + düzenlenebilir değer kutusu + birim
 
 const API = '/api/drone/sim';
@@ -105,6 +107,11 @@ const LAUNCH_ICON = {
   wheels: svgIco('<path d="M3 11h18l-3-3H8l-5 3Z"/><path d="M12 8V5h4"/><path d="M7 11v4M16 11v4"/><circle cx="7" cy="17" r="2"/><circle cx="16" cy="17" r="2"/><path d="M3 21h18"/>'),
   ramp: svgIco('<path d="M3 19 19 7"/><path d="M5 19h14"/><path d="M8 19v-3.5M13 19v-7"/><rect x="12" y="7" width="5" height="3" rx=".6" transform="rotate(-37 14.5 8.5)"/><circle cx="6" cy="21" r="1.4"/><circle cx="17" cy="21" r="1.4"/>'),
   vehicle: svgIco('<path d="M2 16h20v-4h-6l-2-3H9v3H2Z"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="18.5" r="2"/><path d="M8 9h11l-3-2.2H11L8 9Z"/><path d="M13.5 6.8V5"/>'),
+  // §27 INTERCEPTOR fırlatıcıları: 4'lü (2×2 hücre, açık kapak), 8'li (4×2), yerden tekli (sehpa + tüp), el fırlatıcısı (omuz tüpü + ekran)
+  pod4: svgIco('<rect x="5" y="8" width="14" height="11" rx="1"/><path d="M12 8v11M5 13.5h14"/><path d="M5.5 8 3.5 4.5h5L10 8"/><path d="M8 19v2M16 19v2"/><path d="M15.5 4.2v2.3M14.3 5.4h2.4"/>'),
+  pod8: svgIco('<rect x="2.5" y="9" width="19" height="10" rx="1"/><path d="M7.25 9v10M12 9v10M16.75 9v10M2.5 14h19"/><path d="M3 9 1.8 5.5h4L7 9"/><path d="M5 19v2M19 19v2"/>'),
+  tube: svgIco('<rect x="9" y="5" width="6" height="11" rx="1"/><path d="M9 5 7 2.5h5"/><path d="M12 16l-5 5M12 16l5 5M12 16v5"/><path d="M15 9h2v3h-2"/>'),
+  handheld: svgIco('<circle cx="6" cy="5" r="2"/><path d="M6 7v6l-2 8M6 13l2 8M6 9l4 1"/><path d="m9 11 11-6.5 1.5 2.6-11 6.5z"/><path d="M12 12.5l.8 2.6"/><rect x="13.5" y="5.5" width="3" height="2.2" rx=".4" transform="rotate(-30 15 6.6)"/>'),
 };
 
 // ======================================================================
@@ -349,28 +356,32 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const launchInfo = h('div', { class: 'small muted fs-launch-info' });
   const applyLaunch = () => { preview?.setLaunch({ ...L }); };
   // Ayar kaydırıcıları veriden (flightsim_wizard LAUNCH_PARAM_DEFS); hangisinin görüneceğini seçili seçeneğin `params` listesi belirler
-  const launchParams = Object.fromEntries(Object.entries(LAUNCH_PARAM_DEFS).map(([key, d]) => [key, numSlider({ h, label: d.label, value: L[key] ?? d.min, min: d.min, max: d.max, step: d.step, unit: d.unit, cls: 'fs-launch-param',
-    onInput: v => { L[key] = v; drawLaunchInfo(); applyLaunch(); } })]));
+  const launchParams = Object.fromEntries(Object.entries(LAUNCH_PARAM_DEFS).map(([key, d]) => [key, numSlider({ h, label: tr(d.label), value: L[paramField(key)] ?? d.max, min: d.min, max: d.max, step: d.step, unit: d.unit, integer: !!d.integer, cls: 'fs-launch-param',
+    onInput: v => { L[paramField(key)] = v; drawLaunchInfo(); applyLaunch(); } })]));
   const launchNote = h('div', { class: 'small muted fs-launch-param fs-launch-note' });
   const drawLaunchInfo = () => {
     const v = rampExitSpeed();
     launchInfo.textContent = L.method === 'ramp' ? tr('Pnömatik rampa: 6 m ray, 0,5 sn kızak → çıkış hızı ≈ {v} m/s ({k} km/h); açı {a}°. SITL: plane-catapult modeli, servo 7 tetiği; TKOFF_THR_MINACC 8 m/s².', { v: v.toFixed(0), k: Math.round(v * 3.6), a: Math.round(L.angle_deg) })
       : L.method === 'vehicle' ? tr('Araç üstü: uçak {k} km/h ({v} m/s) yer hızında bırakılır (TKOFF_ROTATE_SPD = bırakma hızı); araç frenleyip durur.', { k: Math.round(L.release_kmh), v: (L.release_kmh / 3.6).toFixed(1) })
+      : L.method === 'pod4' || L.method === 'pod8' ? tr('{c} hücreli kutu: {n} dolu · {e} boş. Kapak açılır, interceptor kuyruk üstünden dikey çıkar (SITL: GUIDED + ARM + NAV_TAKEOFF); hücre sırası soldan sağa, arka sıradan öne.', { c: L.method === 'pod4' ? 4 : 8, n: Math.round(L.loaded ?? (L.method === 'pod4' ? 4 : 8)), e: (L.method === 'pod4' ? 4 : 8) - Math.round(L.loaded ?? (L.method === 'pod4' ? 4 : 8)) })
+      : L.method === 'tube' ? tr('Yerden tekli tüp: kapak açılır, interceptor tüpten dikey çıkar (SITL: GUIDED + ARM + NAV_TAKEOFF).')
+      : L.method === 'handheld' ? (() => { const w = aimWaypoint(L.aim_az_deg ?? 0, L.aim_el_deg ?? 55); return tr('El fırlatıcısı: nişan yönü {az}° · açısı {el}°. Fırlatınca interceptor 8 m dikey çıkar ve nişan doğrultusundaki noktaya ({h} m ileride, {a} m irtifa) yönelir. Uçuşta "Nişangâh" ile yeniden nişan alınabilir.', { az: Math.round(L.aim_az_deg ?? 0), el: Math.round(L.aim_el_deg ?? 55), h: Math.round(w.horiz_m), a: Math.round(w.alt_m) }); })()
       : tr('Tekerlekli: iniş takımı eklenir; uçak pist boyunca hızlanır, 12 m/s döndürme hızında burun kalkar (ArduPlane TAKEOFF).');
   };
-  const launchDesc = h('p', { class: 'small muted' }, 'Sabit kanat uçağın nasıl havalanacağı: tekerlekli pist koşusu, pnömatik fırlatma rampası ya da pickup üstünden bırakma. Seçim 3B sahnede ve SITL kalkış parametrelerinde uygulanır.');
+  const launchDesc = h('p', { class: 'small muted' }, tr(launchStepDesc('sabit_kanat', 'sitl')));
+  const lastMethod = {};   // tip → son seçilen kalkış yöntemi (tip değişip geri gelince seçim korunur)
   // Kayıt kipinde de sorulur (kullanıcı isteği): seçili logun aracı sabit kanat (ArduPlane) ise kartlar görünür; düzenek 3B'de kurulur, aşamalar logdan türetilir (§8)
   const drawLaunch = () => {
-    const opts = launchOptionsFor(activeType());   // veriden: tipe uygun kalkış seçenekleri (yoksa adım atlanır)
+    const at = activeType(), opts = launchOptionsFor(at);   // veriden: tipe uygun kalkış seçenekleri (yoksa adım atlanır)
     launchBox.hidden = !opts.length;
-    const nm = normLaunchMethod(L.method, activeType()); if (nm !== L.method) { L.method = nm; applyLaunch(); }
-    launchDesc.textContent = tr(S.mode === 'replay'
-      ? 'Kayıttaki sabit kanat uçağın kalkış düzeneği: rampa ya da araç 3B sahnede kurulur; ARM, fırlatma ve bırakma aşamaları logdan (ARM anı, ilk hareket, yer hızı/irtifa) türetilir. SITL parametresi yazılmaz.'
-      : 'Sabit kanat uçağın nasıl havalanacağı: tekerlekli pist koşusu, pnömatik fırlatma rampası ya da pickup üstünden bırakma. Seçim 3B sahnede ve SITL kalkış parametrelerinde uygulanır.');
-    clear(launchCards, opts.map(o => h('button', { type: 'button', class: `fs-type fs-launch ${L.method === o.key ? 'on' : ''}`, 'data-launch': o.key, onclick: () => { L.method = o.key; drawLaunch(); applyLaunch(); } },
-      h('span', { class: 'fs-type-ico', html: LAUNCH_ICON[o.icon] || LAUNCH_ICON.wheels }), h('b', null, o.name), h('span', { class: 'small muted' }, o.desc))));
+    if (opts.some(o => o.key === L.method)) lastMethod[at] = L.method; else if (lastMethod[at]) L.method = lastMethod[at];
+    const nm = normLaunchMethod(L.method, at); if (nm !== L.method) { L.method = nm; applyLaunch(); }
+    launchDesc.textContent = tr(launchStepDesc(at, S.mode));
+    launchCards.classList.toggle('fs-launches-4', opts.length >= 4);
+    clear(launchCards, opts.map(o => h('button', { type: 'button', class: `fs-type fs-launch ${L.method === o.key ? 'on' : ''}`, 'data-launch': o.key, onclick: () => { if (o.key !== L.method && (o.key === 'pod4' || o.key === 'pod8')) L.loaded = o.key === 'pod4' ? 4 : 8; L.method = o.key; drawLaunch(); applyLaunch(); } },   // kutu değişince hücreler dolu başlar
+      h('span', { class: 'fs-type-ico', html: LAUNCH_ICON[o.icon] || LAUNCH_ICON.wheels }), h('b', null, tr(o.name), o.badge ? h('span', { class: 'badge blue fs-launch-badge2' }, tr(o.badge)) : null), h('span', { class: 'small muted' }, tr(o.desc)))));
     const cur = opts.find(o => o.key === L.method);
-    for (const [key, sl] of Object.entries(launchParams)) { sl.set(L[key]); sl.el.hidden = !cur?.params.includes(key); }
+    for (const [key, sl] of Object.entries(launchParams)) { const f = paramField(key), d = LAUNCH_PARAM_DEFS[key]; if (cur?.params.includes(key) && (L[f] == null || L[f] > d.max || L[f] < d.min)) L[f] = d.max === 359 ? 0 : key === 'aim_el_deg' ? 55 : d.max; sl.set(L[f]); sl.el.hidden = !cur?.params.includes(key); }
     launchNote.hidden = !cur?.note; launchNote.textContent = cur?.note ? tr(cur.note) : '';
     drawLaunchInfo();
   };
@@ -451,7 +462,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
         : 'Uçuş loglarına erişim için Araçlar ya da Saha Yönetimi yetkisi gerekir.'));
       return;
     }
-    clear(logList, rows.map(l => h('button', { type: 'button', class: `fs-log ${S.log === l.id ? 'on' : ''}`, onclick: () => { S.log = l.id; drawLogs(); drawLaunch(); refreshModels(); } },
+    clear(logList, rows.map(l => h('button', { type: 'button', class: `fs-log ${S.log === l.id ? 'on' : ''}`, onclick: () => { S.log = l.id; if (l.sim_launch && typeof l.sim_launch === 'object') Object.assign(L, pickLaunch(l.sim_launch)); drawLogs(); drawLaunch(); applyLaunch(); refreshModels(); } },
       h('span', { class: 'fs-log-ico', html: TYPE_ICON[(TYPES.find(x => x[0] === l.type) || [])[3] || 'quad'] }),
       h('span', { class: 'fs-log-main' },
         h('b', null, originBadge(l), l.file_name, l.ext ? h('span', { class: 'badge gray fs-log-ext' }, l.ext.toUpperCase()) : null, l.cached ? h('span', { class: 'badge green', title: tr('Kareler önbellekte; hemen açılır') }, '⚡') : null),
@@ -686,7 +697,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     if (S.mode === 'sitl' && S.center == null) { toast('Önce bir merkez seçin', 'err'); goStep('world'); return true; }
     if (S.mode === 'sitl' && targetsSec.error()) { toast(`${tr('Hedefler')}: ${targetsSec.error()}`, 'err'); goStep('targets'); return true; }
     if (S.mode === 'sitl' && siteSec.error()) { toast(`${tr('Yer Kontrol Merkezi')}: ${siteSec.error()}`, 'err'); goStep('site'); return true; }
-    if (S.mode === 'sitl') setPref('fs.wz.last', JSON.stringify({ type: S.type, center: S.center, launch: { method: L.method, angle_deg: L.angle_deg, release_kmh: L.release_kmh } }));   // §6 son seçimler
+    if (S.mode === 'sitl') setPref('fs.wz.last', JSON.stringify({ type: S.type, center: S.center, launch: { method: L.method, angle_deg: L.angle_deg, release_kmh: L.release_kmh, loaded: L.loaded, aim_az_deg: L.aim_az_deg, aim_el_deg: L.aim_el_deg } }));   // §6 son seçimler (§27 fırlatıcı alanları dahil)
     // §17: otomatik tam ekran (kullanıcı etkinleştirmesi içinde; reddedilirse sessiz) + kayıt açıksa ekran paylaşımı izni BİR KEZ, oturum açılmadan önce
     enterFullscreen();
     if (!mock && recPrefs.on) { const { stream, reason } = await acquireDisplayStream(); stashStream(stream); if (!stream && reason === 'denied') toast(tr('Ekran paylaşımı reddedildi; 3B sahne + HUD kaydedilecek (panel kayda girmez)')); }
@@ -824,6 +835,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     if (cur === 'summary') drawSummary();
     if (cur === 'camera') camCards.redraw?.();
     if (cur === 'site') siteSec.refresh();
+    preview?.setPreviewFocus?.(cur === 'launch' ? 'rig' : null);   // Kalkış adımı: önizleme kamerası düzeneğe yakın tur atar
     drawFoot();
     if (scroll || lastDrawn !== cur) { const mb = body.closest('.modal-body'); if (mb) mb.scrollTop = 0; }
     lastDrawn = cur;
@@ -880,6 +892,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     previewBox.querySelector('.fs-preview-msg')?.remove();
     const sel = picker.selectionFor(activeType()); if (sel) { preview.setType(activeType(), sel).then(() => picker.drawInfo()); picker.redraw(); }
     preview.setTargets?.(targetsSec.enriched());   // §24: önizlemede hedef yörüngeleri
+    preview.setPreviewFocus?.(W.step === 'launch' ? 'rig' : null);
     picker.ensureThumbs();   // 3B sahne hazır: eksik küçük resimler artık üretilebilir (snapshotModel)
     if (preview.terrainInfo) progInfo({ stage: 'done', real: preview.real, ...preview.terrainInfo });
   } catch (err) {
@@ -894,7 +907,7 @@ const randomSeed = () => Math.floor(Math.random() * 2147483646) + 1;
 function pickLaunch(l) {
   const o = {};
   if (LAUNCH_OPTIONS.some(x => x.key === l.method)) o.method = l.method;
-  for (const [k, d] of Object.entries(LAUNCH_PARAM_DEFS)) { const v = Number(l[k]); if (Number.isFinite(v) && v >= d.min && v <= d.max) o[k] = v; }
+  for (const [k, d] of Object.entries(LAUNCH_PARAM_DEFS)) { const f = paramField(k), v = Number(l[f]); if (l[f] != null && Number.isFinite(v) && v >= d.min && v <= d.max && o[f] == null) o[f] = v; }
   return o;
 }
 
@@ -913,10 +926,15 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const world = { ...WORLD_DEFAULTS, ...(session.world || {}) };
   // Sabit kanat kalkış yöntemi (§13): session.launch {method, angle_deg, release_kmh, phase}. Canlıda aşamalar sunucudan (WS `launch`); kayıtta
   // (§8) sunucu olay yaymaz, aşamalar log karelerinden türetilir (replayLaunchTimeline) ve oynatıcı zamanına göre uygulanır (atlamada `snap`).
-  const launch = type === 'sabit_kanat' ? { ...LAUNCH_DEFAULTS, ...(session.launch || world.launch || {}) } : null;
-  const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış' };
+  // §27 INTERCEPTOR fırlatıcısı (pod4 | pod8 | tube | handheld): aynı `launch` nesnesi; aşamalar sunucudan (canlı) / logdan (kayıt, AGL 1,5 m)
+  const lsrc = session.launch || world.launch || {};
+  const launch = type === 'sabit_kanat' || (type === 'interceptor' && isIceptLauncher(lsrc.method)) ? { ...LAUNCH_DEFAULTS, ...lsrc } : null;
+  const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış', pod4: 'Fırlat', pod8: 'Fırlat', tube: 'Fırlat', handheld: 'Fırlat' };
+  const ICEPT_TXT = { armed: 'Interceptor fırlatıcıda, motor hazır', launch: 'FIRLATMA', released: 'Interceptor fırlatıcıdan çıktı' };
   const LAUNCH_PHASE_TEXT = { armed: { ramp: 'Uçak rampada, motor hazır', vehicle: 'Uçak araçta, motor hazır', wheels: 'Pist koşusu başlıyor' },
     launch: { ramp: 'FIRLATMA', vehicle: 'Araç hızlanıyor', wheels: 'Pist koşusu' }, released: { ramp: 'Uçak rampadan ayrıldı', vehicle: 'BIRAKILDI', wheels: 'Uçak havalandı' } };
+  for (const ph of Object.keys(ICEPT_TXT)) for (const m of ['pod4', 'pod8', 'tube', 'handheld']) LAUNCH_PHASE_TEXT[ph][m] = ICEPT_TXT[ph];
+  let launcherUi = null;   // §27 (oturum ekranı kurulunca)
 
   // ---------- iskelet ----------
   const stage = h('div', { class: `fs-stage ${replay ? 'fs-replay' : ''}`, 'data-immersive': '1' });
@@ -1099,14 +1117,14 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   window.__fsRig = () => (sim?.rigDiag ? sim.rigDiag() : null);
   window.__fsCtrl = () => (sim?.ctrlState ? sim.ctrlState() : null);
   window.__fsTele = () => last;   // teşhis: son telemetri karesi (roll/pitch/alt_rel/mode/armed/servo)   // §13.1 kontrol yüzeyi teşhisi: servo/servo_fn/servo_rev → eksen girişleri → yüzey açıları (° arka kenar aşağı +)
-  ops = createOpsPanel(stage, { sid, session, type, modes, launch, canWrite, hub: !replay && !mock, mp: mpOpts, getSim: () => sim, cmdSim: (name, params) => cmd(name, params), onReset: () => reset(), onToggle: on => { opsBtn.classList.toggle('primary', on); camPip?.layout(); },
+  ops = createOpsPanel(stage, { sid, session, type, modes, launch, canWrite, hub: !replay && !mock, mp: mpOpts, getSim: () => sim, cmdSim: (name, params) => cmd(name, name === 'takeoff' ? { ...params, ...(launcherUi?.takeoffExtra() || {}) } : params), onReset: () => reset(), onToggle: on => { opsBtn.classList.toggle('primary', on); camPip?.layout(); },
     speed: replay ? null : { onPick: f => cmd('speed', { factor: f }) } });   // §23: panel "Sim" grubunda hız seçici
   opsBtn.classList.toggle('primary', ops.enabled);
   const audio = createEngineAudio(stage, { type, launch, replay, tr, getSim: () => sim, getCrashed: () => !crash.hidden, getSpeed: () => player?.speed() ?? 1 });   // §16: düğmeyi alt çubuğa kendisi ekler; kamera/kalkış aşaması/çarpışma getter'lardan
   // §17 ekran kaydı: rozet üst şeride, anahtar alt çubuğa; 3B hazır olunca başlar (Başlat'ta alınan ekran paylaşımı akışı varsa o, yoksa 3B+HUD tuvali)
   const recText = () => [tr('Uçuş Simülatörü kaydı'), replay ? `${tr('kayıttan oynatma')}${session.replay?.file_name ? ` · ${session.replay.file_name}` : ''}` : [tr(TYPE_NAME[type] || type), session.center?.name, launch ? tr(launchLabel(launch, tr)) : null].filter(Boolean).join(' · '),
     clock(rec?.seconds ?? 0), fmtDateTime(session.created_at)].filter(Boolean).join(' · ');
-  const rec = mock || !canWrite ? null : createRecorder(stage, { sid, tr, getSim: () => sim, getHudCanvas: () => stage.querySelector('.fs-mhud'), getOsdCanvas: () => stage.querySelector('.fs-osd'), getOverlays: () => [camPip?.overlay()].filter(Boolean), audio, text: recText, onEvent: (t, sev) => addEvent(t, sev) });   // §22: FPV OSD da yedek yolda kayda girer; kayıt kamerayı değiştirmez
+  const rec = mock || !canWrite ? null : createRecorder(stage, { sid, tr, getSim: () => sim, getHudCanvas: () => stage.querySelector('.fs-mhud'), getOsdCanvas: () => stage.querySelector('.fs-osd'), getOverlays: () => [camPip?.overlay(), launcherUi?.overlay?.()].filter(Boolean), audio, text: recText, onEvent: (t, sev) => addEvent(t, sev) });   // §22: FPV OSD da yedek yolda kayda girer; kayıt kamerayı değiştirmez
 
   // Tam alan yerleşimi (Canlı Uçuş iframe kalıbı): main#view mutlak konumlu, scroller kaydırmaz
   view.classList.add('ops-view');
@@ -1118,6 +1136,11 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   if (session.site) {
     siteUi = createSiteScreens(stage, { tr, getSim: () => sim, site: session.site, mount, onToggle: () => camPip?.layout() });
     if (siteUi.buttons.length) bar.insertBefore(h('div', { class: 'pill-group fs-site-btns' }, siteUi.buttons), opsBtn.nextSibling);
+  }
+  // §27 fırlatıcı: hücre envanteri (3B kutu/tüp) + el fırlatıcısında NİŞANGÂH penceresi (alt çubukta ⌖ Nişangâh — G)
+  if (launch && isIceptLauncher(launch.method)) {
+    launcherUi = createLauncherUi(stage, { tr, getSim: () => sim, launch, session, mount, canWrite: canWrite && !replay, onFire: () => takeoffDialog(), onToggle: () => camPip?.layout() });
+    if (launcherUi.buttons.length) bar.insertBefore(h('div', { class: 'pill-group fs-scope-btns' }, launcherUi.buttons), opsBtn.nextSibling);
   }
 
   // Olay şeridi (3B kurulumundan önce tanımlı: gerçek arazi yükleme özeti de buraya yazılır).
@@ -1185,8 +1208,11 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const setupSite = () => {
     const D = session.defend;
     const I = D?.state?.icept;
-    sim.setSite(session.site, { rack: D ? (D.config?.interceptors || 10) : 0, show: I ? Math.max(0, I.total - I.used) : (D?.config?.interceptors || 10) - 1 });
+    // §27: kutu fırlatıcılarında 10'lu raf yok (envanter kutularda); tüp / el fırlatıcısında raf yedek deposu
+    const lm = launch && isIceptLauncher(launch.method) ? launch.method : null;
+    sim.setSite(session.site, { rack: D ? (lm ? rackCountFor(lm, D.config?.interceptors || 10) : (D.config?.interceptors || 10)) : 0, show: I ? Math.max(0, I.total - I.used) : (D?.config?.interceptors || 10) - 1 });
     if (D) sim.setDefend(D);
+    launcherUi?.sync();
     siteUi?.applyPrefs();
     if (D && !defHud) {
       defHud = createDefendHud({ stage, tr, defend: D, getSim: () => sim, holder: siteUi?.stripHolder, canWrite, replay,
@@ -1233,6 +1259,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
         if (netsim) window.__fsSim = sim;   // teşhis: Playwright/konsol sim.netStats() · sim.motionStats(true)
         if (sim.terrainInfo && !worldReady) progMsg({ stage: 'done', real: sim.real, ...sim.terrainInfo });
         if (launch && session.launch?.phase) sim.setLaunchPhase(session.launch.phase);   // oturuma geç katılan izleyici: aşama sunucudan
+        launcherUi?.sync();   // §27 hücre envanteri + nişangâh dikdörtgeni
         if (session.targets) { sim.setTargets(session.targets); targetsTracker = replay ? createInterceptTracker(session.targets) : null; }   // §24 hedefler (kayıtta önlemeler istemcide yeniden hesaplanır)
         if (session.site) setupSite();   // §26
         msg.hidden = true;
@@ -1458,11 +1485,13 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     const m = launch?.method;
     const hint = m === 'ramp' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; 1 sn sonra pnömatik rampa kızağı {a}° açıyla fırlatır (SITL mancınık tetiği). Fırlatma ivmesi algılanınca gaz açılır.', { a: Math.round(launch.angle_deg) })
       : m === 'vehicle' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; pickup pist boyunca hızlanır, {k} km/h yer hızında uçak bırakılır ve tırmanır.', { k: Math.round(launch.release_kmh) })
+      : m === 'handheld' ? (() => { const a = sim?.getAim?.() || { az: launch.aim_az_deg ?? 0, el: launch.aim_el_deg ?? 55 }, w = aimWaypoint(a.az, a.el); return tr('El fırlatıcısı: GUIDED + ARM; interceptor tüpten çıkar, 8 m dikey tırmanır ve nişan doğrultusuna (az {az}° · el {el}° → {h} m ileride {a} m) yönelir (DO_REPOSITION). Hedef irtifa yok sayılır.', { az: Math.round(a.az), el: Math.round(a.el), h: Math.round(w.horiz_m), a: Math.round(w.alt_m) }); })()
+      : m === 'pod4' || m === 'pod8' || m === 'tube' ? tr('Fırlatıcı: GUIDED + ARM; kapak açılır, interceptor kuyruk üstünden dikey çıkar (NAV_TAKEOFF) ve hedef irtifada askıda bekler. Yatay uçuş için FBWA / CRUISE / AUTO.')
       : type === 'interceptor' ? tr('Dikey kalkış: GUIDED + ARM + VTOL kalkışı — kuyruk üstünden dikey tırmanır, hedef irtifada askıda bekler. Yatay uçuşa geçmek için FBWA / CRUISE / AUTO; dönüş RTL (dikey iniş).')
       : isPlane(type) ? 'Uçak TAKEOFF moduna alınır; pist boyunca hızlanır.' : 'Dron GUIDED modda belirtilen irtifaya yükselir.';
     const label = LAUNCH_BTN[m] || 'Kalkış';
     modal({ title: label, body: field('Hedef irtifa (m, AGL)', alt, hint),
-      actions: [{ label: 'Vazgeç' }, { label, class: 'primary', onClick: () => cmd('takeoff', { alt: Number(alt.value) || 30 }) }] });
+      actions: [{ label: 'Vazgeç' }, { label, class: 'primary', onClick: () => cmd('takeoff', { alt: Number(alt.value) || 30, ...(launcherUi?.takeoffExtra() || {}) }) }] });   // §27 el fırlatıcısı: canlı nişan
   };
   // §24 önleme (WS `target`; kayıtta istemci izleyicisi): olay şeridi (sarı), 3B'de hedefte genişleyen halka, kısa bildirim
   const onTarget = (m, at = null) => {
@@ -1475,7 +1504,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // Kalkış aşaması (WS `launch`): 3B düzenek + olay şeridi
   const onLaunch = m => {
     if (!launch) return;
-    sim?.setLaunchPhase(m.phase); ops?.setLaunchPhase(m.phase);
+    sim?.setLaunchPhase(m.phase); ops?.setLaunchPhase(m.phase); launcherUi?.onLaunch(m);
     const txt = (LAUNCH_PHASE_TEXT[m.phase] || {})[launch.method] || m.phase;
     addEvent(m.phase === 'released' && m.speed_kmh != null ? `${tr(txt)} · ${f0(m.speed_kmh)} km/h` : tr(txt), m.phase === 'released' || m.phase === 'launch' ? 'warning' : 'info');
   };
@@ -1497,6 +1526,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     crash.hidden = true;
     sim?.clearCollision();
     sim?.setLaunchPhase(null);   // uçak yeniden rampaya / araca oturur
+    launcherUi?.reset?.();
     sim?.resetCamera();
     if (canWrite) await cmd('reset'); else toast('Sıfırlamak için yazma izni gerekir', 'err');
   };
@@ -1544,7 +1574,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       if (m.t === 'event') return addEvent(m.text, m.severity, replay ? (player?.time() ?? null) : null, 'STATUS');
       if (m.t === 'launch') return onLaunch(m);
       if (m.t === 'target') return onTarget(m);   // §24 önleme
-      if (m.t === 'defend') { if (m.state && session.defend) session.defend.state = m.state; return defHud?.event(m); }   // §26 görev olayları (dalga/önleme/sızma/kayıp/bitiş)
+      if (m.t === 'defend') { if (m.state && session.defend) session.defend.state = m.state; launcherUi?.sync(); return defHud?.event(m); }   // §27: sıradaki interceptor → sonraki hücre   // §26 görev olayları (dalga/önleme/sızma/kayıp/bitiş)
       if (m.t === 'state') {
         if (m.replay) session.replay = { ...(session.replay || {}), ...m.replay };
         if (m.center) session.center = { ...(session.center || {}), ...m.center };   // kayıt: ayrıştırma bitti → merkez = ilk ARM konumu (§8)
@@ -1594,7 +1624,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     if (replay) window.removeEventListener('keydown', onKeyReplay);
     player?.dispose();
     socket?.close();
-    milHud?.dispose(); osd?.dispose(); camPip?.dispose(); camCtl.dispose(); siteUi?.dispose(); defHud?.dispose();   // §26
+    milHud?.dispose(); osd?.dispose(); camPip?.dispose(); camCtl.dispose(); siteUi?.dispose(); defHud?.dispose(); launcherUi?.dispose();   // §26 + §27
     if (rec) { rec.abandon(); rec.dispose(); }   // §17: Bitir'siz çıkış → kayıt durur, parçalar akıtılır, sunucuda yarım kayıt (24 sa)
     audio.dispose(); ops?.dispose(); gauges.dispose();
     sim?.dispose();
@@ -1832,7 +1862,7 @@ function mockBackend(ctx) {
     const mdl = mockModel(type, model);
     const s = { id, type, model: mdl, airframe: isPlane(type) ? ({ 'builtin:caymaz': 'caymaz', 'builtin:delta': 'delta' }[mdl.id] || null) : null, layout: type === 'sabit_kanat' ? (layout || layoutForModel(mdl) || 'classic') : null, center, world: { ...WORLD_DEFAULTS, ...(world || {}) }, state: 'HAZIR', udp_port: 14550 + MOCK.seq - 1, host: location.hostname,
       power: { ...(isPlane(type) ? { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25 } : { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25 }), elec_cells: 4, elec_mah: 10000, elec_w: 30, ...(power || {}) },   // §23 (sahte kip: göstergeler istemci modelinden)
-      launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: type === 'sabit_kanat' ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null }, camera: normCamType(camera),
+      launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: type === 'sabit_kanat' || (type === 'interceptor' && isIceptLauncher((world || {}).launch?.method)) ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null }, camera: normCamType(camera),
       created_at: new Date().toISOString(), owner: { id: ctx.user?.id, name: ctx.user?.full_name || ctx.user?.username || '—' }, gcs: { connected: false, addr: null, since: null }, sitl: { pid: 0, port: 0, error: null } };
     s.flight = new MockFlight(s);
     MOCK.sessions.set(id, s);
@@ -1977,6 +2007,9 @@ class MockFlight {
         S.lt = 0; S.lphase = 'armed'; this.launch('armed');
         const m = this.s.launch?.method;
         if (m !== 'ramp') { S.lphase = 'launch'; this.launch('launch'); }
+      } else if (this.s.type === 'interceptor' && isIceptLauncher(this.s.launch?.method) && S.z < 1) {   // §27 fırlatıcı: armed → launch → (AGL 1,5 m) released
+        if (p.aim && this.s.launch) { this.s.launch.aim_az_deg = p.aim.az_deg; this.s.launch.aim_el_deg = p.aim.el_deg; }
+        this.launch('armed'); setTimeout(() => this.launch('launch'), 400); setTimeout(() => this.launch('released', { speed_kmh: 0 }), 900);
       }
     }
     else if (name === 'rtl') { S.mode = 'RTL'; S.phase = 'rtl'; S.auto = false; this.event('Mode RTL'); }

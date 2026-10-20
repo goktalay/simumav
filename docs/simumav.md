@@ -113,7 +113,7 @@ tests/test_simumav.py   REST + oturum + bridge (SITL yok) · tests/test_simumav_
   — kayıtta otomatik **TRTEST** (TR TEST Kalecik: lat 40.0990, lon 33.4101; ajan doğrular), is_default=1.
 - `missions(id, user_id, track_id, name, kind ('corridor'|'free'|'spray'|'fpv_flags'|'fpv_gates'|'survey'), — `fpv_gates`: parkurun halkalarını sırayla geçme (plan: {order:[gate i…], laps}), plan JSON (waypoint'ler +
   tür parametreleri; HEPGO flightsim_mission ile uyumlu `route` biçimi), preview_png)`
-- `flights(id, user_id, pilot_id, drone_id, track_id, mission_id NULL, launch ('wheels'|'ramp'|'vehicle'|'hand'), started_at,
+- `flights(id, user_id, pilot_id, drone_id, track_id, mission_id NULL, launch ('wheels'|'ramp'|'vehicle'|'hand'|'pod4'|'pod8'|'tube'|'handheld'), started_at,
   ended_at, duration_s, result ('ok'|'crash'|'abort'), summary JSON (flightsim_mission summary + `gates:{passed,missed,laps,best_lap_s}` stop gövdesinden),
   bin_path, video_path, params_path, mp_port, replay_cache, core_log_id, core_run_id, snapshot JSON (dron/pilot/parkur/görev adları — kayıt silinse
   de kart dolu))` — Operasyon modülünün kaynağı. `hand` (elden atış) çekirdekte düşük ivmeli mancınık (`ramp`, angle 12°, 40 km/h) olarak koşar.
@@ -152,8 +152,9 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
 - `GET /api/missions[?track_id]` → `{missions:[…], quota}`; `POST /api/missions {track_id,name,kind,plan}` — plan `{items:[{seq,command,frame,x(lat·1e7),y,z,param1..4}],…}`
   YA DA oyun arayüzü editörünün biçimi `{kind, route:{points:[{seq,cmd,lat,lon,alt_rel,frame}]}, shape, params, order, laps}` (`bridge.plan_items` SITL yüklemesinde items'a çevirir)
   ≤ 500 öğe, parkur yarıçapı içinde, z 0–1000, kalibrasyon/reboot komutları yasak; `fpv_gates` planı `{order:[halka i…], laps 1–10}`; red 422 `plan_rejected`.
-- `POST /api/fly/start {drone_id, pilot_id, track_id, mission_id?, launch: {method wheels|ramp|vehicle|hand, angle_deg 10–30, release_kmh 40–110,
-  hand_speed_ms 6–8, hand_pitch_deg 10–15} | 'yöntem', record:{bin (vars. true), video}, power?, speedup? (§10)}` → 201
+- `POST /api/fly/start {drone_id, pilot_id, track_id, mission_id?, launch: {method wheels|ramp|vehicle|hand|pod4|pod8|tube|handheld, angle_deg 10–30, release_kmh 40–110,
+  hand_speed_ms 6–8, hand_pitch_deg 10–15, loaded 1…hücre, aim_az_deg 0–360, aim_el_deg 10–85} | 'yöntem', record:{bin (vars. true), video}, power?, speedup? (§10)}` → 201
+  (HEPGO §27 INTERCEPTOR fırlatıcıları: yalnız sınır denetimi, tip zorlaması yok — çekirdek tipe göre ayıklar; `flights.launch` yöntem adı, göç yok)
   `{flight_id, sim_id, mp:{host,port,proto:'tcp'}|null, ws:'/ws/fly/<sim_id>', state, power, speedup}`; 409 `flight_open` (`flight_id`, `sim_id` — ön yüz "Süren uçuşunuz var"
   kartı: Uçuşa dön `#/fly/{id}` / Uçuşu bitir), 429 `server_full` (`retry_after`, `Retry-After`), 422 görev başka parkura ait, 503 `sitl`/`no_port`. Görev planı
   SITL hazır olunca `mission_upload` ile yüklenir. `GET /api/fly/current` → kullanıcının açık uçuşu `{flight_id, sim_id, started_at, state, elapsed_s,
@@ -213,7 +214,9 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
 - Uç: sihirbaz (dron → parkur → kalkış yöntemi [sabit kanatta: rampa/araç/tekerlek/**elden atış**] → görev opsiyonel →
   BAŞLA) → mevcut HEPGO simülasyon sahnesi + dron paneli + HUD/FPV birebir; MP TCP bilgisi panelde.
   Uç ayrıntıları (static/simumav/app/fly; tests/test_simumav_fly.mjs):
-  • Sihirbaz adımları `wizard.js` createWizard: drone → track → launch (yalnız plane/interceptor/vtol) → mission → pilot; parkur değişince görev sıfırlanır;
+  • Sihirbaz adımları `wizard.js` createWizard: drone → track → launch (plane/vtol: kalkış yöntemi; INTERCEPTOR: HEPGO §27 fırlatıcı — ayrı durum `ilaunch`,
+    `iceptLaunchBody` {method, loaded? | aim_az_deg, aim_el_deg}; adımda düzenek önizlemesi) → mission → pilot; parkur değişince görev sıfırlanır;
+    uçuşta el fırlatıcısında HEPGO `flightsim_scope_ui.js` NİŞANGÂH penceresi (keyed `launcher.*` metinleri, 7 dil) ve takeoff{alt, aim};
     `payload()` = POST /api/fly/start gövdesi (launch: {method, angle_deg 10–30, release_kmh 40–110, hand_speed_ms 6–8, hand_pitch_deg 10–15}; kopterde
     {method:'wheels'}). Tip eşlemesi: plane/interceptor → sabit_kanat, heli → helikopter, fpv/multirotor → multirotor. Model: sunucu `preview`+`orient` verdiyse gerçekçi GLB {id, glb_url, orient, has_prop} (glb:* ve yükseltilmiş proc:*);
     'proc:quad250' → builtin:quad, 'proc:caymaz' → builtin:caymaz, 'proc:interceptor' → builtin:delta, kütüphane anahtarı + preview GLB → {id, glb_url}. Dron önizlemesi: dronun çevresinde dönen

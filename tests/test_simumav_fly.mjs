@@ -6,9 +6,10 @@
 //   • gates.js: düzlem kesişimi (içinde / dışında / ters yön / düzlem geçilmedi), izleyici (pass/miss/atlama/ters yön/tur/bitiş), replayGatesAt, gateStats
 //   • session.js: installWsBridge (yalnız /ws/drone/live yolu yönlendirilir) — DOM gerektirmeyen kısım sahte `win` ile
 import assert from 'node:assert/strict';
-import { createWizard, normLaunch, launchBody, speedScale, speedAngle, speedTicks, modelFor, worldFromTrack, countdownAt, needsLaunch, simType, STEPS, timeOfDay, AIRFRAMES, airframeOf, airframeForModel, airframeLabel, needsAirframe } from '../static/simumav/app/fly/wizard.js';
+import { ICEPT_LAUNCH_SM, createWizard, hasLaunchStep, iceptLaunchBody, iceptLaunchLabel, isIceptLaunch, normIceptLaunch, normLaunch, launchBody, speedScale, speedAngle, speedTicks, modelFor, worldFromTrack, countdownAt, needsLaunch, simType, STEPS, timeOfDay, AIRFRAMES, airframeOf, airframeForModel, airframeLabel, needsAirframe } from '../static/simumav/app/fly/wizard.js';
 import { HAND, handPoseAt, handReleaseTime, shimTelemetry, replayHandTimeline, replayHandPhaseAt, replayHandPhaseStart, handCfg, REPLAY_HAND_RELEASE } from '../static/simumav/app/fly/hand_launch.js';
 import { CAMERA_KEYS, cameraDefault, camTr } from '../static/simumav/app/fly/camera_pick.js';
+import { ICEPT_METHODS } from '../static/js/modules/flightsim_launcher.js';
 import { crossing, createGateTracker, gateLocal, localFrom, replayGatesAt, gateStats, MISS_FACTOR } from '../static/simumav/app/fly/gates.js';
 
 let n = 0;
@@ -220,5 +221,28 @@ test('HEPGO §26 yer kontrol sahası + "Yer kontrolünü koru": site adımı gö
   W.set('mission_id', null); W.set('drone_id', 1); b = W.payload();
   assert.equal(b.defend, undefined, 'kopter → görev yok'); assert.equal(W.state.defend, null);
   W.set('site', { station: false, radar: false, eo: false }); assert.equal(W.payload().site, undefined);
+});
+test('HEPGO §27 INTERCEPTOR fırlatıcısı: kalkış adımı açılır, ayrı durum (ilaunch), gövde (loaded / nişan), etiket; sabit kanat durumu etkilenmez', () => {
+  assert.deepEqual(ICEPT_LAUNCH_SM.map(r => r[0]), ICEPT_METHODS);
+  assert.ok(hasLaunchStep('interceptor') && hasLaunchStep('plane') && !hasLaunchStep('fpv') && !needsLaunch('interceptor'));
+  const D2 = { ...DATA, drones: [...DATA.drones, { id: 9, name: 'Av', type: 'interceptor', model_key: 'glb:icept_x4' }] };
+  const W = createWizard(D2, { drone_id: 9 });
+  assert.deepEqual(W.steps(), STEPS);
+  assert.deepEqual(W.payload().launch, { method: 'pod4', loaded: 4 });
+  W.set('ilaunch', { method: 'pod8' }); assert.deepEqual(W.payload().launch, { method: 'pod8', loaded: 8 }, 'yöntem değişince hücre sayısı dolu');
+  W.set('ilaunch', { loaded: 12 }); assert.equal(W.state.ilaunch.loaded, 8);
+  W.set('ilaunch', { method: 'pod4', loaded: 9 }); assert.equal(W.state.ilaunch.loaded, 4, '4\'lüde en çok 4');
+  W.set('ilaunch', { method: 'handheld', aim_az_deg: 400, aim_el_deg: 2 });
+  assert.deepEqual(W.payload().launch, { method: 'handheld', aim_az_deg: 359, aim_el_deg: 10 });
+  W.set('ilaunch', { method: 'tube' }); assert.deepEqual(W.payload().launch, { method: 'tube' });
+  W.set('ilaunch', { method: 'hand' }); assert.equal(W.state.ilaunch.method, 'pod4', 'bilinmeyen → varsayılan');
+  assert.equal(W.state.launch.method, 'hand', 'sabit kanat durumu ayrı');
+  assert.ok(isIceptLaunch('handheld') && !isIceptLaunch('hand'));
+  assert.deepEqual(normIceptLaunch({ method: 'pod8', loaded: 3 }).loaded, 3);
+  assert.equal(iceptLaunchLabel({ method: 'pod8', loaded: 3 }), "8'li fırlatıcı · 3/8");
+  assert.equal(iceptLaunchLabel({ method: 'handheld', aim_az_deg: 45, aim_el_deg: 30 }, k => ({ 'launcher.handheld': 'Handheld launcher' }[k] ?? k)), 'Handheld launcher 30°/45°');
+  assert.deepEqual(iceptLaunchBody({ method: 'pod4', loaded: 2, aim_az_deg: 10 }), { method: 'pod4', loaded: 2 });
+  const W3 = createWizard(D2, { drone_id: 9, launch: { method: 'handheld', aim_az_deg: 20, aim_el_deg: 40 } });   // süren uçuş / önceki seçim
+  assert.equal(W3.state.ilaunch.method, 'handheld'); assert.equal(W3.state.ilaunch.aim_el_deg, 40);
 });
 console.log(`\n${n} test geçti`);

@@ -21,7 +21,7 @@ import os
 import re
 import time
 
-from . import db, drone_params, drone_sitl, flightsim_gcs, flightsim_hub, flightsim_icept, flightsim_mission, flightsim_power, flightsim_targets
+from . import db, drone_params, drone_sitl, flightsim_gcs, flightsim_hub, flightsim_icept, flightsim_launcher, flightsim_mission, flightsim_power, flightsim_targets
 
 SITL_ENABLED = os.environ.get('HEPGO_SITL', '1') != '0'
 UDP_BASE = int(os.environ.get('SIM_UDP_BASE', '14550'))
@@ -72,7 +72,8 @@ def kamera_dogrula(v, varsayilan='day'):
 
 # Sabit kanat kalkış yöntemi (§13): wheels (tekerlekli pist koşusu) · ramp (pnömatik fırlatma rampası; açı 10–30°) · vehicle (pickup üstünden bırakma; hız 40–110 km/h)
 LAUNCH_DEFAULTS = {'method': 'wheels', 'angle_deg': 15, 'release_kmh': 70}
-LAUNCH_METHODS = ('wheels', 'ramp', 'vehicle')
+LAUNCH_METHODS = ('wheels', 'ramp', 'vehicle') + flightsim_launcher.ICEPT_METHODS   # §27 INTERCEPTOR fırlatıcıları: pod4 | pod8 | tube | handheld
+SABIT_KANAT_LAUNCH = ('wheels', 'ramp', 'vehicle')
 LAUNCH_SITL_MODEL = {'ramp': 'plane-catapult'}   # SITL `--model` geçersizleştirmesi: mancınık modeli (servo 7 tetiği ile 15 m/s² · 2 sn fırlatma ivmesi)
 LAUNCH_SERVO = 7                                 # SIM_Plane: servos[6] > 1700 → fırlatma (DO_SET_SERVO 7)
 RAMP_ACCEL = 8.0                                 # TKOFF_THR_MINACC (m/s²): fırlatma ivmesi algılanınca gaz
@@ -252,7 +253,7 @@ def launch_dogrula(l):
     out = dict(LAUNCH_DEFAULTS)
     if l.get('method') is not None:
         if l['method'] not in LAUNCH_METHODS:
-            raise SimHata('invalid', 'world.launch.method wheels | ramp | vehicle olmalı')
+            raise SimHata('invalid', f"world.launch.method {' | '.join(LAUNCH_METHODS)} olmalı")
         out['method'] = l['method']
     for k, alt, ust in (('angle_deg', 10, 30), ('release_kmh', 40, 110)):
         v = l.get(k)
@@ -261,14 +262,29 @@ def launch_dogrula(l):
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not (alt <= v <= ust):
             raise SimHata('invalid', f'world.launch.{k} {alt}…{ust} arasında olmalı')
         out[k] = float(v)
+    try:   # §27 fırlatıcı alanları (loaded, aim_az_deg, aim_el_deg): verilmişse sınır denetimi; fırlatıcı yönteminde varsayılanla dolar
+        out.update(flightsim_launcher.ek_alanlar(l, out['method']))
+    except flightsim_launcher.LauncherHata as e:
+        raise SimHata('invalid', str(e))
     return out
 
 
 def launch_normalize(tip, launch):
-    """Yalnız sabit kanat yöntem seçer; VTOL dikey, kopterler dikey kalkar → yöntem 'wheels' (etkisiz) olarak saklanır."""
+    """Yöntem tipe göre: sabit kanat wheels | ramp | vehicle; INTERCEPTOR §27 fırlatıcıları (pod4 | pod8 | tube | handheld; yoksa 'wheels' = pad,
+    düzeneksiz — eski gövdeler); diğer tipler dikey kalkar → 'wheels' (etkisiz). Fırlatıcı olmayan yöntemde fırlatıcı alanları atılır."""
     l = dict(launch or LAUNCH_DEFAULTS)
-    if tip != 'sabit_kanat':
+    m = l.get('method')
+    if tip == 'sabit_kanat':
+        ok = m in SABIT_KANAT_LAUNCH
+    elif tip in DIKEY_TIPLER:
+        ok = flightsim_launcher.firlatici_mi(m)
+    else:
+        ok = False
+    if not ok:
         l['method'] = 'wheels'
+    if not flightsim_launcher.firlatici_mi(l['method']):
+        for k in ('loaded', 'aim_az_deg', 'aim_el_deg'):
+            l.pop(k, None)
     return l
 
 
@@ -420,6 +436,7 @@ class SahteKinematik:
         self.hedef_alt = 0.0
         self.aci = 0.0
         self.kalkis = None   # sabit kanat kalkış aşaması: {'faz': 'run'|'air', 'hiz', 'yol', 'tetik'}
+        self.nisan = None    # §27 el fırlatıcısı: (az, el) derece → dikey yerine nişan ışını boyunca tırmanış
         self.roll = self.pitch = self.yaw = 0.0
         self.rs = self.ps = self.ys = 0.0          # açısal hızlar (rad/s; ATTITUDE rollspeed/pitchspeed/yawspeed karşılığı)
         self.vn = self.ve = self.vd = 0.0
@@ -447,6 +464,7 @@ class SahteKinematik:
             self.armed = True
             self.mode = 'TAKEOFF' if self.plane and not self.dikey else 'GUIDED'
             self.hedef_alt = max(1.0, float(p.get('alt') or (50 if self.plane else 10)))
+            self.nisan = tuple(p['aim']) if self.dikey and p.get('aim') else None
             self.eve = False
             if self.plane and not self.dikey and self.alt_rel < 1.0:
                 self.kalkis = {'faz': 'run', 'hiz': 0.0, 'yol': 0.0, 'tetik': self.launch.get('method') != 'ramp'}   # rampa: fırlatma tetiğini bekler
@@ -548,6 +566,15 @@ class SahteKinematik:
             self.vd = 0.0
             self.throttle = 50.0
         if self.dikey and self.alt_rel < self.hedef_alt - 0.01:   # §25 dikey tırmanış (yerinde; gövde burun yukarı)
+            if self.nisan:   # §27 el fırlatıcısı: nişan ışını boyunca (yatay hız = tırmanma / tan(el), ≤ 2×seyir)
+                az, el = math.radians(self.nisan[0]), math.radians(self.nisan[1])
+                vh = min(self.HIZ * 2, self.TIRMANMA / max(0.05, math.tan(el)))
+                self.vn, self.ve = vh * math.cos(az), vh * math.sin(az)
+                self.lat += self.vn * dt / 110574.0
+                self.lon += self.ve * dt / (111320.0 * math.cos(math.radians(self.lat0)))
+                self.yaw = az
+                self.aci = az   # tırmanış bitince daire bu kerterizden sürer
+                return
             self.vn = self.ve = 0.0
             return
         if self.alt_rel > 1.0:   # merkez etrafında daire (saat yönü)
@@ -568,6 +595,8 @@ class SahteKinematik:
         yatay = self.armed and self.alt_rel > 1.0 and self.alt_rel >= self.hedef_alt - 0.01 and not (self.eve and math.hypot(self.vn, self.ve) < 0.5)
         if yatay:
             return [round(self.roll, 4), round(self.pitch, 4), round(self.yaw, 4)]
+        if self.nisan and self.armed and self.alt_rel > 0.05:   # §27 el fırlatıcısı: nişan açısıyla tırmanış
+            return [0.0, round(math.radians(self.nisan[1]), 4), round(math.radians(self.nisan[0]), 4)]
         return [0.0, round(math.pi / 2, 4), round(self.yaw, 4)]
 
     def tele(self):
@@ -1301,9 +1330,13 @@ class SimSession:
         hub = getattr(self, 'hub', None)
         if hub is not None:
             m = self.launch.get('method', 'wheels')
-            metin = {'armed': {'ramp': 'Kalkış: TAKEOFF + ARM, uçak rampada', 'vehicle': 'Kalkış: TAKEOFF + ARM, uçak araçta', 'wheels': 'Kalkış: TAKEOFF + ARM, pist koşusu'},
-                     'launch': {'ramp': f"FIRLATMA (rampa {round(float(extra.get('angle_deg') or 0))}°)", 'vehicle': f"Araç hızlanıyor ({round(float(extra.get('release_kmh') or 0))} km/h)", 'wheels': 'Pist koşusu'},
-                     'released': {'ramp': 'Uçak rampadan ayrıldı', 'vehicle': 'BIRAKILDI', 'wheels': 'Uçak havalandı'}}.get(phase, {}).get(m, phase)
+            kutu = {'pod4': 'hücre', 'pod8': 'hücre', 'tube': 'tüp', 'handheld': 'el fırlatıcısı'}   # §27
+            metin = {'armed': {'ramp': 'Kalkış: TAKEOFF + ARM, uçak rampada', 'vehicle': 'Kalkış: TAKEOFF + ARM, uçak araçta', 'wheels': 'Kalkış: TAKEOFF + ARM, pist koşusu',
+                               **{k: f'Fırlatıcı: GUIDED + ARM, interceptor {v} içinde' for k, v in kutu.items()}},
+                     'launch': {'ramp': f"FIRLATMA (rampa {round(float(extra.get('angle_deg') or 0))}°)", 'vehicle': f"Araç hızlanıyor ({round(float(extra.get('release_kmh') or 0))} km/h)", 'wheels': 'Pist koşusu',
+                                **{k: 'FIRLATMA (kapak açıldı)' for k in ('pod4', 'pod8', 'tube')},
+                                'handheld': f"FIRLATMA (el · az {round(float(extra.get('aim_az_deg') or 0))}° el {round(float(extra.get('aim_el_deg') or 0))}°)"},
+                     'released': {'ramp': 'Uçak rampadan ayrıldı', 'vehicle': 'BIRAKILDI', 'wheels': 'Uçak havalandı', **{k: f'Interceptor {v} dışında' for k, v in kutu.items()}}}.get(phase, {}).get(m, phase)
             if extra.get('speed_kmh') is not None:
                 metin += f" · {round(float(extra['speed_kmh']))} km/h"
             try:
@@ -1382,6 +1415,98 @@ class SimSession:
             return
         except Exception as e:   # noqa: BLE001
             self._olay(f'Dikey kalkış hatası: {e}'[:200], 3)
+
+    async def _icept_kalkis(self, alt, aim=None):
+        """§27 INTERCEPTOR fırlatıcıdan kalkış: GUIDED + ARM (`armed`) → kapak açılır / NAV_TAKEOFF (`launch`) → dron hücreden/tüpten çıkar
+        (AGL ≥ 1,5 m → `released`). Kutu/tüp: dikey NAV_TAKEOFF `alt`. El fırlatıcısı: NAV_TAKEOFF HAND_CLIMB_M (8 m) → QHOVER + RC yaw ile nişan
+        azimutuna dönüş (_icept_yon_hizala) → GUIDED + nişan noktasına (aim_noktasi: nişan doğrultusunda 500 m yol, irtifa 30…350 m)
+        MAV_CMD_DO_REPOSITION → ArduPlane sabit kanada geçip nişan yönünde uçar (docs §27 ölçümleri).
+        Sahte kipte kinematik nişan ışını boyunca tırmanır."""
+        te = self.tele
+        m = self.launch.get('method')
+        hand = m == 'handheld'
+        if hand and aim is not None:
+            self.launch['aim_az_deg'], self.launch['aim_el_deg'] = float(aim[0]), float(aim[1])
+        az, el = float(self.launch.get('aim_az_deg') or 0.0), float(self.launch.get('aim_el_deg') or 55.0)
+        wp = flightsim_launcher.aim_noktasi(az, el) if hand else None
+        ek = {'aim_az_deg': round(az, 1), 'aim_el_deg': round(el, 1)} if hand else {}
+        if self.savunma is not None:
+            ek['cell'] = int(self.savunma.icept['used'])   # görev: ateşlenen hücre sırası (1 tabanlı)
+        try:
+            if self.sahte is not None:
+                self.sahte.komut('takeoff', {'alt': wp['alt_m'] if hand else alt, 'aim': (az, el) if hand else None})
+                self._launch_yay('armed', alt=alt, **ek)
+                await asyncio.sleep(0.4)
+                self._launch_yay('launch', **ek)
+            else:
+                self._mod_gonder('GUIDED')
+                await asyncio.sleep(0.4)
+                if not te.get('armed'):
+                    self._gonder(self.mav.command_long_encode(self.sysid, self.comp, 400, 0, 1, 21196, 0, 0, 0, 0, 0))
+                    await asyncio.sleep(1.0)
+                self._launch_yay('armed', alt=alt, **ek)
+                hedef = flightsim_launcher.HAND_CLIMB_M if hand else alt
+                self._olay(f'Fırlatma: {flightsim_launcher.etiket(self.launch)} · GUIDED + ARM + NAV_TAKEOFF {hedef:g} m'
+                           + (f' → nişan noktası {wp["horiz_m"]:.0f} m / {wp["alt_m"]:.0f} m' if hand else ''), 6)
+                self._launch_yay('launch', **ek)
+                for _ in range(3):   # ARM'dan hemen sonra "Already flying" reddi görülebilir (§25) → 3 sn'de yükselmezse yinele
+                    self._gonder(self.mav.command_long_encode(self.sysid, self.comp, 22, 0, 0, 0, 0, 0, 0, 0, hedef))
+                    bitis = time.time() + 3.0
+                    while time.time() < bitis and float(te.get('alt_rel') or 0) <= 1.0:
+                        await asyncio.sleep(0.1)
+                    if float(te.get('alt_rel') or 0) > 1.0:
+                        break
+            bitis = time.time() + 40
+            while time.time() < bitis and self.state == 'HAZIR' and float(te.get('alt_rel') or 0) < flightsim_launcher.RELEASE_AGL_M:
+                await asyncio.sleep(0.05)
+            if float(te.get('alt_rel') or 0) < flightsim_launcher.RELEASE_AGL_M:
+                return
+            self._launch_yay('released', speed_kmh=round(float(te.get('groundspeed') or 0) * 3.6, 1), **ek)
+            if hand and self.sahte is None:
+                bitis = time.time() + 20
+                while time.time() < bitis and self.state == 'HAZIR' and float(te.get('alt_rel') or 0) < flightsim_launcher.HAND_CLIMB_M * 0.7:
+                    await asyncio.sleep(0.1)
+                # Yön hizalama (ölçüldü: GUIDED askıda CONDITION_YAW etkisiz; tailsitter geçişi askıdaki "VTOL görünümü" yönünde olur — ilk denemede
+                # 49° askı yönüyle 120° nişana 71° sapma): QHOVER + RC yaw ile nişan azimutuna döndürülür (ATTITUDE yaw = VTOL görünümü), sonra GUIDED.
+                await self._icept_yon_hizala(az)
+                self._mod_gonder('GUIDED')
+                await asyncio.sleep(0.3)
+                c = self.center
+                lat, lon = flightsim_launcher.enlem_boylam(float(c['lat']), float(c['lon']), wp['east_m'], wp['north_m'])
+                # MAV_CMD_DO_REPOSITION (192), COMMAND_INT, GLOBAL_RELATIVE_ALT_INT; param2 bit 0: GUIDED'a geç
+                self._gonder(self.mav.command_int_encode(self.sysid, self.comp, 6, 192, 0, 0, -1, 1, 0, float('nan'), int(lat * 1e7), int(lon * 1e7), float(wp['alt_m'])))
+                self._olay(f"Nişan yönüne: az {az:.0f}° · el {el:.0f}° → {wp['horiz_m']:.0f} m ileride {wp['alt_m']:.0f} m (DO_REPOSITION)", 6)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:   # noqa: BLE001
+            self._olay(f'Fırlatma dizisi hatası: {e}'[:200], 3)
+
+    async def _icept_yon_hizala(self, az, sure=7.0):
+        """§27 el fırlatıcısı: askıda (QHOVER, gaz orta = irtifa tut) RC yaw ile VTOL görünümü yönünü nişan azimutuna getirir; |hata| < 6° ya da süre
+        dolunca RC serbest bırakılır. Dönüş: son hata (°)."""
+        te = self.tele
+        self._mod_gonder('QHOVER')
+        await asyncio.sleep(0.3)
+        hata = 180.0
+        try:
+            bitis = time.time() + sure
+            while time.time() < bitis and self.state == 'HAZIR':
+                yaw = math.degrees(float(te.get('yaw') or 0.0)) % 360.0
+                hata = ((az - yaw + 180.0) % 360.0) - 180.0
+                if abs(hata) < 6.0:
+                    break
+                pwm = int(1500 + max(-350.0, min(350.0, hata * 5.0)))
+                self._gonder(self.mav.rc_channels_override_encode(self.sysid, self.comp, 1500, 1500, 1500, pwm, 0, 0, 0, 0))
+                await asyncio.sleep(0.1)
+        finally:
+            self._gonder(self.mav.rc_channels_override_encode(self.sysid, self.comp, 0, 0, 0, 0, 0, 0, 0, 0))   # serbest bırak
+        self._olay(f'Nişan yönüne dönüldü: hata {hata:+.0f}° (QHOVER + yaw)', 6)
+        return hata
+
+    def _icept_kalkis_baslat(self, alt, aim=None):
+        if self._launch_task is not None and not self._launch_task.done():
+            self._launch_task.cancel()
+        self._launch_task = self.loop.create_task(self._icept_kalkis(alt, aim))
 
     def _dikey_kalkis_baslat(self, alt):
         if self._launch_task is not None and not self._launch_task.done():
@@ -1584,7 +1709,11 @@ class SimSession:
                 alt = 50.0 if self.type in PLANE_TIPLERI else 10.0
             if isinstance(alt, bool) or not isinstance(alt, (int, float)) or not (1 <= alt <= 1000):
                 raise SimHata('invalid', 'takeoff.alt 1…1000 m olmalı')
-            p = {'alt': float(alt)}
+            try:   # §27 el fırlatıcısı: canlı nişan {az_deg, el_deg} (sınır denetimi; yöntem handheld değilse yok sayılır)
+                aim = flightsim_launcher.aim_dogrula(p.get('aim'))
+            except flightsim_launcher.LauncherHata as e:
+                raise SimHata('invalid', str(e))
+            p = {'alt': float(alt), 'aim': aim}
         elif name == 'mode':
             mode = str(p.get('mode') or '').upper()
             if mode not in _modlar(self.vtype if self.vtype is not None else _varsayilan_vtype(self.type)):
@@ -1628,6 +1757,9 @@ class SimSession:
             return {'ok': True, 'factor': p['factor']}
         if name == 'takeoff' and self.type == 'sabit_kanat' and (self.sahte is not None or self._heartbeat_alindi):
             self._kalkis_baslat(p['alt'])   # yönteme göre dizi (§13): armed → launch → released olayları
+            return {'ok': True}
+        if name == 'takeoff' and self.type in DIKEY_TIPLER and flightsim_launcher.firlatici_mi(self.launch.get('method')) and (self.sahte is not None or self._heartbeat_alindi):
+            self._icept_kalkis_baslat(p['alt'], p.get('aim'))   # §27 fırlatıcıdan: armed → launch (kapak/tüp) → released; el fırlatıcısında nişan yönüne
             return {'ok': True}
         if name == 'takeoff' and self.type in DIKEY_TIPLER and self.sahte is None and self._heartbeat_alindi:
             self._dikey_kalkis_baslat(p['alt'])   # §25: GUIDED + ARM + NAV_TAKEOFF (VTOL kalkışı; kuyruk üstünden dikey)

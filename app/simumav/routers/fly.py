@@ -39,6 +39,10 @@ class LaunchIn(BaseModel):
     release_kmh: Optional[float] = Field(None, ge=40, le=110)
     hand_speed_ms: Optional[float] = Field(None, ge=6, le=8)
     hand_pitch_deg: Optional[float] = Field(None, ge=10, le=15)
+    # HEPGO §27 INTERCEPTOR fırlatıcıları (pod4 | pod8 | tube | handheld): dolu hücre + el fırlatıcısı nişanı (hücre üst sınırı bridge.launch_dogrula'da)
+    loaded: Optional[int] = Field(None, ge=1, le=8)
+    aim_az_deg: Optional[float] = Field(None, ge=0, le=360)
+    aim_el_deg: Optional[float] = Field(None, ge=10, le=85)
 
 
 class TargetsIn(BaseModel):
@@ -72,7 +76,7 @@ class StartIn(BaseModel):
     pilot_id: int
     track_id: int
     mission_id: Optional[int] = None
-    launch: Union[LaunchIn, str, None] = None     # {method, angle_deg, release_kmh, hand_speed_ms, hand_pitch_deg} ya da yalnız yöntem adı
+    launch: Union[LaunchIn, str, None] = None     # {method, angle_deg, release_kmh, hand_speed_ms, hand_pitch_deg, loaded?, aim_az_deg?, aim_el_deg?} ya da yalnız yöntem adı
     record: Optional[RecordIn] = None
     power: Optional[dict] = None                   # §10 güç ve yakıt (sihirbaz): hangar ayarının üstüne; power.dogrula
     speedup: Any = None                            # §10 (bool/dize zorlaması yok: bridge.speedup_dogrula) başlangıç simülasyon hızı 1 | 2 | 4 | 8 (≤ SIMUMAV_MAX_SPEEDUP)

@@ -1,11 +1,11 @@
 // SIMUMAV › Uç — sihirbaz adım makinesi ve tip eşlemeleri (saf; DOM yok; node ile test edilir: tests/test_simumav_fly.mjs).
-// Adımlar: drone → track → launch (yalnız sabit kanat / VTOL) → power (güç ve yakıt + simülasyon hızı, §10) → mission (isteğe bağlı)
+// Adımlar: drone → track → launch (sabit kanat / VTOL: kalkış yöntemi; INTERCEPTOR: fırlatıcı — HEPGO §27) → power (güç ve yakıt + simülasyon hızı, §10) → mission (isteğe bağlı)
 // → site (YER KONTROL: radar / istasyon / EO + "Yer kontrolünü koru"; HEPGO §26, isteğe bağlı) → targets (HEDEFLER, isteğe bağlı; HEPGO §24)
 // → pilot (+ kayıt seçenekleri) → BAŞLA.
 // Çıktı: `payload()` → POST /api/fly/start gövdesi (docs/simumav.md §4): {drone_id, pilot_id, track_id, mission_id?, launch, record:{video,bin},
 // power? (power.js createPowerState.body()), speedup? (> 1 ise)}.
 // Tip eşlemesi: SIMUMAV dron türleri (§3 drones.type) → HEPGO simülatör tipleri (flightsim*.js): plane → sabit_kanat, interceptor → interceptor
-// (4 pervaneli tailsitter, HEPGO §25: dikey kalkış, ~400 km/h; kalkış yöntemi adımı yok), heli → helikopter, fpv/multirotor → multirotor, vtol → vtol.
+// (4 pervaneli tailsitter, HEPGO §25: dikey kalkış, ~400 km/h; §27 fırlatıcı adımı), heli → helikopter, fpv/multirotor → multirotor, vtol → vtol.
 // Eski sabit kanat jetleri (glb:jet / glb:zephyr / proc:interceptor) artık 'plane' tipindedir (sunucu göçü v2): hız ölçeği 600 km/h ve jet sesi model
 // anahtarına göre (speedScale / audioTypeFor ikinci argümanı). FPV: başlangıç kamerası FPV.
 
@@ -16,8 +16,41 @@ export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: '
 export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'interceptor', vtol: 'vtol' };
 export const TYPE_LABEL = { multirotor: 'Multikopter', fpv: 'FPV dron', heli: 'Helikopter', plane: 'Sabit kanat', interceptor: 'INTERCEPTOR', vtol: 'VTOL' };
 export const simType = t => TYPE_MAP[t] || 'multirotor';
-// Kalkış yöntemi adımı yalnız sabit kanat / VTOL'de: rampa, araç, tekerlek, ELDEN ATIŞ (INTERCEPTOR kuyruk üstünden dikey kalkar → adım yok)
+// Kalkış yöntemi (sabit kanat düzeneği) yalnız sabit kanat / VTOL'de: rampa, araç, tekerlek, ELDEN ATIŞ. INTERCEPTOR'da aynı adımda FIRLATICI seçilir
+// (HEPGO §27: 4'lü / 8'li kutu, yerden tekli tüp, el fırlatıcısı) — durum ayrı (`ilaunch`), kalkış yine kuyruk üstünden dikey.
 export const needsLaunch = t => t === 'plane' || t === 'vtol';
+export const hasLaunchStep = t => needsLaunch(t) || t === 'interceptor';
+// HEPGO §27 INTERCEPTOR fırlatıcıları: [anahtar, i18n anahtarı (ad), Türkçe ad, i18n açıklama, Türkçe açıklama, ayar alanları]
+export const ICEPT_LAUNCH_SM = [
+  ['pod4', 'launcher.pod4', "4'lü fırlatıcı", 'launcher.pod4_desc', 'Kutu fırlatıcı, 2×2 dikey hücre. Kapak açılır, interceptor kuyruk üstünden dikey çıkar.', ['loaded']],
+  ['pod8', 'launcher.pod8', "8'li fırlatıcı", 'launcher.pod8_desc', 'Kutu fırlatıcı, 4×2 dikey hücre. Görevde envanter kutulara dağılır (raf yerine).', ['loaded']],
+  ['tube', 'launcher.tube', 'Yerden tekli', 'launcher.tube_desc', 'Üç ayaklı sehpada tek dikey fırlatma tüpü; kapak açılır, interceptor tüpten çıkar.', []],
+  ['handheld', 'launcher.handheld', 'El fırlatıcısı', 'launcher.handheld_desc', 'Pilotun omzundaki silah benzeri aparat; üstündeki küçük ekranda göğe bakan kamera ve havadaki hedefler.', ['aim_az_deg', 'aim_el_deg']],
+];
+export const ICEPT_CELLS = { pod4: 4, pod8: 8, tube: 1, handheld: 1 };
+export const ICEPT_LAUNCH_DEFAULTS = { method: 'pod4', loaded: 4, aim_az_deg: 0, aim_el_deg: 55 };
+export const ICEPT_LIMITS = { loaded: [1, 8], aim_az_deg: [0, 359], aim_el_deg: [10, 85] };
+export const isIceptLaunch = m => Object.prototype.hasOwnProperty.call(ICEPT_CELLS, m);
+export const normIceptLaunch = (l = {}) => {
+  const out = { ...ICEPT_LAUNCH_DEFAULTS, ...(l || {}) };
+  if (!isIceptLaunch(out.method)) out.method = ICEPT_LAUNCH_DEFAULTS.method;
+  for (const [k, [a, b]] of Object.entries(ICEPT_LIMITS)) { const n = Number(out[k]); out[k] = Number.isFinite(n) ? Math.min(b, Math.max(a, n)) : ICEPT_LAUNCH_DEFAULTS[k]; }
+  out.loaded = Math.round(Math.min(out.loaded, ICEPT_CELLS[out.method]));
+  return out;
+};
+// Sunucuya giden fırlatıcı (bridge.launch_dogrula; çekirdek world.launch): kutularda loaded, el fırlatıcısında nişan
+export const iceptLaunchBody = l => {
+  const n = normIceptLaunch(l);
+  const out = { method: n.method };
+  if (ICEPT_CELLS[n.method] > 1) out.loaded = n.loaded;
+  if (n.method === 'handheld') { out.aim_az_deg = n.aim_az_deg; out.aim_el_deg = n.aim_el_deg; }
+  return out;
+};
+export const iceptLaunchLabel = (l, tr = null) => {
+  const n = normIceptLaunch(l), row = ICEPT_LAUNCH_SM.find(r => r[0] === n.method), T = (k, tx) => { const r = tr ? tr(k) : k; return r && r !== k ? r : tx; };
+  const name = T(row[1], row[2]);
+  return n.method === 'pod4' || n.method === 'pod8' ? `${name} · ${n.loaded}/${ICEPT_CELLS[n.method]}` : n.method === 'handheld' ? `${name} ${Math.round(n.aim_el_deg)}°/${Math.round(n.aim_az_deg)}°` : name;
+};
 // Yüksek hız sabit kanat jet modelleri (eski "interceptor" kaydı; göç v2 ile 'plane'): 600 km/h ölçek + jet sesi
 export const JET_MODELS = ['glb:jet', 'glb:zephyr', 'proc:interceptor'];
 export const isJetModel = k => JET_MODELS.includes(String(k || ''));
@@ -119,6 +152,7 @@ export function createWizard(data = {}, init = {}) {
     mission_id: init.mission_id ?? null,
     pilot_id: init.pilot_id ?? (data.pilots || []).find(p => p.is_default)?.id ?? (data.pilots || [])[0]?.id ?? null,
     launch: normLaunch(init.launch),
+    ilaunch: normIceptLaunch(init.ilaunch || (isIceptLaunch(init.launch?.method) ? init.launch : null)),   // HEPGO §27 INTERCEPTOR fırlatıcısı
     record: { video: !!init.record?.video, bin: init.record?.bin !== false },
     power: init.power ?? null,          // §10: güç gövdesi (power.js body()); dron değişince sıfırlanır (adım yeniden kurar)
     speedup: init.speedup ?? 1,         // §10: başlangıç simülasyon hızı
@@ -129,7 +163,7 @@ export function createWizard(data = {}, init = {}) {
   let i = 0;
   const drone = () => (data.drones || []).find(d => d.id === S.drone_id) || null;
   const type = () => drone()?.type || 'multirotor';
-  const steps = () => STEPS.filter(k => k !== 'launch' || needsLaunch(type()));
+  const steps = () => STEPS.filter(k => k !== 'launch' || hasLaunchStep(type()));
   const step = () => steps()[Math.min(i, steps().length - 1)];
   const canNext = () => {
     const k = step();
@@ -144,6 +178,7 @@ export function createWizard(data = {}, init = {}) {
   const goto = k => { const j = steps().indexOf(k); if (j < 0 || j > i) return false; i = j; return true; };   // yalnız geriye ya da bulunulan adıma
   const set = (k, v) => {
     if (k === 'launch') S.launch = normLaunch({ ...S.launch, ...(v || {}) });
+    else if (k === 'ilaunch') S.ilaunch = normIceptLaunch({ ...S.ilaunch, ...(v || {}), ...(v?.method && v.method !== S.ilaunch.method && v.loaded == null ? { loaded: ICEPT_CELLS[v.method] } : {}) });
     else if (k === 'record') S.record = { ...S.record, ...(v || {}) };
     else if (k === 'drone_id') { if (v !== S.drone_id) S.power = null; S.drone_id = v; if (type() !== 'interceptor') S.defend = null; i = Math.min(i, steps().length - 1); if (S.mission_id != null) { /* görev parkura bağlı; dron değişince korunur */ } }
     else if (k === 'speedup') S.speedup = [1, 2, 4, 8].includes(Number(v)) ? Number(v) : 1;
@@ -155,7 +190,7 @@ export function createWizard(data = {}, init = {}) {
     if (!ready()) return null;
     const body = { drone_id: S.drone_id, pilot_id: S.pilot_id, track_id: S.track_id, record: { video: !!S.record.video, bin: !!S.record.bin } };
     if (S.mission_id != null) body.mission_id = S.mission_id;
-    body.launch = needsLaunch(type()) ? launchBody(S.launch) : { method: 'wheels' };   // kopter/heli: alan zorunlu; `wheels` nötr değer
+    body.launch = needsLaunch(type()) ? launchBody(S.launch) : type() === 'interceptor' ? iceptLaunchBody(S.ilaunch) : { method: 'wheels' };   // kopter/heli: alan zorunlu; `wheels` nötr değer; INTERCEPTOR: §27 fırlatıcı
     if (S.power) body.power = { ...S.power };
     if (S.speedup > 1) body.speedup = S.speedup;
     if (S.targets?.items?.length) body.targets = { items: S.targets.items.map(x => ({ ...x })), radius_m: S.targets.radius_m };

@@ -31,11 +31,13 @@
 //        setKeyboardLock(bool) (sanal kumanda açıkken WASD/QE/ok/boşluk tuşları 3B'ye gitmez) }. opts: { type, airframe, preview, origin, onProgress, onFallback, … }
 
 import { addLandingGear, createLaunchRig, RIG_FINE_ERR } from './flightsim_launch.js';   // sabit kanat kalkış yöntemi (§13): iniş takımı, rampa, pickup
+import { aimAt, aimVector, isIceptLauncher, launcherInventory, SCOPE_FOV, SCOPE_ZOOMS, scopeFov } from './flightsim_launcher.js';   // §27 INTERCEPTOR fırlatıcıları (saf)
+import { createIceptRig } from './flightsim_launcher3d.js';   // §27 kutu / tüp / el fırlatıcısı + pilot (prosedürel)
 import { CTRL_RE, CTRL_MAX, controlInputs, surfaceTarget, easeSurface, layoutForModel } from './flightsim_airframe.js';   // §13.1 kontrol düzeni: servo → mantıksal eksen → yüzey açıları (ruddervator dahil)
 import { createTimeline } from './flightsim_interp.js';   // telemetri zaman çizgisi: uyarlanır gecikme tamponlu enterpolasyon (§5)
 import { createMissionLayer } from './flightsim_mission.js';   // §18: görev çizimi (tüp bacaklar, WP etiketleri, ikonlar) + iniş dairesi H
 import { targetState, targetsRelative, drawRadar, drawLabel, RADIUS_DEFAULT as TARGET_RADIUS } from './flightsim_targets.js';   // §24 hedefler (kinematik, radar, etiket)
-import { boxCorners, selectTarget, lockedIndex } from './flightsim_tgthud.js';   // §24.5 HUD hedef sembolojisi (prizma köşeleri, kilit)
+import { boxCorners, selectTarget, lockedIndex, symbology, drawSymbology } from './flightsim_tgthud.js';   // §24.5 HUD hedef sembolojisi (prizma köşeleri, kilit)
 import { EO_FOV_MAX, EO_FOV_MIN, STATION_Z, SWEEP_S, TOWER_EO_Z, TOWER_RADAR_Z, autoRadarRange, bearingFrom, eoLook, eoStatus, eoZoom, fallState, radarCovers, siteLayout, sweepAngle, sweepGlow, threatGeometry, threatPhase, threatState } from './flightsim_gcs.js';   // §26 yer kontrol sahası + görev (saf)
 import { EO_POST, buildRackPad, buildRadarPrism, buildRangeRings, buildStation, buildSweep, buildTower } from './flightsim_gcs3d.js';   // §26 prosedürel modeller + radar katmanı
 import { attitudeQuat } from './flightsim_interp.js';
@@ -1139,9 +1141,19 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // released geçişi (§13): kızak ucu ↔ SITL farkı (off, dq) → k ile sönümlenir; kz dikey ofsetin ayrı (yalnız tırmanışla eriyen) katsayısı
   const rel = { on: false, armed: false, t: 0, kz: 1, off: new T.Vector3(), dq: new T.Quaternion(), lastPos: new T.Vector3(), lastQ: new T.Quaternion() };
   const gLock = { on: false, pos: new T.Vector3(), t: 1 };   // yerde kilit (frame içinde; §13)
+  let launcherInv = null;   // §27 hücre envanteri {total, used, launchers} (oturum/görev; yoksa launch.loaded)
+  let previewFocus = null;  // sihirbaz önizlemesi: 'rig' → kamera düzeneğin çevresinde (Kalkış adımı)
   function buildRig() {
     rig?.dispose(); rig = null;
     const m = launchCfg?.method;
+    if (launchCfg && drone.type === 'interceptor' && isIceptLauncher(m)) {   // §27 kutu / tüp / el fırlatıcısı
+      const sz = drone.bbox?.size || [0.45, 0.45, 0.2];   // dronun gerçek boyutu (gövde çerçevesi: x açıklık, y burun–kuyruk, z yükseklik)
+      rig = createIceptRig(T, { ...launchCfg, heading: num(W.runway_heading, 0), scale: MODEL_SCALE, night: W.time === 'night', dusk: W.time === 'dusk', inventory: launcherInv || launcherInventory(launchCfg),
+        fit: { span: Math.max(sz[0], sz[2]), length: sz[1] } });
+      scene.add(rig.group);
+      sc.lastAt = 0;
+      return;
+    }
     if (!launchCfg || (m !== 'ramp' && m !== 'vehicle') || drone.type !== 'sabit_kanat') return;
     rig = createLaunchRig(T, { ...launchCfg, heading: num(W.runway_heading, 0), scale: MODEL_SCALE, night: W.time === 'night', dusk: W.time === 'dusk' });
     scene.add(rig.group);
@@ -1532,6 +1544,17 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // §24.5 HUD sembolojisi verisi (flightsim_tgthud.symbology girişi). Kamera: SON render edilen ana kamera (matrixWorld); FPV ('pilot') kipinde balıkgözü
   // katsayıları (CAM_FRAG k/scale) da verilir. Hedef yoksa / zaman yoksa null. Her çağrı tg.hudAt'i günceller (sahne etiketleri gizlenir).
   const hudV = new T.Vector3();
+  // Etkin hedeflerin sembolojisi için öğeler (uzaklık/ΔH P noktasına göre; §27 nişangâh da kullanır)
+  function hudItems(t, P) {
+    const now = performance.now();
+    return activeEntries(t).filter(({ st }) => st.phase !== 'fall').map(({ x, st }) => {
+      const c = [x.root.position.x, x.root.position.y, x.root.position.z];
+      x.body.updateWorldMatrix(true, false);
+      const corners = x.lc.map(v => hudV.copy(v).applyMatrix4(x.body.matrixWorld).toArray());
+      const dist = Math.hypot(c[0] - P.x, c[1] - P.y, c[2] - P.z), f0 = tg.flash.get(x.it.i);
+      return { i: x.it.i, name: x.it.name, center: c, corners, vel: [st.vx || 0, st.vy || 0, st.vz || 0], dist, dz: c[2] - P.z, inside: dist <= x.R, flash: f0 != null && now - f0 < 2000 };
+    });
+  }
   function targetsHud() {
     if (preview || !tg.cfg || !tg.items.length || !tg.group.visible) return null;
     const t = targetTime();
@@ -1541,14 +1564,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     const e = camera.matrixWorld.elements, pilot = camMode === 'pilot';
     const view = { pos: [e[12], e[13], e[14]], right: [e[0], e[1], e[2]], up: [e[4], e[5], e[6]], fwd: [-e[8], -e[9], -e[10]], tanV: Math.tan(camera.fov * DEG / 2), aspect: camera.aspect,
       k: pilot ? POST_K : 0, scale: pilot ? 1 / (1 + POST_K * 0.5) : 1 };
-    const P = cur.pos, now = performance.now();
-    const items = activeEntries(t).filter(({ st }) => st.phase !== 'fall').map(({ x, st }) => {
-      const c = [x.root.position.x, x.root.position.y, x.root.position.z];
-      x.body.updateWorldMatrix(true, false);
-      const corners = x.lc.map(v => hudV.copy(v).applyMatrix4(x.body.matrixWorld).toArray());
-      const dist = Math.hypot(c[0] - P.x, c[1] - P.y, c[2] - P.z), f0 = tg.flash.get(x.it.i);
-      return { i: x.it.i, name: x.it.name, center: c, corners, vel: [st.vx || 0, st.vy || 0, st.vz || 0], dist, dz: c[2] - P.z, inside: dist <= x.R, flash: f0 != null && now - f0 < 2000 };
-    });
+    const P = cur.pos;
+    const items = hudItems(t, P);
     if (!items.length) return null;
     return { view, radius: tg.cfg.radius_m, sel: { ...tg.sel }, player: { pos: [P.x, P.y, P.z], vel: [cur.vel.x, cur.vel.y, cur.vel.z] }, items };
   }
@@ -1744,10 +1761,10 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       // Düzenek pist başında SABİT: demir bir kez (ilk telemetri) ya da SITL konumu > 2 m sıçrarsa (reset/set_home); araç yer koşusunda her kare izler (§13)
       if (tele.has && rig.anchored && (rig.tracking || rig.needsAnchor(cur.pos))) { rig.anchor(cur.pos, rigSurf, rigOffset()); rigSurfT = now; }
       else if (now - rigSurfT > RIG_SURF_MS) { rigSurfT = now; rig.resurface(rigSurf, rigOffset()); }
-      rig.update(dt, { speed: tele.speed });
+      rig.update(dt, { speed: tele.speed, alt: tele.has ? cur.pos.z : 0 });
       if (rig.carrying) {
-        rig.attachWorld(rigPos); rigPos.z += drone.ground || 0;
-        rig.planeQuat(rigQ);
+        if (rig.carryPose) rig.carryPose(rigPos, rigQ, drone.ground || 0);   // §27 hücre/tüp ekseni boyunca (kuyruk tabanda; `launch`ta tırmanışla çıkar)
+        else { rig.attachWorld(rigPos); rigPos.z += drone.ground || 0; rig.planeQuat(rigQ); }
         drone.group.position.copy(rigPos); drone.group.quaternion.copy(rigQ);
         rel.lastPos.copy(rigPos); rel.lastQ.copy(rigQ); rel.armed = tele.has;
       } else if (rel.armed) {
@@ -1841,7 +1858,12 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     // Google 3B karoları: kamera çözünürlüğü + LOD + yer ofseti (kalkışa dek); kamera kipi değişse de aynı camera nesnesi
     if (g3d) { try { g3d.update(camera, tele.has && tele.armed && tele.speed > 1, now); } catch { /* karo hatası kareyi durdurmasın */ } }
     // Kamera kipleri
-    if (preview) {
+    if (preview && previewFocus === 'rig' && rig) {   // §27 / §13 sihirbaz Kalkış adımı: düzeneğin çevresinde yavaş tur
+      previewAngle += dt * 0.22;
+      const f = rig.focus || { r: 16, h: 2, x: rig.group.position.x, y: rig.group.position.y, z: rig.group.position.z };
+      camera.position.set(f.x + Math.cos(previewAngle) * f.r, f.y + Math.sin(previewAngle) * f.r, f.z + f.h + f.r * 0.32);
+      camera.lookAt(f.x, f.y, f.z + (f.look ?? f.h * 0.55));
+    } else if (preview) {
       previewAngle += dt * 0.12;
       const R = Math.max(900, terrain ? terrain.size * 0.32 : 1200);
       camera.position.set(Math.cos(previewAngle) * R, Math.sin(previewAngle) * R, Math.max(260, terrain ? terrain.H * 0.9 + 160 : 300));
@@ -1885,6 +1907,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     }
     if (pip.on && !preview) renderPip(now);
     if (!preview && site.cfg) { renderRadarView(now); renderEoView(now); }   // §26 radar + EO ekranları (aynı bağlam; viewport kopyası)
+    if (rig?.hasScope) renderScope(now);   // §27 el fırlatıcısı nişangâhı: 3B ekran dokusu + (açıksa) nişangâh penceresi (aynı bağlam)
     if (frameHooks.size) frameHooks.forEach(fn => { try { fn(canvas); } catch { /* kanca hatası kareyi bozmaz */ } });   // §17: render SONRASI (aynı rAF turu; preserveDrawingBuffer gerekmez)
   }
   // Araç kamera pozları (ana kamera ve PiP aynı fonksiyonlar)
@@ -2217,6 +2240,103 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     ev.info = { status, sel: sel ? sel.x.it.i : null, name: sel ? sel.x.it.name : null, dyn: !!sel?.x.it.dyn, az: site.eo.az, el: site.eo.el, range_m: range, zoom: EO_FOV_MAX / ev.cam.fov, fov: ev.cam.fov,
       type: ev.type, eo_km: num(site.cfg.eo_km, 5), slewing: !!sel && slewErr >= 3, phase: sel?.st.phase || null, speed: sel ? sel.st.speed : null };
   }
+  // ---------- §27 el fırlatıcısı NİŞANGÂHI (aynı renderer; İKİNCİ WebGL BAĞLAMI YOK) ----------
+  // Kamera nişan biriminin lensinden nişan yönüne (az, el; yuvarlanma yok) → küçük render hedefi. Bu doku (1) aparatın üstündeki 3B EKRANA (MeshBasic
+  // harita) ve (2) nişangâh penceresi açıksa viewport/scissor kopyasıyla ana tuvale çizilir (EO kalıbı). 3B ekranın sembol katmanı (TD kutusu/prizma,
+  // ekran dışı oklar, artı işareti, AZ/EL) 2B tuvalde (flightsim_tgthud.symbology/drawSymbology) → CanvasTexture; pencerenin katmanı DOM'da (scopeHud).
+  // Hız: pencere açık 20 fps (yavaş karede 10), yalnız 3B ekran 6 fps ve ana kamera aparata < 80 m iken. Render sırasında düzenek (pilot/tüp) ve
+  // tüpteki dron gizlenir; hedef etiket sprite'ları ve görev çizimi gizlenir.
+  const sc = { rect: null, rt: null, cam: new T.PerspectiveCamera(SCOPE_FOV, 1.4, 0.3, 60000), mat: camMat(), scene: new T.Scene(), lastAt: 0, zoom: 1, renders: 0,
+    pos: new T.Vector3(), ovlCv: null, ovlTex: null, hud: null };
+  sc.cam.up.set(0, 0, 1);
+  { const q = new T.Mesh(new T.PlaneGeometry(2, 2), sc.mat); q.frustumCulled = false; sc.scene.add(q); }
+  // Nişangâh sembolojisi verisi (flightsim_tgthud.symbology girişi; SON nişangâh render pozuyla). Hedef yoksa items boş.
+  function scopeHud() {
+    if (!rig?.hasScope) return null;
+    sc.cam.updateMatrixWorld();
+    const e = sc.cam.matrixWorld.elements;
+    const view = { pos: [e[12], e[13], e[14]], right: [e[0], e[1], e[2]], up: [e[4], e[5], e[6]], fwd: [-e[8], -e[9], -e[10]], tanV: Math.tan(sc.cam.fov * DEG / 2), aspect: sc.cam.aspect, k: 0, scale: 1 };
+    const t = tg.cfg && tg.items.length ? targetTime() : null;
+    const P = { x: e[12], y: e[13], z: e[14] };
+    const items = t != null && tg.group.visible ? hudItems(t, P) : [];
+    // kilit: elle kilitli hedef (Tab / radar) yoksa NİŞAN ÇİZGİSİNE en yakın hedef (en küçük sapma açısı) — TD kutusu nişan alınan hedefte
+    let sel = { ...tg.sel };
+    if (sel.auto && items.length) {
+      const f = view.fwd, ang = it => { const d = [it.center[0] - P.x, it.center[1] - P.y, it.center[2] - P.z], n = Math.hypot(...d) || 1; return Math.acos(clamp((d[0] * f[0] + d[1] * f[1] + d[2] * f[2]) / n, -1, 1)); };
+      sel = { i: items.reduce((b, it) => (ang(it) < ang(b) ? it : b)).i, auto: false };
+    }
+    return { view, radius: tg.cfg?.radius_m || 25, sel, player: { pos: [P.x, P.y, P.z], vel: [0, 0, 0] }, items, aim: rig.aim, zoom: sc.zoom, fov: sc.cam.fov };
+  }
+  function drawScopeOverlay() {   // 3B ekranın sembol katmanı (256×184 saydam tuval)
+    if (typeof document === 'undefined' || !rig?.screenOverlay) return;
+    if (!sc.ovlCv) { sc.ovlCv = document.createElement('canvas'); sc.ovlCv.width = 256; sc.ovlCv.height = 184; sc.ovlTex = new T.CanvasTexture(sc.ovlCv); sc.ovlTex.colorSpace = T.SRGBColorSpace; }
+    const o = rig.screenOverlay;
+    if (o.material.map !== sc.ovlTex) { o.material.map = sc.ovlTex; o.material.needsUpdate = true; o.visible = true; }
+    const g = sc.ovlCv.getContext('2d'), Wc = sc.ovlCv.width, Hc = sc.ovlCv.height, C = '#7dff8a';
+    g.clearRect(0, 0, Wc, Hc);
+    const d = sc.hud;
+    if (d?.items?.length) drawSymbology(g, symbology(d, Wc, Hc, { S: 0.8, inset: { l: 18, r: 18, t: 18, b: 22 } }), { color: C, S: 0.8, F: 11, W: Wc, H: Hc });
+    g.strokeStyle = C; g.lineWidth = 1.5; g.beginPath();   // artı işareti
+    g.moveTo(Wc / 2 - 14, Hc / 2); g.lineTo(Wc / 2 - 4, Hc / 2); g.moveTo(Wc / 2 + 4, Hc / 2); g.lineTo(Wc / 2 + 14, Hc / 2);
+    g.moveTo(Wc / 2, Hc / 2 - 14); g.lineTo(Wc / 2, Hc / 2 - 4); g.moveTo(Wc / 2, Hc / 2 + 4); g.lineTo(Wc / 2, Hc / 2 + 14); g.stroke();
+    g.font = '700 13px ui-monospace, Menlo, Consolas, monospace'; g.fillStyle = C; g.textBaseline = 'bottom';
+    const a = rig.aim; g.textAlign = 'left'; g.fillText(`AZ ${String(Math.round(a.az) % 360).padStart(3, '0')}`, 6, Hc - 4); g.textAlign = 'right'; g.fillText(`EL ${Math.round(a.el)}`, Wc - 6, Hc - 4);
+    g.textAlign = 'center'; g.textBaseline = 'top'; g.fillText(`×${sc.zoom}${d?.items?.length ? ` · ${d.items.length} TGT` : ''}`, Wc / 2, 4);
+    sc.ovlTex.needsUpdate = true;
+  }
+  function renderScope(now) {
+    const r = sc.rect;
+    const near = camera.position.distanceTo(rig.group.position) < 80 * (MODEL_SCALE / 2.5);
+    if (!r && !near) return;
+    const pr = Math.min(renderer.getPixelRatio(), 1.5) * 0.85;
+    const rw = r ? Math.max(96, Math.round(r.w * pr)) : 256, rh = r ? Math.max(72, Math.round(r.h * pr)) : 184;
+    if (!sc.rt || sc.rt.width !== rw || sc.rt.height !== rh) { sc.rt?.dispose(); sc.rt = new T.WebGLRenderTarget(rw, rh, { depthBuffer: true, stencilBuffer: false }); sc.lastAt = 0; }
+    const scr = rig.screen;
+    if (scr && scr.material.map !== sc.rt.texture) { scr.material.map = sc.rt.texture; scr.material.color.set(0xffffff); scr.material.needsUpdate = true; }
+    if (now - sc.lastAt >= (r ? (frameMs > 22 ? 100 : 50) : (preview ? 200 : 160))) {
+      sc.lastAt = now;
+      const p = rig.scopePose(sc.pos);
+      const f = aimVector(p.az, p.el);
+      sc.cam.position.copy(p.pos); sc.cam.lookAt(p.pos.x + f[0] * 100, p.pos.y + f[1] * 100, p.pos.z + f[2] * 100);
+      sc.cam.fov = scopeFov(sc.zoom); sc.cam.aspect = rw / rh; sc.cam.far = camera.far; sc.cam.updateProjectionMatrix(); sc.cam.updateMatrixWorld();
+      const sh = renderer.shadowMap.autoUpdate; renderer.shadowMap.autoUpdate = false;
+      const rv0 = rig.group.visible, dv = drone.group.visible, carry = rig.carrying;
+      rig.group.visible = false; if (carry) drone.group.visible = false;
+      const hidden = tg.items.filter(x => x.spr?.visible); hidden.forEach(x => { x.spr.visible = false; });
+      const mg = mission.group, mv = mg?.visible; if (mg) mg.visible = false;
+      try { renderer.setRenderTarget(sc.rt); renderer.render(scene, sc.cam); renderer.setRenderTarget(null); }
+      finally { renderer.shadowMap.autoUpdate = sh; rig.group.visible = rv0; drone.group.visible = dv; hidden.forEach(x => { x.spr.visible = true; }); if (mg) mg.visible = mv; }
+      sc.renders++;
+      sc.hud = scopeHud();
+      drawScopeOverlay();
+    }
+    if (r) {
+      sc.mat.uniforms.tDiffuse.value = sc.rt.texture;
+      setCamUniforms(sc.mat, 'fpv', rw, rh, true, 'day');
+      const Wc = Math.max(1, mountEl.clientWidth), Hc = Math.max(1, mountEl.clientHeight);
+      renderer.setViewport(r.x, Hc - r.y - r.h, r.w, r.h); renderer.setScissor(r.x, Hc - r.y - r.h, r.w, r.h); renderer.setScissorTest(true);
+      renderer.render(sc.scene, post.cam);
+      renderer.setScissorTest(false); renderer.setViewport(0, 0, Wc, Hc);
+    }
+  }
+  // "Hedefe yönel": kilitli (yoksa en yakın) hedefe nişan
+  function aimAtTarget(i = null) {
+    if (!rig?.hasScope) return null;
+    const t = targetTime(); if (t == null) return null;
+    const lens = rig.scopePose(sc.pos)?.pos; if (!lens) return null;
+    const list = activeEntries(t).filter(({ st }) => st.phase !== 'fall');
+    if (!list.length) return null;
+    const want = i ?? (tg.sel.auto ? null : tg.sel.i);
+    const pick = list.find(e => e.x.it.i === want) || list.reduce((b, e) => (!b || e.x.root.position.distanceTo(lens) < b.x.root.position.distanceTo(lens) ? e : b), null);
+    const pp = pick.x.root.position, a = aimAt([lens.x, lens.y, lens.z], [pp.x, pp.y, pp.z]);
+    const res = rig.setAim(a.az, a.el);
+    if (launchCfg) { launchCfg.aim_az_deg = res.az; launchCfg.aim_el_deg = res.el; }
+    return { ...res, i: pick.x.it.i, range: a.range };
+  }
+  const setAim = (az, el) => { if (!rig?.setAim) return null; const a = rig.setAim(az, el); if (launchCfg) { launchCfg.aim_az_deg = a.az; launchCfg.aim_el_deg = a.el; } sc.lastAt = 0; return a; };
+  const setLauncherInventory = inv => { launcherInv = inv ? { ...inv } : null; if (rig?.setInventory && launcherInv) rig.setInventory(launcherInv); };
+  const launcherInfo = () => (rig?.iceptRig ? { method: rig.method, phase: rig.phase, aim: rig.aim, inventory: rig.inventory, cells: rig.cells, puffs: rig.puffs, scope: !!rig.hasScope,
+    scopeRenders: sc.renders, scopeRect: sc.rect, zoom: sc.zoom, screen: rig.screenPose?.() || null, x: rig.group.position.x, y: rig.group.position.y, z: rig.group.position.z } : null);
   const siteInfo = () => (site.cfg ? { cfg: { ...site.cfg }, layout: site.L, rack: site.rackShow, rackN: site.rackModels.length, eo: { ...site.eo },
     station: site.station ? site.station.group.position.toArray() : null, tower: site.tower ? site.tower.group.position.toArray() : null } : null);
   const frameHooks = new Set();   // §17 ekran kaydı: her karede render edilen tuvali okuyan kancalar (drawImage → birleşik kayıt tuvali)
@@ -2278,7 +2398,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     canvas.removeEventListener('wheel', onWheel);
     controls.dispose();
     disposeGroup(gWorld); disposeGroup(drone.group); mission.dispose(); disposeGroup(tg.group); tg.radar?.remove();
-    disposeGroup(site.group); disposeGroup(rv.scene); rv.rt?.dispose(); rv.mat.dispose(); rv.quad.geometry.dispose(); ev.rt?.dispose(); ev.mat.dispose(); smokeTex?.dispose();   // §26
+    disposeGroup(site.group); disposeGroup(rv.scene); rv.rt?.dispose(); rv.mat.dispose(); rv.quad.geometry.dispose(); ev.rt?.dispose(); ev.mat.dispose(); smokeTex?.dispose(); sc.rt?.dispose(); sc.mat.dispose(); sc.ovlTex?.dispose();   // §26 + §27 nişangâh
     post.rt?.dispose(); post.mat.dispose(); post.quad.geometry.dispose(); pip.rt?.dispose(); pip.mat.dispose(); pip.quad.geometry.dispose(); heatMats.forEach(m => m.dispose()); heatMats.clear();
     renderer.dispose();
     renderer.forceContextLoss?.();
@@ -2329,6 +2449,11 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     get targetTime() { return targetTime(); }, setRadarVisible: v => { tg.radarOn = !!v; syncSmallRadar(); },
     // §26 yer kontrol sahası + radar/EO ekranları + "Yer kontrolünü koru" tehditleri
     setSite, setRackCount, siteHit, siteInfo, setDefend, setDefendState, flashThreat, lockTarget,
+    // §27 INTERCEPTOR fırlatıcıları: envanter (hücre durumları), el fırlatıcısı nişanı + nişangâh (3B ekran + pencere)
+    setPreviewFocus: f => { previewFocus = f === 'rig' ? 'rig' : null; }, get rigFocus() { return rig?.focus || null; },
+    setLauncherInventory, launcherInfo, setAim, getAim: () => (rig?.hasScope ? rig.aim : null), aimAtTarget, scopeHud: () => sc.hud, get hasScope() { return !!rig?.hasScope; },
+    setScopeRect: r => { sc.rect = r && r.w > 0 && r.h > 0 ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } : null; sc.lastAt = 0; },
+    setScopeZoom: z => { sc.zoom = SCOPE_ZOOMS.includes(Number(z)) ? Number(z) : 1; sc.lastAt = 0; return sc.zoom; }, getScopeZoom: () => sc.zoom,
     setRadarRect: r => { rv.rect = r && r.w > 0 && r.h > 0 ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } : null; tg.radarHide = !!rv.rect; syncSmallRadar(); },
     setEoRect: r => { ev.rect = r && r.w > 0 && r.h > 0 ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } : null; },
     setRadarRange: km => { rv.fixedKm = km ? Number(km) : null; }, radarInfo: () => rv.info, radarPick, eoInfo: () => ev.info,

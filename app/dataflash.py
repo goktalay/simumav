@@ -81,17 +81,25 @@ class _Bicim:
 
 
 def _metin(b):
-    b = bytes(b).split(b'\x00', 1)[0]
+    """pymavlink DFMessage.__getattr__ ile aynı: önce TÜM alan çözülür (UTF-8, olmazsa ISO-8859-1), sonra ilk NUL'da kesilir
+    (NUL sonrası çöp UTF-8 değilse NUL öncesi de ISO-8859-1 ile çözülür — pymavlink davranışı birebir)."""
+    b = bytes(b)
     try:
-        return b.decode('utf-8')
+        s = b.decode('utf-8')
     except UnicodeDecodeError:
-        return b.decode('ISO-8859-1')
+        s = b.decode('ISO-8859-1')
+    i = s.find('\x00')
+    return s[:i] if i >= 0 else s
 
 
 SAKIN = 4000   # tam yolda bu kadar FMT'siz mesajdan sonra hızlı yola geçilir
 
 
-def _python_yuru(tampon, p, sinir, n, bitti, uz, bicimler, istenen, ist, konumlar):
+class _Dur(Exception):
+    """tanimsizda_dur: tanımsız tipli başlıkta okuma biter (pymavlink indeksleyicisi gibi)."""
+
+
+def _python_yuru(tampon, p, sinir, n, bitti, uz, bicimler, istenen, ist, konumlar, tanimsizda_dur=False):
     """Mesaj mesaj yürüyüş (FMT kayıtlarını işler, bozuk baytta sonraki A3 95'e atlar, tanımsız tipte 1 bayt ilerler).
     Dönüş (p, hızlı_yola_dön)."""
     sakin = 0
@@ -105,6 +113,8 @@ def _python_yuru(tampon, p, sinir, n, bitti, uz, bicimler, istenen, ist, konumla
         t = tampon[p + 2]
         L = uz[t]
         if L == 0:               # tanımsız tip: bir bayt ilerle, sonraki başlığı ara
+            if tanimsizda_dur:
+                raise _Dur()
             p += 1
             continue
         if p + L > n:            # kesik son mesaj (yalnız dosya sonunda olabilir)
@@ -192,10 +202,20 @@ def _vektor_yuru(arr, p, sinir, n, uz, ist, konumlar):
     return yeni_p, sonuc
 
 
-def oku(path, istenen, ilerleme=None, blok=BLOK):
+_TAMSAYI = set('bBhHiIMqQ')
+_BOLEN = {'c': 100.0, 'C': 100.0, 'e': 100.0, 'E': 100.0, 'L': 1e7}   # pymavlink: v = float(ham); v /= (1 / çarpan)
+
+
+def oku(path, istenen, ilerleme=None, blok=BLOK, kesin=False, ofs=False, tanimsizda_dur=False):
     """`istenen`: {tip adı: [sütun adları]} (yoksa atlanır). Dönüş: {tip adı: {sütun: np.ndarray}} — yalnız logda bulunan tip/sütunlar;
     sayısal sütunlar float32 (f/g/b/B/h/H/M/c/C) ya da float64 (zaman, L enlem/boylam, i/I/e/E/q/Q/d; çarpan uygulanmış), metin sütunları (n/N/Z) Python str listesi, 'a' dizileri (n, 32).
-    Mesajlar dosya sırasıyla. `ilerleme(yüzde)` okunan bayta göre çağrılır (0…100). Bellek: blok + istenen sütunlar."""
+    Mesajlar dosya sırasıyla. `ilerleme(yüzde)` okunan bayta göre çağrılır (0…100). Bellek: blok + istenen sütunlar.
+    `kesin`: değerler pymavlink ile BİT BİT aynı (uçuş logu analizi): tamsayı biçimler (b/B/h/H/i/I/M/q/Q) int64 (M işaretli, pymavlink 'b'),
+    f/g/d float64, c/C/e/E/L float64(ham) / 100 ya da 1e7 (pymavlink bölme sırası). Bir parçada eksik sütun varsa o sütun float64 + NaN olur.
+    `ofs`: her tipe '_ofs' (mesajın dosyadaki bayt konumu, int64) eklenir — tipler arası dosya sırası için.
+    `tanimsizda_dur`: FMT'si görülmemiş tipte geçerli bir A3 95 başlığına rastlanınca okuma orada BİTER — pymavlink DFReader_binary
+    indeksleyicisinin (init_arrays / dfindexer: "unknown msg type" → break) davranışı; analiz sonucunun eski yolla birebir aynı olması için.
+    Varsayılan (False): bir bayt ilerleyip sonraki başlıkla sürdürür (daha toleranslı; 3B oynatma)."""
     toplam = os.path.getsize(path)
     uzunluklar = [0] * 256
     uzunluklar[FMT_TIP] = FMT_UZUNLUK
@@ -219,32 +239,42 @@ def oku(path, istenen, ilerleme=None, blok=BLOK):
             konumlar = {}
             arr = np.frombuffer(tampon, dtype=np.uint8)
             vektor_ok = True
-            while p < sinir:
-                if vektor_ok:            # hızlı yol: numpy aday başlıkları + ardıl zinciri; FMT / bozuk bayt / bilinmeyen tipte durur
-                    p, durum = _vektor_yuru(arr, p, sinir, n, uzunluklar, istenen_tip, konumlar)
-                    if durum == 'blok':
-                        break
-                # tam yol (pymavlink ile aynı kurallar): FMT kaydı, yeniden eşitleme; ardışık SAKIN mesajdan sonra hızlı yola döner
-                p, vektor_ok = _python_yuru(tampon, p, sinir, n, bitti, uzunluklar, bicimler, istenen, istenen_tip, konumlar)
+            dur = False
+            try:
+                while p < sinir:
+                    if vektor_ok:            # hızlı yol: numpy aday başlıkları + ardıl zinciri; FMT / bozuk bayt / bilinmeyen tipte durur
+                        p, durum = _vektor_yuru(arr, p, sinir, n, uzunluklar, istenen_tip, konumlar)
+                        if durum == 'blok':
+                            break
+                    # tam yol (pymavlink ile aynı kurallar): FMT kaydı, yeniden eşitleme; ardışık SAKIN mesajdan sonra hızlı yola döner
+                    p, vektor_ok = _python_yuru(tampon, p, sinir, n, bitti, uzunluklar, bicimler, istenen, istenen_tip, konumlar,
+                                                tanimsizda_dur)
+            except _Dur:
+                dur = True
             if konumlar:                 # bloktaki istenen mesajları toplu çöz (yapılı dtype görünümü)
                 for t, ks in konumlar.items():
                     b = bicimler[t]
                     idx = np.sort(np.concatenate([np.asarray(ks[0], dtype=np.int64)] + ks[1:]))   # [0]: tam yol listesi
                     kayit = arr[(idx + 3)[:, None] + np.arange(b.uzunluk - 3)].view(b.dtype).reshape(-1)
                     sut = [c for c in istenen[b.ad] if c in b.dtype.names]
-                    if sut:
-                        ham.setdefault(b.ad, []).append((b, {c: kayit[c].copy() for c in sut}, len(kayit)))
+                    if sut or ofs:
+                        d = {c: kayit[c].copy() for c in sut}
+                        if ofs:
+                            d['_ofs'] = idx + taban
+                        ham.setdefault(b.ad, []).append((b, d, len(kayit)))
             del arr
             if ilerleme:
                 y = int(100 * min(toplam, taban + p) / max(1, toplam))
                 if y != son_yuzde:
                     son_yuzde = y
                     ilerleme(y)
-            if bitti:
+            if bitti or dur:
                 break
     sonuc = {}
     for ad, parcalar in ham.items():
         cols = {}
+        if ofs:
+            cols['_ofs'] = np.concatenate([d['_ofs'] for _b, d, _m in parcalar]).astype(np.int64)
         for c in istenen[ad]:
             ornek = next((b for b, d, _n in parcalar if c in d), None)
             if ornek is None:
@@ -254,6 +284,8 @@ def oku(path, istenen, ilerleme=None, blok=BLOK):
                 cols[c] = [_metin(x) for _b, d, m in parcalar for x in (d[c] if c in d else [b''] * m)]
             elif ch_ == 'a':
                 cols[c] = np.concatenate([d[c] if c in d else np.zeros((m, 32), np.int16) for _b, d, m in parcalar])
+            elif kesin:
+                cols[c] = _kesin_sutun(c, parcalar)
             else:
                 parca = []
                 for b, d, m in parcalar:
@@ -271,6 +303,30 @@ def oku(path, istenen, ilerleme=None, blok=BLOK):
     if ilerleme and son_yuzde < 100:
         ilerleme(100)
     return sonuc
+
+
+def _kesin_sutun(c, parcalar):
+    """pymavlink ile aynı değerler (bkz. oku(kesin=True)). Her parça kendi biçim karakteriyle çözülür (ortada FMT değişimi)."""
+    parca, eksik = [], False
+    for b, d, m in parcalar:
+        if c not in d:
+            parca.append(None)
+            eksik = True
+            continue
+        ch = b.bicim[b.sutunlar.index(c)] if c in b.sutunlar else 'f'
+        v = d[c]
+        if ch == 'M':
+            v = v.view(np.int8)
+        if ch in _TAMSAYI:
+            v = v.astype(np.int64)
+        else:
+            v = v.astype(np.float64)
+            if ch in _BOLEN:
+                v = v / _BOLEN[ch]
+        parca.append(v)
+    if eksik or len({p.dtype.kind for p in parca if p is not None}) > 1:
+        parca = [np.full(m, np.nan) if p is None else p.astype(np.float64) for p, (_b, _d, m) in zip(parca, parcalar)]
+    return np.concatenate(parca) if len(parca) > 1 else parca[0]
 
 
 def zaman(cols):

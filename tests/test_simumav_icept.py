@@ -101,7 +101,42 @@ def main():
         r = c.post(f"/api/fly/{f['flight_id']}/stop", json={}, headers=H); assert r.status_code == 200, r.text
         sm = r.json()['flight']['summary']
         assert sm['targets']['count'] == 2 and sm['targets']['radius_m'] == 30 and 'score' in sm['targets'], sm.get('targets')
-    print('SIMUMAV INTERCEPTOR + hedefler testleri geçti.')
+        # ---- HEPGO §27 fırlatıcılar: doğrulama (sınırlar), çekirdek world.launch, flights.launch, WS takeoff{aim} → aşamalar
+        for kotu in ({'method': 'pod4', 'loaded': 9}, {'method': 'handheld', 'aim_el_deg': 5}, {'method': 'handheld', 'aim_az_deg': 400}, {'method': 'pod9'}):
+            r = c.post('/api/fly/start', json={**base, 'launch': kotu}, headers=H)
+            assert r.status_code == 422, (kotu, r.text)
+        assert bridge.launch_dogrula({'method': 'pod8'})['loaded'] == 8 and bridge.LAUNCH_CEKIRDEK['handheld'] == 'handheld'
+        r = c.post('/api/fly/start', json={**base, 'launch': {'method': 'handheld', 'aim_az_deg': 90, 'aim_el_deg': 30}}, headers=H)
+        assert r.status_code == 201, r.text
+        f = r.json()
+        s = bridge.oturum(f['sim_id'])
+        assert s.launch['method'] == 'handheld' and s.launch['aim_az_deg'] == 90.0 and s.launch['aim_el_deg'] == 30.0, s.launch
+        st = c.get(f"/api/fly/{f['flight_id']}").json()
+        assert st['launch']['method'] == 'handheld' and st['session']['launch']['method'] == 'handheld', st['launch']
+        with sqlite3.connect(config.DB_PATH) as cc:
+            assert cc.execute('SELECT launch FROM flights WHERE id = ?', (f['flight_id'],)).fetchone()[0] == 'handheld'
+        son = time.time() + 20
+        while time.time() < son and s.state != 'HAZIR':
+            time.sleep(0.1)
+        with c.websocket_connect(f"/ws/fly/{f['sim_id']}", headers={**H, 'Cookie': f"smsid={c.cookies.get('smsid')}"}) as ws:
+            json.loads(ws.receive_text())
+            ws.send_json({'t': 'cmd', 'rid': 'a1', 'name': 'takeoff', 'params': {'alt': 40, 'aim': {'az_deg': 120, 'el_deg': 40}}})
+            fazlar, son = [], time.time() + 15
+            while time.time() < son and (not fazlar or fazlar[-1] != 'released'):
+                m = json.loads(ws.receive_text())
+                if m.get('t') == 'launch':
+                    fazlar.append(m['phase'])
+                    if m['phase'] == 'launch':
+                        assert m['method'] == 'handheld' and m['aim_az_deg'] == 120.0 and m['aim_el_deg'] == 40.0, m
+            assert fazlar == ['armed', 'launch', 'released'], fazlar
+        assert s.launch['aim_az_deg'] == 120.0
+        r = c.post(f"/api/fly/{f['flight_id']}/stop", json={}, headers=H); assert r.status_code == 200, r.text
+        r = c.post('/api/fly/start', json={**base, 'launch': {'method': 'pod8', 'loaded': 5}}, headers=H)
+        assert r.status_code == 201, r.text
+        f = r.json(); s = bridge.oturum(f['sim_id'])
+        assert s.launch['method'] == 'pod8' and s.launch['loaded'] == 5, s.launch
+        r = c.post(f"/api/fly/{f['flight_id']}/stop", json={}, headers=H); assert r.status_code == 200, r.text
+    print('SIMUMAV INTERCEPTOR + hedefler + fırlatıcı (§27) testleri geçti.')
 
 
 if __name__ == '__main__':

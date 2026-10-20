@@ -43,7 +43,7 @@ const f0 = v => (v == null || Number.isNaN(Number(v)) ? '—' : String(Math.roun
 const f1 = v => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(1));
 const CARD = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' };
 const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
-const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış' };
+const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış', pod4: 'Fırlat', pod8: 'Fırlat', tube: 'Fırlat', handheld: 'Fırlat' };   // §27 fırlatıcılar
 const SEV_CLASS = { hata: 'err', uyari: 'warn', basari: 'ok', bilgi: '' };
 // GÖKTUNGU kalkış kontrol listesi (kalkis_kontrol.js) — simülatörde zorunlu maddeler; sunucu drone_takeoff_checks'e kaydeder (hub takeoff{kontrol})
 const CHECKLIST = [
@@ -308,6 +308,8 @@ export function createOpsPanel(stage, opts = {}) {
     const label = LAUNCH_BTN[launch?.method] || 'Kalkış';
     const hint = launch?.method === 'ramp' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; 1 sn sonra pnömatik rampa kızağı {a}° açıyla fırlatır (SITL mancınık tetiği).', { a: Math.round(launch.angle_deg) })
       : launch?.method === 'vehicle' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; pickup pist boyunca hızlanır, {k} km/h yer hızında uçak bırakılır.', { k: Math.round(launch.release_kmh) })
+      : launch?.method === 'handheld' ? tr('El fırlatıcısı: GUIDED + ARM; interceptor tüpten çıkar ve nişan doğrultusuna yönelir (Nişangâh penceresindeki nişan).')
+      : ['pod4', 'pod8', 'tube'].includes(launch?.method) ? tr('Fırlatıcı: GUIDED + ARM; kapak açılır, interceptor kuyruk üstünden dikey çıkar (NAV_TAKEOFF).')
       : isPlane ? tr('ArduPlane yöntemi: TKOFF_ALT = hedef, TAKEOFF modu, ARM; uçak pist boyunca hızlanır.') : tr('GÖKTUNGU akışı: GUIDED → ARM → NAV_TAKEOFF; dron hedef irtifaya yükselir.');
     const all = h('button', { class: 'btn sm', type: 'button', onclick: () => boxes.forEach(b => { b.cb.checked = true; }) }, 'Hepsini onayla');
     modal({ title: label, body: h('div', null, field('Hedef irtifa (m, AGL)', alt, hint),

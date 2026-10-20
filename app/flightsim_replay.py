@@ -1060,7 +1060,7 @@ class ReplaySession:
             with db.connect() as conn:
                 r = db.row(conn.execute('SELECT power FROM drone_sim_runs WHERE bin_log_id = ? AND power IS NOT NULL ORDER BY id DESC LIMIT 1', (int(log['id']),)))
                 c = db.row(conn.execute('SELECT camera FROM drone_sim_runs WHERE bin_log_id = ? AND camera IS NOT NULL ORDER BY id DESC LIMIT 1', (int(log['id']),)))
-                h = db.row(conn.execute('SELECT type, targets, world FROM drone_sim_runs WHERE bin_log_id = ? AND mode = ? ORDER BY id DESC LIMIT 1', (int(log['id']), 'sitl')))
+                h = db.row(conn.execute('SELECT type, targets, world, launch FROM drone_sim_runs WHERE bin_log_id = ? AND mode = ? ORDER BY id DESC LIMIT 1', (int(log['id']), 'sitl')))
             if r and r.get('power'):
                 self.power = (json.loads(r['power']) or {}).get('settings') or None
             if c and c.get('camera') in flightsim.KAMERA_TURLERI:
@@ -1077,6 +1077,14 @@ class ReplaySession:
             if self.sim_tip == 'interceptor':
                 self.type = 'interceptor'
                 self.model = flightsim._model_eski(self.type, None)
+                # §27 fırlatıcı türü kayıttan: istekte fırlatıcı seçilmediyse (wheels/eksik) canlı oturumun fırlatıcısı (yöntem, dolu hücre, nişan)
+                istek = ((self.world or {}).get('launch') or {}).get('method')
+                with contextlib.suppress(Exception):
+                    kl = json.loads(h.get('launch') or 'null') or {}
+                    if not flightsim.flightsim_launcher.firlatici_mi(istek) and flightsim.flightsim_launcher.firlatici_mi(kl.get('method')):
+                        kl = flightsim.launch_dogrula({k: v for k, v in kl.items() if k != 'phase'})
+                        self.world = {**(self.world or {}), 'launch': kl}
+                self.launch = flightsim.launch_normalize(self.type, (self.world or {}).get('launch'))
         except Exception:   # noqa: BLE001
             self.power = None
 
@@ -1260,7 +1268,9 @@ def loglari_listele(conn, user, q=None, limit=300):
                     json_extract(l.analysis, '$.summary.start_utc') AS start_utc,
                     json_extract(l.analysis, '$.summary.home.lat') AS home_lat,
                     json_extract(l.analysis, '$.summary.home.lng') AS home_lon,
-                    json_extract(l.analysis, '$.summary.distance_m') AS distance_m
+                    json_extract(l.analysis, '$.summary.distance_m') AS distance_m,
+                    (SELECT r.type FROM drone_sim_runs r WHERE r.bin_log_id = l.id AND r.mode = 'sitl' ORDER BY r.id DESC LIMIT 1) AS sim_type,
+                    (SELECT r.launch FROM drone_sim_runs r WHERE r.bin_log_id = l.id AND r.mode = 'sitl' ORDER BY r.id DESC LIMIT 1) AS sim_launch
              FROM flight_logs l LEFT JOIN users u ON u.id = l.uploaded_by LEFT JOIN field_tasks t ON t.id = l.task_id
              WHERE l.status = 'TAMAM' '''
     args = []
@@ -1279,7 +1289,11 @@ def loglari_listele(conn, user, q=None, limit=300):
         if ext and ext not in UZANTILAR:
             continue
         r['ext'] = ext.lstrip('.')
-        r['type'] = arac_tipi(r.get('vehicle'))
+        r['type'] = 'interceptor' if r.get('sim_type') == 'interceptor' else arac_tipi(r.get('vehicle'))   # §25: firmware ArduPlane der; simülatör kaydı tipi bilir
+        try:   # §27: canlı oturumun kalkış yöntemi/fırlatıcısı (sihirbaz kayıt kipinde önerir)
+            r['sim_launch'] = json.loads(r['sim_launch']) if r.get('sim_launch') else None
+        except (TypeError, ValueError):
+            r['sim_launch'] = None
         r['cached'] = onbellek_yolu(r['id']).exists()
         out.append(r)
     return out

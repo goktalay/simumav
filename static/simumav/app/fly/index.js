@@ -8,7 +8,7 @@
 // session.js openSession. Stiller: ./fly.css (sihirbaz + sahne ekleri) ve ./fly-sim.css (HEPGO fs-* kopyası) bir kez eklenir.
 import { clear, h, toast, toastError, confirmDialog, fmtDuration, t as tr, onLeave, runLeave } from './simui.js';
 import { net } from './net.js';
-import { COUNTDOWN_S, LAUNCH_LIMITS, LAUNCH_METHODS_SM, STEP_TITLES, TYPE_LABEL, WORLD_MODE_LABEL, airframeLabel, airframeOf, countdownAt, createWizard, launchLabelSm, modelFor, needsAirframe, needsLaunch, simType, speedScale, worldFromTrack } from './wizard.js';
+import { COUNTDOWN_S, ICEPT_CELLS, ICEPT_LAUNCH_SM, ICEPT_LIMITS, LAUNCH_LIMITS, LAUNCH_METHODS_SM, STEP_TITLES, iceptLaunchBody, iceptLaunchLabel, TYPE_LABEL, WORLD_MODE_LABEL, airframeLabel, airframeOf, countdownAt, createWizard, launchLabelSm, modelFor, needsAirframe, needsLaunch, simType, speedScale, worldFromTrack } from './wizard.js';
 import { openSession, startFlight, fetchMeta } from './session.js';
 import { canFuel, createPowerStep, powerOf } from './power.js';
 import { createCameraPick } from './camera_pick.js';   // kamera türü kartları (pilot adımı; HEPGO §22.3)
@@ -124,7 +124,7 @@ async function renderWizard(view, ctx) {
     const tg = W.state.targets?.items?.length ? `◎ ${W.state.targets.items.length}` : null;   // HEPGO §24 hedef sayısı
     const st = W.state.site, sv = [st?.radar ? `R${st.radar_km}` : null, st?.station ? 'GKS' : null, st?.eo ? `EO${st.eo_km}` : null].filter(Boolean).join('·');
     const siteTxt = sv ? `◈ ${sv}${W.state.defend || m?.kind === 'defend' ? ` · ${tr('site.defend')}` : ''}` : null;   // HEPGO §26
-    clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : null, pwTxt, m ? m.name : null, siteTxt, tg, p ? p.name : null].filter(Boolean).join(' · '));
+    clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : d?.type === 'interceptor' ? iceptLaunchLabel(W.state.ilaunch, tr) : null, pwTxt, m ? m.name : null, siteTxt, tg, p ? p.name : null].filter(Boolean).join(' · '));
   };
   // ---------- §10 güç ve yakıt adımı (dron değişince ön ayar sıfırlanır) ----------
   let powerPreset = null;
@@ -149,13 +149,15 @@ async function renderWizard(view, ctx) {
         if (destroyed || !previewBox?.isConnected) return;
         // Dönen dron önizlemesi: preview:true dünya turu yapar (uzak); burada normal kip + serbest kamera dronun çevresinde döndürülür (klavye kilitli)
         const world = { ...M3D.WORLD_DEFAULTS, mode: 'procedural', size_m: 1500, building_count: 0, tree_density: 0.08, fog: 0.05, seed: 4242 };
-        preview = await M3D.createFlightSim3D(previewBox, world, { preview: false, type, model, launch: needsLaunch(d.type) ? { method: 'wheels' } : null, camera: 'free', homeMark: false });
+        preview = await M3D.createFlightSim3D(previewBox, world, { preview: false, type, model, launch: needsLaunch(d.type) ? { method: 'wheels' } : d.type === 'interceptor' && W.step() === 'launch' ? iceptLaunchBody(W.state.ilaunch) : null, camera: 'free', homeMark: false });
         window.__smPreview = preview;   // teşhis (Playwright): modelInfo, kamera
         parkPose(preview, type);
         if (destroyed) { preview.dispose(); preview = null; return; }
         preview.setKeyboardLock?.(true);
         let ang = 0.8;
         preview.addFrameHook?.(() => {
+          const rf = preview.rigFocus;   // HEPGO §27: fırlatıcı adımında düzeneğin çevresinde
+          if (rf) { ang += 0.005; const x = rf.x + Math.cos(ang) * rf.r, y = rf.y + Math.sin(ang) * rf.r, z = rf.z + rf.h + rf.r * 0.32, tz = rf.z + rf.h * 0.55; const dx = rf.x - x, dy = rf.y - y, dz = tz - z, L = Math.hypot(dx, dy, dz) || 1; preview.setFreeView(x, y, z, Math.atan2(-dx, dy) * 180 / Math.PI, Math.asin(dz / L) * 180 / Math.PI); return; }
           const mi = preview.modelInfo, bb = mi?.bbox?.size || [1, 1, 0.4], dik = mi?.type === 'interceptor';
           // INTERCEPTOR park duruşu dikey (kuyruk yerde): bakış noktası gövde ortası (−min.y × 2,5), küçük gövdeye yakın kamera
           const r = Math.max(dik ? 0.45 : 1.2, Math.max(bb[0], bb[1]) / 2 * 2.5) * (dik ? 2.1 : 3.2), zc = dik ? Math.max(0.3, -(mi.bbox.min?.[1] ?? -0.2) * 2.5) : Math.max(bb[2], 0.3) * 2.5 * 0.5 + 0.2;
@@ -196,7 +198,40 @@ async function renderWizard(view, ctx) {
     drawList();
     body.append(data.tracks.length ? list : h('p', { class: 'muted' }, tr('Parkur yok; Parkur modülünden ekleyin.')));
   };
+  // HEPGO §27 INTERCEPTOR fırlatıcısı: 4 kart (4'lü / 8'li / yerden tekli / el fırlatıcısı) + dolu hücre ya da nişan kaydırıcıları + düzenek önizlemesi
+  const LT = (k, tx, p) => { const r = tr(k, p); return r && r !== k ? r : tx.replace(/\{(\w+)\}/g, (m, q) => (p?.[q] != null ? String(p[q]) : m)); };
+  const ICEPT_ICON = {
+    pod4: '<svg viewBox="0 0 48 48"><rect x="10" y="18" width="28" height="22" rx="2"/><path d="M24 18v22M10 29h28M11 18 7 10h10l3 8"/><path d="M15 40v4M33 40v4"/></svg>',
+    pod8: '<svg viewBox="0 0 48 48"><rect x="4" y="20" width="40" height="18" rx="2"/><path d="M14 20v18M24 20v18M34 20v18M4 29h40M5 20 3 12h8l3 8"/></svg>',
+    tube: '<svg viewBox="0 0 48 48"><rect x="18" y="8" width="12" height="24" rx="2"/><path d="M18 8l-4-5h10M24 32l-10 12M24 32l10 12M24 32v12"/></svg>',
+    handheld: '<svg viewBox="0 0 48 48"><circle cx="12" cy="9" r="4"/><path d="M12 13v13l-4 16M12 26l4 16M12 18l8 2"/><path d="m18 22 22-13 3 5-22 13z"/><rect x="27" y="10" width="6" height="4" rx="1" transform="rotate(-30 30 12)"/></svg>',
+  };
+  const stepIceptLaunch = () => {
+    previewBox = previewBox || h('div', { class: 'sm-preview' }, h('div', { class: 'sm-preview-msg' }, tr('3B önizleme hazırlanıyor…')));
+    const list = h('div', { class: 'sm-cards sm-cards-launch' });
+    const opts = h('div', { class: 'sm-launch-opts' });
+    const apply = () => { preview?.setLaunch?.(iceptLaunchBody(W.state.ilaunch)); };
+    const slider = (key, label, unit) => {
+      const [a, b0] = ICEPT_LIMITS[key], b = key === 'loaded' ? ICEPT_CELLS[W.state.ilaunch.method] : b0;
+      const inp = h('input', { type: 'range', min: a, max: b, step: 1, value: W.state.ilaunch[key] });
+      const out = h('b', { class: 'mono' }, `${Math.round(W.state.ilaunch[key])}${unit}`);
+      inp.addEventListener('input', () => { W.set('ilaunch', { [key]: Number(inp.value) }); out.textContent = `${Math.round(W.state.ilaunch[key])}${unit}`; drawFoot(); apply(); });
+      return h('label', { class: 'sm-slider' }, h('span', null, label), inp, out);
+    };
+    const drawOpts = () => {
+      const m = W.state.ilaunch.method;
+      clear(opts, m === 'pod4' || m === 'pod8' ? [slider('loaded', LT('launcher.loaded', 'Dolu hücre'), ` / ${ICEPT_CELLS[m]}`), h('p', { class: 'small muted' }, LT('launcher.defend_note', '"Yer kontrolünü koru" görevinde dolu hücre görevin interceptor sayısıdır: kutular yan yana kurulur (10\'lu raf yerine).'))]
+        : m === 'handheld' ? [slider('aim_az_deg', LT('launcher.aim_az', 'Nişan yönü'), '°'), slider('aim_el_deg', LT('launcher.aim_el', 'Nişan açısı'), '°'), h('p', { class: 'small muted' }, LT('launcher.hand_note', 'Uçuşta "Nişangâh" penceresi: aparatın baktığı yöne kamera ve hedefler; fare, I/J/K/L ya da ok düğmeleriyle nişan alın, "Fırlat" ile interceptor nişan yönünde çıkar.'))]
+        : h('p', { class: 'small muted' }, LT('launcher.tube_note', 'Görevde 10\'lu raf yedek deposudur; her "sıradaki interceptor" tüpe yeniden yüklenir.')));
+    };
+    const drawList = () => clear(list, ICEPT_LAUNCH_SM.map(([k, nk, name, dk, desc]) => card(k === W.state.ilaunch.method, { icon: h('i', { class: `sm-ico sm-ico-icept sm-icept-${k}`, html: ICEPT_ICON[k] }), title: LT(nk, name), sub: LT(dk, desc), badge: k === 'handheld' ? LT('launcher.scope_badge', 'Nişangâh') : null, cls: k === 'handheld' ? 'hand' : '', onClick: () => { W.set('ilaunch', { method: k }); drawList(); drawOpts(); drawFoot(); apply(); } })));
+    drawList(); drawOpts();
+    body.append(h('p', { class: 'muted sm-launch-desc' }, LT('launcher.step_desc', 'INTERCEPTOR\'ın hangi fırlatıcıdan çıkacağı. Tailsitter kuyruk üstünden dikey çıkar; el fırlatıcısında nişan yönüne yönelir.')),
+      h('div', { class: 'sm-two' }, h('div', null, list, opts), h('div', { class: 'sm-preview-col' }, previewBox)));
+    ensurePreview().then(apply);
+  };
   const stepLaunch = () => {
+    if (W.drone()?.type === 'interceptor') return stepIceptLaunch();
     const L = W.state.launch;
     const list = h('div', { class: 'sm-cards sm-cards-launch' });
     const opts = h('div', { class: 'sm-launch-opts' });
@@ -268,7 +303,9 @@ async function renderWizard(view, ctx) {
   const draw = () => {
     clear(body);
     const k = W.step();
-    if (k !== 'drone' && preview) { preview.dispose(); preview = null; previewBox = null; }   // 3B döngüsü yalnız dron adımında (diğer adımlarda CPU/GPU boşa dönmesin)
+    const keep = k === 'drone' || (k === 'launch' && W.drone()?.type === 'interceptor');   // §27 fırlatıcı adımında düzenek önizlemesi
+    if (!keep && preview) { preview.dispose(); preview = null; previewBox = null; }   // 3B döngüsü yalnız dron / fırlatıcı adımında (diğer adımlarda CPU/GPU boşa dönmesin)
+    if (k === 'drone' && preview) preview.setLaunch?.(null);
     dropTargetsUi();   // hedef adımına dönülürse yeniden kurulur
     body.dataset.step = k;
     ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, power: stepPower, mission: stepMission, site: stepSite, targets: stepTargets, pilot: stepPilot })[k]?.();
@@ -301,7 +338,7 @@ async function renderWizard(view, ctx) {
     preview?.dispose(); preview = null; destroyed = true; dropTargetsUi();
     runLeave();
     ctx.track?.('flight_start', { drone_type: W.drone()?.type || 'unknown', launch: payload.launch?.method || payload.launch || 'wheels', world_mode: W.track()?.world_mode || 'unknown', mission: W.mission() ? 1 : 0 });
-    await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.state.launch, record: W.state.record, power: s.power || W.state.power, speedup: s.speedup || W.state.speedup, targets: W.state.targets, site: s.site || null }, { ...ctx, meta: data.meta });
+    await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.drone()?.type === 'interceptor' ? W.state.ilaunch : W.state.launch, record: W.state.record, power: s.power || W.state.power, speedup: s.speedup || W.state.speedup, targets: W.state.targets, site: s.site || null }, { ...ctx, meta: data.meta });
   };
   onLeave(() => { destroyed = true; preview?.dispose(); preview = null; dropTargetsUi(); });
   drawOpen();
