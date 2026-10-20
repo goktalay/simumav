@@ -3,7 +3,7 @@
 Oturum `rec.bin` ile açıldıysa SITL parametreleri `LOG_BACKEND_TYPE 1 / LOG_DISARMED 0 / LOG_FILE_DSRMROT 1` (drone_sitl.parm_metni):
 yalnız armed süre yazılır, disarm'da dosya kapanır. Kapanışta (flightsim.SimSession._temizle): disarm + kısa bekleme → SITL durur →
 çalışma dizinindeki en büyük `logs/*.BIN` dosyası `UPLOAD_DIR/flightlogs/<rastgele>.bin`'e taşınır (files.save_upload_stream kalıbı),
-`flight_logs` satırı açılır (aircraft "Simülatör · <tip>", pilot oturum sahibi, location merkez adı, görev yok) ve analiz kuyruğuna
+`flight_logs` satırı açılır (origin 'SIM', aircraft "Simülatör · <tip>", pilot oturum sahibi, location merkez adı, görev yok) ve analiz kuyruğuna
 girer (flight_analysis.start) → analizi bitince Uçuş Logu Analizi ve sihirbazın "Kayıttan oynat" listesinde görünür.
 Boyut sınırı `SIM_BIN_MAX_MB` (varsayılan 500): aşan dosya kaydedilmez (uyarı), diskten silinir.
 """
@@ -53,8 +53,8 @@ def kaydet(session_dict, bin_yollari, analiz=True):
         drone = session_dict.get('drone') or {}
         aircraft = f'Simülatör · {tip}' + (f' · {drone.get("code")}' if drone.get('code') else '')
         with db.connect() as conn:
-            cur = conn.execute('''INSERT INTO flight_logs (task_id, flight_id, file, file_name, size, aircraft, pilot, location, note, uploaded_by, uploaded_at)
-                                  VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            cur = conn.execute('''INSERT INTO flight_logs (task_id, flight_id, file, file_name, size, aircraft, pilot, location, note, uploaded_by, uploaded_at, origin)
+                                  VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SIM')''',
                                (f'flightlogs/{ad}', gorunen, boyut, aircraft, owner.get('name'), center.get('name'),
                                 f'Uçuş Simülatörü oturumu #{session_dict.get("id")} (SITL DataFlash)', owner.get('id'), db.now()))
             log_id = cur.lastrowid

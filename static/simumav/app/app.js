@@ -73,7 +73,15 @@ const ctx = {
   // go('ops', '12') ya da go('#/ops/12') — Uç modülü hash biçimini kullanır
   go: (name, params = '') => { location.hash = String(name).startsWith('#') ? name : `#/${name}${params ? `/${params}` : ''}`; },
   toast: (msg, kind) => toast(msg, kind === 'err' || kind === 'error' ? 'err' : kind === 'ok' || kind === 'success' ? 'ok' : ''),
-  setBack: (label, target = 'menu') => { back.hidden = !label; document.getElementById('back-label').textContent = label || ''; back.onclick = () => ctx.go(target); },
+  // Hedef rota şu anki adresle aynıysa (ör. #/missions içinde görev düzenleyicisi → "Görevler"; #/tracks, #/hangar sihirbazı) hash değişmez,
+  // hashchange gelmez ve düğme hiçbir şey yapmazdı → aynı rotada modül yeniden kurulur (alt ekran kapanır, liste açılır).
+  setBack: (label, target = 'menu') => {
+    back.hidden = !label; document.getElementById('back-label').textContent = label || '';
+    back.onclick = () => {
+      const hash = String(target).startsWith('#') ? target : `#/${target}`;
+      if (location.hash === hash || (target === 'menu' && !location.hash)) route(true); else ctx.go(target);
+    };
+  },
   refreshSession: async () => { await loadSession(); renderChip(); },
   applyTheme,
   setLang: async code => { await setLang(code); renderChip(); await route(true); },

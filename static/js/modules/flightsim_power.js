@@ -10,7 +10,8 @@
 //   bitince rozet; FPV OSD / gimbal HUD açıkken kendi çizimleri (fs-osd-on / fs-mhud-on gizler); tıklanınca ayrıntı kutusu.
 // Saf yardımcılar (tests/test_flightsim_power.mjs): fuelLpm, batteryWh, servoJoule, measuredKmPerL, avgW, createPowerSim, powerWarnings, fuelText, elecText, rangeText,
 //   gaugeLevel/gaugeArc/fuelGauge/elecGauge/gaugeModels, needleAngle/niceScaleMax/scaleTicks/zoneArc/arcPath/easeNeedle, speedGauge/engineGauge/dashModels, createPowerAcc, powerDetailRows.
-// ui.js içe aktarılmaz (Node testinde çalışır): DOM üreten fonksiyonlar `h` ve `tr`'yi parametre alır.
+// ui.js içe aktarılmaz (Node testinde çalışır): DOM üreten fonksiyonlar `h` ve `tr`'yi parametre alır. Sihirbaz alanları fs_inputs.numSlider (içe aktarmasız saf modül).
+import { numSlider } from './fs_inputs.js';
 
 export const HUCRE_V = 3.7, SERVO_J_PER_US = 0.0005, W_PENCERE_S = 30, FUEL_MIN_KM = 0.3, FUEL_MIN_L = 0.02, ELEC_MIN_S = 60;
 export const FUEL_LOW_PCT = 20, ELEC_LOW_PCT = 25;
@@ -392,12 +393,13 @@ export function createPowerSection({ h, tr, api = null, getType, getDroneId = ()
   const V = { ...defaultsFor(getType()) };
   let src = 'default', info = null;   // 'default' | 'drone'
   const inp = {}, srcBadge = {}, rows = {};
-  const fmt = (k, v) => (v == null ? '' : k === 'elec_cells' ? String(Math.round(v)) : String(Number(v)));
+  // Görsel giriş (§6.1): kaydırıcı + düzenlenebilir değer kutusu + birim (fs_inputs.numSlider); geniş aralıklar logaritmik. Sınırlar LIMITS (sunucuyla aynı).
+  const SCALE = { max_speed_ms: 'lin', fuel_l: 'log', fuel_km_per_l: 'log', elec_cells: 'lin', elec_mah: 'log', elec_w: 'log' };
   const mk = (k, label, unit, step, hint) => {
-    inp[k] = h('input', { class: 'input fs-pw-inp', type: 'number', min: LIMITS[k][0], max: LIMITS[k][1], step, value: fmt(k, V[k]), inputmode: 'decimal',
-      oninput: () => { const v = num(inp[k].value); V[k] = v == null ? null : clamp(v, LIMITS[k][0], LIMITS[k][1]); srcBadge[k].textContent = ''; drawInfo(); } });
     srcBadge[k] = h('span', { class: 'badge gray fs-pw-src' }, '');
-    rows[k] = h('label', { class: 'fs-pw-row', 'data-pw': k }, h('span', { class: 'fs-pw-lbl' }, h('span', null, label), srcBadge[k]), h('span', { class: 'fs-pw-ctl' }, inp[k], h('i', null, unit)), hint ? h('span', { class: 'small muted fs-pw-hint' }, hint) : null);
+    inp[k] = numSlider({ h, label: h('span', null, h('span', null, label), srcBadge[k]), value: V[k] ?? LIMITS[k][0], min: LIMITS[k][0], max: LIMITS[k][1], step, unit, scale: SCALE[k], integer: k === 'elec_cells', hint,
+      onInput: v => { V[k] = clamp(v, LIMITS[k][0], LIMITS[k][1]); srcBadge[k].textContent = ''; drawInfo(); } });
+    rows[k] = h('div', { class: 'fs-pw-row', 'data-pw': k }, inp[k].el);
     return rows[k];
   };
   const note = h('div', { class: 'small fs-pw-info' });
@@ -427,7 +429,7 @@ export function createPowerSection({ h, tr, api = null, getType, getDroneId = ()
   };
   const applyType = () => { rows.max_speed_ms.hidden = !isPlaneType(getType()); };
   const setValues = (vals, from) => {
-    for (const k of POWER_FIELDS) { if (vals[k] !== undefined) { V[k] = vals[k]; inp[k].value = fmt(k, V[k]); } srcBadge[k].textContent = from && from[k] != null ? tr('dron kaydından') : ''; }
+    for (const k of POWER_FIELDS) { if (vals[k] !== undefined) { V[k] = vals[k]; if (V[k] != null) inp[k].set(V[k]); } srcBadge[k].textContent = from && from[k] != null ? tr('dron kaydından') : ''; }
     src = from && Object.keys(from).length ? 'drone' : 'default';
     drawInfo();
   };

@@ -26,12 +26,14 @@ import re
 import time
 from datetime import datetime, timezone
 
+import numpy as np
+
 from . import config, db
 
 REPLAY_HZ = int(os.environ.get('SIM_REPLAY_HZ', '25'))          # 20–50 Hz
 REPLAY_MAX_FRAMES = 150000                                       # üstü seyreltilir (2 saat × 25 Hz = 180k)
 MAX_EVENTS = 400
-ONBELLEK_SURUM = 4   # 3: `servo` kare alanı + `servo_fn` (kayıtta kontrol yüzeyleri) · 4: `body` (SITL SIM gövde yönelimi; §25 tailsitter) + `t0`
+ONBELLEK_SURUM = 5   # 5: hızlı ikili yol (tam ızgara) + büyük kayıtta LOD genel bakış ve zaman parçaları (`lod`) · 3: `servo` kare alanı + `servo_fn` (kayıtta kontrol yüzeyleri) · 4: `body` (SITL SIM gövde yönelimi; §25 tailsitter) + `t0`
 FIELDS = ['t', 'lat', 'lon', 'alt_msl', 'alt_rel', 'roll', 'pitch', 'yaw', 'vn', 've', 'vd', 'gs', 'as', 'hdg', 'thr', 'mode', 'armed',
           'batt_v', 'batt_pct', 'sats', 'fix', 'rc', 'servo', 'body']
 # SIM: SITL fiziğinin gerçek yönelimi (yalnız SITL .bin'lerinde; derece) → `body` [roll, pitch, yaw] rad — INTERCEPTOR kaydında ATT Q kiplerinde
@@ -348,6 +350,379 @@ def _bin_ayristir(path, hz, ilerleme=None):
     return T.bitir('bin')
 
 
+
+# ======================================================================
+# Hızlı ikili DataFlash yolu (dataflash.oku + numpy): akış halinde okuma, sabit ızgaraya sample-and-hold yeniden örnekleme.
+# 700 MB / 3+ saatlik gerçek uçuşta pymavlink yolu ~2 dk ve ~2 GB RSS idi (ilerleme indekslemede %100'e çıkıp kalıyordu);
+# bu yol ~10 sn ve ~0,4 GB, ilerleme okunan bayta göre gerçek. Kare anlamı `_bin_ayristir` ile aynıdır (alan sırası FIELDS).
+# ======================================================================
+BIN_SUTUNLAR = {
+    'GPS': ['TimeUS', 'TimeMS', 'I', 'Instance', 'Status', 'NSats', 'Lat', 'Lng', 'Alt', 'Spd', 'GCrs', 'VZ', 'GWk', 'GMS'],
+    'POS': ['TimeUS', 'Lat', 'Lng', 'Alt'],
+    'ATT': ['TimeUS', 'TimeMS', 'Roll', 'Pitch', 'Yaw'],
+    'SIM': ['TimeUS', 'Roll', 'Pitch', 'Yaw'],
+    'RCIN': ['TimeUS', 'TimeMS'] + [f'C{i}' for i in range(1, SERVO_N + 1)],
+    'RCOU': ['TimeUS', 'TimeMS'] + [f'C{i}' for i in range(1, SERVO_N + 1)],
+    'BAT': ['TimeUS', 'Inst', 'Instance', 'Volt', 'RemPct'],
+    'CURR': ['TimeUS', 'TimeMS', 'Inst', 'Instance', 'Volt'],
+    'MODE': ['TimeUS', 'TimeMS', 'Mode', 'ModeNum'],
+    'ARM': ['TimeUS', 'ArmState'],
+    'EV': ['TimeUS', 'TimeMS', 'Id'],
+    'STAT': ['TimeUS', 'Armed'],
+    'MSG': ['TimeUS', 'TimeMS', 'Message'],
+    'NKF1': ['TimeUS', 'C', 'VN', 'VE', 'VD'],
+    'XKF1': ['TimeUS', 'C', 'VN', 'VE', 'VD'],
+    'CTUN': ['TimeUS', 'TimeMS', 'ThO', 'ThrOut', 'As'],
+    'ARSP': ['TimeUS', 'I', 'Airspeed'],
+    'ORGN': ['TimeUS', 'Type', 'Lat', 'Lng', 'Alt'],
+    'PARM': ['TimeUS', 'TimeMS', 'Name', 'Value'],
+}
+_ARAC_ONEKI = ('ArduPlane', 'ArduCopter', 'ArduRover', 'ArduSub', 'ArduHeli', 'Blimp')
+
+
+def _zaman_dizisi(cols):
+    from . import dataflash
+    return dataflash.zaman(cols)
+
+
+def _tut(zaman, deger, izgara):
+    """Sample-and-hold: ızgaradaki her an için o ana kadarki son değer (öncesi NaN). `deger` (n,) ya da (n, k)."""
+    if zaman is None or not len(zaman):
+        shp = (len(izgara),) + tuple(np.shape(deger)[1:])
+        return np.full(shp, np.nan, dtype=np.float32)
+    i = np.searchsorted(zaman, izgara, side='right') - 1
+    out = deger[np.maximum(i, 0)].astype(np.float64 if deger.dtype == np.float64 else np.float32, copy=True)
+    if out.ndim == 1:
+        out[i < 0] = np.nan
+    else:
+        out[i < 0, :] = np.nan
+    return out
+
+
+def _sec(cols, maske):
+    return {k: (v[maske] if hasattr(v, 'shape') else [x for x, m in zip(v, maske) if m]) for k, v in cols.items()}
+
+
+def _orn0(cols, ad='I'):
+    """Örnek (instance) 0 maskesi: I / Inst / Instance sütunu yoksa hepsi."""
+    for k in (ad, 'Inst', 'Instance'):
+        if k in cols:
+            v = cols[k]
+            return np.isnan(v) | (v == 0)
+    return None
+
+
+def _bin_hizli(path, hz, ilerleme=None):
+    """İkili DataFlash → {meta…, 'K': {alan: np.ndarray}} (kareler sütunlu; `frames` yok). ValueError: konum yok."""
+    from . import dataflash
+    from .flightlog import WARN_RE
+    D = dataflash.oku(str(path), BIN_SUTUNLAR, ilerleme=(lambda y: ilerleme(int(y * 0.8))) if ilerleme else None)
+    zam = {}
+    for ad, cols in list(D.items()):
+        z = dataflash.zaman(cols)
+        if z is None or not len(z):
+            D.pop(ad)
+            continue
+        zam[ad] = z
+    if not zam:
+        raise ValueError('Logda kayıttan oynatma için konum verisi yok')
+    t0 = min(float(z[0]) for z in zam.values())
+    for ad in zam:
+        zam[ad] = zam[ad] - t0
+    T = _Toplayici(hz)
+    T.t0 = t0
+    # --- araç (firmware) ---
+    msg = D.get('MSG')
+    if msg:
+        T.vehicle = next((m for m in msg['Message'] if m.startswith(_ARAC_ONEKI)), None)
+    names = _mode_names(T.vehicle) if T.vehicle else {}
+    # --- konum: POS (EKF) varsa ilk POS'tan sonra o, öncesinde GPS (fix ≥ 3) ---
+    gps = D.get('GPS')
+    g0 = None
+    if gps:
+        m0 = _orn0(gps)
+        g0 = _sec(gps, m0) if m0 is not None else gps
+        zg = _zaman_dizisi(g0) - t0
+        g_fix = g0['Status'] >= 3 if 'Status' in g0 else np.ones(len(zg), bool)
+    pos = D.get('POS')
+    if pos:
+        pm = (pos['Lat'] != 0) & (pos['Lng'] != 0)
+        pos = _sec(pos, pm)
+        zp = zam['POS'][pm]
+        if not len(zp):
+            pos = None
+    gps_fix = None
+    if g0 is not None and g_fix.any():
+        gps_fix = {k: g0[k][g_fix] for k in ('Lat', 'Lng', 'Alt', 'Spd', 'GCrs', 'VZ') if k in g0}
+        zgf = zg[g_fix]
+    ilk = [x for x in ((zp[0] if pos else None), (zgf[0] if gps_fix else None)) if x is not None]
+    if not ilk:
+        raise ValueError('Logda kayıttan oynatma için konum verisi yok')
+    bas = float(min(ilk))
+    son = float(max(z[-1] for z in zam.values()))
+    izgara = np.arange(bas, son + 1e-9, 1.0 / hz)
+    if len(izgara) < 2:
+        raise ValueError('Logda kayıttan oynatma için konum verisi yok')
+    n = len(izgara)
+    K = {'t': izgara}
+    lat = np.full(n, np.nan); lon = np.full(n, np.nan); alt = np.full(n, np.nan)
+    gps_alt_h = None
+    if gps_fix:
+        lat = _tut(zgf, gps_fix['Lat'], izgara); lon = _tut(zgf, gps_fix['Lng'], izgara)
+        gps_alt_h = _tut(zgf, gps_fix['Alt'], izgara) if 'Alt' in gps_fix else None
+        alt = gps_alt_h.astype(np.float64) if gps_alt_h is not None else alt
+    if pos:
+        sonra = izgara >= zp[0]
+        plat, plon = _tut(zp, pos['Lat'], izgara), _tut(zp, pos['Lng'], izgara)
+        palt = _tut(zp, pos['Alt'], izgara).astype(np.float64) if 'Alt' in pos else np.full(n, np.nan)
+        if gps_alt_h is not None:
+            palt = np.where(np.isnan(palt), gps_alt_h, palt)
+        lat[sonra], lon[sonra], alt[sonra] = plat[sonra], plon[sonra], palt[sonra]
+    K['lat'], K['lon'], K['alt_msl'] = lat, lon, alt
+    # --- yönelim ---
+    att = D.get('ATT')
+    if att:
+        za = zam['ATT']
+        for k, a in (('roll', 'Roll'), ('pitch', 'Pitch'), ('yaw', 'Yaw')):
+            v = _tut(za, np.radians(att[a].astype(np.float64)), izgara)
+            K[k] = np.where(np.isnan(v), 0.0, v)
+        K['hdg'] = _tut(za, np.mod(att['Yaw'].astype(np.float64), 360.0), izgara)
+    else:
+        K['roll'] = K['pitch'] = K['yaw'] = np.zeros(n)
+        K['hdg'] = np.full(n, np.nan)
+    sim = D.get('SIM')
+    K['body'] = (np.stack([_tut(zam['SIM'], np.radians(sim[a].astype(np.float64)), izgara) for a in ('Roll', 'Pitch', 'Yaw')], axis=1)
+                 if sim else None)
+    # --- hız: GPS (yer hızı + rota) · EKF (NKF1/XKF1 çekirdek 0) ilk EKF anından sonra ---
+    K['gs'] = _tut(zgf, gps_fix['Spd'], izgara) if gps_fix and 'Spd' in gps_fix else np.full(n, np.nan, np.float32)
+    vn = np.full(n, np.nan); ve = np.full(n, np.nan); vd = np.full(n, np.nan)
+    if gps_fix and 'Spd' in gps_fix:
+        crs = np.radians(np.nan_to_num(gps_fix['GCrs'].astype(np.float64))) if 'GCrs' in gps_fix else np.zeros(len(zgf))
+        spd = gps_fix['Spd'].astype(np.float64)
+        vn, ve = _tut(zgf, spd * np.cos(crs), izgara), _tut(zgf, spd * np.sin(crs), izgara)
+        if 'VZ' in gps_fix:
+            vd = _tut(zgf, -gps_fix['VZ'].astype(np.float64), izgara)
+    ekf_ad = 'XKF1' if 'XKF1' in D else ('NKF1' if 'NKF1' in D else None)
+    if ekf_ad:
+        e = D[ekf_ad]
+        em = (np.isnan(e['C']) | (e['C'] == 0)) if 'C' in e else np.ones(len(zam[ekf_ad]), bool)
+        ze = zam[ekf_ad][em]
+        if len(ze):
+            sonra = izgara >= ze[0]
+            for hedef, a in ((vn, 'VN'), (ve, 'VE'), (vd, 'VD')):
+                hedef[sonra] = _tut(ze, e[a][em], izgara)[sonra]
+    K['vn'], K['ve'], K['vd'] = vn, ve, vd
+    # --- hava hızı: ARSP (örnek 0); yoksa CTUN.As · gaz: CTUN ThO / ThrOut (≤ 1,5 ise oran → %) ---
+    ctun = D.get('CTUN')
+    arsp = D.get('ARSP')
+    if arsp:
+        am = _orn0(arsp)
+        am = am if am is not None else np.ones(len(zam['ARSP']), bool)
+        K['as'] = _tut(zam['ARSP'][am], arsp['Airspeed'][am], izgara)
+    elif ctun and 'As' in ctun:
+        K['as'] = _tut(zam['CTUN'], ctun['As'], izgara)
+    else:
+        K['as'] = np.full(n, np.nan, np.float32)
+    if ctun and ('ThO' in ctun or 'ThrOut' in ctun):
+        thr = (ctun['ThO'] if 'ThO' in ctun else ctun['ThrOut']).astype(np.float64)
+        thr = np.where(thr <= 1.5, thr * 100.0, thr)
+        K['thr'] = _tut(zam['CTUN'], thr, izgara)
+    else:
+        K['thr'] = np.full(n, np.nan, np.float32)
+    # --- batarya: BAT (yoksa CURR) örnek 0, Volt > 0,5 ---
+    bat_ad = 'BAT' if 'BAT' in D else ('CURR' if 'CURR' in D else None)
+    K['batt_v'] = K['batt_pct'] = np.full(n, np.nan, np.float32)
+    if bat_ad:
+        b = D[bat_ad]
+        bm = _orn0(b, 'Inst')
+        bm = bm if bm is not None else np.ones(len(zam[bat_ad]), bool)
+        if 'Volt' in b:
+            vm = bm & (b['Volt'] > 0.5)
+            K['batt_v'] = _tut(zam[bat_ad][vm], b['Volt'][vm], izgara)
+        if 'RemPct' in b:
+            pm_ = bm & (b['RemPct'] >= 0)
+            K['batt_pct'] = np.floor(_tut(zam[bat_ad][pm_], b['RemPct'][pm_], izgara))
+    # --- GPS durumu ---
+    if g0 is not None:
+        K['fix'] = _tut(zg, g0['Status'], izgara) if 'Status' in g0 else np.full(n, np.nan, np.float32)
+        K['sats'] = _tut(zg, g0['NSats'], izgara) if 'NSats' in g0 else np.full(n, np.nan, np.float32)
+        if T.start_utc is None and 'GWk' in g0 and 'GMS' in g0:
+            ok = g_fix & (g0['GWk'] > 0)
+            if ok.any():
+                i = int(np.argmax(ok))
+                unix = 315964800 + float(g0['GWk'][i]) * 604800 + float(g0['GMS'][i]) / 1000.0 - 18 - float(zg[i])
+                T.start_utc = datetime.fromtimestamp(unix, timezone.utc).isoformat()
+    else:
+        K['fix'] = K['sats'] = np.full(n, np.nan, np.float32)
+    # --- RC girişi / servo çıkışı (8 kanal) ---
+    for alan, ad in (('rc', 'RCIN'), ('servo', 'RCOU')):
+        r = D.get(ad)
+        if r:
+            m8 = np.stack([np.nan_to_num(r[f'C{i}']) if f'C{i}' in r else np.zeros(len(zam[ad]), np.float32) for i in range(1, SERVO_N + 1)], axis=1)
+            K[alan] = _tut(zam[ad], m8.astype(np.float32), izgara)
+        else:
+            K[alan] = None
+    # --- seyrek olaylar (zaman sırasıyla): MSG, MODE, ARM/STAT/EV, ORGN, PARM ---
+    def konum_an(t):
+        i = int(np.searchsorted(izgara, t, side='right')) - 1
+        if i < 0 or np.isnan(lat[i]):
+            return None
+        return (float(lat[i]), float(lon[i]), None if np.isnan(alt[i]) else float(alt[i]))
+
+    olaylar = []   # (t, sıra, tür, değer)
+    if msg:
+        for t, txt in zip(zam['MSG'].tolist(), msg['Message']):
+            olaylar.append((t, 0, 'msg', txt))
+    if 'MODE' in D:
+        md = D['MODE']
+        num = md['ModeNum'] if 'ModeNum' in md else md.get('Mode')
+        if num is not None:
+            for t, v in zip(zam['MODE'].tolist(), num.tolist()):
+                olaylar.append((t, 1, 'mode', None if v != v else int(v)))
+    if 'ARM' in D:
+        for t, v in zip(zam['ARM'].tolist(), D['ARM']['ArmState'].tolist()):
+            olaylar.append((t, 2, 'arm', bool(v)))
+    if 'STAT' in D and 'Armed' in D['STAT']:
+        a_ = D['STAT']['Armed']
+        degis = np.flatnonzero(np.concatenate([[True], a_[1:] != a_[:-1]]))   # yalnız geçişler (T.arm tekrarı yok sayar)
+        for i in degis.tolist():
+            olaylar.append((float(zam['STAT'][i]), 2, 'arm', bool(a_[i])))
+    if 'EV' in D:
+        for t, v in zip(zam['EV'].tolist(), D['EV']['Id'].tolist()):
+            if v in (10, 11):
+                olaylar.append((t, 2, 'arm', v == 10))
+            elif v == 25:
+                olaylar.append((t, 3, 'ev25', None))
+    if 'ORGN' in D:
+        o = D['ORGN']
+        for i, t in enumerate(zam['ORGN'].tolist()):
+            if ('Type' not in o or o['Type'][i] == 0) and T.origin is None:
+                olaylar.append((t, 3, 'orgn', (float(o['Lat'][i]), float(o['Lng'][i]), _num(float(o['Alt'][i])) if 'Alt' in o else None)))
+                break
+    if 'PARM' in D:
+        p_ = D['PARM']
+        for ad, v in zip(p_['Name'], p_['Value'].tolist()):
+            if ad.startswith('SERVO'):
+                T.parametre(ad, v)
+    olaylar.sort(key=lambda x: (x[0], x[1]))
+    mod_adim, arm_adim = [], []   # (t, değer) basamak fonksiyonları
+    for t, _s, tur, v in olaylar:
+        if tur == 'msg':
+            T.olay(t, v, 4 if WARN_RE.search(v) else 6)
+        elif tur == 'mode':
+            onceki = T.cur['mode']
+            T.mod_degis(t, names.get(v, f'Mod {v}'))
+            if T.cur['mode'] != onceki:
+                mod_adim.append((t, T.cur['mode']))
+        elif tur == 'arm':
+            k = konum_an(t)
+            T.cur['lat'], T.cur['lon'], T.cur['alt_msl'] = (k if k else (None, None, None))
+            onceki = T.cur['armed']
+            T.arm(t, v)
+            if T.cur['armed'] != onceki:
+                arm_adim.append((t, T.cur['armed']))
+        elif tur == 'ev25':
+            k = konum_an(t)
+            if k and T.origin is None:
+                T.origin = k
+        elif tur == 'orgn':
+            if T.origin is None:
+                T.origin = v
+    if T.home_bekliyor and T.home is None:   # ARM konumdan önce: ilk konum (ızgaranın ilk karesi)
+        T.home = (float(lat[0]), float(lon[0]), 0.0 if np.isnan(alt[0]) else float(alt[0]))
+
+    def basamak(adim, bos):
+        if not adim:
+            return np.full(n, bos, np.float32)
+        zt = np.array([a for a, _ in adim]); dv = np.array([np.nan if b is None else b for _, b in adim], np.float32)
+        out = _tut(zt, dv, izgara)
+        return np.where(np.isnan(out), bos, out)
+    K['mode'] = basamak(mod_adim, np.nan)
+    K['armed'] = basamak(arm_adim, 0)
+    del D
+    return _bitir_kolon(T, K, 'bin')
+
+
+def _bitir_kolon(T, K, kaynak):
+    """_Toplayici.bitir'in sütunlu karşılığı: ev (ilk ARM / ORGN / ilk kare), alt_rel, kalkış anı (ilk havalanma öncesi son ARM)."""
+    t = K['t']
+    n = len(t)
+    home = T.home or T.origin
+    if home is None:
+        home = (float(K['lat'][0]), float(K['lon'][0]), 0.0 if np.isnan(K['alt_msl'][0]) else float(K['alt_msl'][0]))
+    if home[2] is None:
+        home = (home[0], home[1], 0.0 if np.isnan(K['alt_msl'][0]) else float(K['alt_msl'][0]))
+    alt = K['alt_msl']
+    K['alt_rel'] = np.where(np.isnan(alt), 0.0, alt - home[2])
+    gs = np.nan_to_num(K['gs'])
+    havada_m = (K['alt_rel'] > 5) & (gs > 3)
+    if havada_m.any():
+        havada = float(t[int(np.argmax(havada_m))])
+        onceki = [a for a in T.arm_times if a <= havada]
+        T.takeoff_t = onceki[-1] if onceki else (T.takeoff_t if T.takeoff_t is not None else havada)
+        if T.takeoff_t is not None and havada - T.takeoff_t > 120:
+            T.takeoff_t = max(T.takeoff_t, havada - 10)
+        if T.takeoff_t is not None:
+            i = int(np.searchsorted(t, T.takeoff_t - 1e-9))
+            if i < n and not np.isnan(alt[i]) and abs(alt[i] - home[2]) > 0.5:
+                home = (home[0], home[1], float(alt[i]))
+                K['alt_rel'] = np.where(np.isnan(alt), 0.0, alt - home[2])
+    return {'v': ONBELLEK_SURUM, 'hz': T.hz, 'fields': FIELDS, 'K': K, 'modes': T.modes, 'events': T.events,
+            'duration_s': _r(float(t[-1]), 2), 'home': {'lat': round(home[0], 7), 'lon': round(home[1], 7), 'alt': _r(home[2], 2)},
+            'takeoff_t': _r(T.takeoff_t, 2), 'start_utc': T.start_utc, 'vehicle': T.vehicle, 'type': arac_tipi(T.vehicle),
+            'n': n, 'source': kaynak, 'servo_fn': list(T.servo_fn), 't0': _r(T.t0, 3)}
+
+
+# kare alanı → (yuvarlama basamağı | 'i' tamsayı)
+_YUV = {'t': 3, 'lat': 7, 'lon': 7, 'alt_msl': 2, 'alt_rel': 2, 'roll': 4, 'pitch': 4, 'yaw': 4, 'vn': 2, 've': 2, 'vd': 2, 'gs': 2, 'as': 2,
+        'hdg': 1, 'thr': 1, 'mode': 'i', 'armed': 'i', 'batt_v': 2, 'batt_pct': 'i', 'sats': 'i', 'fix': 'i'}
+
+
+def _liste(v, yuv):
+    """np dizisi → JSON listesi: NaN → None, yuvarlama / tamsayı."""
+    if yuv == 'i':
+        nan = np.isnan(v)
+        out = v.astype(np.float64)
+        out = np.where(nan, 0, out).astype(np.int64).tolist()
+        if nan.any():
+            for i in np.flatnonzero(nan).tolist():
+                out[i] = None
+        return out
+    out = np.round(v.astype(np.float64), yuv).tolist()
+    if np.isnan(v).any():
+        out = [None if x != x else x for x in out]
+    return out
+
+
+def kareler(K, a=0, b=None, adim=1):
+    """Sütunlu kareler → [[t, lat, …, rc, servo, body]] (FIELDS sırası) — [a:b:adim] dilimi."""
+    sl = slice(a, b, adim)
+    n = len(K['t'][sl])
+    sut = []
+    for f in FIELDS:
+        if f in _YUV:
+            sut.append(_liste(K[f][sl], _YUV[f]))
+        elif f in ('rc', 'servo'):
+            m = K.get(f)
+            if m is None:
+                sut.append([None] * n)
+            else:
+                mm = m[sl]
+                bos = np.isnan(mm[:, 0])
+                rows = np.nan_to_num(mm).astype(np.int64).tolist()
+                sut.append([None if e else r for r, e in zip(rows, bos.tolist())])
+        elif f == 'body':
+            m = K.get('body')
+            if m is None:
+                sut.append([None] * n)
+            else:
+                mm = m[sl]
+                bos = np.isnan(mm[:, 0])
+                rows = np.round(np.nan_to_num(mm).astype(np.float64), 4).tolist()
+                sut.append([None if e else r for r, e in zip(rows, bos.tolist())])
+    return [list(r) for r in zip(*sut)]
+
+
 def _tlog_ayristir(path, hz):
     """MAVLink telemetri kaydı (.tlog: 8 bayt big-endian µs zaman damgası + paket)."""
     from pymavlink import mavutil
@@ -424,8 +799,9 @@ def _tlog_ayristir(path, hz):
     return T.bitir('tlog')
 
 
-def ayristir(path, hz=REPLAY_HZ, ilerleme=None):
-    """Log dosyasını kare dizisine çevirir (uzantıya göre .tlog → MAVLink, aksi DataFlash). ValueError: okunamaz / konum yok."""
+def _ayristir_ham(path, hz=REPLAY_HZ, ilerleme=None):
+    """Uzantı/içeriğe göre ayrıştırıcı: .tlog → MAVLink; ikili DataFlash (A3 95) → hızlı sütunlu yol (`K`); metin .log → pymavlink."""
+    from . import dataflash
     p = str(path)
     ext = os.path.splitext(p)[1].lower()
     if not os.path.isfile(p):
@@ -433,35 +809,145 @@ def ayristir(path, hz=REPLAY_HZ, ilerleme=None):
     try:
         if ext == '.tlog':
             return _tlog_ayristir(p, hz)
+        if dataflash.ikili_mi(p):
+            return _bin_hizli(p, hz, ilerleme)
         return _bin_ayristir(p, hz, ilerleme)
     except ValueError:
         raise
-    except Exception as e:   # noqa: BLE001 — pymavlink bozuk dosyada çeşitli hatalar üretir
+    except Exception as e:   # noqa: BLE001 — bozuk dosyada çeşitli hatalar
         raise ValueError(f'Log çözümlenemedi: {e}') from e
 
 
+def ayristir(path, hz=REPLAY_HZ, ilerleme=None):
+    """Log dosyasını kare dizisine çevirir (`frames` listesi; FIELDS sırası). ValueError: okunamaz / konum yok.
+    Büyük kayıtlarda bellek için `hazirla` kullanılır (kareleri parça parça yazar); bu işlev tüm kareleri listeye çevirir."""
+    d = _ayristir_ham(path, hz, ilerleme)
+    if 'K' in d:
+        d['frames'] = kareler(d.pop('K'))
+    return d
+
+
+# ---- önbellek (v5): küçük kayıt tek dosya; büyük kayıt = genel bakış (LOD) + zaman parçaları ----
+TEK_PARCA_KARE = int(os.environ.get('SIM_REPLAY_TEK_PARCA', '45000'))   # 25 Hz'de 30 dk; üstü parçalı
+PARCA_S = 120                                                            # parça süresi (sn)
+GENEL_HZ = 1.0                                                           # büyük kayıtta genel bakış kare hızı
+
+
+def onbellek_parca_yolu(log_id, k):
+    return onbellek_dizini() / f'{int(log_id)}.p{int(k)}.json.gz'
+
+
+def onbellek_sil(log_id):
+    """Kaydın tüm önbellek dosyaları (meta + parçalar)."""
+    d = onbellek_dizini()
+    for f in [onbellek_yolu(log_id)] + list(d.glob(f'{int(log_id)}.p*.json.gz')):
+        try:
+            f.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def onbellek_boyutu(log_id):
+    d = onbellek_dizini()
+    return sum(f.stat().st_size for f in [onbellek_yolu(log_id)] + list(d.glob(f'{int(log_id)}.p*.json.gz')) if f.exists())
+
+
+def _gz_yaz(yol, obj, seviye=6):
+    """Atomik gzip JSON yazımı. Tek seferde dumps + compress (gzip metin akışına json.dump binlerce küçük yazım yapar: ~2× yavaş)."""
+    tmp = yol.with_name(yol.name + '.tmp')
+    with open(tmp, 'wb') as f:
+        f.write(gzip.compress(json.dumps(obj, separators=(',', ':'), ensure_ascii=False).encode('utf-8'), seviye, mtime=0))
+    os.replace(tmp, yol)
+
+
+ISCI = max(1, int(os.environ.get('SIM_REPLAY_ISCI', '4') or 4))   # parça yazımında paralel süreç (alt süreçte; fork)
+_PK = None   # fork edilen işçilerin paylaştığı sütunlu kareler (yazarken kopyalanır; salt okunur)
+
+
+def _parca_yaz(is_):
+    log_id, k, a, b = is_
+    _gz_yaz(onbellek_parca_yolu(log_id, k), {'v': ONBELLEK_SURUM, 'k': k, 'a': a, 'frames': kareler(_PK, a, b)}, 5)
+    return k
+
+
 def onbellek_meta(gz_path):
-    """Önbellek dosyasından kareler olmadan meta (oturum için): v, hz, n, duration_s, home, takeoff_t, start_utc, vehicle, type, modes."""
+    """Önbellek dosyasından kareler olmadan meta (oturum için): v, hz, n, duration_s, home, takeoff_t, start_utc, vehicle, type, modes, lod."""
     with gzip.open(gz_path, 'rt', encoding='utf-8') as f:
         d = json.load(f)
     if d.get('v') != ONBELLEK_SURUM:
         raise ValueError('eski önbellek')
-    return {k: d.get(k) for k in ('v', 'hz', 'n', 'duration_s', 'home', 'takeoff_t', 'start_utc', 'vehicle', 'type', 'source')} | {'modes': d.get('modes')}
+    lod = d.get('lod')
+    if lod:   # parçaların hepsi diskte mi (yarım kalmış üretim)?
+        for k in range(int(lod.get('chunks') or 0)):
+            if not onbellek_parca_yolu(int(os.path.basename(gz_path).split('.')[0]), k).exists():
+                raise ValueError('eksik parça')
+    return {k: d.get(k) for k in ('v', 'hz', 'n', 'duration_s', 'home', 'takeoff_t', 'start_utc', 'vehicle', 'type', 'source', 'lod')} | {'modes': d.get('modes')}
 
 
-def hazirla(log_id, path, ilerleme=None):
-    """Önbellek varsa (ve sürümü güncelse) metasını döner; yoksa ayrıştırır, gzip yazar (atomik), metayı döner. İş parçacığında çağrılır."""
+def onbellek_hazir_meta(log_id):
+    """Güncel ve tam önbellek varsa metası, yoksa None (bozuk/eski önbellek silinmez; `hazirla` yeniden üretir)."""
+    gz = onbellek_yolu(log_id)
+    if not gz.exists():
+        return None
+    try:
+        return onbellek_meta(gz)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def hazirla(log_id, path, ilerleme=None, paralel=False):
+    """Önbellek varsa (ve sürümü güncelse) metasını döner; yoksa ayrıştırır, gzip yazar (atomik), metayı döner. İş parçacığında / alt süreçte.
+    Büyük kayıt (n > TEK_PARCA_KARE): `<id>.p<k>.json.gz` parçaları ({k, a, frames} — PARCA_S saniyelik tam hızda kareler) ÖNCE yazılır,
+    sonra `<id>.json.gz` meta + genel bakış karesi (GENEL_HZ; `frames`) + `lod` {chunk_s, chunks, chunk_n, step, n_overview}. Meta
+    dosyası en son yazıldığından varlığı tamamlanmış önbellek demektir. İlerleme: ayrıştırma %0–80, yazma %80–100.
+    `paralel`: parçalar fork'lu işçilerle yazılır — yalnız tek iş parçacıklı alt süreçte (`_main`) açılır."""
     gz = onbellek_yolu(log_id)
     if gz.exists():
         try:
             return onbellek_meta(gz)
         except (OSError, ValueError, json.JSONDecodeError):
-            gz.unlink(missing_ok=True)
-    data = ayristir(path, ilerleme=ilerleme)
-    tmp = gz.with_suffix('.tmp')
-    with gzip.open(tmp, 'wt', encoding='utf-8', compresslevel=6) as f:
-        json.dump(data, f, separators=(',', ':'), ensure_ascii=False)
-    os.replace(tmp, gz)
+            onbellek_sil(log_id)
+    data = _ayristir_ham(path, ilerleme=ilerleme)
+    K = data.pop('K', None)
+    for f in onbellek_dizini().glob(f'{int(log_id)}.p*.json.gz'):
+        f.unlink(missing_ok=True)
+    if K is not None:
+        n = data['n']
+        if n <= TEK_PARCA_KARE:
+            data['frames'] = kareler(K)
+        else:
+            hz = data['hz']
+            parca_n = int(PARCA_S * hz)
+            parca = (n + parca_n - 1) // parca_n
+            global _PK
+            _PK = K
+            isler = [(log_id, k, k * parca_n, min(n, (k + 1) * parca_n)) for k in range(parca)]
+            try:
+                if paralel and ISCI > 1 and parca >= 8:   # JSON üretimi GIL'e bağlı: alt süreçte fork'lu işçilere bölünür (K paylaşılır)
+                    import multiprocessing as mp
+                    with mp.get_context('fork').Pool(min(ISCI, os.cpu_count() or 1)) as havuz:
+                        for i, _k in enumerate(havuz.imap_unordered(_parca_yaz, isler)):
+                            if ilerleme:
+                                ilerleme(80 + int(19 * (i + 1) / parca))
+                else:
+                    for i, is_ in enumerate(isler):
+                        _parca_yaz(is_)
+                        if ilerleme:
+                            ilerleme(80 + int(19 * (i + 1) / parca))
+            finally:
+                _PK = None
+            adim = max(1, int(round(hz / GENEL_HZ)))
+            genel = kareler(K, 0, None, adim)
+            if (n - 1) % adim:
+                genel += kareler(K, n - 1, n)
+            data['frames'] = genel
+            data['lod'] = {'chunk_s': PARCA_S, 'chunks': parca, 'chunk_n': parca_n, 'step': adim, 'n_overview': len(genel)}
+        del K
+    else:
+        data['frames'] = _thin(data['frames'], REPLAY_MAX_FRAMES)
+    _gz_yaz(gz, data)
+    if ilerleme:
+        ilerleme(100)
     data.pop('frames', None)
     data.pop('events', None)
     return data
@@ -514,7 +1000,7 @@ def _main(argv):
             son[0] = pct
             print(f'P {pct}', flush=True)
     try:
-        meta = hazirla(log_id, path, ilerleme)
+        meta = hazirla(log_id, path, ilerleme, paralel=True)
     except ValueError as e:
         print(f'ERR {e}', flush=True)
         sys.exit(1)
@@ -681,7 +1167,10 @@ class ReplaySession:
             yol = config.UPLOAD_DIR / self.log['file']
             self._olay(f'Kayıt hazırlanıyor: {self.log.get("file_name")}', 6)
             try:
-                meta = await hazirla_async(self.log['id'], yol, self._ilerleme)
+                # önbellek güncelse alt süreç açılmaz (python + numpy açılışı ~1–2 sn); yoksa alt süreçte ayrıştırılır (ilerlemeli)
+                meta = await asyncio.get_running_loop().run_in_executor(None, onbellek_hazir_meta, self.log['id'])
+                if meta is None:
+                    meta = await hazirla_async(self.log['id'], yol, self._ilerleme)
             except ValueError as e:
                 self.sitl['error'] = str(e)
                 self._olay(str(e), 2)
@@ -762,7 +1251,7 @@ def loglari_listele(conn, user, q=None, limit=300):
     mods = set(user.get('modules') or [])
     if 'tools' not in mods and 'field' not in mods:
         return []
-    sql = '''SELECT l.id, l.task_id, l.file, l.file_name, l.size, l.status, l.aircraft, l.pilot, l.location, l.note, l.uploaded_at, l.source,
+    sql = '''SELECT l.id, l.task_id, l.file, l.file_name, l.size, l.status, l.aircraft, l.pilot, l.location, l.note, l.uploaded_at, l.source, l.origin,
                     u.full_name AS uploaded_by_name, t.code AS task_code,
                     json_extract(l.analysis, '$.summary.vehicle') AS vehicle,
                     json_extract(l.analysis, '$.summary.flight_s') AS flight_s,

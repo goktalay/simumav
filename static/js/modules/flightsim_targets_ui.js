@@ -6,6 +6,7 @@
 // modelin dönen 3B görüntüsü (sürükle/tekerlek), ölçek çubuğu, ad · seyir/azami hız · boyut. Önizleme öğesi hedef nesnesine bağlıdır (WeakMap): kartlar
 // yeniden çizilince (yön/model değişimi) tuval taşınır, görüntü sıfırlanmaz.
 import { DIAMETER, ALT, RADIUS, RADIUS_DEFAULT, TARGET_MAX, newTarget, validateTargets } from './flightsim_targets.js';
+import { numSlider } from './fs_inputs.js';   // §6.1 görsel giriş: kaydırıcı + değer kutusu + birim
 
 const num = (v, d = null) => (v == null || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
 const kmh = ms => Math.round(Number(ms) * 3.6);
@@ -26,8 +27,8 @@ export function createTargetsSection({ h, tr, catalog = [], limits = {}, onChang
     const m = catalog.find(c => c.source === 'target') || catalog[0];
     S.items.push(newTarget(m, S.items.length)); draw(); changed();
   } }, '+ ', tr('Hedef ekle'));
-  const radInp = h('input', { class: 'input fs-tg-inp', type: 'number', min: RADIUS[0], max: RADIUS[1], step: 1, value: S.radius, inputmode: 'numeric',
-    oninput: () => { S.radius = num(radInp.value, RADIUS_DEFAULT); changed(); } });
+  const radSl = numSlider({ h, label: tr('Önleme yarıçapı'), value: S.radius, min: RADIUS[0], max: RADIUS[1], step: 1, unit: 'm', integer: true, cls: 'fs-tg-radius',
+    onInput: v => { S.radius = v; changed(); } });
   const modelSelect = (it, onPick) => {
     const groups = [['target', tr('Hedef modelleri')], ['builtin', tr('Sistemdeki dron türleri')]];
     const sel = h('select', { class: 'input fs-tg-model', onchange: () => onPick(sel.value) },
@@ -36,15 +37,13 @@ export function createTargetsSection({ h, tr, catalog = [], limits = {}, onChang
     return sel;
   };
   const row = (label, ctl, unit, hint) => h('label', { class: 'fs-tg-field' }, h('span', { class: 'fs-tg-lbl' }, tr(label)), h('span', { class: 'fs-tg-ctl' }, ctl, unit ? h('i', null, unit) : null), hint ? h('span', { class: 'small muted' }, hint) : null);
-  const numInp = (it, key, min, max, step, toUi = v => v, fromUi = v => v) => {
-    const el = h('input', { class: 'input fs-tg-inp', type: 'number', min, max, step, value: toUi(it[key]), inputmode: 'decimal',
-      oninput: () => { const v = num(el.value); if (v != null) { it[key] = fromUi(v); changed(); } } });
-    return el;
-  };
+  // Sayısal alan → kaydırıcı (geniş aralıklar logaritmik); toUi/fromUi birim dönüşümü (hız: m/s ↔ km/h)
+  const numSl = (it, key, label, min, max, step, unit, { scale = 'lin', hint = null, toUi = v => v, fromUi = v => v } = {}) => numSlider({ h, label: tr(label), value: toUi(it[key]), min, max, step, unit, scale, hint,
+    onInput: v => { it[key] = fromUi(v); changed(); } }).el;
   function draw() {
     list.replaceChildren(...S.items.map((it, k) => {
       const m = modelOf(it.model);
-      const spd = numInp(it, 'speed_ms', 1, m ? kmh(m.max_ms) : 1000, 1, v => kmh(v), v => Math.round(v / 3.6 * 100) / 100);
+      const spd = numSl(it, 'speed_ms', 'Hız', 1, m ? kmh(m.max_ms) : 1000, 1, 'km/h', { hint: m ? tr('seyir {c} · azami {x} km/h', { c: kmh(m.cruise_ms), x: kmh(m.max_ms) }) : null, toUi: v => kmh(v), fromUi: v => Math.round(v / 3.6 * 100) / 100 });
       const dirSeg = h('div', { class: 'seg fs-tg-dir' }, [['cw', '↻ ' + tr('Saat yönü')], ['ccw', '↺ ' + tr('Saat yönü tersi')]].map(([v, l]) =>
         h('button', { type: 'button', class: it.dir === v ? 'on' : '', onclick: () => { it.dir = v; draw(); changed(); } }, l)));
       const card = h('div', { class: 'fs-tg-card', 'data-target': k },
@@ -55,12 +54,12 @@ export function createTargetsSection({ h, tr, catalog = [], limits = {}, onChang
         previewOf(it),
         m?.desc ? h('div', { class: 'small muted fs-tg-desc' }, m.desc) : null,
         h('div', { class: 'fs-tg-grid' },
-          row('İrtifa', numInp(it, 'alt_m', ALT[0], ALT[1], 5), 'm'),
-          row('Yörünge çapı', numInp(it, 'diameter_m', DIAMETER[0], DIAMETER[1], 50), 'm'),
-          row('Hız', spd, 'km/h', m ? tr('seyir {c} · azami {x} km/h', { c: kmh(m.cruise_ms), x: kmh(m.max_ms) }) : null),
+          numSl(it, 'alt_m', 'İrtifa', ALT[0], ALT[1], 5, 'm', { scale: 'log' }),
+          numSl(it, 'diameter_m', 'Yörünge çapı', DIAMETER[0], DIAMETER[1], 50, 'm', { scale: 'log' }),
+          spd,
           row('Yön', dirSeg, null),
-          row('Merkez doğu', numInp(it, 'east_m', -20000, 20000, 50), 'm'),
-          row('Merkez kuzey', numInp(it, 'north_m', -20000, 20000, 50), 'm')),
+          numSl(it, 'east_m', 'Merkez doğu', -20000, 20000, 50, 'm'),
+          numSl(it, 'north_m', 'Merkez kuzey', -20000, 20000, 50, 'm')),
         h('div', { class: 'small muted fs-tg-sum' }, summary(it, m)));
       return card;
     }));
@@ -82,7 +81,7 @@ export function createTargetsSection({ h, tr, catalog = [], limits = {}, onChang
     h('h3', null, h('span', { class: 'fs-no' }, '◎'), tr('Hedefler'), h('span', { class: 'badge gray' }, tr('isteğe bağlı'))),
     h('p', { class: 'small muted' }, tr('Simülasyonda havada sürekli uçan hedefler: her biri seçtiğiniz irtifada, verdiğiniz çapta dairesel yörüngede uçar (SITL\'siz, sunucuda kinematik; Mission Planner haritasında ADSB trafiği olarak görünür). Dronunuz bir hedefe önleme yarıçapı içinde yaklaşınca "önleme" sayılır; raporda sayı ve süre yer alır.')),
     empty, list,
-    h('div', { class: 'fs-tg-foot' }, addBtn, h('label', { class: 'fs-tg-field fs-tg-rad' }, h('span', { class: 'fs-tg-lbl' }, tr('Önleme yarıçapı')), h('span', { class: 'fs-tg-ctl' }, radInp, h('i', null, 'm'))),
+    h('div', { class: 'fs-tg-foot' }, addBtn, radSl.el,
       h('span', { class: 'small muted' }, tr('En çok {n} hedef · çap {a}–{b} m · irtifa {c}–{d} m', { n: TARGET_MAX, a: DIAMETER[0], b: DIAMETER[1], c: ALT[0], d: ALT[1] }))),
     err);
   draw();
