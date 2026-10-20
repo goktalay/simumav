@@ -826,7 +826,7 @@ class SimSession:
             port, err = await ex(None, lambda: drone_sitl.YONETICI.baslat(self.kimlik, self.type, c['lat'], c['lon'], sysid=1,
                                                                           irtifa=c.get('alt') or EV_IRTIFA, konsol=self._konsol, model=sitl_model,
                                                                           log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type, **self.montaj_arg)
-                                                                          + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]]))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir)
+                                                                          + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]], temiz=True))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir)
             if port and self.rec['bin']:
                 self._olay('DataFlash kaydı açık: uçuş logu (.bin) oturum kapanışında Uçuş Logları\'na kaydedilir', 6)
             if not port:

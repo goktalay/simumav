@@ -275,11 +275,14 @@ class SitlYoneticisi:
         with self._kilit:
             return dict(self._bilgi.get(int(kimlik)) or {})
 
-    def baslat(self, kimlik, tip, lat, lon, sysid, irtifa=None, konsol=None, model=None, log_bin=False, ekstra_parm=None):
+    def baslat(self, kimlik, tip, lat, lon, sysid, irtifa=None, konsol=None, model=None, log_bin=False, ekstra_parm=None, temiz=False):
         """SITL sürecini başlatır. Dönüş: (port, hata) — başarısızsa port None. Bloklar (~2 sn): iş parçacığında çağrılır.
         `model`: `--model` değerini geçersiz kılar (ör. uçuş simülatörü rampa kalkışı için 'plane-catapult'; TIP_ESLEME değişmez).
         `log_bin`: DataFlash .BIN kaydı açık (uçuş simülatörü "Uçuş logunu kaydet"; docs/ucus-simulatoru.md §19) — yalnız armed süre.
-        `ekstra_parm`: dronun kayıtlı parametreleri (`AD DEĞER` satırları) → varsayilan.parm sonuna (drone_params)."""
+        `ekstra_parm`: dronun kayıtlı parametreleri (`AD DEĞER` satırları) → varsayilan.parm sonuna (drone_params).
+        `temiz`: eski eeprom.bin silinir — her oturum yalnız varsayilan.parm (+ PARAM_SET) ile başlar. Uçuş simülatörü yuvaları (9001…) oturumlar
+        arasında yeniden kullanılır; eeprom kalırsa önceki oturumda Mission Planner'dan / başka dronun kaydından yazılan değerler (ör. AIRSPEED_MIN 30,
+        eski SIM_SRV_REV maskesi) sonraki oturuma taşınıyor, uçak kalkışta düşüyordu."""
         kimlik = int(kimlik)
         konsol = konsol or self.konsol
         if self.calisiyor_mu(kimlik):
@@ -298,6 +301,11 @@ class SitlYoneticisi:
             dizin.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             return None, f'SITL çalışma dizini oluşturulamadı: {e}'
+        if temiz:
+            try:
+                (dizin / 'eeprom.bin').unlink(missing_ok=True)
+            except OSError as e:
+                return None, f'SITL eski parametre belleği (eeprom.bin) silinemedi: {e}'
         parm = dizin / 'varsayilan.parm'     # Tuzak A: gerçek defaults dosyası
         try:
             parm.write_text(parm_metni(sysid, log_bin, ekstra_parm), encoding='utf-8')
