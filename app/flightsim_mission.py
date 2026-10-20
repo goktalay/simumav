@@ -422,6 +422,8 @@ class GorevIzleyici:
             'crash': crash, 'crash_count': len(self.crashes), 'autopilot_detect_count': len(self.warnings), 'deviation': sapma, 'safety': safety, 'track': iz,
             # §23 güç ve yakıt: ayarlar + harcanan yakıt / ölçülen km/L + batarya Wh / ortalama W + simülasyon hızı (GucDurumu.ozet; kayıttan oynatmada yok)
             'power': s.guc.ozet() if getattr(s, 'guc', None) is not None else None,
+            # §24 hedefler: önleme sayısı / ilk önleme süresi / en yakın geçiş + puan ve rozetler (kayıttan oynatmada istemci yeniden hesaplar)
+            'targets': s.hedef_iz.ozet() if getattr(s, 'hedef_iz', None) is not None else None,
         }
         out['safety_note'] = guvenlik_notu(out)
         return out

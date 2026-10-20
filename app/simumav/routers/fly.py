@@ -13,7 +13,7 @@ import json
 import re
 import secrets
 import time
-from typing import Any, Optional, Union
+from typing import Any, List, Optional, Union
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -41,6 +41,11 @@ class LaunchIn(BaseModel):
     hand_pitch_deg: Optional[float] = Field(None, ge=10, le=15)
 
 
+class TargetsIn(BaseModel):
+    items: List[dict] = Field(default_factory=list, max_length=8)
+    radius_m: Optional[float] = Field(None, ge=5, le=200)
+
+
 class StartIn(BaseModel):
     drone_id: int
     pilot_id: int
@@ -51,6 +56,7 @@ class StartIn(BaseModel):
     power: Optional[dict] = None                   # §10 güç ve yakıt (sihirbaz): hangar ayarının üstüne; power.dogrula
     speedup: Any = None                            # §10 (bool/dize zorlaması yok: bridge.speedup_dogrula) başlangıç simülasyon hızı 1 | 2 | 4 | 8 (≤ SIMUMAV_MAX_SPEEDUP)
     camera: Optional[str] = Field(None, max_length=8)   # HEPGO §22.3 kamera türü: day | thermal | night
+    targets: Optional[TargetsIn] = None             # HEPGO §24 hedefler: {items ≤ 8, radius_m}; içerik bridge.hedefler_dogrula
 
 
 class RecStartIn(BaseModel):
@@ -86,7 +92,8 @@ async def start(body: StartIn, request: Request, user=User):
     launch = body.launch.model_dump(exclude_none=True) if isinstance(body.launch, LaunchIn) else {'method': body.launch or 'wheels'}
     try:
         out = await bridge.ucus_baslat(user, pilot, drone, track, mission, launch, body.record.model_dump() if body.record else None, request,
-                                       power=body.power, speedup=body.speedup, camera=body.camera)
+                                       power=body.power, speedup=body.speedup, camera=body.camera,
+                                       targets=body.targets.model_dump(exclude_none=True) if body.targets else None)
     except bridge.BridgeHata as e:
         if e.error == 'invalid' and str(e.message).startswith(('power', 'Yakıt')):
             db.audit_bagimsiz('power_reject', user['id'], auth.client_ip(request), e.message[:200])
@@ -94,6 +101,14 @@ async def start(body: StartIn, request: Request, user=User):
             db.audit_bagimsiz('quota', user['id'], auth.client_ip(request), e.message)
         hata_cevir(e)
     return out
+
+
+@router.get('/targets')
+def targets_catalog(user=User):
+    """Hedefler adımı (HEPGO §24): seçilebilen modeller + sınırlar."""
+    from ... import flightsim_targets as ft
+    return {'models': bridge.hedef_katalogu(), 'max': ft.HEDEF_MAX, 'diameter_m': list(ft.CAP_SINIR), 'alt_m': list(ft.IRTIFA_SINIR),
+            'radius_m': list(ft.YARICAP_SINIR), 'radius_default': ft.YARICAP_VARSAYILAN, 'offset_m': ft.OFSET_SINIR}
 
 
 @router.get('/current')

@@ -17,7 +17,7 @@ from datetime import datetime
 from .. import flightsim_power as P
 
 ENGINES = ('fuel', 'electric')
-YAKIT_TIPLERI = ('plane', 'interceptor', 'vtol')          # yakıtlı motor anlamlı (çekirdek PLANE_TIPLERI: sabit_kanat, vtol)
+YAKIT_TIPLERI = ('plane', 'interceptor', 'vtol')          # azami hız + (isteğe bağlı) yakıt anlamlı (çekirdek PLANE_TIPLERI: sabit_kanat, vtol, interceptor)
 ALANLAR = P.ALANLAR                                        # max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w
 SINIRLAR = dict(P.SINIRLAR)
 OLCUM_ALANLARI = ('fuel_km_per_l_last', 'elec_w_last', 'measured_at')
@@ -47,10 +47,15 @@ MODEL_VARSAYILAN = {
     'glb:jet': {'engine': 'fuel', 'max_speed_ms': 150, 'fuel_l': 6, 'fuel_km_per_l': 20, 'elec_cells': 4, 'elec_mah': 5000, 'elec_w': 60},
     'proc:interceptor': {'engine': 'fuel', 'max_speed_ms': 150, 'fuel_l': 6, 'fuel_km_per_l': 20, 'elec_cells': 4, 'elec_mah': 5000, 'elec_w': 60},
     'glb:zephyr': {'engine': _E, 'max_speed_ms': 120, 'elec_cells': 4, 'elec_mah': 5000, 'elec_w': 160},
+    # INTERCEPTOR tailsitter (HEPGO §25): elektrikli; azami hız 400 km/h (X4), P1-SUN 300 km/h, Sting 315 km/h — SITL itki çarpanı tailsitter uyumundan
+    'glb:icept_x4': {'engine': _E, 'max_speed_ms': 111.1, 'elec_cells': 6, 'elec_mah': 8000, 'elec_w': 40},
+    'builtin:icept_x4': {'engine': _E, 'max_speed_ms': 111.1, 'elec_cells': 6, 'elec_mah': 8000, 'elec_w': 40},
+    'glb:p1sun': {'engine': _E, 'max_speed_ms': 83.3, 'elec_cells': 6, 'elec_mah': 4000, 'elec_w': 30},
+    'glb:sting': {'engine': _E, 'max_speed_ms': 87.5, 'elec_cells': 6, 'elec_mah': 4000, 'elec_w': 30},
 }
 TIP_VARSAYILAN = {
     'fpv': MODEL_VARSAYILAN['glb:iris_fpv'], 'multirotor': MODEL_VARSAYILAN['glb:iris'], 'heli': MODEL_VARSAYILAN['glb:heli'],
-    'plane': MODEL_VARSAYILAN['builtin:caymaz'], 'vtol': MODEL_VARSAYILAN['glb:standard_vtol'], 'interceptor': MODEL_VARSAYILAN['glb:jet'],
+    'plane': MODEL_VARSAYILAN['builtin:caymaz'], 'vtol': MODEL_VARSAYILAN['glb:standard_vtol'], 'interceptor': MODEL_VARSAYILAN['glb:icept_x4'],
 }
 
 

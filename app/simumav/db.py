@@ -143,8 +143,15 @@ CREATE TABLE IF NOT EXISTS support_files (
 CREATE INDEX IF NOT EXISTS ix_support_files_t ON support_files(user_id, ticket_id);
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 """
-_MIGRATIONS = []   # [(sürüm, [sql, …])] — ileride sütun eklemeleri
-SCHEMA_VERSION = 1
+# [(sürüm, [sql, …])] — idempotent. v2 (HEPGO §25): "interceptor" artık 4 pervaneli tailsitter; eski sabit kanat jet/delta interceptor dronları
+# (glb:jet, glb:zephyr, proc:interceptor) ve uçuş anlık görüntüleri 'plane' tipine taşınır — model, parametre, güç ayarları aynen kalır.
+_ESKI_ICEPT = "('glb:jet', 'glb:zephyr', 'proc:interceptor')"
+_MIGRATIONS = [
+    (2, [f"UPDATE drones SET type = 'plane' WHERE type = 'interceptor' AND model_key IN {_ESKI_ICEPT}",
+         "UPDATE flights SET snapshot = json_set(snapshot, '$.drone.type', 'plane') WHERE json_valid(snapshot) "
+         f"AND json_extract(snapshot, '$.drone.type') = 'interceptor' AND json_extract(snapshot, '$.drone.model_key') IN {_ESKI_ICEPT}"]),
+]
+SCHEMA_VERSION = 2
 
 # TR TEST Kalecik (Ankara) UAV test sahası — tesisin resmî koordinatı kamuya açık kaynaklarda yok; Kalecik ilçe merkezi (40.0972N 33.4083E,
 # 725 m) yakınındaki sözleşme değeri kullanılır. Kullanıcı parkuru düzenleyip kaydırabilir.

@@ -1,20 +1,25 @@
 // SIMUMAV › Uç — sihirbaz adım makinesi ve tip eşlemeleri (saf; DOM yok; node ile test edilir: tests/test_simumav_fly.mjs).
-// Adımlar: drone → track → launch (yalnız sabit kanat / interceptor / VTOL) → power (güç ve yakıt + simülasyon hızı, §10) → mission (isteğe bağlı)
-// → pilot (+ kayıt seçenekleri) → BAŞLA.
+// Adımlar: drone → track → launch (yalnız sabit kanat / VTOL) → power (güç ve yakıt + simülasyon hızı, §10) → mission (isteğe bağlı)
+// → targets (HEDEFLER, isteğe bağlı; HEPGO §24) → pilot (+ kayıt seçenekleri) → BAŞLA.
 // Çıktı: `payload()` → POST /api/fly/start gövdesi (docs/simumav.md §4): {drone_id, pilot_id, track_id, mission_id?, launch, record:{video,bin},
 // power? (power.js createPowerState.body()), speedup? (> 1 ise)}.
-// Tip eşlemesi: SIMUMAV dron türleri (§3 drones.type) → HEPGO simülatör tipleri (flightsim*.js): plane/interceptor → sabit_kanat, heli → helikopter,
-// fpv/multirotor → multirotor, vtol → vtol. Interceptor özel: hız ölçeği 600 km/h, ses modeli yüksek devir. FPV: başlangıç kamerası FPV.
+// Tip eşlemesi: SIMUMAV dron türleri (§3 drones.type) → HEPGO simülatör tipleri (flightsim*.js): plane → sabit_kanat, interceptor → interceptor
+// (4 pervaneli tailsitter, HEPGO §25: dikey kalkış, ~400 km/h; kalkış yöntemi adımı yok), heli → helikopter, fpv/multirotor → multirotor, vtol → vtol.
+// Eski sabit kanat jetleri (glb:jet / glb:zephyr / proc:interceptor) artık 'plane' tipindedir (sunucu göçü v2): hız ölçeği 600 km/h ve jet sesi model
+// anahtarına göre (speedScale / audioTypeFor ikinci argümanı). FPV: başlangıç kamerası FPV.
 
-export const STEPS = ['drone', 'track', 'launch', 'power', 'mission', 'pilot'];
-export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', pilot: 'Pilot ve kayıt' };
+export const STEPS = ['drone', 'track', 'launch', 'power', 'mission', 'targets', 'pilot'];
+export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', targets: 'targets.step', pilot: 'Pilot ve kayıt' };
 
 // SIMUMAV türü → HEPGO simülatör tipi
-export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'sabit_kanat', vtol: 'vtol' };
-export const TYPE_LABEL = { multirotor: 'Multikopter', fpv: 'FPV dron', heli: 'Helikopter', plane: 'Sabit kanat', interceptor: 'Interceptor', vtol: 'VTOL' };
+export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'interceptor', vtol: 'vtol' };
+export const TYPE_LABEL = { multirotor: 'Multikopter', fpv: 'FPV dron', heli: 'Helikopter', plane: 'Sabit kanat', interceptor: 'INTERCEPTOR', vtol: 'VTOL' };
 export const simType = t => TYPE_MAP[t] || 'multirotor';
-// Kalkış yöntemi adımı yalnız sabit kanat ailesinde (plane / interceptor / vtol): rampa, araç, tekerlek, ELDEN ATIŞ
-export const needsLaunch = t => t === 'plane' || t === 'interceptor' || t === 'vtol';
+// Kalkış yöntemi adımı yalnız sabit kanat / VTOL'de: rampa, araç, tekerlek, ELDEN ATIŞ (INTERCEPTOR kuyruk üstünden dikey kalkar → adım yok)
+export const needsLaunch = t => t === 'plane' || t === 'vtol';
+// Yüksek hız sabit kanat jet modelleri (eski "interceptor" kaydı; göç v2 ile 'plane'): 600 km/h ölçek + jet sesi
+export const JET_MODELS = ['glb:jet', 'glb:zephyr', 'proc:interceptor'];
+export const isJetModel = k => JET_MODELS.includes(String(k || ''));
 
 // Kalkış yöntemleri (HEPGO flightsim_launch.js LAUNCH_METHODS + yeni `hand`): [anahtar, ad, açıklama, ayar alanları]
 export const LAUNCH_METHODS_SM = [
@@ -49,22 +54,25 @@ export const launchBody = l => {
 export const AIRFRAMES = ['classic', 'elevon', 'vtail'];
 export const AIRFRAME_LABEL = { classic: 'Aileron + Elevatör (T-kuyruk)', elevon: 'Elevon (delta kanat)', vtail: 'V-kuyruk (ruddervator)' };
 export const AIRFRAME_SHORT = { classic: 'Klasik', elevon: 'Elevon', vtail: 'V-kuyruk' };
-export const needsAirframe = t => t === 'plane' || t === 'interceptor';
+export const needsAirframe = t => t === 'plane';
 export const airframeForModel = key => { const k = String(key || '').toLowerCase(); if (!k) return null; if (/talon|vtail|v-tail/.test(k)) return 'vtail'; if (/delta|interceptor|caymaz|zephyr|elevon/.test(k)) return 'elevon'; if (/cessna|believer|plane/.test(k)) return 'classic'; return null; };
 export const airframeOf = (drone, catalogModel = null) => (!drone || !needsAirframe(drone.type) ? null : (AIRFRAMES.includes(drone.airframe) ? drone.airframe : (catalogModel?.airframe && AIRFRAMES.includes(catalogModel.airframe) ? catalogModel.airframe : airframeForModel(drone.model_key) || 'classic')));
 export const airframeLabel = (a, tr = s => s) => (a && AIRFRAME_LABEL[a] ? tr(AIRFRAME_LABEL[a]) : '—');
 
-// Hız göstergesi ölçeği (km/h): interceptor 600 (ARSPD_FBW_MAX 170 m/s ≈ 612 km/h), sabit kanat / VTOL 200, helikopter 120, kopter / FPV 150
-export const SPEED_SCALE = { interceptor: 600, plane: 200, vtol: 200, heli: 120, fpv: 150, multirotor: 100 };
-export const speedScale = t => SPEED_SCALE[t] || 100;
+// Hız göstergesi ölçeği (km/h): INTERCEPTOR 450 (azami 400 km/h), sabit kanat / VTOL 200 (jet modeli 600: AIRSPEED_MAX 170 m/s ≈ 612 km/h),
+// helikopter 120, kopter / FPV 150
+export const SPEED_SCALE = { interceptor: 450, plane: 200, vtol: 200, heli: 120, fpv: 150, multirotor: 100 };
+export const speedScale = (t, modelKey = null) => (t === 'plane' && isJetModel(modelKey) ? 600 : SPEED_SCALE[t] || 100);
 export const speedTicks = max => { const step = max >= 400 ? 100 : max >= 150 ? 50 : 20; const out = []; for (let v = 0; v <= max; v += step) out.push(v); return out; };
 // Gösterge iğnesi açısı: 0 → −120°, max → +120° (240° yay)
 export const speedAngle = (kmh, max) => -120 + 240 * clamp((Number(kmh) || 0) / max, 0, 1);
 // Başlangıç kamerası: FPV dron → 'fpv' (gimbal), diğerleri takip
 export const startCameraFor = t => (t === 'fpv' ? 'fpv' : 'follow');
-// Ses modeli tipi: interceptor için yüksek devirli ayrı model (flightsim_audio AUDIO_MODELS'e çalışma zamanında eklenir; session.js)
-export const audioTypeFor = t => (t === 'interceptor' ? 'interceptor' : simType(t));
-export const INTERCEPTOR_AUDIO = { kind: 'plane', cylinders: 2, blades: 3, idleRpm: 4200, maxRpm: 19000 };
+// Ses modeli tipi: jet modelleri için yüksek devirli ayrı model 'jet' (flightsim_audio AUDIO_MODELS'e çalışma zamanında eklenir; session.js);
+// INTERCEPTOR çekirdeğin 4 elektrik motorlu modelini kullanır (AUDIO_MODELS.interceptor)
+export const audioTypeFor = (t, modelKey = null) => (t === 'plane' && isJetModel(modelKey) ? 'jet' : simType(t));
+export const JET_AUDIO = { kind: 'plane', cylinders: 2, blades: 3, idleRpm: 4200, maxRpm: 19000 };
+export const INTERCEPTOR_AUDIO = JET_AUDIO;   // geriye uyum (eski ad)
 
 // Dron → HEPGO 3B model tanımı: 'builtin:*' dahili; sunucu `preview` (GLB) + `orient` vermişse gerçekçi GLB (flightsim3d buildLibrary: 'glb:*' anahtarları ve
 // MODEL_YUKSELT ile yükseltilmiş eski 'proc:*' kayıtları; pervane `rotor_*`/`propeller` düğümleri, kontrol yüzeyleri adıyla); 'proc:<şablon>' → dahili
@@ -76,7 +84,7 @@ export function modelFor(drone) {
   if (drone?.preview && drone?.orient) return { id: key || 'glb', glb_url: drone.preview, orient: drone.orient, has_prop: drone.has_prop !== false };
   if (key.startsWith('proc:')) return { id: PROC_MAP[key.slice(5)] || (needsLaunch(drone?.type) ? 'builtin:caymaz' : drone?.type === 'heli' ? 'builtin:heli' : 'builtin:quad') };
   if (key && drone?.preview) return { id: key, glb_url: drone.preview, orient: drone?.orient || undefined };
-  return { id: drone?.type === 'heli' ? 'builtin:heli' : needsLaunch(drone?.type) ? (drone?.type === 'interceptor' ? 'builtin:delta' : 'builtin:caymaz') : 'builtin:quad' };
+  return { id: drone?.type === 'heli' ? 'builtin:heli' : drone?.type === 'interceptor' ? 'builtin:icept_x4' : needsLaunch(drone?.type) ? 'builtin:caymaz' : 'builtin:quad' };
 }
 // Parkur `world` JSON (§3: size_m, trees_pct, extra_buildings, fog_pct, runway_deg, runway, time_of_day) → HEPGO WORLD_DEFAULTS anahtarları
 // (size_m, tree_density 0…1, building_count, fog 0…1, runway_heading, runway, time 'day'|'dusk'|'night'); HEPGO adları da olduğu gibi kabul edilir.
@@ -113,6 +121,7 @@ export function createWizard(data = {}, init = {}) {
     record: { video: !!init.record?.video, bin: init.record?.bin !== false },
     power: init.power ?? null,          // §10: güç gövdesi (power.js body()); dron değişince sıfırlanır (adım yeniden kurar)
     speedup: init.speedup ?? 1,         // §10: başlangıç simülasyon hızı
+    targets: init.targets ?? null,      // HEPGO §24 hedefler: {items, radius_m} | null (targets.js)
   };
   let i = 0;
   const drone = () => (data.drones || []).find(d => d.id === S.drone_id) || null;
@@ -146,6 +155,7 @@ export function createWizard(data = {}, init = {}) {
     body.launch = needsLaunch(type()) ? launchBody(S.launch) : { method: 'wheels' };   // kopter/heli: alan zorunlu; `wheels` nötr değer
     if (S.power) body.power = { ...S.power };
     if (S.speedup > 1) body.speedup = S.speedup;
+    if (S.targets?.items?.length) body.targets = { items: S.targets.items.map(x => ({ ...x })), radius_m: S.targets.radius_m };
     return body;
   };
   const missionsFor = () => (data.missions || []).filter(m => S.track_id == null || m.track_id === S.track_id);

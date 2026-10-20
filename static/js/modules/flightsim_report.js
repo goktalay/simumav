@@ -39,6 +39,8 @@ export function buildReportText(sum, tr) {
   if (D) out.push(`${tr('Sapma')}: ${f1(D.dist_m)} m ${tr('yatay')}, ${f1(D.dz_m)} m ${tr('dikey')}${D.in_circle ? ` · ${tr('İniş dairesi içinde')}` : ''}`);
   const pw = powerLines(sum, tr);   // §23
   if (pw) out.push(`${tr('Güç ve yakıt')}: ${pw}`);
+  const tg = targetLines(sum, tr);   // §24
+  if (tg) out.push(`${tr('Hedefler')}: ${tg}`);
   const sn = safetyText(sum, tr);
   if (sn) out.push(`${tr('Güvenlik notu')}: ${sn}`);
   return out.join('\n');
@@ -75,6 +77,31 @@ export function powerSection(sum, tr) {
     P.speedup?.max > 1 ? kv(tr('Simülasyon hızı'), `${tr('en çok')} ${P.speedup.max}× · ${P.speedup.changes} ${tr('değişim')} · ${tr('süreler simülasyon zamanıdır')}`) : null);
 }
 const clock2 = s => { s = Math.max(0, Math.floor(Number(s) || 0)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+
+// ---------- §24 hedefler (önleme sayısı / ilk önleme süresi / en yakın geçiş + puan, rozet) ----------
+export const BADGE_TEXT = { first: 'İlk önleme', quick: 'Hızlı avcı (≤ 60 sn)', ace: 'As (tüm hedefler)', close: 'Yakın geçiş (≤ 5 m)', hunter: 'Avcı (≥ 5 önleme)' };
+export function targetLines(sum, tr) {
+  const T = sum.targets; if (!T || !T.count) return '';
+  const first = T.items.filter(d => d.first_s != null).map(d => d.first_s);
+  return [tr('{h}/{n} hedef önlendi', { h: T.hit_targets, n: T.count }), tr('{t} önleme', { t: T.total }), first.length ? tr('ilk önleme {s} sn', { s: f1(Math.min(...first)) }) : null,
+    tr('puan {p}', { p: T.score ?? 0 })].filter(Boolean).join(' · ');
+}
+export function targetsSection(sum, tr) {
+  const T = sum.targets; if (!T || !T.count) return null;
+  const kv = (k, v, cls = '') => h('div', { class: `fs-rp-kv ${cls}` }, h('span', null, k), h('b', null, v));
+  const tile = (label, value, unit, cls = '') => h('div', { class: `fs-rp-tile ${cls}` }, h('b', null, value, unit ? h('i', null, unit) : null), h('span', null, label));
+  const first = T.items.filter(d => d.first_s != null).map(d => d.first_s);
+  return h('div', { class: 'fs-rp-sec fs-rp-targets' }, h('h4', null, '◎ ', tr('Hedefler'), ' · ', tr('önleme yarıçapı {r} m', { r: f0(T.radius_m) })),
+    h('div', { class: 'fs-rp-tiles fs-rp-tg-tiles' },
+      tile(tr('Önlenen hedef'), `${T.hit_targets}/${T.count}`, null, T.all_hit ? 'green' : ''),
+      tile(tr('Toplam önleme'), String(T.total)),
+      tile(tr('İlk önleme'), first.length ? f1(Math.min(...first)) : '—', first.length ? 'sn' : null),
+      tile(tr('Puan'), String(T.score ?? 0))),
+    T.items.map(d => kv(`${d.i + 1} · ${d.name}`, d.intercepts
+      ? tr('{n} önleme · ilk {s} sn · yarıçap içinde {in} sn · en yakın {m} m', { n: d.intercepts, s: f1(d.first_s), in: f1(d.in_s), m: f1(d.min_dist_m) })
+      : tr('önlenmedi · en yakın {m} m', { m: f1(d.min_dist_m) }), d.intercepts ? 'green' : '')),
+    T.badges?.length ? h('div', { class: 'fs-rp-badges' }, T.badges.map(b => h('span', { class: 'badge purple' }, '★ ', tr(BADGE_TEXT[b] || b)))) : null);
+}
 
 // ---------- 2B mini harita ----------
 export function drawMiniMap(canvas, sum, tr) {
@@ -197,6 +224,7 @@ export function reportBody(sum, tr, { canWrite = false, be = null } = {}) {
     tiles,
     h('div', { class: 'fs-rp-cols' }, h('div', null, basic, mission), h('div', { class: 'fs-rp-mapwrap' }, canvas, legend, dev)),
     powerSection(sum, tr),   // §23
+    targetsSection(sum, tr),   // §24
     crash, safety);
   requestAnimationFrame(() => { try { drawMiniMap(canvas, sum, tr); } catch { /* harita hatası raporu bozmasın */ } });
   return body;

@@ -30,10 +30,12 @@ from . import config, db
 REPLAY_HZ = int(os.environ.get('SIM_REPLAY_HZ', '25'))          # 20–50 Hz
 REPLAY_MAX_FRAMES = 150000                                       # üstü seyreltilir (2 saat × 25 Hz = 180k)
 MAX_EVENTS = 400
-ONBELLEK_SURUM = 3   # 3: `servo` kare alanı + `servo_fn` (kayıtta kontrol yüzeyleri)
+ONBELLEK_SURUM = 4   # 3: `servo` kare alanı + `servo_fn` (kayıtta kontrol yüzeyleri) · 4: `body` (SITL SIM gövde yönelimi; §25 tailsitter) + `t0`
 FIELDS = ['t', 'lat', 'lon', 'alt_msl', 'alt_rel', 'roll', 'pitch', 'yaw', 'vn', 've', 'vd', 'gs', 'as', 'hdg', 'thr', 'mode', 'armed',
-          'batt_v', 'batt_pct', 'sats', 'fix', 'rc', 'servo']
-BIN_TIPLERI = ['GPS', 'POS', 'ATT', 'RCIN', 'RCOU', 'BAT', 'CURR', 'MODE', 'ARM', 'EV', 'STAT', 'MSG', 'NKF1', 'XKF1', 'CTUN', 'ARSP', 'ORGN', 'PARM']
+          'batt_v', 'batt_pct', 'sats', 'fix', 'rc', 'servo', 'body']
+# SIM: SITL fiziğinin gerçek yönelimi (yalnız SITL .bin'lerinde; derece) → `body` [roll, pitch, yaw] rad — INTERCEPTOR kaydında ATT Q kiplerinde
+# "VTOL görünümü"dür (askıda pitch ≈ 0); 3B gövde `body` ile çizilir (canlıdaki tele.att_body eşleniği)
+BIN_TIPLERI = ['GPS', 'POS', 'ATT', 'RCIN', 'RCOU', 'BAT', 'CURR', 'MODE', 'ARM', 'EV', 'STAT', 'MSG', 'NKF1', 'XKF1', 'CTUN', 'ARSP', 'ORGN', 'PARM', 'SIM']
 TLOG_TIPLERI = ['HEARTBEAT', 'GLOBAL_POSITION_INT', 'ATTITUDE', 'RC_CHANNELS', 'RC_CHANNELS_RAW', 'SERVO_OUTPUT_RAW', 'SYS_STATUS', 'VFR_HUD',
                 'GPS_RAW_INT', 'STATUSTEXT', 'HOME_POSITION', 'PARAM_VALUE']
 SERVO_N = 8
@@ -93,7 +95,7 @@ class _Toplayici:
         self.adim = 1.0 / hz
         self.cur = {'lat': None, 'lon': None, 'alt_msl': None, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0, 'vn': None, 've': None, 'vd': None,
                     'gs': None, 'as': None, 'hdg': None, 'thr': None, 'mode': None, 'armed': 0, 'batt_v': None, 'batt_pct': None,
-                    'sats': None, 'fix': None, 'rc': None, 'servo': None}
+                    'sats': None, 'fix': None, 'rc': None, 'servo': None, 'body': None}
         self.servo_fn = [None] * SERVO_N   # SERVOn_FUNCTION (PARM/PARAM_VALUE); 3B flap (2/3) ve elevon (77/78) kanal eşlemesi
         self.frames = []
         self.events = []
@@ -169,7 +171,7 @@ class _Toplayici:
         self.frames.append([_r(t, 3), round(c['lat'], 7), round(c['lon'], 7), _r(c['alt_msl'], 2), None, _r(c['roll'], 4), _r(c['pitch'], 4),
                             _r(c['yaw'], 4), _r(c['vn'], 2), _r(c['ve'], 2), _r(c['vd'], 2), _r(c['gs'], 2), _r(c['as'], 2), _r(c['hdg'], 1),
                             _r(c['thr'], 1), c['mode'], c['armed'], _r(c['batt_v'], 2), c['batt_pct'], c['sats'], c['fix'],
-                            list(c['rc']) if c['rc'] else None, list(c['servo']) if c['servo'] else None])
+                            list(c['rc']) if c['rc'] else None, list(c['servo']) if c['servo'] else None, list(c['body']) if c.get('body') else None])
 
     def bitir(self, kaynak):
         if len(self.frames) < 2:
@@ -201,7 +203,8 @@ class _Toplayici:
         return {'v': ONBELLEK_SURUM, 'hz': self.hz, 'fields': FIELDS, 'frames': frames, 'modes': self.modes, 'events': self.events,
                 'duration_s': _r(duration, 2), 'home': {'lat': round(home[0], 7), 'lon': round(home[1], 7), 'alt': _r(home[2], 2)},
                 'takeoff_t': _r(self.takeoff_t, 2), 'start_utc': self.start_utc, 'vehicle': self.vehicle, 'type': arac_tipi(self.vehicle),
-                'n': len(frames), 'source': kaynak, 'servo_fn': list(self.servo_fn)}
+                'n': len(frames), 'source': kaynak, 'servo_fn': list(self.servo_fn),
+                't0': _r(self.t0, 3)}   # kare t = 0 anının kaynak saati (sn; SITL .bin'de time_boot) — §24 hedef yörüngeleri tt = t0 + t ile canlıdakiyle aynı
 
 
 def _mode_names(firmware):
@@ -268,6 +271,11 @@ def _bin_ayristir(path, hz, ilerleme=None):
         elif tp == 'ATT':
             c['roll'], c['pitch'], c['yaw'] = math.radians(m.Roll), math.radians(m.Pitch), math.radians(m.Yaw)
             c['hdg'] = float(m.Yaw) % 360.0
+        elif tp == 'SIM':
+            try:
+                c['body'] = [round(math.radians(float(m.Roll)), 4), round(math.radians(float(m.Pitch)), 4), round(math.radians(float(m.Yaw)), 4)]
+            except (AttributeError, TypeError, ValueError):
+                pass
         elif tp == 'RCIN':
             c['rc'] = [int(getattr(m, f'C{i}', 0) or 0) for i in range(1, 9)]
         elif tp == 'RCOU':
@@ -555,14 +563,25 @@ class ReplaySession:
         self.power = None
         # §22.3: kaydın canlı oturumundaki kamera türü (drone_sim_runs.camera) → kayıttan oynatma aynı türle açılır; yoksa ac_replay verilen türü atar
         self.camera = None
+        # §24/§25: kaydın canlı oturumu hedefliyse aynı yörüngeler (tt = t0 + t) ve tip INTERCEPTOR ise gövde `body` ile çizilir
+        self.hedefler = None
+        self.sim_tip = None
         try:
             with db.connect() as conn:
                 r = db.row(conn.execute('SELECT power FROM drone_sim_runs WHERE bin_log_id = ? AND power IS NOT NULL ORDER BY id DESC LIMIT 1', (int(log['id']),)))
                 c = db.row(conn.execute('SELECT camera FROM drone_sim_runs WHERE bin_log_id = ? AND camera IS NOT NULL ORDER BY id DESC LIMIT 1', (int(log['id']),)))
+                h = db.row(conn.execute('SELECT type, targets FROM drone_sim_runs WHERE bin_log_id = ? AND mode = ? ORDER BY id DESC LIMIT 1', (int(log['id']), 'sitl')))
             if r and r.get('power'):
                 self.power = (json.loads(r['power']) or {}).get('settings') or None
             if c and c.get('camera') in flightsim.KAMERA_TURLERI:
                 self.camera = c['camera']
+            if h:
+                self.sim_tip = h.get('type') if h.get('type') in flightsim.TIP_ADLARI else None
+                if h.get('targets'):
+                    self.hedefler = (json.loads(h['targets']) or {}).get('config') or None
+            if self.sim_tip == 'interceptor':
+                self.type = 'interceptor'
+                self.model = flightsim._model_eski(self.type, None)
         except Exception:   # noqa: BLE001
             self.power = None
 
@@ -573,7 +592,8 @@ class ReplaySession:
                 'udp_port': None, 'host': host or self._fs.PUBLIC_HOST or None, 'created_at': self.created_at, 'owner': dict(self.owner),
                 'client': dict(self.client) if self.client else None,
                 'gcs': {'connected': False, 'addr': None, 'since': None}, 'sitl': dict(self.sitl), 'replay': dict(self.replay),
-                'power': dict(self.power) if self.power else None, 'camera': self.camera or 'day'}
+                'power': dict(self.power) if self.power else None, 'camera': self.camera or 'day',
+                'targets': self._fs.flightsim_targets.zenginlestir(self.hedefler) if self.hedefler else None, 'vertical': self.type in self._fs.DIKEY_TIPLER}
 
     def _yay(self, obj):
         txt = json.dumps(obj, ensure_ascii=False)
@@ -638,7 +658,7 @@ class ReplaySession:
                 self.replay.update(progress=100, frames=meta.get('n'), duration_s=meta.get('duration_s'), home=meta.get('home'), hz=meta.get('hz'),
                                    takeoff_t=meta.get('takeoff_t'), start_utc=meta.get('start_utc'), vehicle=meta.get('vehicle') or self.replay['vehicle'],
                                    modes=meta.get('modes'))
-                self.type = meta.get('type') or self.type
+                self.type = self.sim_tip if self.sim_tip == 'interceptor' else (meta.get('type') or self.type)   # §25: firmware adı ArduPlane der
                 self.launch = self._fs.launch_normalize(self.type, self.world.get('launch'))
                 h = meta.get('home') or {}
                 self.center.update(lat=h.get('lat'), lon=h.get('lon'), alt=h.get('alt'))

@@ -44,8 +44,20 @@ BUILTIN = {
     'quad': {'name': 'Quad', 'types': ('multirotor',), 'format': 'procedural', 'has_prop': True, 'desc': 'Prosedürel dört rotor (60 cm)'},
     'hexa': {'name': 'Hexa', 'types': ('hexarotor',), 'format': 'procedural', 'has_prop': True, 'desc': 'Prosedürel altı rotor (90 cm)'},
     'heli': {'name': 'Heli', 'types': ('helikopter',), 'format': 'procedural', 'has_prop': True, 'desc': 'Prosedürel helikopter (1,5 m)'},
+    # §25 INTERCEPTOR (4 pervaneli tailsitter) kataloğu — GLB'ler SIMUMAV ile ortak (static/simumav/models; tools/icept_models_build.py; LICENSES.md).
+    # Çerçeve burun +X, yukarı +Y; pervaneler `prop_N` düğümleri (göbek orijinli, gövde ekseni etrafında döner). Askıda burun yukarı yönelimi SITL'den gelir.
+    'icept_x4': {'name': 'INTERCEPTOR X4', 'types': ('interceptor',), 'format': 'glb', 'glb': 'simumav/models/icept_x4.glb', 'has_prop': True,
+                 'orient': {'forward': '+x', 'up': '+y', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}},
+                 'desc': 'Kullanıcının montajı (STEP): siyah puro gövde, X kanat, 4 gondol + turuncu motor + çekici pervane; dikey kalkış, yatayda 400 km/h'},
+    'p1sun': {'name': 'P1-SUN', 'types': ('interceptor',), 'format': 'glb', 'glb': 'simumav/models/p1sun.glb', 'has_prop': True,
+              'orient': {'forward': '+x', 'up': '+y', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}},
+              'desc': 'P1-SUN önleyici (Ukrayna; ~0,44 m), 4 pervane, kamera burunda'},
+    'sting': {'name': 'Sting', 'types': ('interceptor',), 'format': 'glb', 'glb': 'simumav/models/sting.glb', 'has_prop': True,
+              'orient': {'forward': '+x', 'up': '+y', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}},
+              'desc': 'Wild Hornets Sting önleyici (~0,45 m), 4 pervane'},
 }
-VARSAYILAN = {'multirotor': 'builtin:quad', 'hexarotor': 'builtin:hexa', 'helikopter': 'builtin:heli', 'sabit_kanat': 'builtin:caymaz', 'vtol': 'builtin:caymaz'}
+VARSAYILAN = {'multirotor': 'builtin:quad', 'hexarotor': 'builtin:hexa', 'helikopter': 'builtin:heli', 'sabit_kanat': 'builtin:caymaz', 'vtol': 'builtin:caymaz',
+              'interceptor': 'builtin:icept_x4'}
 ORIENT_VARSAYILAN = {'forward': '+y', 'up': '+z', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}}
 
 
@@ -229,7 +241,7 @@ def coz(conn, tip, model, airframe=None):
         if airframe not in (None, ''):
             if airframe not in ('caymaz', 'delta'):
                 raise SimHata('invalid', 'airframe caymaz | delta olmalı')
-            if tip not in PLANE_TIPLERI:
+            if tip not in ('sabit_kanat', 'vtol'):
                 return getir(conn, VARSAYILAN[tip], tip)
             return getir(conn, f'builtin:{airframe}', tip)
         return getir(conn, VARSAYILAN.get(tip, 'builtin:quad'), tip)

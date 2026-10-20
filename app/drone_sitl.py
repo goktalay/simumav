@@ -40,6 +40,8 @@ TIP_ESLEME = {
     'helikopter': ('arducopter', 'heli'),
     'sabit_kanat': ('arduplane', 'plane'),
     'vtol': ('arduplane', 'quadplane'),
+    # INTERCEPTOR (§25): 4 pervaneli tailsitter — dikey kalkış, yatay uçuş (ArduPlane quadplane + Q_TAILSIT; parametre seti flightsim_icept.PARM)
+    'interceptor': ('arduplane', 'quadplane-copter_tailsitter'),
 }
 # Sürüm SABİTLENİR (GÖKTUNGU 'stable/' kullanıyordu; eş oturum önerisi: sürüm klasörü + sha kaydı)
 SURUM = {'arducopter': ('Copter', 'stable-4.7.2'), 'arduplane': ('Plane', 'stable-4.7.2')}
@@ -53,6 +55,8 @@ EV_IRTIFA = 100.0            # --home irtifası (GÖKTUNGU varsayılanı)
 def model_tipi(model):
     """Dron kaydının model metninden SITL tipi (tanımsızsa çok rotorlu)."""
     m = str(model or '').lower()
+    if 'interceptor' in m or 'tailsit' in m or 'önleyici' in m:
+        return 'interceptor'
     if 'vtol' in m or 'quadplane' in m:
         return 'vtol'
     if 'kanat' in m or 'plane' in m or 'uçak' in m:
@@ -119,7 +123,7 @@ def sanal_montaj_destegi(tip):
 
 def hiz_olcegi_destegi(tip):
     """İkili SIM_PLN_THR_MUL (plane itki çarpanı; azami hız §23) parametresini tanıyor mu? Yalnız uçak tiplerinde anlamlı."""
-    if tip not in ('sabit_kanat', 'vtol'):
+    if tip not in ('sabit_kanat', 'vtol', 'interceptor'):
         return False
     return _imza_destegi(tip, HIZ_OLCEGI_IMZA)
 
@@ -185,7 +189,15 @@ def bos_taban_port(baslangic, adim=PORT_ADIM, deneme=200, kullanilan=()):
     return None
 
 
-def parm_metni(sysid, log_bin=False, ekstra=None):
+def tip_parm_satirlari(tip):
+    """Tipe özgü SITL varsayılanları (HEPGO tabanından SONRA, kayıtlı parametrelerden ÖNCE): INTERCEPTOR tailsitter seti (flightsim_icept.PARM)."""
+    if tip == 'interceptor':
+        from . import flightsim_icept
+        return flightsim_icept.parm_satirlari()
+    return []
+
+
+def parm_metni(sysid, log_bin=False, ekstra=None, tip=None):
     """SITL `--defaults` dosyası içeriği (Tuzak A). `log_bin`: DataFlash .BIN kaydı (LOG_BACKEND_TYPE 1 = dosya) yalnız armed süre
     (LOG_DISARMED 0) ve disarm'da dosya kapanır/döner (LOG_FILE_DSRMROT 1) → oturum kapanışında son .BIN uçuş loglarına kaydedilir
     (flightsim_bin). Kapalıyken kayıt tamamen kapalı: GÖKTUNGU'da tek sanal dron 43 GB .BIN üretmişti.
@@ -201,6 +213,7 @@ def parm_metni(sysid, log_bin=False, ekstra=None):
         satirlar += ['LOG_BACKEND_TYPE 1', 'LOG_DISARMED 0', 'LOG_FILE_DSRMROT 1']
     else:
         satirlar += ['LOG_BACKEND_TYPE 0', 'LOG_DISARMED 0']
+    satirlar += tip_parm_satirlari(tip)
     if ekstra:
         satirlar += ['# HEPGO kayitli parametreler (drone_sitl_params)'] + [str(s).strip() for s in ekstra if str(s).strip()]
     return '\n'.join(satirlar) + '\n'
@@ -308,7 +321,7 @@ class SitlYoneticisi:
                 return None, f'SITL eski parametre belleği (eeprom.bin) silinemedi: {e}'
         parm = dizin / 'varsayilan.parm'     # Tuzak A: gerçek defaults dosyası
         try:
-            parm.write_text(parm_metni(sysid, log_bin, ekstra_parm), encoding='utf-8')
+            parm.write_text(parm_metni(sysid, log_bin, ekstra_parm, tip), encoding='utf-8')
         except OSError as e:
             return None, f'SITL varsayılan parametre dosyası yazılamadı: {e}'
         bin_temizle(kimlik)   # önceki oturumun .BIN artıkları (kaydedilmişse zaten taşındı)

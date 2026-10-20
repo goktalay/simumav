@@ -21,7 +21,7 @@ import os
 import re
 import time
 
-from . import db, drone_params, drone_sitl, flightsim_hub, flightsim_mission, flightsim_power
+from . import db, drone_params, drone_sitl, flightsim_hub, flightsim_icept, flightsim_mission, flightsim_power, flightsim_targets
 
 SITL_ENABLED = os.environ.get('HEPGO_SITL', '1') != '0'
 UDP_BASE = int(os.environ.get('SIM_UDP_BASE', '14550'))
@@ -53,8 +53,10 @@ TELE_TBM_KAPI = 18                    # ms: iki yayın arası en az SITL zamanı
 # Sanal kumanda (RC_CHANNELS_OVERRIDE) için SITL parametreleri: RC failsafe akışı bozmasın (override kesilince RTL/kayıp yok)
 RC_PARAMLAR = (('SIM_RC_FAIL', 0), ('FS_THR_ENABLE', 0), ('THR_FAILSAFE', 0), ('RC_OVERRIDE_TIME', 3.0))
 
-TIP_ADLARI = {'multirotor': 'Multikopter', 'hexarotor': 'Hexakopter', 'helikopter': 'Helikopter', 'sabit_kanat': 'Sabit Kanat', 'vtol': 'VTOL'}
-PLANE_TIPLERI = ('sabit_kanat', 'vtol')
+TIP_ADLARI = {'multirotor': 'Multikopter', 'hexarotor': 'Hexakopter', 'helikopter': 'Helikopter', 'sabit_kanat': 'Sabit Kanat', 'vtol': 'VTOL',
+              'interceptor': 'INTERCEPTOR'}
+PLANE_TIPLERI = ('sabit_kanat', 'vtol', 'interceptor')   # ArduPlane ikilisi (interceptor = quadplane tailsitter, §25)
+DIKEY_TIPLER = ('interceptor',)   # §25: dikey kalkış/iniş yapan uçak tipi (pist/rampa yok; GUIDED VTOL kalkışı, RTL → dikey iniş)
 KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}
 # §22.3 kamera türü (gimbal/FPV kamerası ve PiP): sunucu yalnız enum doğrular; oturumda/kayıt satırında saklanır, kayıttan oynatma aynı türü açar
 KAMERA_TURLERI = ('day', 'thermal', 'night')
@@ -228,6 +230,9 @@ def airframe_dogrula(tip, a):
 
 def _model_eski(tip, airframe):
     """`model` verilmeden açılan oturum (eski istemci / doğrudan MANAGER.ac): dahili modelin özet nesnesi (DB'siz; §12 kütüphanesinde her zaman var)."""
+    if tip in DIKEY_TIPLER:   # §25: INTERCEPTOR dahili GLB'si (yönelimli; buildLibrary)
+        from . import flightsim_models
+        return flightsim_models.builtin_api('icept_x4', tip)
     key = {'multirotor': 'quad', 'hexarotor': 'hexa', 'helikopter': 'heli'}.get(tip) or (airframe if airframe in AIRFRAMES else 'caymaz')
     return {'id': f'builtin:{key}', 'source': 'builtin', 'type': tip, 'orient': None, 'has_prop': True, 'glb_url': None, 'ready': True}
 
@@ -399,6 +404,7 @@ class SahteKinematik:
     def __init__(self, tip, lat, lon, alt, ruzgar_ms, launch=None, heading=0):
         self.tip = tip
         self.plane = tip in PLANE_TIPLERI
+        self.dikey = tip in DIKEY_TIPLER   # §25 INTERCEPTOR: dikey kalkış (pist koşusu yok), havada yatay uçuş; gövde yönelimi `att_body`
         self.lat0, self.lon0, self.alt0 = float(lat), float(lon), float(alt or 0)
         self.ruzgar = float(ruzgar_ms or 0)
         self.launch = dict(launch or LAUNCH_DEFAULTS)   # sabit kanat kalkış yöntemi (§13): yer koşusu / rampa / araç taklidi
@@ -439,10 +445,10 @@ class SahteKinematik:
             self.eve = self.mode in ('RTL', 'QRTL')
         elif name == 'takeoff':
             self.armed = True
-            self.mode = 'TAKEOFF' if self.plane else 'GUIDED'
+            self.mode = 'TAKEOFF' if self.plane and not self.dikey else 'GUIDED'
             self.hedef_alt = max(1.0, float(p.get('alt') or (50 if self.plane else 10)))
             self.eve = False
-            if self.plane and self.alt_rel < 1.0:
+            if self.plane and not self.dikey and self.alt_rel < 1.0:
                 self.kalkis = {'faz': 'run', 'hiz': 0.0, 'yol': 0.0, 'tetik': self.launch.get('method') != 'ramp'}   # rampa: fırlatma tetiğini bekler
         elif name == 'rtl':
             self.mode = 'RTL'
@@ -541,6 +547,9 @@ class SahteKinematik:
         else:
             self.vd = 0.0
             self.throttle = 50.0
+        if self.dikey and self.alt_rel < self.hedef_alt - 0.01:   # §25 dikey tırmanış (yerinde; gövde burun yukarı)
+            self.vn = self.ve = 0.0
+            return
         if self.alt_rel > 1.0:   # merkez etrafında daire (saat yönü)
             w = self.HIZ / self.YARICAP
             self.aci += w * dt
@@ -554,9 +563,17 @@ class SahteKinematik:
         else:
             self.vn = self.ve = 0.0
 
+    def govde(self):
+        """§25 INTERCEPTOR gövde (sabit kanat çerçevesi) yönelimi: yerde ve dikey tırmanış/inişte burun yukarı (pitch 90°), yatay uçuşta görünüm = gövde."""
+        yatay = self.armed and self.alt_rel > 1.0 and self.alt_rel >= self.hedef_alt - 0.01 and not (self.eve and math.hypot(self.vn, self.ve) < 0.5)
+        if yatay:
+            return [round(self.roll, 4), round(self.pitch, 4), round(self.yaw, 4)]
+        return [0.0, round(math.pi / 2, 4), round(self.yaw, 4)]
+
     def tele(self):
         hs = math.hypot(self.vn, self.ve)
-        return {'lat': round(self.lat, 7), 'lon': round(self.lon, 7), 'alt_msl': round(self.alt0 + self.alt_rel, 2), 'alt_rel': round(self.alt_rel, 2),
+        ek = {'att_body': self.govde()} if self.dikey else {}
+        return {**ek, 'lat': round(self.lat, 7), 'lon': round(self.lon, 7), 'alt_msl': round(self.alt0 + self.alt_rel, 2), 'alt_rel': round(self.alt_rel, 2),
                 'roll': round(self.roll, 4), 'pitch': round(self.pitch, 4), 'yaw': round(self.yaw, 4),
                 'rs': round(self.rs, 3), 'ps': round(self.ps, 3), 'ys': round(self.ys, 3), 'tbm': int(self.sure_ms), 'tbm_pos': int(self.sure_ms),
                 'vn': round(self.vn, 2), 've': round(self.ve, 2), 'vd': round(self.vd, 2),
@@ -588,8 +605,14 @@ class _UdpProto(asyncio.DatagramProtocol):
 # Oturum
 # ======================================================================
 class SimSession:
-    def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None):
+    def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None,
+                 targets=None):
         self.id = int(sid)
+        # §24 hedefler: doğrulanmış {items, radius_m} (flightsim_targets.dogrula) — SITL'siz kinematik yörüngeler; önleme izleyicisi; MP'ye ADSB_VEHICLE
+        self.hedefler = targets or None
+        self.hedef_iz = flightsim_targets.HedefIzleyici(self.hedefler) if self.hedefler else None
+        self._adsb_son = 0.0
+        self._simstate_son = 0.0   # §25 INTERCEPTOR: son SIMSTATE (gövde yönelimi `att_body`) alımı
         self.camera = kamera_dogrula(camera)   # §22.3 kamera türü (son seçim; `camera` komutu günceller → kayıt satırı)
         self.kimlik = KIMLIK_TABANI + self.id
         self.type, self.center, self.world, self.owner = tip, center, world, owner
@@ -717,8 +740,11 @@ class SimSession:
                 # §23 güç ve yakıt: ayarlar + anlık durum + azami hız uygulaması (itki ölçeği destek/gözlenen çarpan) + simülasyon hızı
                 'camera': self.camera,   # §22.3
                 'power': dict(self.power), 'power_state': self.guc.tele_alanlari(), 'speedup': self.guc.speedup,
-                'speed_scale': {'supported': bool(self.hiz_olcegi), 'thr_mul': flightsim_power.thr_mul_icin(self.power['max_speed_ms']) if self.power.get('max_speed_ms') else None,
-                                'thr_mul_sitl': self.thr_mul_sitl, 'stock_ms': round(flightsim_power.plane_tam_gaz_hizi(), 1)}}
+                'speed_scale': {'supported': bool(self.hiz_olcegi), 'thr_mul': flightsim_power.thr_mul_tip(self.power['max_speed_ms'], self.type) if self.power.get('max_speed_ms') else None,
+                                'thr_mul_sitl': self.thr_mul_sitl, 'stock_ms': round(flightsim_power.stok_hiz(self.type), 1)},
+                # §24 hedefler (model görsel bilgisiyle) + önleme durumu; §25 dikey kalkış tipi
+                'targets': flightsim_targets.zenginlestir(self.hedefler), 'targets_state': self.hedef_iz.ozet() if self.hedef_iz else None,
+                'vertical': self.type in DIKEY_TIPLER}
 
     # ---- §14: bekleyici kuyrukları (MavKomut) ----
     @contextlib.contextmanager
@@ -1067,7 +1093,15 @@ class SimSession:
             te['tbm'] = int(m.time_boot_ms)
             self.att_sayac += 1
             self._att_son = time.time()
-            self._tele_yay(te['tbm'])
+            if self.type not in DIKEY_TIPLER or time.time() - self._simstate_son > 0.2:
+                self._tele_yay(te['tbm'])   # INTERCEPTOR: yayın aynı EXTRA1 tikindeki SIMSTATE'te (gövde yönelimi ile birlikte)
+        elif t == 'SIMSTATE' and self.type in DIKEY_TIPLER:
+            # §25 tailsitter: ArduPlane ATTITUDE'ı Q kiplerinde ve geçişte "VTOL görünümü"yle yollar (quadplane.show_vtol_view: ahrs_view = gövde ·
+            # PITCH_90 → askıda pitch ≈ 0). HUD/FPV OSD bu görünümü kullanır (pilot için doğal); 3B gövde ise SITL fiziğinin GERÇEK yönelimini (SIMSTATE,
+            # sabit kanat çerçevesi: askıda burun yukarı ~90°) `att_body` ile çizer. Açısal hızlar (rs/ps/ys) zaten gövde çerçevesindedir.
+            te['att_body'] = [round(m.roll, 4), round(m.pitch, 4), round(m.yaw, 4)]
+            self._simstate_son = time.time()
+            self._tele_yay(te.get('tbm'))
         elif t == 'VFR_HUD':
             te['airspeed'], te['groundspeed'], te['throttle'], te['climb'] = round(m.airspeed, 2), round(m.groundspeed, 2), m.throttle, round(m.climb, 2)
             te['heading'] = float(m.heading)
@@ -1119,6 +1153,8 @@ class SimSession:
             self._param_set(launch_parametreleri(self.launch))
             self._param_set(self.flap_parametreleri())   # otomatik flaplar (kayıtlı değeri olanlar atlanır: kullanıcı yapılandırması)
             self._layout_yaz()                           # kontrol düzeni başlangıç seti (§13.1; kayıtlı adlar atlanır) + konsol notu
+        if self.type in DIKEY_TIPLER:   # §25 tailsitter: açık etkinleştirme + RTL dikey iniş (parm dosyasında da var; eeprom'daki eski değer ezilir) + yerde itki 0
+            self._param_set(flightsim_icept.OTURUM_PARAMLARI + PLANE_YER_PARAMLARI)
         self._hiz_yaz()   # §23 azami hız (uçak): AIRSPEED_MAX/CRUISE, THR_MAX + SIM_PLN_THR_MUL (yamalı ikili)
         if self.speedup_istek != 1.0:   # reset sonrası yeni SITL: seçili simülasyon hızı korunur
             self._param_set(((flightsim_power.SIM_SPEEDUP, self.speedup_istek),))
@@ -1179,7 +1215,7 @@ class SimSession:
         Uçak tiplerinde max_speed yoksa da SIM_PLN_THR_MUL 1 yazılır (eeprom'da önceki oturumdan kalan çarpan silinsin)."""
         if self.type not in PLANE_TIPLERI:
             return []
-        out = flightsim_power.hiz_parametreleri(self.power.get('max_speed_ms'), self.kayitli_params, self.hiz_olcegi)
+        out = flightsim_power.hiz_parametreleri(self.power.get('max_speed_ms'), self.kayitli_params, self.hiz_olcegi, tip=self.type)
         if self.hiz_olcegi and not any(a == flightsim_power.SIM_PLN_THR_MUL for a, _ in out):
             out.append((flightsim_power.SIM_PLN_THR_MUL, 1.0))
         return out
@@ -1196,9 +1232,9 @@ class SimSession:
             mul = next((d for a, d in p if a == flightsim_power.SIM_PLN_THR_MUL), None)
             cruise = next((d for a, d in p if a == 'AIRSPEED_CRUISE'), None)
             if mul is not None:
-                self._olay(f'Azami hız {v:g} m/s: AIRSPEED_MAX {v:g}, AIRSPEED_CRUISE {cruise:g}, THR_MAX 100, SITL itki çarpanı SIM_PLN_THR_MUL {mul:g} (stok tam gaz ≈ {flightsim_power.plane_tam_gaz_hizi():.0f} m/s)', 6)
+                self._olay(f'Azami hız {v:g} m/s ({v * 3.6:.0f} km/h): AIRSPEED_MAX {v:g}, AIRSPEED_CRUISE {cruise:g}, THR_MAX 100, SITL itki çarpanı SIM_PLN_THR_MUL {mul:g} (stok tam gaz ≈ {flightsim_power.stok_hiz(self.type):.0f} m/s)', 6)
             else:
-                self._olay(f'Azami hız {v:g} m/s: {flightsim_power.HIZ_DESTEK_YOK} (stok fizik tam gazda ≈ {flightsim_power.plane_tam_gaz_hizi():.0f} m/s verir)', 4)
+                self._olay(f'Azami hız {v:g} m/s: {flightsim_power.HIZ_DESTEK_YOK} (stok fizik tam gazda ≈ {flightsim_power.stok_hiz(self.type):.0f} m/s verir)', 4)
 
     def flap_parametreleri(self):
         """FLAP_PARAMLARI'ndan dronun kalıcı kaydında olmayanlar (kayıtlı SERVOn_FUNCTION / *_FLAP_* kullanıcı kararıdır, ezilmez)."""
@@ -1308,6 +1344,34 @@ class SimSession:
         except Exception as e:   # noqa: BLE001
             self._olay(f'Kalkış dizisi hatası: {e}'[:200], 3)
 
+    async def _dikey_kalkis(self, alt):
+        """§25 INTERCEPTOR dikey kalkış: GUIDED → ARM → NAV_TAKEOFF (ArduPlane quadplane GUIDED'da VTOL kalkışı yapar; tailsitter kuyruk üstünden
+        dikey tırmanır). ARM'dan hemen sonra gelen NAV_TAKEOFF "Already flying" ile reddedilebildiğinden (ölçüldü) yükseklik artmazsa 2 kez yinelenir."""
+        te = self.tele
+        try:
+            self._mod_gonder('GUIDED')
+            await asyncio.sleep(0.4)
+            if not te.get('armed'):
+                self._gonder(self.mav.command_long_encode(self.sysid, self.comp, 400, 0, 1, 21196, 0, 0, 0, 0, 0))
+                await asyncio.sleep(1.0)
+            self._olay(f'Dikey kalkış: GUIDED + ARM + NAV_TAKEOFF {alt:g} m (kuyruk üstünden)', 6)
+            for _ in range(3):
+                self._gonder(self.mav.command_long_encode(self.sysid, self.comp, 22, 0, 0, 0, 0, 0, 0, 0, alt))
+                bitis = time.time() + 3.0
+                while time.time() < bitis:
+                    if float(te.get('alt_rel') or 0) > 1.0:
+                        return
+                    await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:   # noqa: BLE001
+            self._olay(f'Dikey kalkış hatası: {e}'[:200], 3)
+
+    def _dikey_kalkis_baslat(self, alt):
+        if self._launch_task is not None and not self._launch_task.done():
+            self._launch_task.cancel()
+        self._launch_task = self.loop.create_task(self._dikey_kalkis(alt))
+
     def _kalkis_baslat(self, alt):
         if self._launch_task is not None and not self._launch_task.done():
             self._launch_task.cancel()
@@ -1359,6 +1423,11 @@ class SimSession:
         """Yakıt/batarya adımı (flightsim_power.GucDurumu): SITL time_boot_ms farkıyla (speedup'ta hızlı akar). Biten kaynak → kırmızı olay +
         WS `warn` (kind fuel_empty | elec_empty); uçuş sürer (kullanıcı kararı: yalnız uyarı)."""
         t = tbm if tbm is not None else self.tele.get('tbm')
+        if self.hedef_iz is not None and t is not None:
+            try:
+                self._hedef_adim(t)
+            except Exception:   # noqa: BLE001 — hedef izleme telemetriyi bozmasın
+                pass
         try:
             biten = self.guc.adim(self.tele, t)
         except Exception:   # noqa: BLE001 — gösterge hatası telemetriyi bozmasın
@@ -1370,6 +1439,39 @@ class SimSession:
                 metin = f'ELEKTRONİK BATARYA BİTTİ — {self.guc.wh_cap:.0f} Wh tükendi ({self.guc.time_s / 60:.0f} dk); gerçek uçakta kumanda/telemetri kesilirdi, simülasyon sürüyor'
             self._olay(metin, 2)
             self._yay({'t': 'warn', 'kind': f'{k}_empty', 'text': metin, 'ts': time.time()})
+
+    # ---- §24 hedefler ----
+    def _hedef_adim(self, tbm):
+        """Önleme izleme: hedef zamanı t = tbm/1000 (SITL saati); oyuncu dronu yerel ENU'da; yarıçap içine giriş → olay şeridi + WS `target`."""
+        te = self.tele
+        if te.get('lat') is None:
+            return
+        c = self.center
+        x, y = flightsim_targets.yerel(float(c['lat']), float(c['lon']), te['lat'], te['lon'])
+        for o in self.hedef_iz.adim(float(tbm) / 1000.0, x, y, float(te.get('alt_rel') or 0), bool(te.get('armed'))):
+            ek = f" · ilk önleme {o['after_s']:g} sn" if o['first'] else f" · {o['n']}. geçiş"
+            self._yay({'t': 'target', 'kind': 'intercept', **o, 'tt': round(float(tbm) / 1000.0, 3), 'ts': round(time.time(), 3),
+                       'state': self.hedef_iz.ozet()})
+            self._olay(f"ÖNLEME · {o['name']} · {o['dist_m']:g} m{ek}", 5)
+
+    def _adsb_gonder(self):
+        """Hedefleri Mission Planner haritasına trafik olarak (ADSB_VEHICLE, kaynak sysid 1 / comp 156 MAV_COMP_ID_ADSB; yalnız GCS'ye — SITL'e gitmez)."""
+        if not self.hedefler or self.gcs_addr is None:
+            return
+        if getattr(self, 'mav_adsb', None) is None:
+            self.mav_adsb = _dialect().MAVLink(None, srcSystem=self.sysid or 1, srcComponent=flightsim_targets.ADSB_COMP)
+        c = self.center
+        t = float(self.tele.get('tbm') or 0) / 1000.0
+        alt0 = (self.tele.get('home') or {}).get('alt')
+        if alt0 is None:
+            alt0 = float(c.get('alt') or EV_IRTIFA)
+        for a in flightsim_targets.adsb_alanlari(self.hedefler, float(c['lat']), float(c['lon']), alt0, t):
+            try:
+                m = self.mav_adsb.adsb_vehicle_encode(*a)
+                self._gcs_gonder(m.pack(self.mav_adsb))
+                self.mav_adsb.seq = (self.mav_adsb.seq + 1) % 256
+            except Exception:   # noqa: BLE001
+                continue
 
     def _gcs_heartbeat(self):
         self._gonder(self.mav.heartbeat_encode(6, 8, 0, 0, 0))   # MAV_TYPE_GCS, MAV_AUTOPILOT_INVALID
@@ -1430,6 +1532,9 @@ class SimSession:
             return {'ok': True, 'factor': p['factor']}
         if name == 'takeoff' and self.type == 'sabit_kanat' and (self.sahte is not None or self._heartbeat_alindi):
             self._kalkis_baslat(p['alt'])   # yönteme göre dizi (§13): armed → launch → released olayları
+            return {'ok': True}
+        if name == 'takeoff' and self.type in DIKEY_TIPLER and self.sahte is None and self._heartbeat_alindi:
+            self._dikey_kalkis_baslat(p['alt'])   # §25: GUIDED + ARM + NAV_TAKEOFF (VTOL kalkışı; kuyruk üstünden dikey)
             return {'ok': True}
         if name == 'crash':   # §18: 3B algılaması — bina/su (ve sahte kip) kesin → kayıt + zorla disarm; gerçek SITL'de arazi ADAY (SITL "Hit ground" teyidi bekler)
             kayit, disarm = self.gorev.ucboyut_bildirim(p.get('kind') or 'manual', p.get('speed'), p)
@@ -1697,6 +1802,9 @@ class SimSession:
             now = time.time()
             dt, son = now - son, now
             n += 1
+            if self.hedefler and now - self._adsb_son >= 0.5:   # §24: hedefler Mission Planner'a ADSB trafiği (2 Hz)
+                self._adsb_son = now
+                self._adsb_gonder()
             if self.sahte is not None:
                 self.sahte.adim(min(dt, 0.5))
                 self.tele.update(self.sahte.tele())
@@ -1879,7 +1987,8 @@ class SimManager:
     def acik_sayisi(self):
         return len([s for s in self.sessions.values() if s.state != 'KAPANDI'])
 
-    async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None):
+    async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None, targets=None,
+                 targets_katalog=None):
         """Yeni oturum: doğrulama (400) → limit (409) → SITL ikilisi (503) → UDP port (503, oturum içinde HATA) → görev.
         `model`: flightsim_models.coz ile çözülmüş kütüphane nesnesi (router); yoksa `airframe` ile dahili model.
         `drone` (§14, isteğe bağlı): Dron Envanteri kaydı {id, code, name, model} — harekât panelinde telemetri bu adla akar.
@@ -1901,6 +2010,10 @@ class SimManager:
             raise SimHata('invalid', str(e))
         airframe = airframe_dogrula(tip, airframe)
         layout = layout_dogrula(tip, layout, model)   # §13.1 kontrol düzeni (400)
+        try:
+            targets = flightsim_targets.dogrula(targets, targets_katalog)   # §24 hedefler (≤ 8; irtifa, çap, hız ≤ model azami; 400) — SIMUMAV kendi kataloğunu verir
+        except flightsim_targets.HedefHata as e:
+            raise SimHata('invalid', str(e))
         if not center or center.get('lat') is None or center.get('lon') is None:
             raise SimHata('invalid', 'Merkez bulunamadı')
         world = world_dogrula(world)
@@ -1934,7 +2047,7 @@ class SimManager:
         sid = self._next
         self._next += 1
         s = SimSession(sid, tip, {'id': center.get('id'), 'name': center.get('name'), 'lat': float(center['lat']), 'lon': float(center['lon']),
-                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout, camera)
+                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout, camera, targets)
         s.alt_not = alt_not
         self.sessions[sid] = s
         s.task = asyncio.get_running_loop().create_task(s.run())

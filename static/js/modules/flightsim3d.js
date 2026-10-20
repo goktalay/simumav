@@ -34,6 +34,8 @@ import { addLandingGear, createLaunchRig, RIG_FINE_ERR } from './flightsim_launc
 import { CTRL_RE, CTRL_MAX, controlInputs, surfaceTarget, easeSurface, layoutForModel } from './flightsim_airframe.js';   // §13.1 kontrol düzeni: servo → mantıksal eksen → yüzey açıları (ruddervator dahil)
 import { createTimeline } from './flightsim_interp.js';   // telemetri zaman çizgisi: uyarlanır gecikme tamponlu enterpolasyon (§5)
 import { createMissionLayer } from './flightsim_mission.js';   // §18: görev çizimi (tüp bacaklar, WP etiketleri, ikonlar) + iniş dairesi H
+import { targetState, targetsRelative, drawRadar, drawLabel, RADIUS_DEFAULT as TARGET_RADIUS } from './flightsim_targets.js';   // §24 hedefler (kinematik, radar, etiket)
+import { attitudeQuat } from './flightsim_interp.js';
 import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
 
 const LIB = '/static/vendor/three/';
@@ -750,6 +752,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   }
 
   function addHomeMark() {
+    if (opts.homeMark === false) return;   // SIMUMAV hangar/sihirbaz önizlemesi: küçük dron yakın kamerada turuncu ev diski baskın görünmesin
     const home = new T.Mesh(new T.CircleGeometry(3, 24), new T.MeshBasicMaterial({ color: 0xf59e0b }));
     home.position.z = 0.12;
     gWorld.add(home);
@@ -1051,11 +1054,33 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     return { grp, props, ctrl: findCtrlNodes(sc), tips: { left: [bb.min.x, bb.min.y + (bb.max.y - bb.min.y) * 0.3, hz * 0.6], right: [bb.max.x, bb.min.y + (bb.max.y - bb.min.y) * 0.3, hz * 0.6], tail: [0, bb.min.y, hz * 0.4] }, span: w };
   };
   // Dahili GLB modeller (yönelimli; flightsim_models BUILTIN ile aynı): talon → SIMUMAV GLB çerçevesi (burun +X, yukarı +Y)
-  const BUILTIN_GLB = { talon: { glb_url: '/static/models/talon-vtail.glb', orient: { forward: '+x', up: '+y', scale: 1, offset: [0, 0, 0] }, has_prop: true, layout: 'vtail' } };
+  const SM_ORIENT = { forward: '+x', up: '+y', scale: 1, offset: [0, 0, 0] };   // SIMUMAV GLB çerçevesi (burun +X, yukarı +Y)
+  const BUILTIN_GLB = { talon: { glb_url: '/static/models/talon-vtail.glb', orient: SM_ORIENT, has_prop: true, layout: 'vtail' },
+    // §25 INTERCEPTOR kataloğu (static/simumav/models; HEPGO da aynı yoldan): 4 pervaneli tailsitter gövdeleri
+    icept_x4: { glb_url: '/static/simumav/models/icept_x4.glb', orient: SM_ORIENT, has_prop: true },
+    p1sun: { glb_url: '/static/simumav/models/p1sun.glb', orient: SM_ORIENT, has_prop: true },
+    sting: { glb_url: '/static/simumav/models/sting.glb', orient: SM_ORIENT, has_prop: true } };
+  // §25 INTERCEPTOR prosedürel yedek (GLB yüklenemezse): puro gövde + burun konisi, X kanat, 4 gondol + turuncu motor + çekici pervane (burun yönünde)
+  const buildIcept = M => {
+    const grp = new T.Group(), props = [];
+    const L = 1.0, r = 0.06;
+    grp.add(mesh(new T.CylinderGeometry(r, r * 0.8, L * 0.8, 18), M.carbon, 0, -0.05, 0));
+    const nose = mesh(new T.ConeGeometry(r, L * 0.22, 18), M.carbon, 0, L * 0.46, 0); grp.add(nose);
+    for (let k = 0; k < 4; k++) {
+      const a = Math.PI / 4 + k * Math.PI / 2, c = Math.cos(a), sn = Math.sin(a), span = 0.36;
+      const wing = mesh(new T.BoxGeometry(span, 0.16, 0.012), M.carbon, c * (r + span / 2), -0.12, sn * (r + span / 2));
+      wing.rotation.y = -a; grp.add(wing);
+      const tx = c * (r + span), tz = sn * (r + span);
+      grp.add(mesh(new T.CylinderGeometry(0.028, 0.024, 0.24, 12), M.carbon, tx, -0.05, tz));            // gondol (Y boyunca)
+      grp.add(mesh(new T.CylinderGeometry(0.03, 0.03, 0.05, 12), M.orange, tx, 0.09, tz));               // motor
+      const pr = propeller(0.11, k % 2 ? 1 : -1, M, 2); pr.rotation.x = -Math.PI / 2; pr.position.set(tx, 0.125, tz); grp.add(pr); props.push(pr);
+    }
+    return { grp, props, ctrl: [], tips: { left: [-0.32, -0.1, 0.2], right: [0.32, -0.1, 0.2], tail: [0, -0.46, 0] } };
+  };
   // Model seçimi (§12): dize ('caymaz' | 'delta' eski; 'builtin:<ad>') ya da kütüphane nesnesi {id, glb_url, orient, …}
   const SIZES = { multirotor: 0.6, hexarotor: 0.9 };
   const normModel = (type, model) => {
-    if (!model) return { id: { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli' }[type] || 'builtin:caymaz' };
+    if (!model) return { id: { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', interceptor: 'builtin:icept_x4' }[type] || 'builtin:caymaz' };
     if (typeof model === 'string') return { id: model.startsWith('builtin:') ? model : `builtin:${model}` };
     return model;
   };
@@ -1068,6 +1093,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (model.glb_url && (!isBuiltin || model.orient)) {   // kütüphane modeli ya da yönelimli dahili GLB (talon): GLB + orient
       try { built = await buildLibrary(model, M); } catch (e) { console.warn('Kütüphane modeli yüklenemedi, dahili modele düşüldü:', e?.message || e); built = null; }
     }
+    if (!built && type === 'interceptor') built = buildIcept(M);   // §25 GLB yüklenemedi → prosedürel tailsitter
     if (!built && plane && key !== 'delta') { try { built = await buildCaymaz(M); } catch { built = null; } }   // GLB yüklenemedi → delta kanat
     if (!built && plane) built = buildDelta(M);
     if (!built) built = type === 'helikopter' ? buildHeli(M) : buildMulti(type === 'hexarotor' ? 6 : 4, SIZES[type] || 0.6, M);
@@ -1090,7 +1116,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     const bb = new T.Box3().setFromObject(built.grp);
     drone.radius = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y, 1) / 2 * MODEL_SCALE;
     drone.nose = (bb.max.y + 0.15) * MODEL_SCALE;
-    drone.ground = -bb.min.z * MODEL_SCALE;   // park yüksekliği (iniş takımı / sınır kutusu altı yere değer)
+    drone.ground = (type === 'interceptor' ? -bb.min.y : -bb.min.z) * MODEL_SCALE;   // park yüksekliği (iniş takımı / sınır kutusu altı yere değer; §25 tailsitter kuyruk üstünde: gövde −Y ucu)
     built.grp.scale.setScalar(MODEL_SCALE);   // 4 km'lik dünyada görünürlük: gerçek boyutun 2.5 katı
     drone.group.add(built.grp);
     drone.props = built.props; drone.ctrl = built.ctrl || []; drone.lights = built.lights || []; drone.type = type; drone.model = model; drone.gear = built.gear || null;
@@ -1348,6 +1374,124 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   }
   const clearCollision = () => { coll.hitAt = -Infinity; coll.below = 0; coll.kind = null; coll.lastH = null; };
 
+  // ---------- §24 hedefler: dairesel yörüngede sürekli uçan kinematik hedefler (flightsim_targets.js; sunucu eşleniği app/flightsim_targets.py) ----------
+  // Zaman: canlıda zaman çizgisinin oynatma başı (kaynak = SITL time_boot_ms → t = play/1000; dron ile aynı gecikme), kayıtta karenin `tt`'si
+  // (t0 + kare t). Modeller dron gibi ×MODEL_SCALE; yatış (koordineli dönüş) + yön; pervaneler döner; ad/uzaklık etiketi (ekran boyutlu sprite),
+  // yörünge çizgisi (soluk), önlemede genişleyen halka; radar (2B canvas, sağ üst köşe altı; setRadarVisible).
+  const tg = { cfg: null, items: [], group: new T.Group(), seq: 0, rel: [], lastRel: 0, radar: null, radarOn: !preview, flash: new Map(), shown: false };
+  scene.add(tg.group);
+  const targetTime = () => {
+    if (preview) return performance.now() / 1000;                     // sihirbaz önizlemesi: yerel saat
+    const l = tele.last;
+    if (!l) return null;
+    if (typeof l.tt === 'number') return l.tt;                       // kayıt (t0 + t) / sahte istemci
+    if (l.tbm != null && tl.has) return tl.play / 1000;              // canlı: SITL saati (oynatma başı)
+    return null;
+  };
+  const buildTargetModel = async (it, M) => {
+    const key = String(it.model || ''), bk = key.startsWith('builtin:') ? key.slice(8) : null;
+    const glb = it.glb_url ? { glb_url: it.glb_url, orient: it.orient || SM_ORIENT, has_prop: it.has_prop !== false } : (bk && BUILTIN_GLB[bk]) || null;
+    if (glb && (glb.orient || !bk)) { try { return await buildLibrary({ id: key, ...glb }, M); } catch { /* yedek aşağıda */ } }
+    if (bk === 'caymaz') { try { return await buildCaymaz(M); } catch { return buildDelta(M); } }
+    if (bk === 'quad') return buildMulti(4, 0.6, M);
+    if (bk === 'hexa') return buildMulti(6, 0.9, M);
+    if (bk === 'heli') return buildHeli(M);
+    if (bk === 'icept_x4' || bk === 'p1sun' || bk === 'sting') return buildIcept(M);
+    return buildDelta(M);
+  };
+  const orbitLine = it => {
+    const R = Number(it.diameter_m) / 2, n = 128, pts = [];
+    for (let k = 0; k <= n; k++) { const a = k / n * 2 * Math.PI; pts.push(new T.Vector3((Number(it.east_m) || 0) + R * Math.cos(a), (Number(it.north_m) || 0) + R * Math.sin(a), Number(it.alt_m))); }
+    const ln = new T.Line(new T.BufferGeometry().setFromPoints(pts), new T.LineDashedMaterial({ color: 0xff5a46, transparent: true, opacity: 0.45, dashSize: 14, gapSize: 10, depthWrite: false }));
+    ln.computeLineDistances();
+    return ln;
+  };
+  async function setTargets(cfg) {
+    const seq = ++tg.seq;
+    disposeGroup(tg.group); tg.items = []; tg.rel = []; tg.flash.clear();
+    tg.cfg = cfg && Array.isArray(cfg.items) && cfg.items.length ? { ...cfg, radius_m: num(cfg.radius_m, TARGET_RADIUS) } : null;
+    if (tg.radar) tg.radar.style.display = tg.radarOn && tg.cfg ? '' : 'none';
+    if (!tg.cfg) return;
+    for (const it of tg.cfg.items) {
+      const M = MAT();
+      let built;
+      try { built = await buildTargetModel(it, M); } catch { built = buildDelta(M); }
+      if (seq !== tg.seq || disposed) { disposeGroup(built.grp); return; }
+      built.grp.traverse(o => { if (o.isMesh) o.castShadow = false; });
+      const root = new T.Group(), body = new T.Group();
+      built.grp.scale.setScalar(MODEL_SCALE); body.add(built.grp); root.add(body);
+      const bb = new T.Box3().setFromObject(built.grp);
+      const cv = document.createElement('canvas'); cv.width = 256; cv.height = 84;
+      const tex = new T.CanvasTexture(cv); tex.colorSpace = T.SRGBColorSpace;
+      const spr = new T.Sprite(new T.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false, toneMapped: false, fog: false }));
+      spr.center.set(0.5, 0); spr.scale.set(0.2, 0.066, 1); spr.renderOrder = 20;   // ekran boyutlu (sizeAttenuation kapalı): uzakta da okunur
+      spr.position.set(0, 0, Math.max(bb.max.z, 0.4) + 1.5);
+      root.add(spr);
+      const flash = new T.Sprite(new T.SpriteMaterial({ map: ringTexture(), color: 0xffd23f, transparent: true, opacity: 0, depthWrite: false, fog: false, toneMapped: false, blending: T.AdditiveBlending }));
+      flash.visible = false; flash.renderOrder = 19; root.add(flash);   // önleme: hedefte genişleyen parlak halka (billboard)
+      const ring = orbitLine(it);
+      tg.group.add(root, ring);
+      tg.items.push({ it, root, body, props: built.props || [], spr, cv, tex, flash, ring, key: '' });
+    }
+    if (!tg.radar && !preview) {
+      tg.radar = document.createElement('canvas');
+      tg.radar.className = 'fs-radar';
+      tg.radar.width = 280; tg.radar.height = 280;
+      tg.radar.style.cssText = 'position:absolute;left:12px;top:118px;width:150px;height:150px;pointer-events:none;z-index:4;border-radius:50%';   // sol üst: sağda harekât paneli / askeri HUD göstergeleri
+      mountEl.appendChild(tg.radar);
+    }
+    if (tg.radar) tg.radar.style.display = tg.radarOn ? '' : 'none';
+  }
+  let ringTex = null;
+  const ringTexture = () => {
+    if (ringTex) return ringTex;
+    const cv = document.createElement('canvas'); cv.width = cv.height = 128;
+    const g = cv.getContext('2d');
+    g.strokeStyle = '#fff'; g.lineWidth = 9; g.beginPath(); g.arc(64, 64, 54, 0, 2 * Math.PI); g.stroke();
+    g.globalAlpha = 0.35; g.lineWidth = 3; g.beginPath(); g.arc(64, 64, 40, 0, 2 * Math.PI); g.stroke();
+    ringTex = new T.CanvasTexture(cv);
+    return ringTex;
+  };
+  function flashTarget(i) { tg.flash.set(Number(i), performance.now()); }
+  const tgQ = new T.Quaternion();
+  function updateTargets(now, rawDt) {
+    if (!tg.items.length) return;
+    const t = targetTime();
+    const has = t != null;
+    tg.group.visible = has;
+    if (!has) return;
+    const R = tg.cfg.radius_m;
+    const rate = 70;   // rad/s pervane (sabit seyir devri)
+    for (const x of tg.items) {
+      const st = targetState(x.it, t);
+      x.root.position.set(st.x, st.y, st.z);
+      x.body.quaternion.copy(attitudeQuat(T, st.roll, 0, st.yaw, tgQ));
+      for (const p of x.props) {
+        const ax = p.userData.axis || 'z';
+        p.rotation[ax] = (p.rotation[ax] + rate * Math.min(0.5, rawDt) * (p.userData.dir || 1)) % (2 * Math.PI);
+        if (p.userData.disc) p.userData.disc.material.opacity = 0.4;
+        if (p.userData.blades) for (const b of p.userData.blades) b.visible = false;
+      }
+      const f0 = tg.flash.get(x.it.i);
+      if (f0 != null) {
+        const u = (now - f0) / 2000;
+        if (u >= 1) { tg.flash.delete(x.it.i); x.flash.visible = false; }
+        else { x.flash.visible = true; x.flash.scale.setScalar(Math.max(1, 2 * R * (0.15 + 0.85 * u))); x.flash.material.opacity = 0.9 * (1 - u) ** 1.5; }
+      }
+    }
+    if (now - tg.lastRel > 100) {   // 10 Hz: göreli durum (etiket, radar, targetsInfo)
+      tg.lastRel = now;
+      const hdg = num(tele.last?.heading, 0);
+      tg.rel = targetsRelative(tg.cfg.items, t, cur.pos.x, cur.pos.y, cur.pos.z, hdg, R);
+      tg.rel.forEach((r, k) => {
+        const x = tg.items[k]; if (!x) return;
+        const key = `${x.it.name}|${Math.round(r.dist / (r.dist > 1000 ? 100 : 5))}|${Math.round(r.dz / 5)}|${r.inside}`;
+        if (key !== x.key) { x.key = key; drawLabel(x.cv.getContext('2d'), x.cv.width, x.cv.height, { name: `${x.it.i + 1} · ${x.it.name}`, dist: r.dist, dz: r.dz, inside: r.inside }); x.tex.needsUpdate = true; }
+      });
+      if (tg.radar && tg.radarOn) drawRadar(tg.radar.getContext('2d'), tg.radar.width, tg.radar.height, tg.rel, { radius: R });
+    }
+  }
+
   // ---------- boyut ----------
   function resize() {
     const w = Math.max(1, mountEl.clientWidth), hgt = Math.max(1, mountEl.clientHeight);
@@ -1478,6 +1622,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       if (p.userData.blades) for (const b of p.userData.blades) b.visible = blur < 0.85;
     }
     if (drone.ctrl.length) updateCtrl(pdt);   // kontrol yüzeyleri (servo/rc → hedef açı → servo hızı sınırı)
+    if (tg.items.length) updateTargets(now, rawDt);   // §24 hedefler
     // Seyir ışıkları: kırmızı/yeşil 1 Hz çift flaş üzerine sabit; kuyruk beyaz strobe 1 Hz (gece halo büyür)
     const tt = now / 1000, ph = tt % 1, navOn = ph < 0.08 || (ph > 0.16 && ph < 0.24), strobeOn = ph > 0.5 && ph < 0.58;
     const night = W.time === 'night', dusk = W.time === 'dusk', haloBase = night ? 0.55 : dusk ? 0.4 : 0.22;   // sprite ölçeği model ölçeğiyle çarpılır
@@ -1539,11 +1684,17 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   }
   // Araç kamera pozları (ana kamera ve PiP aynı fonksiyonlar)
   // Gimbal kamerası — burun konumu: gövde +Y yönünde model yarıçapı kadar ileri, biraz yukarı; bakış: gövde yönelimi × (90° + gimbal) X dönüşü
+  // §25 tailsitter "VTOL görünümü": gövde burnu yukarı kalktıkça (askı) araç kameraları ve FPV OSD gövde · Rx(−90°·h) çerçevesini kullanır (ArduPlane
+  // ahrs_view eşleniği: askıda ufuk düz, kamera karın yönüne bakar); h = burun yükselişi 30°→70° yumuşak geçiş. Diğer tiplerde gövdenin kendisi.
+  const viewQ = new T.Quaternion(), viewTmp = new T.Quaternion(), viewAx = new T.Vector3(1, 0, 0), viewNose = new T.Vector3();
+  const hoverFactor = q => { if (drone.type !== 'interceptor') return 0; viewNose.set(0, 1, 0).applyQuaternion(q); const e = Math.asin(clamp(viewNose.z, -1, 1)) / DEG; return smooth(30, 70, e); };
+  const viewQuat = q => { const hf = hoverFactor(q); return hf <= 0 ? viewQ.copy(q) : viewQ.copy(q).multiply(viewTmp.setFromAxisAngle(viewAx, -Math.PI / 2 * hf)); };
   function poseGimbal(cam) {
+    const vq = viewQuat(cur.q);
     tmpV.set(0, drone.nose, 0.12 * MODEL_SCALE).applyQuaternion(cur.q);
     cam.position.copy(cur.pos).add(tmpV);
     tmpQ.setFromAxisAngle(tmpV2.set(1, 0, 0), (90 + gimbal) * DEG);
-    cam.quaternion.copy(cur.q).multiply(tmpQ);
+    cam.quaternion.copy(vq).multiply(tmpQ);
   }
   // GERÇEK FPV (§22): kamera burna sabit (burun noktası + küçük ileri ofset; 'burun görünür' açıkken biraz geride ve üstte → gövde ucu/pervane kadrajda),
   // gövdeyle birlikte döner: roll/pitch/yaw TAM uygulanır (ufuk yatar); gimbal yok. Gösterilen (kilit/düzenek dahil) gövde konumu kullanılır.
@@ -1553,7 +1704,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     tmpV.set(0, drone.nose + back, up).applyQuaternion(drone.group.quaternion);
     cam.position.copy(drone.group.position).add(tmpV);
     tmpQ.setFromAxisAngle(tmpV2.set(1, 0, 0), 90 * DEG);   // gövde +Y (burun) → kamera −Z (bakış)
-    cam.quaternion.copy(drone.group.quaternion).multiply(tmpQ);
+    cam.quaternion.copy(viewQuat(drone.group.quaternion)).multiply(tmpQ);   // §25 tailsitter askıda: VTOL görünümü
   }
   // Kamera PiP'i (§22.4): kaynak = pipSourceFor(ana kip, önceki ana kip) — ana gimbal değilse gimbal kamerası (tür efekti ve yakınlaştırma ile), gimbalse
   // önceki ana kip (takip: kullanıcının yörünge ofseti; FPV: balıkgözü). Render hedefi PiP'in CSS boyutu × min(dpr,1.5) × 0.75; pipInterval ile
@@ -1642,7 +1793,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     canvas.removeEventListener('pointerup', onPointerUp); canvas.removeEventListener('pointercancel', onPointerUp);
     canvas.removeEventListener('wheel', onWheel);
     controls.dispose();
-    disposeGroup(gWorld); disposeGroup(drone.group); mission.dispose();
+    disposeGroup(gWorld); disposeGroup(drone.group); mission.dispose(); disposeGroup(tg.group); tg.radar?.remove();
     post.rt?.dispose(); post.mat.dispose(); post.quad.geometry.dispose(); pip.rt?.dispose(); pip.mat.dispose(); pip.quad.geometry.dispose(); heatMats.forEach(m => m.dispose()); heatMats.clear();
     renderer.dispose();
     renderer.forceContextLoss?.();
@@ -1685,7 +1836,11 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     set onCollision(fn) { onCollision = fn; },
     position: () => ({ x: cur.pos.x, y: cur.pos.y, z: cur.pos.z }),
     cameraPose: () => { camera.updateMatrixWorld(); const e = camera.matrixWorld.elements; return { x: e[12], y: e[13], z: e[14], fx: -e[8], fy: -e[9], fz: -e[10], ux: e[4], uy: e[5], uz: e[6] }; },   // §16 uzaysal ses: dinleyici konumu + ileri/üst (ENU)
-    getPose: () => { tmpE.setFromQuaternion(cur.q, 'ZXY'); return { roll: tmpE.y, pitch: tmpE.x, yaw: -tmpE.z }; },   // render edilen (enterpolasyonlu) yönelim, rad (FPV HUD)
+    getPose: () => { tmpE.setFromQuaternion(viewQuat(cur.q), 'ZXY'); return { roll: tmpE.y, pitch: tmpE.x, yaw: -tmpE.z }; },   // render edilen (enterpolasyonlu) yönelim, rad (FPV HUD; §25 tailsitter askıda VTOL görünümü)
+    getBodyPose: () => { tmpE.setFromQuaternion(cur.q, 'ZXY'); return { roll: tmpE.y, pitch: tmpE.x, yaw: -tmpE.z, hover: hoverFactor(cur.q) }; },   // §25 teşhis: gövde (SITL fiziği) yönelimi + askı oranı
+    // §24 hedefler
+    setTargets, flashTarget, targetsInfo: () => tg.rel.map(r => ({ i: r.i, name: r.name, dist: Math.round(r.dist), horiz: Math.round(r.horiz), dz: Math.round(r.dz), bearing: Math.round(r.bearing), rel: Math.round(r.rel), inside: r.inside })),
+    get targetTime() { return targetTime(); }, setRadarVisible: v => { tg.radarOn = !!v; if (tg.radar) tg.radar.style.display = tg.radarOn && tg.cfg ? '' : 'none'; },
     canvas,
     addFrameHook: fn => { frameHooks.add(fn); return () => frameHooks.delete(fn); },   // §17: render sonrası kanca (kayıt birleşimi)
   };

@@ -19,11 +19,13 @@ export const POWER_FIELDS = ['max_speed_ms', 'fuel_l', 'fuel_km_per_l', 'elec_ce
 export const LIMITS = { max_speed_ms: [5, 150], fuel_l: [0, 500], fuel_km_per_l: [0.5, 500], elec_cells: [1, 16], elec_mah: [100, 200000], elec_w: [0, 2000] };
 export const CAYMAZ_DEFAULTS = { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25, elec_cells: 4, elec_mah: 10000, elec_w: 30 };
 export const COPTER_DEFAULTS = { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25, elec_cells: 4, elec_mah: 10000, elec_w: 30 };
-const PLANE_TYPES = ['sabit_kanat', 'vtol'];
+// §25 INTERCEPTOR: elektrikli tailsitter — yakıt yok, 400 km/h (111,1 m/s), 6S aviyonik bataryası (sunucu INTERCEPTOR_VARSAYILAN)
+export const INTERCEPTOR_DEFAULTS = { max_speed_ms: 111.1, fuel_l: 0, fuel_km_per_l: 25, elec_cells: 6, elec_mah: 8000, elec_w: 40 };
+const PLANE_TYPES = ['sabit_kanat', 'vtol', 'interceptor'];
 const num = (v, d = null) => (v == null || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 export const isPlaneType = t => PLANE_TYPES.includes(t);
-export const defaultsFor = t => ({ ...(isPlaneType(t) ? CAYMAZ_DEFAULTS : COPTER_DEFAULTS) });
+export const defaultsFor = t => ({ ...(t === 'interceptor' ? INTERCEPTOR_DEFAULTS : isPlaneType(t) ? CAYMAZ_DEFAULTS : COPTER_DEFAULTS) });
 
 // ---------- saf hesaplar (sunucuyla birebir) ----------
 // Anlık tüketim (L/dk): (v km/h ÷ 60) ÷ (km/L) × (0,5 + 0,5·gaz)

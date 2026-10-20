@@ -300,7 +300,7 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
     let ly = ly0;
     text(t.mode || '—', lx, ly, { px: F * 1.2, bold: true }); ly += lh * 1.25;
     text(armed ? 'ARM' : 'SAFE', lx, ly, { px: F * 1.05, bold: true, color: armed ? C : '#cfd6cc' }); ly += lh;
-    const plane = /sabit_kanat|vtol/.test(String(ctx.session?.type || ''));
+    const plane = /sabit_kanat|vtol|interceptor/.test(String(ctx.session?.type || ''));
     if (plane && armed && air > 5) { const gl = 1 / Math.max(0.2, Math.cos(roll)); text(`G ${gl.toFixed(1)}`, lx, ly, { px: F * 0.95 }); ly += lh; }
     const thr = clamp(num(t.throttle, 0), 0, 100);
     text(`THR ${thr.toFixed(0).padStart(3, ' ')}%`, lx, ly, { px: F * 0.95 });

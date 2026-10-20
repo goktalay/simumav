@@ -29,7 +29,8 @@
 //   P/O/H/C tuşları HEPGO modüllerinin kendi dinleyicilerindedir (panel/OSD/HUD/3B) — burada yeniden bağlanmaz (çift tetikleme olurdu).
 import { clear, confirmDialog, fmtDateTime, fmtDuration, h, modal, toast, toastError, t as tr, onLeave } from './simui.js';
 import { net, wsUrl } from './net.js';
-import { INTERCEPTOR_AUDIO, TYPE_LABEL, WORLD_MODE_LABEL, audioTypeFor, launchBody, launchLabelSm, modelFor, needsLaunch, simType, speedAngle, speedScale, speedTicks, startCameraFor, worldFromTrack } from './wizard.js';
+import { createScoreBadge, targetsReportCard } from './targets.js';   // HEPGO §24 hedefler: skor rozeti + rapor kartı
+import { JET_AUDIO, TYPE_LABEL, WORLD_MODE_LABEL, audioTypeFor, launchBody, launchLabelSm, modelFor, needsLaunch, simType, speedAngle, speedScale, speedTicks, startCameraFor, worldFromTrack } from './wizard.js';
 import { HAND, HAND_PHASES, createHandOverlay, handCfg, handHud, handReleaseTime, shimTelemetry } from './hand_launch.js';
 import { createOverlay3D } from './overlay3d.js';
 import { createGateLayer } from './gates.js';
@@ -44,7 +45,8 @@ const THREE_URL = '/static/vendor/three/three.module.min.js';   // HEPGO modüll
 const COPTER_MODES = ['STABILIZE', 'ALT_HOLD', 'LOITER', 'GUIDED', 'AUTO', 'RTL', 'LAND', 'POSHOLD', 'BRAKE'];
 const PLANE_MODES = ['MANUAL', 'FBWA', 'FBWB', 'CRUISE', 'LOITER', 'GUIDED', 'AUTO', 'RTL', 'TAKEOFF', 'CIRCLE'];
 const VTOL_MODES = ['QSTABILIZE', 'QHOVER', 'QLOITER', 'QLAND', 'QRTL', 'FBWA', 'CRUISE', 'GUIDED', 'AUTO', 'RTL', 'TAKEOFF'];
-const modesFor = st => (st === 'vtol' ? VTOL_MODES : st === 'sabit_kanat' ? PLANE_MODES : COPTER_MODES);
+const ICEPT_MODES = ['QHOVER', 'QLOITER', 'GUIDED', 'FBWA', 'FBWB', 'CRUISE', 'AUTO', 'LOITER', 'RTL', 'QRTL', 'QLAND'];   // HEPGO §25 tailsitter
+const modesFor = st => (st === 'interceptor' ? ICEPT_MODES : st === 'vtol' ? VTOL_MODES : st === 'sabit_kanat' ? PLANE_MODES : COPTER_MODES);
 const STATE_TEXT = { BASLIYOR: 'Başlıyor', HAZIR: 'Hazır', HATA: 'Hata', KAPANDI: 'Kapandı' };
 const STATE_BADGE = { BASLIYOR: 'yellow', HAZIR: 'green', HATA: 'red', KAPANDI: 'gray' };
 const LAUNCH_PHASE_TEXT = {
@@ -152,6 +154,8 @@ export function showFlightReport(MReport, sum, gates, { pilot, drone, track, fli
   return new Promise(resolve => {
     const body = h('div', { class: 'sm-report' });
     body.append(h('div', { class: 'sm-report-head' }, h('b', null, drone?.name || ''), track?.name ? h('span', { class: 'muted' }, ` · ${track.name}`) : null, pilot?.name ? h('span', { class: 'muted' }, ` · ${tr('Pilot')}: ${pilot.name}`) : null));
+    const tgCard = targetsReportCard({ h, t: tr, sum });   // HEPGO §24 hedefler: puan + rozetler (HEPGO .fs-rp-targets bölümü CSS'te gizli)
+    if (tgCard) body.append(tgCard);
     const pwCard = sum?.power ? powerReportCard({ h, t: tr, pw: sum.power }) : null;   // §10 oyun tarzı güç kartı (HEPGO .fs-rp-power bölümü CSS'te gizli; çift olmasın)
     if (pwCard) body.append(pwCard);
     try { body.append(MReport.reportBody(sum || {}, tr, { canWrite: false, be: null })); } catch { body.append(h('p', { class: 'muted' }, tr('Özet alınamadı.'))); }
@@ -194,7 +198,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     drone: { code: '', name: drone.name || 'Dron' }, hub: { bridge_id: start.session?.hub?.bridge_id ?? -(9000 + (Number(sid) || 0)), name: drone.name || 'Dron' },
     gcs: { connected: false, addr: '' }, sitl: { port: mp.port }, route: [], launch: launch ? { ...launch, phase: null } : null, world,
     power: (() => { const p = picked.power || start.power || start.session?.power; if (!p) return null; const { engine, ...rest } = p; void engine; return rest; })() };   // §10: kadranların azami hız ölçeği (hello'da çekirdek değeri gelir)
-  const maxKmh = speedScale(dType);
+  const maxKmh = speedScale(dType, drone.model_key);
   const gates = Array.isArray(track.gates) ? track.gates : [];
   const gatePlan = mission?.kind === 'fpv_gates' ? (mission.plan || {}) : {};
   const fpvPrefs = MOsd.createFpvPrefs();
@@ -222,8 +226,10 @@ export async function openSession(view, start, picked, ctx = {}) {
   for (const b of speedPill.el.querySelectorAll('[data-speed]')) b.hidden = !speedAllowed.includes(Number(b.dataset.speed));
   speedPill.el.hidden = speedAllowed.length < 2;
   speedPill.set(picked.speedup || start.speedup || 1);
+  const scoreBadge = createScoreBadge({ h, t: tr }); scoreBadge.update(null);   // HEPGO §24 (hedef yoksa gizli)
+  if (!session.targets && start.session?.targets) session.targets = start.session.targets;
   const nav = h('div', { class: 'fs-nav' }, backBtn, h('b', null, 'SIMUMAV'), h('span', { class: 'fs-nav-sub' }, `${TYPE_LABEL[dType] || dType} · ${drone.name || ''} · ${track.name || '—'}${pilot ? ` · ${pilot.name}` : ''} · ${WORLD_MODE_LABEL[world.mode] || world.mode}`), stateBadge, wsBadge,
-    launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, launchLabelSm(launch)) : null, gates.length ? h('span', { class: 'badge purple', title: tr('FPV halkaları') }, `${gates.length} halka`) : null, speedPill.el, fullBtn);   // §10 hız kapsülü üst çubukta (HEPGO nav kalıbı)
+    launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, launchLabelSm(launch)) : null, gates.length ? h('span', { class: 'badge purple', title: tr('FPV halkaları') }, `${gates.length} halka`) : null, scoreBadge.el, speedPill.el, fullBtn);   // §10 hız kapsülü üst çubukta (HEPGO nav kalıbı)
   const onFullChange = () => { const full = !!document.fullscreenElement; stage.classList.toggle('fs-full', full); document.body.classList.toggle('fs-full', full); fullBtn.title = tr(full ? 'Tam ekrandan çık' : 'Tam ekran'); };
   document.addEventListener('fullscreenchange', onFullChange); onFullChange();
 
@@ -348,8 +354,8 @@ export async function openSession(view, start, picked, ctx = {}) {
   ops = MPanel.createOpsPanel(stage, { sid, session, type, modes, launch, canWrite: true, hub: true, mp: { addr: `${mp.host}:${mp.port}`, port: mp.port, copy: () => copyText(`tcp:${mp.host}:${mp.port}`, 'Adres kopyalandı') }, getSim: () => sim, cmdSim, onReset: () => reset(), onToggle: on => { opsBtn.classList.toggle('primary', on); camPip?.layout(); } });
   opsBtn.classList.toggle('primary', ops.enabled);
   patchMpBox(stage, mp);
-  if (MAudio.AUDIO_MODELS && !MAudio.AUDIO_MODELS.interceptor) MAudio.AUDIO_MODELS.interceptor = { ...INTERCEPTOR_AUDIO };   // yüksek devirli ayrı ses modeli (dosyaya dokunmadan)
-  const audio = MAudio.createEngineAudio(stage, { type: audioTypeFor(dType), launch: launch && !isHand ? launch : null, replay: false, tr, getSim: () => sim, getCrashed: () => !crash.hidden, getSpeed: () => 1 });
+  if (MAudio.AUDIO_MODELS && !MAudio.AUDIO_MODELS.jet) MAudio.AUDIO_MODELS.jet = { ...JET_AUDIO };   // jet modelleri: yüksek devirli ayrı ses modeli (dosyaya dokunmadan)
+  const audio = MAudio.createEngineAudio(stage, { type: audioTypeFor(dType, drone.model_key), launch: launch && !isHand ? launch : null, replay: false, tr, getSim: () => sim, getCrashed: () => !crash.hidden, getSpeed: () => 1 });
   const hudCtx = { world, session, replay: false, launch: launch && !isHand ? launch : null, fov: 78, t0: Date.now(),
     get pose() { return sim?.getPose?.() || null; }, get gimbalDeg() { return sim?.getGimbal() ?? 0; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; } };
   milHud = MHud.createMilHud(stage, hudCtx, { tr });
@@ -411,6 +417,7 @@ export async function openSession(view, start, picked, ctx = {}) {
       sim.addFrameHook(() => overlay?.update());
     }
     sim.addFrameHook(() => gauge.frame(1 / 60));
+    if (session.targets?.items?.length) { sim.setTargets(session.targets); sim.__tgSet = true; scoreBadge.update(session.targets_state || { count: session.targets.items.length, hit_targets: 0, score: 0 }); }   // HEPGO §24 (start yanıtının oturumu; yoksa hello'da)
     if (rec) rec.start(MRec.takeStashedStream()).catch(() => {});
   } catch (err) { sceneError = err; console.error('3B sahne kurulamadı', err); }
 
@@ -477,7 +484,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     // HEPGO updateHud sırası: 3B zaman çizgisi (interp tamponu) ÖNCE, sonra HUD/OSD/ses/panel (aynı kare; kamera güncellemesi 3B'nin rAF'ında)
     sim?.setTelemetry(t); milHud?.update(t); osd?.update(t); audio.update(raw); ops?.update(t);
     gateLayer?.update(raw, num(raw.tbm, null) != null ? num(raw.tbm) / 1000 : (Date.now() - hudCtx.t0) / 1000);
-    gauge.update((type === 'sabit_kanat' || type === 'vtol' ? num(raw.airspeed, num(raw.groundspeed, 0)) : num(raw.groundspeed, 0)) * 3.6);
+    gauge.update((type === 'sabit_kanat' || type === 'vtol' || type === 'interceptor' ? num(raw.airspeed, num(raw.groundspeed, 0)) : num(raw.groundspeed, 0)) * 3.6);
     onPower(raw);
     if (rc) rcWarn.hidden = !raw.gcs_connected;
     armBtn.textContent = raw.armed ? 'DISARM' : 'ARM'; armBtn.classList.toggle('danger', !!raw.armed);
@@ -491,6 +498,16 @@ export async function openSession(view, start, picked, ctx = {}) {
     const txt = (LAUNCH_PHASE_TEXT[m.phase] || {})[launch.method] || m.phase;
     addEvent(m.phase === 'released' && m.speed_kmh != null ? `${tr(txt)} · ${f0(m.speed_kmh)} km/h` : tr(txt), m.phase === 'released' || m.phase === 'launch' ? 'warning' : 'info');
   };
+  // ---------- HEPGO §24 hedefler: 3B katmanı (sim.setTargets), önleme olayı → halka parlaması + şerit + skor rozeti + ses ----------
+  const applyTargets = () => { const tgc = session.targets; if (tgc?.items?.length && sim && !sim.__tgSet) { sim.setTargets(tgc); sim.__tgSet = true; scoreBadge.update(session.targets_state || { count: tgc.items.length, hit_targets: 0, score: 0 }); } };
+  const onTarget = m => {
+    if (m.kind && m.kind !== 'intercept') return;
+    sim?.flashTarget(m.i);
+    addEvent(`${tr('targets.intercept')} · ${m.name} · ${f0(m.dist_m)} m · ${m.first ? tr('targets.first_after', { s: f1(m.after_s) }) : tr('targets.pass_n', { n: m.n })}`, 'warning', 'HEDEF');
+    if (m.state) scoreBadge.update(m.state);
+    sfx.select?.();
+    showPwAlert(`◎ ${tr('targets.intercept')}`, m.name, 'low');
+  };
   const showCrash = (reason, speed) => { if (!crash.hidden) return; const k = tr(CRASH_KIND[reason] || 'Çarpışma'); crash.hidden = false; crash.querySelector('.fs-crash-sub').textContent = tr('{k} · {v} m/s · "Sıfırla" ile yeniden başlayın', { k, v: f1(speed) }); addEvent(tr('ÇARPIŞMA: {k} ({v} m/s)', { k, v: f1(speed) }), 'error'); };
   const reset = async () => { pwAlert.hidden = true; crash.hidden = true; sim?.clearCollision(); sim?.setLaunchPhase(null); clearHandTimers(); hand?.setPhase('idle'); countdown.hidden = true; gateLayer?.tracker.reset(); sim?.resetCamera(); await cmd('reset'); };
   const showEnded = reason => { clear(ended, h('div', { class: 'fs-ended-box' }, h('b', null, 'Uçuş sona erdi'), h('div', { class: 'small muted' }, tr(END_REASON[reason] || reason || '')), h('button', { class: 'btn primary', type: 'button', onclick: () => go('#/ops') }, 'Operasyon\'a git'))); ended.hidden = false; };
@@ -501,13 +518,14 @@ export async function openSession(view, start, picked, ctx = {}) {
       if (destroyed) return;
       switch (m.t) {
         case 'tele': return void netsimDeliver(netsim, () => { if (!destroyed) onTele(m); });   // netsim yoksa anında (HEPGO: gecikme + jitter + kayıp)
-        case 'hello': if (m.session) { Object.assign(session, m.session, { hub: { ...session.hub, ...(m.session.hub || {}) } }); setState(session.state); if (Array.isArray(session.route) && session.route.length) { sim?.setMission({ ...(session.mission || {}), points: session.route }); ops?.setRoute(session.route); } } return;
+        case 'hello': if (m.session) { Object.assign(session, m.session, { hub: { ...session.hub, ...(m.session.hub || {}) } }); setState(session.state); applyTargets(); if (Array.isArray(session.route) && session.route.length) { sim?.setMission({ ...(session.mission || {}), points: session.route }); ops?.setRoute(session.route); } } return;
         case 'route': sim?.setMission(m); ops?.setRoute(m.points || []); if (m.source === 'mp') toast(tr("Mission Planner'dan görev yüklendi: {n} nokta", { n: m.points?.length || 0 })); return;
         case 'mission_cur': return sim?.setMissionCurrent(m.seq);
         case 'crash': return showCrash(m.reason, m.speed);
         case 'warn': { const wi = warnInfo(m); if (wi) return powerEmpty(m.kind === 'fuel_empty' ? 'fuel' : 'elec', m.text); return addEvent(tr('Otopilot çarpışma tespiti — kayıt değil: {t}', { t: m.text || '' }), 'warning'); }
         case 'event': return addEvent(m.text, m.severity, 'STATUS');
         case 'launch': return onLaunch(m);
+        case 'target': return onTarget(m);   // HEPGO §24 önleme
         case 'state': if (m.center) session.center = { ...session.center, ...m.center }; return setState(m.state);
         case 'res': { const p = pending.get(m.rid); if (p) { clearTimeout(p.timer); pending.delete(m.rid); p.resolve(m); } return; }
         case 'end': setState('KAPANDI'); showEnded(m.reason); socket?.close(); return;

@@ -516,3 +516,16 @@ doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
   görsel `tests/simumav_power_shots.py` (/tmp/smpower-shots: hangar, düzenleyici, sihirbaz uçak/FPV-en, takip/FPV/gimbal kadranları, yakıt bitti bandı, rapor;
   `SMP_REAL=1 HEPGO_SITL_DIR=/opt/hepgo/sitl/bin` ile gerçek SITL + Operasyon replay).
 
+
+## 11. INTERCEPTOR (tailsitter) ve HEDEFLER — HEPGO §24/§25'in SIMUMAV'a taşınması (`bridge.py`, `static/simumav/app/fly/targets.js`)
+- **Tip kararı:** `interceptor` artık HEPGO çekirdeğinin `interceptor` tipidir (4 pervaneli tailsitter: dikey kalkış, yatayda ~400 km/h; katalog `glb:icept_x4`,
+  `glb:p1sun`, `glb:sting`). Eski "interceptor" sabit kanat jetleri (`glb:jet`, `glb:zephyr`, `proc:interceptor`) **'plane'** altına taşındı. Gerekçe: kullanıcı
+  INTERCEPTOR'u tailsitter olarak tanımladı; jet/delta fizik olarak sabit kanattır (pist/rampa/el atışı kalkışı, kontrol düzeni), aynı tip altında iki farklı fizik
+  (kalkış adımı, mod listesi, kontrol düzeni, ses) karışırdı. Jetler hız ölçeği 600 km/h ve jet sesini model anahtarından alır (`speedScale/audioTypeFor(t, modelKey)`).
+- **Göç v2** (`db._MIGRATIONS`, `SCHEMA_VERSION 2`, idempotent): `drones.type 'interceptor'` + jet/zephyr/proc:interceptor → `'plane'` (model, parametre, güç, renk
+  aynen); `flights.snapshot.drone.type` aynı kuralla (json_set) → eski uçuş kayıtları ve replay'ler sabit kanat olarak açılır. Tailsitter kayıtlarına dokunulmaz.
+- INTERCEPTOR: kalkış yöntemi adımı yok (dikey), kontrol düzeni yok (`airframe` NULL), güç varsayılanı elektrikli 111,1 m/s (P1-SUN 83,3, Sting 87,5), mod listesi Q+FW.
+- **HEDEFLER adımı** (sihirbazda "Görev"den sonra, isteğe bağlı): katalog `GET /api/fly/targets` (hedef GLB'leri `tgt:*` + hangar GLB'leri `glb:*`; HEPGO şirket modelleri
+  yok), kartlarla model/irtifa/çap/hız/yön/merkez ofseti, önleme yarıçapı; geçersizse İleri/BAŞLA kapalı. `fly/start` `targets` ({items ≤ 8, radius_m 5–200};
+  `bridge.hedefler_dogrula` → 422). Snapshot'a ve çekirdek oturuma gider; WS `target` → skor rozeti (üst çubuk "◎ 1/3 · 712 puan"), büyük "ÖNLEME" bandı, ses;
+  uçuş sonu raporunda oyun kartı (puan, rozetler, hedef satırları; HEPGO `.fs-rp-targets` gizli) ve `flights.summary.targets`. 7 dil `targets.*`.

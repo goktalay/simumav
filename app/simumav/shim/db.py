@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS drone_sim_runs (
     result TEXT NOT NULL DEFAULT 'tamam', end_reason TEXT, crash_count INTEGER NOT NULL DEFAULT 0, summary_event_id INTEGER,
     bin_log_id INTEGER, source_log_id INTEGER, video_rec_id TEXT, video_post_id INTEGER, video_path TEXT,
     params_path TEXT, params_count INTEGER NOT NULL DEFAULT 0, scripts_path TEXT, scripts_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
-    power TEXT, fuel_used_l REAL, fuel_km_per_l REAL, elec_wh REAL, elec_w_avg REAL, speedup_max REAL, layout TEXT, camera TEXT
+    power TEXT, fuel_used_l REAL, fuel_km_per_l REAL, elec_wh REAL, elec_w_avg REAL, speedup_max REAL, layout TEXT, camera TEXT,
+    targets TEXT, intercept_count INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_drone_sim_runs_started ON drone_sim_runs(started_at);
 CREATE INDEX IF NOT EXISTS ix_drone_sim_runs_owner ON drone_sim_runs(owner_id);
@@ -71,7 +72,8 @@ def connect():
 # Sonradan eklenen drone_sim_runs sütunları (HEPGO app/db.py ile aynı): §23 güç ve yakıt + §13.1 kontrol düzeni. Eksikken çekirdeğin
 # flightsim_runs.kaydet INSERT'i düşüyordu ("Simülasyon kaydı yazılamadı" → uçuşun .param dökümü / run satırı yok) — eski core.db'ye ALTER.
 RUN_EK_SUTUNLAR = (('power', 'TEXT'), ('fuel_used_l', 'REAL'), ('fuel_km_per_l', 'REAL'), ('elec_wh', 'REAL'), ('elec_w_avg', 'REAL'), ('speedup_max', 'REAL'),
-                   ('layout', 'TEXT'), ('camera', 'TEXT'))   # + §22.3 kamera türü
+                   ('layout', 'TEXT'), ('camera', 'TEXT'),   # + §22.3 kamera türü
+                   ('targets', 'TEXT'), ('intercept_count', 'INTEGER'))   # + §24 hedefler (yapılandırma + önleme sonucu)
 
 
 def init():

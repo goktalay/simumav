@@ -63,7 +63,9 @@ export function createTimeline(T, opts = {}) {
     if (Number.isNaN(srcPos) || srcPos < 0) srcPos = src;
     const first = !st.has;
     if (first || src < st.src - 1000) { resetTimeline(src); if (!first) net.snaps++; }
-    const fa = { src, q: attitudeQuat(T, num(t.roll, 0), num(t.pitch, 0), num(t.yaw, 0)), rx: num(t.ps, 0), ry: num(t.rs, 0), rz: -num(t.ys, 0) };   // gövde: X sağ, Y burun, Z üst
+    // §25 tailsitter (INTERCEPTOR): ATTITUDE Q kiplerinde "VTOL görünümü"dür; gövde SITL'in gerçek yönelimiyle (`att_body` = SIMSTATE) çizilir
+    const ab = Array.isArray(t.att_body) && t.att_body.length === 3 ? t.att_body : null;
+    const fa = { src, q: ab ? attitudeQuat(T, num(ab[0], 0), num(ab[1], 0), num(ab[2], 0)) : attitudeQuat(T, num(t.roll, 0), num(t.pitch, 0), num(t.yaw, 0)), rx: num(t.ps, 0), ry: num(t.rs, 0), rz: -num(t.ys, 0) };   // gövde: X sağ, Y burun, Z üst
     if (first || src !== st.src) pushSorted(attBuf, fa);
     const fp = { src: srcPos, pos: new T.Vector3(p.x, p.y, num(t.alt_rel, 0)), vel: new T.Vector3(num(t.ve, 0), num(t.vn, 0), -num(t.vd, 0)) };
     if (first || srcPos !== st.srcPos) pushSorted(posBuf, fp);
@@ -191,5 +193,5 @@ export function createTimeline(T, opts = {}) {
     } else { cur.pos.copy(interp.pos); cur.q.copy(interp.q); }
     motionSample();
   }
-  return { push, advance, cur, netStats, motionStats, get has() { return st.has; }, get src() { return st.src; }, get dr() { return net.dr; } };
+  return { push, advance, cur, netStats, motionStats, get has() { return st.has; }, get src() { return st.src; }, get dr() { return net.dr; }, get play() { return net.play; } };   // play: oynatma başı (kaynak ms) — §24 hedef zamanı
 }

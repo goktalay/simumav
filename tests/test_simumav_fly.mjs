@@ -16,7 +16,7 @@ const test = (name, fn) => { fn(); n++; console.log('  ✓', name); };
 const near = (a, b, eps = 1e-6, msg) => assert.ok(Math.abs(a - b) <= eps, msg || `${a} ≈ ${b}`);
 
 const DATA = {
-  drones: [{ id: 1, name: 'FPV-1', type: 'fpv', model_key: 'proc:quad250', is_default: 1 }, { id: 2, name: 'Caymaz', type: 'plane', model_key: 'proc:caymaz' }, { id: 3, name: 'Şahin', type: 'interceptor', model_key: 'proc:interceptor' }, { id: 4, name: 'Heli', type: 'heli', model_key: 'lib-heli', preview: '/files/heli.glb' }],
+  drones: [{ id: 1, name: 'FPV-1', type: 'fpv', model_key: 'proc:quad250', is_default: 1 }, { id: 2, name: 'Caymaz', type: 'plane', model_key: 'proc:caymaz' }, { id: 3, name: 'Şahin', type: 'plane', model_key: 'proc:interceptor' }, { id: 4, name: 'Heli', type: 'heli', model_key: 'lib-heli', preview: '/files/heli.glb' }],
   tracks: [{ id: 10, name: 'TRTEST', lat: 40.099, lon: 33.4101, radius_m: 1500, is_default: 1, world_mode: 'google3d', world: { trees_pct: 40, fog_pct: 20, runway_deg: 90 }, gates: [] }, { id: 11, name: 'Göl', lat: 40.2, lon: 33.5, radius_m: 800, world_mode: 'real' }],
   pilots: [{ id: 100, name: 'Pilot', is_default: 1 }, { id: 101, name: 'Ayşe' }],
   missions: [{ id: 7, track_id: 10, name: 'Halka turu', kind: 'fpv_gates', plan: { order: [1, 2, 3], laps: 2 } }, { id: 8, track_id: 11, name: 'Koridor', kind: 'corridor', plan: { route: [] } }],
@@ -26,9 +26,9 @@ console.log('wizard.js');
 test('varsayılanlar: varsayılan dron/parkur/pilot seçili; adımlar kopterde 5 (kalkış yok), sabit kanatta 6 (güç ve yakıt her tipte)', () => {
   const W = createWizard(DATA);
   assert.equal(W.state.drone_id, 1); assert.equal(W.state.track_id, 10); assert.equal(W.state.pilot_id, 100);
-  assert.deepEqual(W.steps(), ['drone', 'track', 'power', 'mission', 'pilot']);
+  assert.deepEqual(W.steps(), ['drone', 'track', 'power', 'mission', 'targets', 'pilot']);
   W.set('drone_id', 2); assert.deepEqual(W.steps(), STEPS);
-  W.set('drone_id', 3); assert.ok(needsLaunch('interceptor')); assert.equal(simType('interceptor'), 'sabit_kanat');
+  W.set('drone_id', 3); assert.ok(needsLaunch('plane') && !needsLaunch('interceptor')); assert.equal(simType('interceptor'), 'interceptor'); assert.equal(simType('plane'), 'sabit_kanat');   // HEPGO §25: INTERCEPTOR tailsitter, dikey kalkış (kalkış adımı yok)
   assert.equal(simType('fpv'), 'multirotor'); assert.equal(simType('heli'), 'helikopter'); assert.equal(simType('vtol'), 'vtol');
 });
 test('ileri/geri: canNext, isLast, goto yalnız geriye; parkur değişince görev sıfırlanır; görevler parkura süzülür', () => {
@@ -38,7 +38,7 @@ test('ileri/geri: canNext, isLast, goto yalnız geriye; parkur değişince göre
   assert.deepEqual(W.missionsFor().map(m => m.id), [7]);
   W.set('mission_id', 7); assert.equal(W.mission().name, 'Halka turu');
   W.set('track_id', 11); assert.equal(W.state.mission_id, null, 'parkur değişti → görev sıfır'); assert.deepEqual(W.missionsFor().map(m => m.id), [8]);
-  assert.ok(W.next()); assert.equal(W.step(), 'pilot'); assert.ok(W.isLast()); assert.equal(W.next(), false);
+  assert.ok(W.next()); assert.equal(W.step(), 'targets'); assert.ok(W.next()); assert.equal(W.step(), 'pilot'); assert.ok(W.isLast()); assert.equal(W.next(), false);
   assert.equal(W.goto('track'), true); assert.equal(W.step(), 'track'); assert.equal(W.goto('pilot'), false, 'ileriye atlanamaz');
   assert.ok(W.prev()); assert.equal(W.step(), 'drone'); assert.equal(W.prev(), false);
 });
@@ -59,9 +59,13 @@ test('payload: start gövdesi (§4) — kopterde launch wheels nötr; sabit kana
   assert.deepEqual(W.payload().power, { engine: 'fuel', fuel_l: 3 }); assert.equal(W.payload().speedup, 4);
   W.set('speedup', 3); assert.equal(W.payload().speedup, undefined);
   W.set('drone_id', 3); assert.equal(W.state.power, null); assert.equal(W.payload().power, undefined);
+  // HEPGO §24 hedefler: yalnız öğe varsa gövdede (kopya)
+  assert.equal(W.payload().targets, undefined); W.set('targets', { items: [], radius_m: 25 }); assert.equal(W.payload().targets, undefined);
+  const it = { model: 'tgt:lancet', alt_m: 120, diameter_m: 800, speed_ms: 30, dir: 'cw' }; W.set('targets', { items: [it], radius_m: 30 });
+  assert.deepEqual(W.payload().targets, { items: [it], radius_m: 30 }); assert.notEqual(W.payload().targets.items[0], it);
 });
-test('hız ölçeği: interceptor 600 km/h, çentikler 100\'lük; iğne −120°…+120°; kopter 100', () => {
-  assert.equal(speedScale('interceptor'), 600); assert.equal(speedScale('multirotor'), 100); assert.equal(speedScale('plane'), 200);
+test('hız ölçeği: INTERCEPTOR 450 km/h, jet modeli 600, çentikler 100\'lük; iğne −120°…+120°; kopter 100', () => {
+  assert.equal(speedScale('interceptor'), 450); assert.equal(speedScale('plane', 'glb:jet'), 600); assert.equal(speedScale('plane', 'proc:interceptor'), 600); assert.equal(speedScale('multirotor'), 100); assert.equal(speedScale('plane'), 200);
   assert.deepEqual(speedTicks(600), [0, 100, 200, 300, 400, 500, 600]); assert.deepEqual(speedTicks(100), [0, 20, 40, 60, 80, 100]);
   assert.equal(speedAngle(0, 600), -120); assert.equal(speedAngle(300, 600), 0); assert.equal(speedAngle(600, 600), 120); assert.equal(speedAngle(900, 600), 120, 'kırpılır');
 });
@@ -191,9 +195,9 @@ if (installWsBridge) test('installWsBridge: yalnız /ws/drone/live → hedef; di
   const r = recRest(7); assert.equal(r.fileUrl('ab'), '/api/fly/rec/ab/file');
 });
 test('kontrol düzeni (§13.1): kayıt → katalog modeli → anahtar tahmini → classic; yalnız sabit kanat ailesi', () => {
-  assert.deepEqual(AIRFRAMES, ['classic', 'elevon', 'vtail']); assert.ok(needsAirframe('plane') && needsAirframe('interceptor') && !needsAirframe('vtol') && !needsAirframe('fpv'));
+  assert.deepEqual(AIRFRAMES, ['classic', 'elevon', 'vtail']); assert.ok(needsAirframe('plane') && !needsAirframe('interceptor') && !needsAirframe('vtol') && !needsAirframe('fpv'));
   assert.equal(airframeOf({ type: 'plane', model_key: 'glb:talon_vtail' }), 'vtail'); assert.equal(airframeOf({ type: 'plane', model_key: 'builtin:caymaz' }), 'elevon');
-  assert.equal(airframeOf({ type: 'plane', model_key: 'glb:rc_cessna' }), 'classic'); assert.equal(airframeOf({ type: 'interceptor', model_key: 'proc:interceptor' }), 'elevon');
+  assert.equal(airframeOf({ type: 'plane', model_key: 'glb:rc_cessna' }), 'classic'); assert.equal(airframeOf({ type: 'plane', model_key: 'proc:interceptor' }), 'elevon'); assert.equal(airframeOf({ type: 'interceptor', model_key: 'glb:icept_x4' }), null);
   assert.equal(airframeOf({ type: 'plane', model_key: 'glb:rc_cessna', airframe: 'vtail' }), 'vtail', 'kayıt öncelikli'); assert.equal(airframeOf({ type: 'plane', model_key: 'lib-x' }, { airframe: 'elevon' }), 'elevon', 'katalog modeli');
   assert.equal(airframeOf({ type: 'plane', model_key: 'lib-x' }), 'classic'); assert.equal(airframeOf({ type: 'fpv', model_key: 'glb:talon_vtail', airframe: 'vtail' }), null); assert.equal(airframeOf(null), null);
   assert.equal(airframeForModel('glb:zephyr'), 'elevon'); assert.equal(airframeForModel(''), null); assert.equal(airframeLabel('vtail'), 'V-kuyruk (ruddervator)'); assert.equal(airframeLabel(null), '—');

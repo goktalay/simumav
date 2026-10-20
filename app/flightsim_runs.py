@@ -133,6 +133,10 @@ def _oturum_alanlari(s):
         'world': json.dumps(dict(getattr(s, 'world', None) or {}), ensure_ascii=False, default=str),
         'launch': json.dumps(dict(getattr(s, 'launch', None) or {}), ensure_ascii=False, default=str) if getattr(s, 'launch', None) else None,
         'camera': getattr(s, 'camera', None),   # §22.3 kamera türü (son seçim)
+        # §24 hedefler: yapılandırma + sonuç (kayıttan oynatma aynı yörüngeleri yeniden üretir) ve toplam önleme sayısı
+        'targets': json.dumps({'config': s.hedefler, 'result': s.hedef_iz.ozet() if getattr(s, 'hedef_iz', None) is not None else None}, ensure_ascii=False, default=str)
+        if getattr(s, 'hedefler', None) else None,
+        'intercept_count': s.hedef_iz.ozet()['total'] if getattr(s, 'hedef_iz', None) is not None else None,
         'layout': getattr(s, 'layout_etkin', None) or getattr(s, 'layout', None),   # §13.1 kontrol düzeni (SITL'de fiilen uçan; kayıttan oynatmada None)
         'started_at': s.created_at, 'ended_at': bitis, 'duration_s': sure, 'mode': mode, 'result': _sonuc(s, crashes),
         'end_reason': getattr(s, 'end_reason', None) or 'kapatildi', 'crash_count': crashes,

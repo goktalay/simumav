@@ -37,7 +37,9 @@ TAMSAYI = ('elec_cells',)
 # Varsayılanlar (kullanıcı: CAYMAZ 45 m/s, 5 L, 25 km/L, 4S 10000 mAh 30 W); kopterlerde yakıt yok (0 L) ve azami hız yazılmaz
 CAYMAZ_VARSAYILAN = {'max_speed_ms': 45.0, 'fuel_l': 5.0, 'fuel_km_per_l': 25.0, 'elec_cells': 4, 'elec_mah': 10000.0, 'elec_w': 30.0}
 KOPTER_VARSAYILAN = {'max_speed_ms': None, 'fuel_l': 0.0, 'fuel_km_per_l': 25.0, 'elec_cells': 4, 'elec_mah': 10000.0, 'elec_w': 30.0}
-PLANE_TIPLERI = ('sabit_kanat', 'vtol')
+# §25 INTERCEPTOR: elektrikli 4 pervaneli tailsitter — yakıt yok, 400 km/h (111,1 m/s) azami hız, 6S aviyonik bataryası
+INTERCEPTOR_VARSAYILAN = {'max_speed_ms': 111.1, 'fuel_l': 0.0, 'fuel_km_per_l': 25.0, 'elec_cells': 6, 'elec_mah': 8000.0, 'elec_w': 40.0}
+PLANE_TIPLERI = ('sabit_kanat', 'vtol', 'interceptor')
 SIM_PLN_THR_MUL = 'SIM_PLN_THR_MUL'
 SIM_SPEEDUP = 'SIM_SPEEDUP'
 # SIM_Plane varsayılan gövdesi (SIM_Plane.h default_coefficients + kurucu): kütle 2 kg, hover_throttle 0,7
@@ -46,6 +48,8 @@ HIZ_DESTEK_YOK = 'SITL ikilisi itki ölçeği (SIM_PLN_THR_MUL) desteklemiyor; a
 
 
 def varsayilanlar(tip):
+    if tip == 'interceptor':
+        return dict(INTERCEPTOR_VARSAYILAN)
     return dict(CAYMAZ_VARSAYILAN if tip in PLANE_TIPLERI else KOPTER_VARSAYILAN)
 
 
@@ -113,7 +117,23 @@ def thr_mul_icin(v_hedef, p=PLANE):
     return round(plane_suruklenme(v, p) / plane_tam_itki(1.0, p), 4)
 
 
-def hiz_parametreleri(v_max, kayitli=None, itki_olcegi=True):
+def thr_mul_tip(v, tip=None):
+    """Tipe göre SIM_PLN_THR_MUL: INTERCEPTOR tailsitter ölçüm uyumu (flightsim_icept; dörtlü motor itkisi ölçeklenmez), diğer uçaklar SIM_Plane fiziği."""
+    if tip == 'interceptor':
+        from . import flightsim_icept
+        return flightsim_icept.thr_mul_icin(v)
+    return thr_mul_icin(v)
+
+
+def stok_hiz(tip=None):
+    """Stok (SIM_PLN_THR_MUL 1) tam gaz seviye hız (m/s) — bilgi satırları."""
+    if tip == 'interceptor':
+        from . import flightsim_icept
+        return flightsim_icept.tam_gaz_hizi(1.0)
+    return plane_tam_gaz_hizi()
+
+
+def hiz_parametreleri(v_max, kayitli=None, itki_olcegi=True, tip=None):
     """Oturum başında yazılacak ArduPlane (+ SITL) parametreleri: AIRSPEED_MAX = v, AIRSPEED_CRUISE = v × (kayıtlı cruise/max oranı; yoksa 12/22),
     THR_MAX 100, yamalı ikilide SIM_PLN_THR_MUL. `kayitli`: ad → değer (dronun kalıcı parametreleri). Dönüş: [(ad, değer)]."""
     if v_max is None:
@@ -121,6 +141,9 @@ def hiz_parametreleri(v_max, kayitli=None, itki_olcegi=True):
     v = float(v_max)
     k = {str(a).upper(): float(b) for a, b in (kayitli or {}).items()} if isinstance(kayitli, dict) else {str(r['name']).upper(): float(r['value']) for r in (kayitli or [])}
     oran = 12.0 / 22.0
+    if tip == 'interceptor':   # §25 tailsitter: seyir azami hızın %80'i (düşük seyirde TECS gazı keser → kontrol otoritesi düşer; flightsim_icept)
+        from . import flightsim_icept
+        oran = flightsim_icept.CRUISE_ORAN
     if k.get('AIRSPEED_MAX') and k.get('AIRSPEED_CRUISE') and k['AIRSPEED_MAX'] > 0:
         oran = max(0.2, min(0.95, k['AIRSPEED_CRUISE'] / k['AIRSPEED_MAX']))
     cruise = round(v * oran, 1)
@@ -129,7 +152,7 @@ def hiz_parametreleri(v_max, kayitli=None, itki_olcegi=True):
         cruise = round(min(v, vmin + 2.0), 1)
     out = [('AIRSPEED_MAX', round(v, 1)), ('AIRSPEED_CRUISE', cruise), ('THR_MAX', 100.0)]
     if itki_olcegi:
-        out.append((SIM_PLN_THR_MUL, thr_mul_icin(v)))
+        out.append((SIM_PLN_THR_MUL, thr_mul_tip(v, tip)))
     return out
 
 

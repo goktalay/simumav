@@ -206,6 +206,14 @@ export function pipObstacleInsets(stage, mount, side) {
   const vis = e => e && e.offsetParent && e.getBoundingClientRect().width > 0;
   const k = stage?.querySelector?.('.fs-pn-kart');
   if (vis(k)) { const r = k.getBoundingClientRect(); if (r.left - m.left > m.width / 2) out.right = Math.max(12, Math.round(m.right - r.left + 12)); }
+  // Alt ortadaki kadran kümesi (.fs-gauges): sağ panel açıkken küme sağa kayar; PiP sütunu (kenardan ~PIP_L_W px) kümeyle yatayda çakışıyorsa
+  // PiP kümenin üstüne çıkar (sağ alt varsayılan konumda pencerenin kadranların arkasında kalmasını önler)
+  const g = stage?.querySelector?.('.fs-gauges');
+  if (vis(g)) {
+    const r = g.getBoundingClientRect(), col = 300;
+    const hit = side === 'l' ? r.left - m.left < (out.left ?? 12) + col : m.right - r.right < (out.right ?? 12) + col;
+    if (hit) out.bottom = Math.max(out.bottom || 0, Math.round(m.bottom - r.top + 8));
+  }
   if (side === 'l') for (const e of stage?.querySelectorAll?.('.fs-pn-yuzen, .fs-mp, .fs-speed-gauge, .sm-fly-stage .fs-net') || []) {
     if (!vis(e)) continue;
     const r = e.getBoundingClientRect();

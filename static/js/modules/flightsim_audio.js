@@ -44,6 +44,7 @@ export const AUDIO_MODELS = {
   helikopter: { kind: 'heli', blades: 3 },
   sabit_kanat: { kind: 'plane', cylinders: 1, blades: 2, idleRpm: 1500, maxRpm: 7500 },
   vtol: { kind: 'vtol', motors: 4, blades: 2, cylinders: 1, idleRpm: 1500, maxRpm: 7500 },
+  interceptor: { kind: 'copter', motors: 4, blades: 3 },   // §25 tailsitter: 4 elektrik motoru (askıda ve yatayda aynı motorlar)
 };
 export const audioModel = type => AUDIO_MODELS[type] || AUDIO_MODELS.multirotor;
 // Motor oranları: her motor hafif farklı devir (üretim toleransı + kontrolcü düzeltmesi) → doğal "vuruş"; 4 ve 6 için farklı diziler

@@ -42,7 +42,7 @@ const pad3 = v => String(Math.round(((v % 360) + 360) % 360)).padStart(3, '0');
 const f0 = v => (v == null || Number.isNaN(Number(v)) ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(1));
 const CARD = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' };
-const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL' };
+const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
 const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış' };
 const SEV_CLASS = { hata: 'err', uyari: 'warn', basari: 'ok', bilgi: '' };
 // GÖKTUNGU kalkış kontrol listesi (kalkis_kontrol.js) — simülatörde zorunlu maddeler; sunucu drone_takeoff_checks'e kaydeder (hub takeoff{kontrol})
@@ -93,7 +93,7 @@ export function createOpsPanel(stage, opts = {}) {
   let disposed = false, hubWs = null, hubTimer = 0, hubPing = 0, hubRetry = 0, hubClosed = false, ridSeq = 0;
   const pending = new Map();   // rid → {resolve, timer, name}
   const fold = lsGet(KEY_FOLD, { ops: true });   // İŞLEMLER varsayılan katlı (GÖKTUNGU'da İŞLEMLER düğmesi açar)
-  const isPlane = type === 'sabit_kanat' || type === 'vtol';
+  const isPlane = type === 'sabit_kanat' || type === 'vtol' || type === 'interceptor';
   const launchBtnText = () => (tele?.armed && (num(tele.alt_rel, 0) > 2 || (launch && launch.phase && launch.phase !== 'armed')) ? 'İniş' : (LAUNCH_BTN[launch?.method] || 'Kalkış'));
   const canCmd = () => canWrite && hub && hubOnline && hubCan !== false && state === 'HAZIR';
   const ico = (k, cls = '') => h('i', { class: `fs-pn-ico ${cls}`, html: ICO[k] });

@@ -15,7 +15,7 @@ import { clear, confirmDialog, fmtDateTime, fmtDuration, h, modal, toast, toastE
 import { launchLabel } from './flightsim_launch.js';
 import { layoutShort } from './flightsim_airframe.js';   // §13.1 kontrol düzeni sütunu (Detaylı)
 
-const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL' };
+const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
 
 const API = '/api/drone/sim/runs';
 const WORLD_MODE = { real: 'Gerçek arazi', google3d: 'Google 3B', procedural: 'Prosedürel' };

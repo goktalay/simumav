@@ -21,7 +21,7 @@ const DEFLECTIONS = [1.5, 3, 6, 12, 25];   // mm: STEP lineer sapma kademeleri (
 const AXES = ['+x', '-x', '+y', '-y', '+z', '-z'];
 const SOURCE_LABEL = { builtin: 'Dahili', design: 'Tasarım', upload: 'Yüklenen' };
 const SOURCE_TONE = { builtin: 'gray', design: 'purple', upload: 'blue' };
-const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL' };
+const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
 const LAYOUT_SHORT = { classic: 'Klasik', elevon: 'Elevon', vtail: 'V-kuyruk' };   // §13.1 kart rozeti (flightsim_airframe.LAYOUT_SHORT ile aynı)
 const fmtSize = b => (b == null ? '—' : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const isBuiltin = m => !!m && String(m.id).startsWith('builtin:');
@@ -356,13 +356,14 @@ export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false,
 // MOCK (?mock=1): dahili modeller + bellekte sahte yükleme
 // ======================================================================
 function mockModels() {
-  const B = { caymaz: ['Caymaz V3', ['sabit_kanat', 'vtol'], 'glb', 'elevon'], delta: ['Delta kanat', ['sabit_kanat', 'vtol'], 'procedural', 'elevon'], talon: ['Talon V-kuyruk', ['sabit_kanat'], 'glb', 'vtail'], quad: ['Quad', ['multirotor'], 'procedural'], hexa: ['Hexa', ['hexarotor'], 'procedural'], heli: ['Heli', ['helikopter'], 'procedural'] };
+  const B = { caymaz: ['Caymaz V3', ['sabit_kanat', 'vtol'], 'glb', 'elevon'], delta: ['Delta kanat', ['sabit_kanat', 'vtol'], 'procedural', 'elevon'], talon: ['Talon V-kuyruk', ['sabit_kanat'], 'glb', 'vtail'], quad: ['Quad', ['multirotor'], 'procedural'], hexa: ['Hexa', ['hexarotor'], 'procedural'], heli: ['Heli', ['helikopter'], 'procedural'],
+    icept_x4: ['INTERCEPTOR X4', ['interceptor'], 'glb'], p1sun: ['P1-SUN', ['interceptor'], 'glb'], sting: ['Sting', ['interceptor'], 'glb'] };
   const extra = [];
   let seq = 0;
   const thumbs = new Map();
   return {
     list: async type => ({ models: [...Object.entries(B).filter(([, v]) => v[1].includes(type)).map(([k, v]) => ({ id: `builtin:${k}`, name: type === 'vtol' && (k === 'caymaz' || k === 'delta') ? `VTOL-${v[0]}` : v[0], source: 'builtin', type, types: v[1], format: v[2], ready: true, has_prop: true, layout: v[3] || null, size: k === 'caymaz' ? 1500000 : k === 'talon' ? 44000 : null, thumb_url: thumbs.get(`builtin:${k}:${type}`) || null, glb_url: k === 'caymaz' ? '/static/models/caymaz-sim.glb' : k === 'talon' ? '/static/models/talon-vtail.glb' : null, orient: k === 'talon' ? { forward: '+x', up: '+y', scale: 1, offset: [0, 0, 0], prop: { mode: 'none', pos: [0, 0, 0], r: 0.3 } } : null })),
-      ...extra.filter(m => m.type === type)], defaults: { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', sabit_kanat: 'builtin:caymaz', vtol: 'builtin:caymaz' }, can_write: true, design_allowed: false, limits: { max_bytes: 50 * 1024 * 1024 } }),
+      ...extra.filter(m => m.type === type)], defaults: { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', sabit_kanat: 'builtin:caymaz', vtol: 'builtin:caymaz', interceptor: 'builtin:icept_x4' }, can_write: true, design_allowed: false, limits: { max_bytes: 50 * 1024 * 1024 } }),
     designFiles: async () => [],
     fromDesign: async () => { throw new Error('Sahte kipte yok'); },
     patch: async (id, body) => { const m = extra.find(x => x.id === id); Object.assign(m, body); return m; },

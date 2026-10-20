@@ -69,14 +69,14 @@ class GlbTest(unittest.TestCase):
                     if data[:8] == b'\x89PNG\r\n\x1a\n':
                         w, h = struct.unpack('>II', data[16:24])
                         self.assertLessEqual(max(w, h), MAX_TEX, f'{key}: doku {w}×{h}')
-            # sınır kutusu (metre; düğüm dönüşümleri dahil): 0,3 … 6 m — trimesh varsa
+            # sınır kutusu (metre; düğüm dönüşümleri dahil): 0,2 … 6 m — trimesh varsa (INTERCEPTOR X4 gerçek ölçüsü 0,25 m; STEP metre)
             try:
                 import trimesh
             except ImportError:
                 continue
             sc = trimesh.load(str(p), force='scene')
             ext = (sc.bounds[1] - sc.bounds[0]).tolist()
-            self.assertTrue(0.3 <= max(ext) <= 6.0, f'{key}: boyut {ext}')
+            self.assertTrue(0.2 <= max(ext) <= 6.0, f'{key}: boyut {ext}')
 
     def test_katalog_eslemesi(self):
         b = self.bridge
@@ -87,7 +87,8 @@ class GlbTest(unittest.TestCase):
         for key, g in b.GLB_MODELS.items():
             self.assertIn(key, keys[g['type']])
             self.assertIn(key, b.MODEL_ESLEME, f'{key}: çekirdek eşlemesi yok')
-            self.assertIn(b.MODEL_ESLEME[key], ('builtin:quad', 'builtin:hexa', 'builtin:heli', 'builtin:caymaz', 'builtin:delta', 'builtin:talon'))
+            self.assertIn(b.MODEL_ESLEME[key], ('builtin:quad', 'builtin:hexa', 'builtin:heli', 'builtin:caymaz', 'builtin:delta', 'builtin:talon',
+                                                  'builtin:icept_x4', 'builtin:p1sun', 'builtin:sting'))
             m = b.glb_model_api(key)
             self.assertEqual(m['glb'], f"/static/simumav/models/{g['file']}.glb")
             self.assertEqual((m['orient']['forward'], m['orient']['up']), ('+x', '+y'))
@@ -100,7 +101,7 @@ class GlbTest(unittest.TestCase):
         self.assertIsNone(b.model_gorsel('builtin:caymaz')['orient'])
         self.assertTrue(b.model_gorsel('bilinmeyen')['proc'])
         self.assertEqual(self.db.DEFAULT_DRONE['model_key'], 'glb:iris_fpv')
-        self.assertTrue(b.model_gecerli('fpv', 'proc:quad250') and b.model_gecerli('interceptor', 'proc:interceptor'))   # eski anahtarlar geçerli kalır
+        self.assertTrue(b.model_gecerli('fpv', 'proc:quad250') and b.model_gecerli('plane', 'proc:interceptor'))   # eski anahtarlar geçerli kalır (eski interceptor jetleri göç v2 ile 'plane')
 
     def test_export_manifesti(self):
         import importlib.util
