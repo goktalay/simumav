@@ -11,7 +11,9 @@
 //   Pervaneler gaz ile döner (yüksek devirde bulanık disk), elevonlar RC ile, seyir ışıkları (sol kırmızı / sağ yeşil / kuyruk beyaz strobe),
 //   yalnız dron gölge düşürür. Yönelim: ArduPilot roll/pitch/yaw (NED) → ENU quaternion (Euler 'ZXY': pitch, roll, −yaw).
 // • Kameralar (1–5, C döngü; §22): Takip (OrbitControls, hedef dron) · FPV ('pilot': burna sabit, gövdeyle döner, FOV 90–150 tekerlek, balıkgözü/vinyet
-//   geçişi, PiP) · Gimbal kamerası ('fpv': burun, gimbal ↑↓, FOV 78, askeri HUD) · Serbest (WASD/QE + fare sürükle) · Yer.
+//   geçişi) · Gimbal kamerası ('fpv': burun, gimbal ↑↓, yakınlaştırma +/− 1–8×, FOV 78, askeri HUD) · Serbest (WASD/QE + fare sürükle) · Yer.
+//   Kamera türü (§22.3; gündüz/termal/gece görüşü) araç kameralarına CAM_FRAG ile; kamera PiP'i (§22.4) aynı WebGL bağlamında render hedefi + viewport
+//   kopyası (setPipRect / swapPip / getPipSource). Gölgelendirici ve saf kurallar ./flightsim_camera.js'te.
 // • Telemetri (50 Hz'e dek): UYARLANIR gecikme tamponlu enterpolasyon — kareler kaynak zaman damgasıyla (yönelim tele.tbm, konum tele.tbm_pos; yoksa ts)
 //   iki ayrı zaman çizgisinde sıralı tamponlanır; oynatma başı kaynak zamanında gerçek süreyle ilerler, hedef gecikme 60 ms + 3×jitter (60…300 ms,
 //   ±10 ms/s); konum lineer / yönelim slerp; tampon bitince ölü hesap (hız + gövde açısal hızları rs/ps/ys, en çok 300 ms) ve gerçek kareye dönüşte
@@ -32,6 +34,7 @@ import { addLandingGear, createLaunchRig, RIG_FINE_ERR } from './flightsim_launc
 import { CTRL_RE, CTRL_MAX, controlInputs, surfaceTarget, easeSurface, layoutForModel } from './flightsim_airframe.js';   // §13.1 kontrol düzeni: servo → mantıksal eksen → yüzey açıları (ruddervator dahil)
 import { createTimeline } from './flightsim_interp.js';   // telemetri zaman çizgisi: uyarlanır gecikme tamponlu enterpolasyon (§5)
 import { createMissionLayer } from './flightsim_mission.js';   // §18: görev çizimi (tüp bacaklar, WP etiketleri, ikonlar) + iniş dairesi H
+import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
 
 const LIB = '/static/vendor/three/';
 export const ATTRIBUTION = 'Uydu: Esri, Maxar, Earthstar Geographics · Yükseklik: Mapzen / AWS Terrain Tiles · Binalar: © OpenStreetMap';
@@ -180,8 +183,8 @@ const loadLibs = () => (_libs ??= Promise.all(
 // 'fpv' = GİMBAL/görev kamerası (eğim ↑↓/tekerlek, ufuk sabit, askeri HUD, FOV 78). Kod adları değişmez (localStorage fs.cam, testler, CSS .fs-fpv).
 export const CAMERA_MODES = [['follow', 'Takip'], ['pilot', 'FPV'], ['fpv', 'Gimbal kamerası'], ['free', 'Serbest'], ['ground', 'Yer']];
 export const PILOT_FOV = { def: 120, min: 90, max: 150, step: 5 };   // FPV (pilot) görüş açısı (°; tekerlek ±5)
-export const PIP_SIZE = { w: 240, h: 135, margin: 12 };               // resim içinde resim (takip kamerası) — CSS px, sağ üst
-export const PIP_FPS = 20;                                            // PiP yenileme hızı (performans: ana sahne 60 fps hedef)
+export const PIP_SIZE = { w: 240, h: 135, margin: 12 };               // PiP varsayılan dikdörtgeni (setPipRect çağrılmadıysa sağ üst; CSS px) — §22.4
+export const GIMBAL_FOV = 78;                                         // gimbal kamerası temel görüş açısı (yakınlaştırma 1×)
 // Kamera döngüsü (C tuşu): mevcut kipten sonraki; bilinmeyen → ilk
 export const nextCameraMode = cur => { const i = CAMERA_MODES.findIndex(([k]) => k === cur); return CAMERA_MODES[(i + 1) % CAMERA_MODES.length][0]; };
 export const WORLD_DEFAULTS = {
@@ -291,30 +294,13 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true; controls.dampingFactor = 0.12; controls.maxPolarAngle = Math.PI * 0.49; controls.minDistance = 3; controls.maxDistance = 20000;
 
-  // ---------- FPV (pilot) son işleme: hafif balıkgözü (barrel) + vinyet (+ analog kipte doygunluk/renk kayması) — tam ekran quad, tek geçiş ----------
-  // Sahne önce bir render hedefine, sonra bozulma gölgelendiricisiyle ekrana çizilir; yalnız 'pilot' kipinde (diğer kiplerde doğrudan render, ek maliyet yok).
-  // Örnekleme: uv' = c + d·(1 + k·r²)·s — k > 0 kenarları içe sıkıştırır (barrel görünüm), s köşeleri kadraj içinde tutar (siyah köşe yok).
+  // ---------- araç kamerası son işleme (§22, §22.3): FPV balıkgözü (barrel) + vinyet (+ analog) ve kamera türü (termal / gece görüşü) — tek tam ekran geçiş ----------
+  // Sahne önce bir render hedefine, sonra CAM_FRAG (flightsim_camera.js) gölgelendiricisiyle ekrana çizilir: 'pilot' kipinde her zaman, gimbal ('fpv')
+  // kipinde tür gündüz değilse; dış gözlemci kiplerinde doğrudan render (ek maliyet yok). Örnekleme: uv' = c + d·(1 + k·r²)·s — k > 0 kenarları içe sıkıştırır.
   const post = { rt: null, scene: new T.Scene(), cam: new T.OrthographicCamera(-1, 1, 1, -1, 0, 1), quad: null, mat: null, w: 0, h: 0 };
   const POST_K = 0.12;   // bozulma katsayısı (hafif)
-  post.mat = new T.ShaderMaterial({
-    uniforms: { tDiffuse: { value: null }, k: { value: POST_K }, scale: { value: 1 / (1 + POST_K * 0.5) }, vignette: { value: 0.28 }, analog: { value: 0 } },
-    depthTest: false, depthWrite: false,
-    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-    fragmentShader: `uniform sampler2D tDiffuse; uniform float k, scale, vignette, analog; varying vec2 vUv;
-      void main(){
-        vec2 d = vUv - 0.5; float r2 = dot(d, d);
-        vec2 uv = 0.5 + d * (1.0 + k * r2) * scale;
-        vec3 c = texture2D(tDiffuse, uv).rgb;
-        if (analog > 0.5) {   // analog FPV alıcısı: doygunluk ↑, hafif sıcak/soğuk kanal kayması, biraz kontrast
-          float l = dot(c, vec3(0.299, 0.587, 0.114));
-          c = mix(vec3(l), c, 1.35);
-          c = (c - 0.5) * 1.08 + 0.5;
-          c.r *= 1.04; c.b *= 0.97;
-        }
-        float v = 1.0 - vignette * smoothstep(0.25, 0.9, r2 * 2.0);
-        gl_FragColor = vec4(c * v, 1.0);
-      }`,
-  });
+  const camMat = () => new T.ShaderMaterial({ uniforms: camUniforms(new T.Vector2(1 / 1024, 1 / 576)), depthTest: false, depthWrite: false, vertexShader: CAM_VERT, fragmentShader: CAM_FRAG });
+  post.mat = camMat();
   post.quad = new T.Mesh(new T.PlaneGeometry(2, 2), post.mat);
   post.quad.frustumCulled = false;
   post.scene.add(post.quad);
@@ -326,14 +312,67 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     post.w = w; post.h = h;
     return post.rt;
   };
-  // PiP (resim içinde resim; §22): ayrı küçük kamera (takip konumu) 20 fps'te küçük bir render hedefine, her karede sağ üste kopyalanır (ucuz blit)
-  const pip = { on: false, cam: new T.PerspectiveCamera(50, PIP_SIZE.w / PIP_SIZE.h, 0.5, 60000), rt: null, lastAt: 0, mat: null, quad: null, scene: new T.Scene() };
+  // Kamera türü (§22.3): 'day' | 'thermal' | 'night'; termal paleti; gimbal yakınlaştırması. Türü yalnız araç kameraları (gimbal/FPV) ve PiP'teki araç kamerası kullanır.
+  const camFx = { type: normCamType(opts.camType), palette: normPalette(opts.thermalPalette), zoom: clampZoom(opts.gimbalZoom ?? 1) };
+  // Kamera PiP'i (§22.4): ayrı küçük kamera; kaynak ana kipe göre (pipSourceFor: ana gimbal değilse gimbal, gimbalse önceki ana kip). Aynı WebGL bağlamı:
+  // küçük render hedefine PiP aralığıyla (30 fps; yavaş karede 15) çizilir, her karede CAM_FRAG ile ana görüntünün üstüne viewport/scissor kopyası.
+  const pip = { on: false, cam: new T.PerspectiveCamera(50, PIP_SIZE.w / PIP_SIZE.h, 0.5, 60000), rt: null, lastAt: 0, mat: null, quad: null, scene: new T.Scene(), rect: null };
   pip.cam.up.set(0, 0, 1);
-  pip.mat = new T.MeshBasicMaterial({ map: null, depthTest: false, depthWrite: false });
+  pip.mat = camMat();
   pip.quad = new T.Mesh(new T.PlaneGeometry(2, 2), pip.mat); pip.quad.frustumCulled = false; pip.scene.add(pip.quad);
-  const pipRect = () => {   // CSS piksel; OSD çerçeveyi buradan çizer
+  const pipRect = () => {   // CSS piksel (bağlama göre); dışarıdan setPipRect ile (sürüklenebilir pencere), yoksa sağ üst varsayılan
+    if (pip.rect) return { ...pip.rect };
     const W = Math.max(1, mountEl.clientWidth), m = PIP_SIZE.margin;
     return { x: W - PIP_SIZE.w - m, y: m, w: PIP_SIZE.w, h: PIP_SIZE.h };
+  };
+  // Termal ısı ipuçları (§22.3): termal geçişte sıcak nesnelerin malzemesi geçici olarak ısı düzeyinde düz renkle (MeshBasic) çizilir — dron gövdesi ılık,
+  // motor/pervane bölgesi sıcak, kalkış aracı/rampa ılık, su soğuk; gökyüzü ve sis soğuk (koyu). Işık sprite'ları (seyir halosu) gizlenir. Render sonrası geri alınır.
+  const heatMats = new Map();
+  // Isı değerleri mutlak; gölgelendirici termal kazancı (thermalGain: gece sahnesi aydınlatmasını normalize eder) uygular → malzeme ısı / kazanç ile çizilir
+  const heatMat = v => { const k = Math.round(clamp(v, 0, 1) * 64); if (!heatMats.has(k)) heatMats.set(k, new T.MeshBasicMaterial({ color: new T.Color(k / 64, k / 64, k / 64), fog: true })); return heatMats.get(k); };
+  const heatWorld = [];   // dünya içinden etiketli nesneler (su) — buildWorld her kurulumda boşaltır
+  let heatList = [], heatAt = -Infinity;
+  const THERMAL_SKY = new T.Color(0.07, 0.07, 0.075), thermalSky = new T.Color();
+  const collectHeat = now => {
+    const tg = thermalGain(W.time);
+    if (now - heatAt < 1000 && heatList.tg === tg) return heatList;
+    heatAt = now;
+    const out = [];
+    const add = (root, v, propV) => root?.traverse(o => {
+      if (o.isSprite) { out.push({ o, sprite: true }); return; }
+      if (!o.isMesh) return;
+      const pv = drone.props.some(p => p === o || p.children?.includes(o)) ? propV : v;
+      out.push({ o, m: heatMat((o.userData.heat ?? pv) / tg) });
+    });
+    add(drone.group, 0.74, 0.9);
+    add(rig?.group, 0.58, 0.58);
+    for (const o of heatWorld) out.push({ o, m: heatMat((o.userData.heat ?? 0.06) / tg) });
+    out.tg = tg;
+    heatList = out;
+    return out;
+  };
+  const withHeat = (on, now, fn) => {
+    if (!on) { fn(); return; }
+    const list = collectHeat(now), saved = [];
+    for (const it of list) { if (it.sprite) { saved.push([it.o, it.o.visible]); it.o.visible = false; } else { saved.push([it.o, it.o.material]); it.o.material = it.m; } }
+    const bg = scene.background, fc = scene.fog ? scene.fog.color.clone() : null;
+    thermalSky.copy(THERMAL_SKY).multiplyScalar(1 / list.tg);   // gökyüzü soğuk kalsın (kazançla parlamasın)
+    scene.background = thermalSky; if (scene.fog) scene.fog.color.copy(thermalSky);
+    try { fn(); } finally {
+      scene.background = bg; if (fc) scene.fog.color.copy(fc);
+      for (const [o, v] of saved) { if (typeof v === 'boolean') o.visible = v; else o.material = v; }
+    }
+  };
+  // Gölgelendirici tekdüzeleri: kaynak kip (balıkgözü yalnız FPV), tür, palet, gece kazancı, düşük çözünürlük (termal), hedef boyutu
+  const setCamUniforms = (mat, mode, w, h, small) => {
+    const u = mat.uniforms, type = camFxApplies(mode) ? camFx.type : 'day', pilot = mode === 'pilot';
+    u.k.value = pilot ? POST_K : 0; u.scale.value = pilot ? 1 / (1 + POST_K * 0.5) : 1;
+    u.vignette.value = pilot ? 0.28 : 0; u.analog.value = pilot && fpv.analog ? 1 : 0;
+    u.camType.value = camTypeIndex(type); u.palette.value = paletteIndex(camFx.palette);
+    u.time.value = (performance.now() / 1000) % 1000; u.gain.value = type === 'thermal' ? thermalGain(W.time) : nightGain(W.time);
+    u.lowres.value = type === 'thermal' ? (small ? 0 : 640) : 0; u.aspect.value = w / Math.max(1, h);
+    u.texel.value.set(1 / Math.max(1, w), 1 / Math.max(1, h));
+    return type;
   };
 
   // ---------- dünya ----------
@@ -504,6 +543,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       const water = new T.Mesh(new T.PlaneGeometry(size * 1.02, size * 1.02), new T.MeshPhongMaterial({
         color: night ? 0x0b1d3a : dusk ? 0x3b5f8a : 0x2f6fa8, transparent: true, opacity: 0.86, shininess: 90, specular: 0x88aadd }));
       water.position.z = waterZ;
+      water.userData.heat = 0.05; heatWorld.push(water);   // termal: su soğuk (§22.3)
       gWorld.add(water);
     }
     const hdg = num(W.runway_heading, 0);
@@ -590,7 +630,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       const z = zmin - 0.2;
       const shape = new T.Shape(pts.map(([x, y]) => new T.Vector2(x, y)));
       const m = new T.Mesh(new T.ShapeGeometry(shape), waterMat);
-      m.position.z = z;
+      m.position.z = z; m.userData.heat = 0.05; heatWorld.push(m);   // termal: su soğuk
       gWorld.add(m);
       waterPolys.push({ pts, z, x1, x2, y1, y2 });
     }
@@ -772,7 +812,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       }
     }
     disposeGroup(gWorld);
-    buildingsAABB = []; waterPolys = [];
+    buildingsAABB = []; waterPolys = []; heatWorld.length = 0;
     if (g3d) buildGoogle(Wn); else if (real) buildReal(Wn, real); else buildProcedural(Wn);
     onProgress?.({ stage: 'done', real: !!real, google: !!g3d, counts: terrain.counts || null, homeElev: terrain.homeElev ?? null, hmin: terrain.hmin ?? null, hmax: terrain.hmax ?? null });
   }
@@ -1147,6 +1187,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
 
   // ---------- kameralar ----------
   let camMode = 'follow', gimbal = -10;   // derece; 0 = burun hizası, eksi = aşağı (gimbal kamerası 'fpv')
+  let prevMode = 'follow', lastFollowOff = null;   // §22.4: önceki ana kip (PiP kaynağı / çift tık yer değiştirme), takipten çıkarken kullanıcının yörünge ofseti
   // FPV (pilot) ayarları (§22): görüş açısı (tekerlek), analog efekt (gölgelendiricide doygunluk; tarama/parazit OSD katmanında), burun görünür (kamera biraz
   // geride ve üstte: gövde ucu / pervane kadrajın altında görünür)
   const fpv = { fov: clamp(num(opts.pilotFov, PILOT_FOV.def), PILOT_FOV.min, PILOT_FOV.max), analog: !!opts.fpvAnalog, nose: opts.fpvNose !== false };
@@ -1158,12 +1199,17 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (typeof mode === 'number') mode = CAMERA_MODES[mode - 1]?.[0];
     if (!CAMERA_MODES.some(([k]) => k === mode)) return;
     const prev = camMode;
+    if (prev === 'follow' && mode !== 'follow') lastFollowOff = camera.position.clone().sub(controls.target);   // yer değiştirip dönünce kullanıcının bakış açısı korunur
+    if (mode !== prev) prevMode = prev;
     camMode = mode;
     controls.enabled = mode === 'follow';
-    camera.fov = mode === 'fpv' ? 78 : mode === 'pilot' ? fpv.fov : 60;
+    camera.fov = mode === 'fpv' ? gimbalZoomFov(GIMBAL_FOV, camFx.zoom) : mode === 'pilot' ? fpv.fov : 60;
     camera.near = mode === 'pilot' ? 0.05 : 0.5;   // FPV: burun/pervane kenarı kesilmesin
     camera.updateProjectionMatrix();
-    if (mode === 'follow') resetCamera();
+    if (mode === 'follow') {
+      resetCamera();
+      if (lastFollowOff && prev !== 'follow') { camera.position.copy(cur.pos).add(lastFollowOff); controls.update(); }
+    }
     if (mode === 'free' && prev !== 'free') {
       // Serbest kamera: bulunduğu yerden devam; yön açılarını mevcut bakıştan türet
       camera.getWorldDirection(tmpV);
@@ -1187,6 +1233,13 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const RC_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
   const setKeyboardLock = v => { keyLock = !!v; free.keys.clear(); };
   const setGimbal = delta => { gimbal = clamp(gimbal + delta, -90, 30); return gimbal; };
+  // Gimbal yakınlaştırma 1×–8× (§22.4): + / − tuşları, Shift+tekerlek, PiP üstünde tekerlek; FOV = 2·atan(tan(39°)/z)
+  const setGimbalZoom = z => {
+    camFx.zoom = clampZoom(z);
+    if (camMode === 'fpv') { camera.fov = gimbalZoomFov(GIMBAL_FOV, camFx.zoom); camera.updateProjectionMatrix(); }
+    opts.onGimbalZoom?.(camFx.zoom);
+    return camFx.zoom;
+  };
   // FPV (pilot) görüş açısı: 90–150°, tekerlek ±5; kip etkinse projeksiyon hemen güncellenir
   const setPilotFov = v => {
     fpv.fov = clamp(Math.round(num(v, PILOT_FOV.def)), PILOT_FOV.min, PILOT_FOV.max);
@@ -1203,6 +1256,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if ((e.key === 'c' || e.key === 'C') && !e.shiftKey) { setCamera(nextCameraMode(camMode)); e.preventDefault(); return; }
     if (keyLock && RC_KEYS.has(e.key.toLowerCase())) return;
     if (camMode === 'fpv' && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { setGimbal(e.key === 'ArrowUp' ? 5 : -5); e.preventDefault(); return; }
+    if (camMode === 'fpv' && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_')) { setGimbalZoom(camFx.zoom * (e.key === '-' || e.key === '_' ? 1 / GIMBAL_ZOOM.step : GIMBAL_ZOOM.step)); e.preventDefault(); return; }
     if (camMode === 'free') { const k = e.key.toLowerCase(); if ('wasdqe'.includes(k) || e.key === 'Shift') { free.keys.add(k === 'shift' ? 'shift' : k); e.preventDefault(); } }
   };
   const onKeyUp = e => { free.keys.delete(e.key.toLowerCase()); if (e.key === 'Shift') free.keys.delete('shift'); };
@@ -1214,7 +1268,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   };
   const onPointerUp = () => { free.drag = null; };
   const onWheel = e => {
-    if (camMode === 'fpv') { setGimbal(e.deltaY > 0 ? -3 : 3); e.preventDefault(); }
+    if (camMode === 'fpv' && e.shiftKey) { setGimbalZoom(camFx.zoom * ((e.deltaY || e.deltaX) > 0 ? 1 / GIMBAL_ZOOM.step : GIMBAL_ZOOM.step)); e.preventDefault(); }   // Shift+tekerlek: yakınlaştırma
+    else if (camMode === 'fpv') { setGimbal(e.deltaY > 0 ? -3 : 3); e.preventDefault(); }
     else if (camMode === 'pilot') { setPilotFov(fpv.fov + (e.deltaY > 0 ? PILOT_FOV.step : -PILOT_FOV.step)); e.preventDefault(); }   // FPV: tekerlek = görüş açısı
   };
   if (!preview) {
@@ -1445,20 +1500,9 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     } else if (camMode === 'follow') {
       controls.update();
     } else if (camMode === 'fpv') {
-      // Gimbal kamerası — burun konumu: gövde +Y yönünde model yarıçapı kadar ileri, biraz yukarı; bakış: gövde yönelimi × (90° + gimbal) X dönüşü
-      tmpV.set(0, drone.nose, 0.12 * MODEL_SCALE).applyQuaternion(cur.q);
-      camera.position.copy(cur.pos).add(tmpV);
-      tmpQ.setFromAxisAngle(tmpV2.set(1, 0, 0), (90 + gimbal) * DEG);
-      camera.quaternion.copy(cur.q).multiply(tmpQ);
+      poseGimbal(camera);
     } else if (camMode === 'pilot') {
-      // GERÇEK FPV (§22): kamera burna sabit (burun noktası + küçük ileri ofset; 'burun görünür' açıkken biraz geride ve üstte → gövde ucu/pervane kadrajda),
-      // gövdeyle birlikte döner: roll/pitch/yaw TAM uygulanır (ufuk yatar); gimbal yok. Gösterilen (kilit/düzenek dahil) gövde konumu kullanılır.
-      // ofsetler model yarıçapına oranlı (kopter 0,75 m → birkaç cm; Caymaz ~3,8 m → ~30 cm geride): burun görünürken gövde ucu kadrajın altında
-      const back = fpv.nose ? -0.08 * drone.radius : 0.02 * drone.radius, up = fpv.nose ? 0.05 * drone.radius + 0.03 : 0.03 * drone.radius + 0.02;
-      tmpV.set(0, drone.nose + back, up).applyQuaternion(drone.group.quaternion);
-      camera.position.copy(drone.group.position).add(tmpV);
-      tmpQ.setFromAxisAngle(tmpV2.set(1, 0, 0), 90 * DEG);   // gövde +Y (burun) → kamera −Z (bakış)
-      camera.quaternion.copy(drone.group.quaternion).multiply(tmpQ);
+      posePilot(camera);
     } else if (camMode === 'free') {
       const sp = (free.keys.has('shift') ? 120 : 30) * dt;
       tmpE.set((90 + free.pitch) * DEG, 0, free.yaw * DEG, 'ZXY');
@@ -1478,41 +1522,71 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       camera.fov = clamp(60 * 35 / Math.max(dist, 1), 5, 60);   // uzaklaştıkça yakınlaştır (teleobjektif)
       camera.updateProjectionMatrix();
     }
-    if (camMode === 'pilot' && !preview) {
-      // FPV: sahne → render hedefi → balıkgözü/vinyet geçişi (ek maliyet tek tam ekran quad; 60 fps hedef)
+    frameMs += (Math.min(200, rawDt * 1000) - frameMs) * 0.1;   // ortalama kare süresi (PiP yarı hız kararı)
+    const fxType = camFxApplies(camMode) ? camFx.type : 'day';
+    if (!preview && (camMode === 'pilot' || fxType !== 'day')) {
+      // Araç kamerası (§22/§22.3): sahne → render hedefi (termalde ısı malzemeleriyle) → CAM_FRAG (FPV balıkgözü/vinyet/analog · termal · gece görüşü)
       const rt = ensurePostTarget();
-      renderer.setRenderTarget(rt);
-      renderer.render(scene, camera);
-      renderer.setRenderTarget(null);
+      withHeat(fxType === 'thermal', now, () => { renderer.setRenderTarget(rt); renderer.render(scene, camera); renderer.setRenderTarget(null); });
       post.mat.uniforms.tDiffuse.value = rt.texture;
-      post.mat.uniforms.analog.value = fpv.analog ? 1 : 0;
+      setCamUniforms(post.mat, camMode, rt.width, rt.height, false);
       renderer.render(post.scene, post.cam);
-      if (pip.on) renderPip(now);
     } else {
       renderer.render(scene, camera);
     }
+    if (pip.on && !preview) renderPip(now);
     if (frameHooks.size) frameHooks.forEach(fn => { try { fn(canvas); } catch { /* kanca hatası kareyi bozmaz */ } });   // §17: render SONRASI (aynı rAF turu; preserveDrawingBuffer gerekmez)
   }
-  // PiP (§22): takip kamerası konumundan (dronun arkası/üstü, followOff × yarıçap) küçük render hedefine PIP_FPS ile; her karede sağ üste kopyalanır.
-  // Gölge haritası PiP geçişinde yenilenmez (autoUpdate kapalı), sis/gökyüzü aynı sahne.
+  // Araç kamera pozları (ana kamera ve PiP aynı fonksiyonlar)
+  // Gimbal kamerası — burun konumu: gövde +Y yönünde model yarıçapı kadar ileri, biraz yukarı; bakış: gövde yönelimi × (90° + gimbal) X dönüşü
+  function poseGimbal(cam) {
+    tmpV.set(0, drone.nose, 0.12 * MODEL_SCALE).applyQuaternion(cur.q);
+    cam.position.copy(cur.pos).add(tmpV);
+    tmpQ.setFromAxisAngle(tmpV2.set(1, 0, 0), (90 + gimbal) * DEG);
+    cam.quaternion.copy(cur.q).multiply(tmpQ);
+  }
+  // GERÇEK FPV (§22): kamera burna sabit (burun noktası + küçük ileri ofset; 'burun görünür' açıkken biraz geride ve üstte → gövde ucu/pervane kadrajda),
+  // gövdeyle birlikte döner: roll/pitch/yaw TAM uygulanır (ufuk yatar); gimbal yok. Gösterilen (kilit/düzenek dahil) gövde konumu kullanılır.
+  // ofsetler model yarıçapına oranlı (kopter 0,75 m → birkaç cm; Caymaz ~3,8 m → ~30 cm geride): burun görünürken gövde ucu kadrajın altında
+  function posePilot(cam) {
+    const back = fpv.nose ? -0.08 * drone.radius : 0.02 * drone.radius, up = fpv.nose ? 0.05 * drone.radius + 0.03 : 0.03 * drone.radius + 0.02;
+    tmpV.set(0, drone.nose + back, up).applyQuaternion(drone.group.quaternion);
+    cam.position.copy(drone.group.position).add(tmpV);
+    tmpQ.setFromAxisAngle(tmpV2.set(1, 0, 0), 90 * DEG);   // gövde +Y (burun) → kamera −Z (bakış)
+    cam.quaternion.copy(drone.group.quaternion).multiply(tmpQ);
+  }
+  // Kamera PiP'i (§22.4): kaynak = pipSourceFor(ana kip, önceki ana kip) — ana gimbal değilse gimbal kamerası (tür efekti ve yakınlaştırma ile), gimbalse
+  // önceki ana kip (takip: kullanıcının yörünge ofseti; FPV: balıkgözü). Render hedefi PiP'in CSS boyutu × min(dpr,1.5) × 0.75; pipInterval ile
+  // (30 fps, ortalama kare > 22 ms ise 15 fps). Gölge haritası PiP geçişinde yenilenmez. Kopya her karede (viewport + scissor; CAM_FRAG).
+  // Sekme gizliyken requestAnimationFrame durur → PiP de durur.
   const pipStats = { renders: 0, blits: 0 };
+  let frameMs = 16;
+  const pipSource = () => pipSourceFor(camMode, prevMode);
   function renderPip(now) {
-    const pr = renderer.getPixelRatio(), rw = Math.round(PIP_SIZE.w * pr), rh = Math.round(PIP_SIZE.h * pr);   // hedef: tampon piksel
-    if (!pip.rt || pip.rt.width !== rw || pip.rt.height !== rh) { pip.rt?.dispose(); pip.rt = new T.WebGLRenderTarget(rw, rh, { depthBuffer: true, stencilBuffer: false }); pip.mat.map = pip.rt.texture; pip.mat.needsUpdate = true; pip.lastAt = 0; }
-    if (now - pip.lastAt >= 1000 / PIP_FPS) {
-      pip.lastAt = now;
-      tmpV.copy(followOff).multiplyScalar(Math.max(2, drone.radius));
-      pip.cam.position.copy(cur.pos).add(tmpV);
-      pip.cam.position.z = Math.max(pip.cam.position.z, terrainHeight(pip.cam.position.x, pip.cam.position.y) + 1);
-      pip.cam.lookAt(cur.pos);
-      pip.cam.far = camera.far; pip.cam.updateProjectionMatrix();
+    const r = pipRect(), src = pipSource();
+    const pr = Math.min(renderer.getPixelRatio(), 1.5) * PIP_RES_SCALE, rw = Math.max(64, Math.round(r.w * pr)), rh = Math.max(36, Math.round(r.h * pr));   // hedef: düşük çözünürlük
+    if (!pip.rt || pip.rt.width !== rw || pip.rt.height !== rh) { pip.rt?.dispose(); pip.rt = new T.WebGLRenderTarget(rw, rh, { depthBuffer: true, stencilBuffer: false }); pip.lastAt = 0; }
+    if (now - pip.lastAt >= pipInterval(frameMs) || pip.src !== src) {
+      pip.lastAt = now; pip.src = src;
+      if (src === 'fpv') { poseGimbal(pip.cam); pip.cam.fov = gimbalZoomFov(GIMBAL_FOV, camFx.zoom); pip.cam.near = 0.5; }
+      else if (src === 'pilot') { posePilot(pip.cam); pip.cam.fov = fpv.fov; pip.cam.near = 0.05; }
+      else {
+        tmpV.copy(lastFollowOff || tmpV2.copy(followOff).multiplyScalar(Math.max(2, drone.radius)));
+        pip.cam.position.copy(cur.pos).add(tmpV);
+        pip.cam.position.z = Math.max(pip.cam.position.z, terrainHeight(pip.cam.position.x, pip.cam.position.y) + 1);
+        pip.cam.lookAt(cur.pos); pip.cam.fov = 50; pip.cam.near = 0.5;
+      }
+      pip.cam.aspect = r.w / Math.max(1, r.h); pip.cam.far = camera.far; pip.cam.updateProjectionMatrix();
       const sh = renderer.shadowMap.autoUpdate; renderer.shadowMap.autoUpdate = false;
-      renderer.setRenderTarget(pip.rt); renderer.render(scene, pip.cam); renderer.setRenderTarget(null);
-      renderer.shadowMap.autoUpdate = sh;
+      const thermal = camFxApplies(src) && camFx.type === 'thermal';
+      withHeat(thermal, now, () => { renderer.setRenderTarget(pip.rt); renderer.render(scene, pip.cam); renderer.setRenderTarget(null); });
+      renderer.shadowMap.autoUpdate = sh;   // Google 3B: karolar ana kameraya göre yüklüdür (PiP aynı sahneyi başka açıdan çizer; ayrı LOD güncellemesi yok)
       pipStats.renders++;
     }
-    // kopya: sağ üst köşe (viewport + scissor; ana görüntünün üstüne)
-    const r = pipRect(), Wc = Math.max(1, mountEl.clientWidth), Hc = Math.max(1, mountEl.clientHeight);   // setViewport/setScissor CSS px alır (pixelRatio içeride)
+    // kopya: PiP dikdörtgeni (viewport + scissor; ana görüntünün üstüne), tür efekti CAM_FRAG ile
+    pip.mat.uniforms.tDiffuse.value = pip.rt.texture;
+    setCamUniforms(pip.mat, src, rw, rh, true);
+    const Wc = Math.max(1, mountEl.clientWidth), Hc = Math.max(1, mountEl.clientHeight);   // setViewport/setScissor CSS px alır (pixelRatio içeride)
     renderer.setViewport(r.x, Hc - r.y - r.h, r.w, r.h); renderer.setScissor(r.x, Hc - r.y - r.h, r.w, r.h); renderer.setScissorTest(true);
     renderer.render(pip.scene, post.cam);
     renderer.setScissorTest(false); renderer.setViewport(0, 0, Wc, Hc);
@@ -1569,7 +1643,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     canvas.removeEventListener('wheel', onWheel);
     controls.dispose();
     disposeGroup(gWorld); disposeGroup(drone.group); mission.dispose();
-    post.rt?.dispose(); post.mat.dispose(); post.quad.geometry.dispose(); pip.rt?.dispose(); pip.mat.dispose(); pip.quad.geometry.dispose();
+    post.rt?.dispose(); post.mat.dispose(); post.quad.geometry.dispose(); pip.rt?.dispose(); pip.mat.dispose(); pip.quad.geometry.dispose(); heatMats.forEach(m => m.dispose()); heatMats.clear();
     renderer.dispose();
     renderer.forceContextLoss?.();
     canvas.remove();
@@ -1579,7 +1653,14 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     setTelemetry, setCamera, getCamera: () => camMode, setGimbal, getGimbal: () => gimbal, resetCamera, snapCamera, terrainHeight, toLocal,
     // FPV (pilot) kipi (§22): görüş açısı 90–150 (tekerlek), analog efekt (gölgelendirici doygunluğu), burun görünür, PiP (takip kamerası sağ üst, 20 fps)
     setPilotFov, getPilotFov: () => fpv.fov, setFpvAnalog: v => { fpv.analog = !!v; }, getFpvAnalog: () => fpv.analog, setFpvNose: v => { fpv.nose = !!v; }, getFpvNose: () => fpv.nose,
-    setPip: v => { pip.on = !!v; }, getPip: () => pip.on, pipRect, pipStats: () => ({ ...pipStats }),
+    setPip: v => { pip.on = !!v; }, getPip: () => pip.on, pipRect, pipStats: () => ({ ...pipStats, interval: pipInterval(frameMs), frameMs, rt: pip.rt ? [pip.rt.width, pip.rt.height] : null }),
+    // §22.4 kamera PiP'i (sürüklenebilir pencere: flightsim_camera.js createCameraPip) + §22.3 kamera türü
+    setPipRect: r => { pip.rect = r && r.w > 0 && r.h > 0 ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } : null; },
+    getPipSource: pipSource, getPrevCamera: () => prevMode,
+    swapPip: () => { const t = pipSwapTarget(camMode, prevMode); setCamera(t); return t; },   // çift tık: ana gimbal değilse gimbal; gimbalse PiP'teki kip
+    setCamType: t => { camFx.type = normCamType(t); pip.lastAt = 0; return camFx.type; }, getCamType: () => camFx.type,
+    setThermalPalette: p => { camFx.palette = normPalette(p); return camFx.palette; }, getThermalPalette: () => camFx.palette,
+    setGimbalZoom, getGimbalZoom: () => camFx.zoom,
     cameraState: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z, az: controls.getAzimuthalAngle(), pol: controls.getPolarAngle(), dist: camera.position.distanceTo(controls.target) }),   // teşhis (§14 testleri: fare ile döndürme çalışıyor mu)
     setWorld, setOrigin, setType, snapshotModel, clearCollision, resize, dispose, netStats, motionStats, setKeyboardLock,
     setLaunch, setLaunchPhase, get launchPhase() { return rig ? rig.phase : null; }, get groundLocked() { return gLock.on; },   // kalkış yöntemi + yerde kilit (§13)

@@ -222,6 +222,13 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
     (size_m, trees_pct|tree_density, extra_buildings|building_count, fog_pct|fog, runway_deg|runway_heading, runway, time_of_day|time) HEPGO WORLD_DEFAULTS'a; rüzgâr
     tracks.wind'den. Kurulum HEPGO flightsim.js renderSession ile aynı (createFlightSim3D opts: camera, pilotFov, fpvAnalog, fpvNose, onPilotFov, g3dKey, onFallback).
   • Kameralar: HEPGO CAMERA_MODES (Takip · FPV 'pilot' + OSD · Gimbal 'fpv' + askeri HUD · Serbest · Yer); FPV dron başlangıçta 'pilot'. Ayarlar.analog_fpv → analog OSD.
+  • Kamera türü + PiP (HEPGO docs/ucus-simulatoru.md §22.3–22.5): pilot adımında oyun kartları `fly/camera_pick.js` (Gündüz · Termal · Gece görüşü; önizleme
+    /sim/flightsim_camera.js ile 2B tuvalde — ek WebGL bağlamı yok; termalde palet seçici). wizard.js'e DOKUNULMAZ: index.js pilot adımına kartı ve BAŞLA
+    gövdesine `camera` ekler. Sunucu `StartIn.camera` (≤ 8 karakter) → `bridge.ucus_baslat(camera=…)` → `flightsim.kamera_dogrula` (geçersiz → 422) →
+    çekirdek oturum `camera` + `flights.snapshot.camera`; GET /api/fly/{id} ve /api/fly/current `camera` döner (uçuşa dönüşte aynı tür). Sahnede
+    📷 menüsü (T / Shift+T / V), sürüklenebilir kamera PiP'i (çift tık → gimbal; aynı WebGL bağlamı, `__smGl` 1 kalır), tür değişimi sessiz WS `camera`
+    komutu (SIM_KOMUT; çekirdek oturum son türü saklar). Varsayılan: dron için yerel son seçim (`fs.cam.byDrone`) → son tercih → gündüz. Metinler `camera.*`
+    (7 dil; `camTr` paylaşılan modülün Türkçe metnini anahtara eşler). Operasyon replay'i Cesium haritasıdır (3B kamera yok) → tür yalnız snapshot'ta.
   • SİMÜLASYON PARİTESİ (HEPGO renderSession ile birebir; kullanıcı simumav.com'da üç gerilemeyi bildirdi):
     – Titreme: telemetri 3B'nin uyarlanır tamponlu zaman çizgisine (flightsim3d.js içindeki flightsim_interp.js) HEPGO sırasıyla verilir (setTelemetry →
       HUD/OSD/ses/panel); `net: 50 Hz · jitter · tampon · DR` etiketi (.fs-net, alt çubuk üstü sağ); teşhis `/app/?netsim=jitter30,loss5,delay40#/fly/<id>`

@@ -3,7 +3,7 @@
 //   params: {} → sihirbaz; { id | flight } → süren uçuşa geri dön (GET /api/fly/{id} → start biçimi).
 // Sihirbaz (oyun tadında, 5 adım; wizard.js saf adım makinesi): 1 dron (kütüphane kartları + dönen 3B önizleme, /api/hangar) · 2 parkur (/api/tracks;
 // dünya kipi + halka sayısı) · 3 kalkış yöntemi (yalnız plane/interceptor/vtol: Rampa / Araç Üstü / Tekerlekli / ELDEN ATIŞ; açı/hız) · 4 görev
-// (isteğe bağlı, /api/missions?track_id=) · 5 pilot (/api/crew; varsayılan seçili) + kayıt seçenekleri (video / .bin) → BAŞLA (geri sayım) →
+// (isteğe bağlı, /api/missions?track_id=) · 5 pilot (/api/crew; varsayılan seçili) + kamera türü (./camera_pick.js) + kayıt seçenekleri (video / .bin) → BAŞLA (geri sayım) →
 // (3b: "Güç ve yakıt" — power.js createPowerStep: hangar değerleri ön dolu, son uçuş ölçümü "Önerilen", simülasyon hızı ≤ meta.power.max_speedup; §10)
 // session.js openSession. Stiller: ./fly.css (sihirbaz + sahne ekleri) ve ./fly-sim.css (HEPGO fs-* kopyası) bir kez eklenir.
 import { clear, h, toast, toastError, confirmDialog, fmtDuration, t as tr, onLeave, runLeave } from './simui.js';
@@ -11,6 +11,7 @@ import { net } from './net.js';
 import { COUNTDOWN_S, LAUNCH_LIMITS, LAUNCH_METHODS_SM, STEP_TITLES, TYPE_LABEL, WORLD_MODE_LABEL, airframeLabel, airframeOf, countdownAt, createWizard, launchLabelSm, modelFor, needsAirframe, needsLaunch, simType, speedScale, worldFromTrack } from './wizard.js';
 import { openSession, startFlight, fetchMeta } from './session.js';
 import { canFuel, createPowerStep, powerOf } from './power.js';
+import { createCameraPick } from './camera_pick.js';   // kamera türü kartları (pilot adımı; HEPGO §22.3)
 
 const here = new URL('.', import.meta.url);
 function ensureCss() {
@@ -66,6 +67,7 @@ async function renderWizard(view, ctx) {
   } catch (err) { toastError(err); clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Veriler alınamadı: {e}', { e: err.message })), h('button', { class: 'btn primary', type: 'button', onclick: () => renderWizard(view, ctx) }, 'Yeniden dene'))); return; }
   if (!data.drones.length) { clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Hangarınız boş. Önce bir dron ekleyin.')), h('button', { class: 'btn primary', type: 'button', onclick: () => ctx.go('#/hangar') }, 'Hangar\'a git'))); return; }
   const W = createWizard(data, ctx.preset || {});
+  const camPick = createCameraPick({ h, tr, getDrone: () => W.drone() });
   const PREVIEW_URL = '/sim/flightsim3d.js';
   let preview = null, previewBox = null, previewType = null, previewModelId = null, destroyed = false;
 
@@ -218,7 +220,8 @@ async function renderWizard(view, ctx) {
     const drawList = () => clear(list, data.pilots.map(p => card(p.id === W.state.pilot_id, { icon: p.svg ? h('i', { class: 'sm-ico sm-ico-pilot', html: p.svg }) : h('i', { class: 'sm-ico sm-ico-pilot', html: '<svg viewBox="0 0 48 48"><circle cx="24" cy="16" r="9"/><path d="M8 42c2-10 8-14 16-14s14 4 16 14z"/></svg>' }), title: p.name, sub: `${p.flights || 0} uçuş · ${(Number(p.hours) || 0).toFixed(1)} sa`, badge: p.is_default ? 'Varsayılan' : null, onClick: () => { W.set('pilot_id', p.id); drawList(); drawFoot(); } })));
     drawList();
     const cb = (key, label, hint) => { const inp = h('input', { type: 'checkbox', checked: !!W.state.record[key], onchange: () => W.set('record', { [key]: inp.checked }) }); return h('label', { class: 'check sm-rec-opt' }, inp, h('span', null, h('b', null, label), h('small', { class: 'muted' }, hint))); };
-    body.append(list, h('div', { class: 'sm-rec-opts' }, h('h3', null, 'Kayıt seçenekleri'), cb('video', 'Video kaydı', '3B sahne + HUD/OSD + motor sesi (WebM); uçuş bitince Operasyon\'da'), cb('bin', 'Uçuş logu (.bin)', 'DataFlash log → kayıttan oynatma ve analiz')));
+    camPick.refresh();
+    body.append(list, camPick.el, h('div', { class: 'sm-rec-opts' }, h('h3', null, 'Kayıt seçenekleri'), cb('video', 'Video kaydı', '3B sahne + HUD/OSD + motor sesi (WebM); uçuş bitince Operasyon\'da'), cb('bin', 'Uçuş logu (.bin)', 'DataFlash log → kayıttan oynatma ve analiz')));
   };
   const draw = () => {
     clear(body);
@@ -236,7 +239,7 @@ async function renderWizard(view, ctx) {
     if (starting || !W.ready()) return;
     starting = true; startBtn.disabled = true;
     document.documentElement.requestFullscreen?.().catch(() => {});   // kullanıcı tıklaması içinde (reddedilirse sessiz)
-    const payload = W.payload();
+    const payload = { ...W.payload(), camera: camPick.value };   // §22.3 kamera türü
     countdown.hidden = false;
     const t0 = performance.now();
     await new Promise(resolve => { const tick = () => { if (destroyed) return resolve(); const c = countdownAt((performance.now() - t0) / 1000); countdown.firstChild.textContent = c.text; countdown.lastChild.textContent = c.done ? '' : tr('Hazır ol…'); countdown.style.setProperty('--frac', String(c.frac)); if (c.done) return setTimeout(resolve, 500); requestAnimationFrame(tick); }; tick(); });
@@ -250,6 +253,7 @@ async function renderWizard(view, ctx) {
       if (err?.status === 409) await showOpenFromError(err);
       return;
     }
+    s.camera = payload.camera;
     toast(tr('Uçuş başladı · MP tcp:{h}:{p}', { h: s.mp?.host || location.hostname, p: s.mp?.port ?? '—' }));
     preview?.dispose(); preview = null; destroyed = true;
     runLeave();

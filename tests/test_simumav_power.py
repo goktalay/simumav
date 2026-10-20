@@ -231,7 +231,7 @@ def main():
     # saf: HEPGO çekirdeği doğrulaması değişmedi (SIMUMAV yalnız kullanır)
     assert flightsim_power.dogrula({'max_speed_ms': 60}, 'multirotor')['max_speed_ms'] is None
     assert power.varsayilan('vtol', 'glb:standard_vtol')['engine'] == 'fuel' and power.varsayilan('heli')['engine'] == 'electric'
-    assert flightsim.KOMUTLAR[-1] == 'speed'
+    assert 'speed' in flightsim.KOMUTLAR and 'camera' in flightsim.KOMUTLAR
     print('test_simumav_power: TAMAM')
 
 

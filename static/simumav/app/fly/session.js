@@ -15,6 +15,8 @@
 //   • Elden atış: telemetri kaydırması (uçak omuzda) + geri sayım + takeoff komutu `launch:'hand'`; SITL'e start gövdesinde `launch.method:'hand'` gider.
 //   • Interceptor: hız göstergesi 600 km/h (SVG kadran), ses modeli AUDIO_MODELS.interceptor (yüksek devir); HUD'da mach yok (HEPGO HUD'da zaten yok).
 //   • FPV dron: başlangıç kamerası 'pilot' (gerçek FPV + OSD); ayarlar.analog_fpv → sim.setFpvAnalog + osd.setAnalog.
+//   • Kamera türü + PiP (HEPGO §22.3–22.5, /sim/flightsim_camera.js): sihirbazın seçimi (picked.camera) → camType; 📷 menüsü (T / Shift+T / V), sürüklenebilir
+//     kamera PiP'i (çift tık → gimbal); tür değişimi sessiz WS `camera` komutu. Seçim arayüzü ./camera_pick.js.
 //   • Halkalar: tracks.gates → neon halka/kapı; geçiş algılama; OSD ok + mesafe + tur/süre; stop gövdesine gates:{passed, missed, best_lap_s, laps}.
 //   • GÜÇ VE YAKIT (§10): HEPGO analog kadranları (/sim/flightsim_power.js createPowerGauges — aynı modül) TÜM kamera kiplerinde alt ortada (power.css
 //     .fs-gauges.sm-game: oyun teması, FPV/gimbal'da yarı saydam ve küçük); tele.fuel/elec/speedup; WS warn kind fuel_empty|elec_empty → büyük
@@ -35,6 +37,7 @@ import { netsimDeliver, netsimFromLocation, parseNetsim, virtualRC } from './rc.
 import { releaseShared } from '../core/three.js';
 import * as sfx from '../ui/sfx.js';
 import { localizeUnits, powerReportCard, trPower, warnInfo } from './power.js';
+import { camTr } from './camera_pick.js';   // kamera türü/PiP metinleri → camera.* i18n anahtarları
 
 const SIM = '/sim/';
 const THREE_URL = '/static/vendor/three/three.module.min.js';   // HEPGO modülleriyle aynı yol → aynı modül örneği
@@ -57,8 +60,8 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
 export const hepgoLaunchFor = (droneType, launch) => (needsLaunch(droneType) ? launchBody(launch) : null);
@@ -173,7 +176,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam } = await loadSim();
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
   const drone = picked.drone || start.drone || { name: 'Dron', type: 'multirotor' }, track = picked.track || start.track || {}, pilot = picked.pilot || start.pilot || null, mission = picked.mission || start.mission || null;
   const dType = drone.type || 'multirotor', type = simType(dType), modes = modesFor(type);
@@ -197,6 +200,10 @@ export async function openSession(view, start, picked, ctx = {}) {
   const fpvPrefs = MOsd.createFpvPrefs();
   if (settings?.analog_fpv != null) fpvPrefs.setAnalog(!!settings.analog_fpv);
   const cam0 = startCameraFor(dType);
+  // HEPGO §22.3–22.5 kamera türü + kamera PiP'i (flightsim_camera.js): tür sihirbazın seçimi (picked.camera; uçuşa dönüşte start.camera), yoksa son tercih
+  const camPrefs = MCam.createCamPrefs();
+  const camType0 = [picked.camera, start.camera, start.session?.camera].find(MCam.isCamType) || camPrefs.type;   // uçuşa dönüş: oturumun türü (session.camera)
+  let camPip = null;
 
   // ---------- iskelet ----------
   const stage = h('div', { class: `fs-stage sm-fly sm-fly-stage ${isHand ? 'fs-hand' : ''}`, 'data-immersive': '1', 'data-drone-type': dType, 'data-world': world.mode });
@@ -224,19 +231,25 @@ export async function openSession(view, start, picked, ctx = {}) {
   const camBtns = M3D.CAMERA_MODES.map(([k, label], i) => h('button', { class: 'btn sm', type: 'button', 'data-cam': k, title: tr('{label} (tuş {n})', { label, n: i + 1 }), onclick: () => sim?.setCamera(k) }, `${i + 1} `, label));
   const gimbalLbl = h('span', { class: 'small fs-gimbal', hidden: true }, '');
   const mhudBtn = h('button', { class: 'btn sm fs-mhud-btn', type: 'button', hidden: true, title: tr('Askeri HUD aç/kapa (H) · Shift+H renk'), onclick: () => { milHud?.toggle(); mhudBtn.classList.toggle('primary', !!milHud?.enabled); } }, 'HUD');
-  // FPV ('pilot') ayarları: OSD · analog efekt · PiP · burun — HEPGO alt çubuğundaki kapsülün sade karşılığı
+  // FPV ('pilot') ayarları: OSD · analog efekt · burun — HEPGO alt çubuğundaki kapsülün sade karşılığı (PiP artık genel kamera PiP'i: 📷 menüsü / V)
   const fpvRow = (label, get, set) => { const inp = h('input', { type: 'checkbox', onchange: () => set(inp.checked) }); const row = h('label', { class: 'fs-audio-row fs-fpv-row' }, inp, h('span', null, label)); row.__sync = () => { inp.checked = !!get(); }; return row; };
   const fpvRows = [
     fpvRow('OSD', () => osd?.enabled, v => { osd?.setEnabled(v); drawFpv(); }),
     fpvRow('Analog efekt', () => fpvPrefs.analog, v => { fpvPrefs.setAnalog(v); osd?.setAnalog(v); sim?.setFpvAnalog?.(v); drawFpv(); }),
-    fpvRow('PiP takip kamerası', () => fpvPrefs.pip, v => { fpvPrefs.setPip(v); sim?.setPip?.(v); drawFpv(); }),
     fpvRow('Pervane/burun görünür', () => fpvPrefs.nose, v => { fpvPrefs.setNose(v); sim?.setFpvNose?.(v); drawFpv(); }),
   ];
   const fovTxt = h('span', { class: 'fs-fpv-fov' }, '');
   const fpvMenu = h('div', { class: 'fs-audio-menu fs-fpv-menu', hidden: true }, ...fpvRows, h('div', { class: 'small muted' }, tr('O: OSD · tekerlek: FOV')));
-  const fpvBtn = h('button', { class: 'btn sm fs-fpv-btn', type: 'button', title: tr('FPV ayarları: OSD, analog efekt, PiP, burun'), onclick: () => { fpvMenu.hidden = !fpvMenu.hidden; } }, 'FPV ', fovTxt, ' ▾');
+  const fpvBtn = h('button', { class: 'btn sm fs-fpv-btn', type: 'button', title: tr('FPV ayarları: OSD, analog efekt, burun'), onclick: () => { fpvMenu.hidden = !fpvMenu.hidden; } }, 'FPV ', fovTxt, ' ▾');
   const fpvCtl = h('span', { class: 'fs-audio pill-group fs-fpv-ctl', hidden: true }, fpvBtn, fpvMenu);
-  const drawFpv = () => { fpvRows.forEach(r => r.__sync()); const fov = sim?.getPilotFov?.() ?? fpvPrefs.fov; fovTxt.textContent = `${fov}°`; fpvBtn.classList.toggle('primary', !!osd?.enabled); };
+  const trc = camTr(tr);
+  const camCtl = MCam.createCameraCtl({ getSim: () => sim, tr: trc, prefs: camPrefs, getPip: () => camPip,
+    onType: t => {   // sunucuya sessiz `camera` komutu (çekirdek oturum → kayıt satırı); yanıtı beklenmez
+      addEvent(trc('Kamera türü: {t}', { t: MCam.camTypeLabel(t, trc) }));
+      if (drone.id != null) camPrefs.rememberDrone(drone.id, t);
+      socket?.send({ t: 'cmd', rid: `cam-${Date.now().toString(36)}`, bridge_id: session.hub.bridge_id, sysid: 1, name: 'camera', params: { type: t } });
+    } });
+  const drawFpv = () => { camCtl?.sync(); camPip?.layout(); fpvRows.forEach(r => r.__sync()); const fov = sim?.getPilotFov?.() ?? fpvPrefs.fov; fovTxt.textContent = `${fov}°`; fpvBtn.classList.toggle('primary', !!osd?.enabled); };
   const opsBtn = h('button', { class: 'btn sm fs-ops-btn', type: 'button', title: tr('Dron panelini göster/gizle (P)'), onclick: () => ops?.toggle() }, 'Panel');
   const gauge = createSpeedGauge(maxKmh, dType === 'interceptor' ? 'INTERCEPTOR' : (TYPE_LABEL[dType] || '').toUpperCase());
   const endBtn = h('button', { class: 'btn sm danger fs-end-btn', type: 'button', onclick: () => endFlight() }, '■ ', 'Uçuşu Bitir');
@@ -246,7 +259,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const modeSel = h('select', { class: 'input sm fs-modesel', onchange: () => { if (modeSel.value) cmd('mode', { mode: modeSel.value }); } },
     h('option', { value: '' }, 'Mod…'), modes.map(mm => h('option', { value: mm }, mm)));
   const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış', hand: 'Elden at' };
-  const bar = h('div', { class: 'fs-bar' }, h('div', { class: 'pill-group' }, camBtns), gimbalLbl, mhudBtn, fpvCtl, opsBtn, h('span', { class: 'spacer' }),
+  const bar = h('div', { class: 'fs-bar' }, h('div', { class: 'pill-group' }, camBtns), gimbalLbl, mhudBtn, fpvCtl, camCtl.el, opsBtn, h('span', { class: 'spacer' }),
     h('div', { class: 'pill-group fs-cmds' }, armBtn, modeSel,
       h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
       h('button', { class: 'btn sm', type: 'button', onclick: () => cmd('rtl') }, 'RTL')),
@@ -271,6 +284,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   gauges.el.classList.add('sm-game');   // oyun teması (power.css)
   const pwAlert = h('div', { class: 'sm-pw-alert', hidden: true, role: 'alert' }, h('b'), h('small'));
   stage.append(mount, msg, crash, events, sticks, bar, nav, ended, countdown, gauge.el, gauges.el, pwAlert, attrib, netLbl);
+  camPip = MCam.createCameraPip(mount, { getSim: () => sim, tr: trc, prefs: camPrefs, insets: side => { const o = MCam.pipObstacleInsets(stage, mount, side); return { top: Math.max(56, Math.round(nav.getBoundingClientRect().bottom - mount.getBoundingClientRect().top) + 10), bottom: Math.max((bar.offsetHeight || 54) + 28, o.bottom || 0), right: o.right ?? 12 }; }, onSwap: () => drawFpv() });
   if (handLbl) stage.append(handLbl);
   view.classList.add('sm-fly-session');
   clear(view, stage);
@@ -331,22 +345,22 @@ export async function openSession(view, start, picked, ctx = {}) {
 
   // ---------- panel / ses / HUD / OSD / kayıt ----------
   const restoreWs = installWsBridge(wsAddr);
-  ops = MPanel.createOpsPanel(stage, { sid, session, type, modes, launch, canWrite: true, hub: true, mp: { addr: `${mp.host}:${mp.port}`, port: mp.port, copy: () => copyText(`tcp:${mp.host}:${mp.port}`, 'Adres kopyalandı') }, getSim: () => sim, cmdSim, onReset: () => reset(), onToggle: on => opsBtn.classList.toggle('primary', on) });
+  ops = MPanel.createOpsPanel(stage, { sid, session, type, modes, launch, canWrite: true, hub: true, mp: { addr: `${mp.host}:${mp.port}`, port: mp.port, copy: () => copyText(`tcp:${mp.host}:${mp.port}`, 'Adres kopyalandı') }, getSim: () => sim, cmdSim, onReset: () => reset(), onToggle: on => { opsBtn.classList.toggle('primary', on); camPip?.layout(); } });
   opsBtn.classList.toggle('primary', ops.enabled);
   patchMpBox(stage, mp);
   if (MAudio.AUDIO_MODELS && !MAudio.AUDIO_MODELS.interceptor) MAudio.AUDIO_MODELS.interceptor = { ...INTERCEPTOR_AUDIO };   // yüksek devirli ayrı ses modeli (dosyaya dokunmadan)
   const audio = MAudio.createEngineAudio(stage, { type: audioTypeFor(dType), launch: launch && !isHand ? launch : null, replay: false, tr, getSim: () => sim, getCrashed: () => !crash.hidden, getSpeed: () => 1 });
   const hudCtx = { world, session, replay: false, launch: launch && !isHand ? launch : null, fov: 78, t0: Date.now(),
-    get pose() { return sim?.getPose?.() || null; }, get gimbalDeg() { return sim?.getGimbal() ?? 0; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; } };
+    get pose() { return sim?.getPose?.() || null; }, get gimbalDeg() { return sim?.getGimbal() ?? 0; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; } };
   milHud = MHud.createMilHud(stage, hudCtx, { tr });
   mhudBtn.classList.toggle('primary', milHud.enabled);
   const osdCtx = { session, replay: false, t0: hudCtx.t0, get pose() { return sim?.getPose?.() || null; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; },
-    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.pipRect; }, get rcOn() { return !!rc; } };
+    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; }, get rcOn() { return !!rc; } };
   osd = MOsd.createFpvOsd(stage, osdCtx, { tr });
   osd.setAnalog?.(fpvPrefs.analog);
   const recText = () => ['SIMUMAV', TYPE_LABEL[dType] || dType, drone.name, track.name, pilot?.name, launch ? launchLabelSm(launch) : null, fmtDateTime(session.created_at)].filter(Boolean).join(' · ');
   const wantVideo = !!(picked.record?.video ?? start.record?.video);
-  if (wantVideo && MRec.recSupported()) rec = MRec.createRecorder(stage, { sid: fid, tr, getSim: () => sim, getHudCanvas: () => stage.querySelector('.fs-mhud'), getOsdCanvas: () => stage.querySelector('.fs-osd'), audio, text: recText, share: () => false, rest: recRest(fid), onEvent: (t, sev) => addEvent(t, sev) });
+  if (wantVideo && MRec.recSupported()) rec = MRec.createRecorder(stage, { sid: fid, tr, getSim: () => sim, getHudCanvas: () => stage.querySelector('.fs-mhud'), getOsdCanvas: () => stage.querySelector('.fs-osd'), getOverlays: () => [camPip?.overlay()].filter(Boolean), audio, text: recText, share: () => false, rest: recRest(fid), onEvent: (t, sev) => addEvent(t, sev) });
 
   // ---------- 3B (HEPGO renderSession kurulumu: üç kip) ----------
   let worldReady = false;
@@ -373,6 +387,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     const s3 = await M3D.createFlightSim3D(mount, world, {
       type, model: session.model, launch, origin: { lat: session.center.lat, lon: session.center.lon, alt: session.center.alt },
       camera: cam0, pilotFov: fpvPrefs.fov, fpvAnalog: fpvPrefs.analog, fpvNose: fpvPrefs.nose, onPilotFov: v => { fpvPrefs.setFov(v); drawFpv(); },
+      camType: camType0, thermalPalette: camPrefs.palette, onGimbalZoom: () => camPip?.redraw(),
       onCameraChange: onCamChange, onCollision: info => cmd('crash', { kind: info.kind, speed: info.speed, dz: info.dz }).catch(() => {}),
       onProgress: progMsg, g3dKey: async () => meta?.maps_key || '',
       onFallback: e => { const t = g3dMode ? tr('Google 3B verisi alınamadı: {e} → prosedürele düşüldü', { e }) : tr('Gerçek veri alınamadı, prosedürele düşüldü: {e}', { e }); addEvent(t, 'warning'); toast(t, 'err'); attrib.hidden = true; },
@@ -382,7 +397,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     if (netsim) window.__fsSim = sim;   // HEPGO teşhis adı: Playwright/konsol sim.netStats() · sim.motionStats(true)
     if (sim.terrainInfo && !worldReady) progMsg({ stage: 'done', real: sim.real, google: sim.google, ...sim.terrainInfo });
     msg.hidden = session.state === 'HAZIR';
-    sim.setPip?.(fpvPrefs.pip);
+    camPip?.layout();   // §22.4 kamera PiP'i (aç/kapa + dikdörtgen 3B'ye)
     sim.setCamera(cam0); camBtns.forEach(b => b.classList.toggle('primary', b.dataset.cam === sim.getCamera()));
     drawFpv();
     if (isHand || gates.length) {
@@ -402,7 +417,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   // Sahne kurulamadı (WebGL bağlamı yok vb.): uçuş sunucuda açık BIRAKILMAZ → otomatik stop + anlaşılır mesaj (BAŞLA tekrar denenebilir)
   if (sceneError) {
     const e = sceneError.message || String(sceneError);
-    const dispose0 = () => { if (destroyed) return; destroyed = true; safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose()); safe(() => restoreWs()); document.removeEventListener('fullscreenchange', onFullChange); document.body.classList.remove('fs-full'); view.classList.remove('sm-fly-session'); stage.remove(); };
+    const dispose0 = () => { if (destroyed) return; destroyed = true; safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => camPip?.dispose()); safe(() => camCtl.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose()); safe(() => restoreWs()); document.removeEventListener('fullscreenchange', onFullChange); document.body.classList.remove('fs-full'); view.classList.remove('sm-fly-session'); stage.remove(); };
     dispose0();
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
     let stopped = false;
@@ -564,7 +579,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();
-    safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose());
+    safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => camPip?.dispose()); safe(() => camCtl.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose());
     safe(() => hand?.dispose()); safe(() => gateLayer?.dispose()); safe(() => overlay?.dispose()); safe(() => sim?.dispose());
     safe(restoreWs);
     if (window.__smSim === sim) delete window.__smSim; if (window.__fsSim === sim) delete window.__fsSim; delete window.__smHand; delete window.__smGates; if (window.__smSession === api) delete window.__smSession;

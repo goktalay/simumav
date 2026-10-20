@@ -109,3 +109,20 @@
 .sm-gate-tile { display: grid; justify-items: center; gap: 2px; padding: 10px; border-radius: 12px; background: var(--surface-2, #1d2532); border: 1px solid var(--border, #2a3444); }
 .sm-gate-tile b { font-size: 22px; font-family: Consolas, Menlo, monospace; } .sm-gate-tile small { color: var(--muted, #a3adbd); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
 .sm-gate-tile.ok b { color: #22c55e; } .sm-gate-tile.bad b { color: #ef4444; }
+
+/* Kamera türü seçimi (camera_pick.js; pilot adımı) — oyun kartları, önizleme 2B tuvalde (HEPGO flightsim_camera.js) */
+.sm-cam-pick { margin-top: 22px; display: grid; gap: 8px; }
+.sm-cam-pick h3 { margin: 0; font-size: 15px; letter-spacing: .04em; text-transform: uppercase; }
+.sm-cam-pick .fs-cam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.sm-cam-card { min-height: 0; padding: 10px 10px 14px; }
+.sm-cam-card .fs-cam-prev { display: block; width: 100%; aspect-ratio: 16 / 9; height: auto; border-radius: 10px; box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 8px 18px rgba(0,0,0,.35); }
+.sm-cam-card.on { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,.45), 0 14px 34px rgba(0,0,0,.45); background: linear-gradient(160deg, rgba(56,189,248,.18), rgba(56,189,248,.04)); }
+.sm-cam-card[data-camtype="thermal"].on { border-color: #f97316; box-shadow: 0 0 0 2px rgba(249,115,22,.45), 0 14px 34px rgba(0,0,0,.45); background: linear-gradient(160deg, rgba(249,115,22,.18), rgba(109,40,217,.06)); }
+.sm-cam-card[data-camtype="night"].on { border-color: #22c55e; box-shadow: 0 0 0 2px rgba(34,197,94,.45), 0 14px 34px rgba(0,0,0,.45); background: linear-gradient(160deg, rgba(34,197,94,.18), rgba(34,197,94,.04)); }
+.sm-cam-card .small { font-size: 12px; color: #a9b4c4; line-height: 1.35; }
+.sm-cam-pick .fs-cam-pal { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sm-cam-pick .fs-cam-pal[hidden] { display: none; }
+.sm-cam-pick .fs-cam-pal .pill-group { display: inline-flex; gap: 4px; padding: 3px; border-radius: 999px; background: rgba(255,255,255,.06); }
+.sm-cam-pick .fs-cam-pal .btn { background: transparent; border-color: transparent; color: #e4e9f1; }
+.sm-cam-pick .fs-cam-pal .btn.primary { background: #f97316; color: #fff; }
+@media (prefers-reduced-motion: reduce) { .sm-cam-card { transition: none; } .sm-cam-card:hover { transform: none; } }

@@ -26,6 +26,7 @@ import { createOpsPanel } from './flightsim_panel.js';
 import { acquireDisplayStream, createRecorder, enterFullscreen, exitFullscreen, pendingCard, recOptionsBox, recPrefs, stashStream, takeStashedStream } from './flightsim_record.js';   // §17: ekran kaydı (Başlat→Bitir) → Şirketten Haberler / sakla; kayıt seçenekleri kutusu; otomatik tam ekran   // §14: YERLİ harekât paneli (iframe yok) — kartlar 3B'nin üstünde yüzer; hub soketi + komutlar panelde
 import { showReport } from './flightsim_report.js';   // §18: Bitir'de özet rapor modalı (çarpışma/sapma kırmızı, mini harita); kayıt tablosundan "Rapor"
 import { runsTable, runsQuery } from './flightsim_runs.js';   // §21: Simülasyon Kayıtları tablosu (filtre/sıralama/sayfalama; Oynat/Rapor/Video/.bin; MASTER: parametre/script)
+import { camTypeLabel, pipObstacleInsets, createCamPrefs, createCameraCards, createCameraCtl, createCameraPip, isCamType, normCamType } from './flightsim_camera.js';   // §22.3–22.5: kamera türü (gündüz/termal/gece), sürüklenebilir kamera PiP'i, sihirbaz kartı
 import { createPowerGauges, createPowerSection, createPowerSim, createSpeedPill, elecText, fuelText, rangeText } from './flightsim_power.js';   // §23: güç ve yakıt (sihirbaz bölümü, göstergeler, güç paneli kadranları §23.6, kayıtta istemci modeli, hız kapsülü)
 
 const API = '/api/drone/sim';
@@ -400,11 +401,12 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     : h('div', { class: 'small muted fs-nocenter' }, 'Kayıtlı merkez yok. Önce ', h('a', { href: '#/drone/routes' }, 'Rotalar › Merkezler'), ' bölümünden bir merkez ekleyin.'));
   drawCenters();
   // ---------- 2b. dron kaydı (isteğe bağlı; §14): harekât panelinde telemetri bu dronun koduyla/adıyla akar; yoksa "Simülatör #N" ----------
-  const droneSel = h('select', { class: 'input fs-drone-sel', onchange: () => { S.drone = droneSel.value ? Number(droneSel.value) : null; powerSec?.refresh(); } }, h('option', { value: '' }, 'Yok — "Simülatör #N" sanal dronu'));
+  const droneCam = new Map();   // §22.3: dron kaydının son kamera türü (sunucu: son simülasyon kaydı) → kamera kartı varsayılanı
+  const droneSel = h('select', { class: 'input fs-drone-sel', onchange: () => { S.drone = droneSel.value ? Number(droneSel.value) : null; powerSec?.refresh(); camForDrone(); } }, h('option', { value: '' }, 'Yok — "Simülatör #N" sanal dronu'));
   const droneBox = h('div', { class: 'fs-drone-step' },
     h('p', { class: 'small muted' }, 'Dron Envanteri\'nden bir kayıt seçilirse harekât panelinde dron o adla görünür; seçilmezse oturuma özel "Simülatör #N" sanal dronu kullanılır. Simülatör her durumda SITL\'dir; kayıt yalnız kimliktir.'),
     h('label', { class: 'fs-drone-row' }, h('span', { class: 'small muted' }, 'Dron kaydı'), droneSel));
-  (be.drones ? be.drones() : Promise.resolve([])).then(rows => { (rows || []).forEach(d => droneSel.append(h('option', { value: d.id }, `${d.code || ''} · ${d.name || ''}${d.model ? ` (${d.model})` : ''}`))); }).catch(() => {});
+  (be.drones ? be.drones() : Promise.resolve([])).then(rows => { (rows || []).forEach(d => { if (isCamType(d.camera)) droneCam.set(d.id, d.camera); }); (rows || []).forEach(d => droneSel.append(h('option', { value: d.id }, `${d.code || ''} · ${d.name || ''}${d.model ? ` (${d.model})` : ''}`))); }).catch(() => {});
 
   // ---------- 1R. kayıttan oynat: uçuş logu listesi (ad, tarih, dron, süre, boyut; arama) ----------
   const logList = h('div', { class: 'fs-logs' });
@@ -539,6 +541,14 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   // ---------- 3a. güç ve yakıt (§23): azami hız · yakıt L + km/L · batarya S/mAh/W — varsayılanlar dron kaydından (son ölçümler), yoksa tip varsayılanı ----------
   const powerSec = createPowerSection({ h, tr, api, getType: activeType, getDroneId: () => S.drone, mock });
   powerSec.refresh();
+  // ---------- 3a'. kamera (§22.3): gündüz / termal / gece görüşü — önizlemeli kartlar (aynı formüllerle 2B tuvalde; ek WebGL bağlamı yok). Varsayılan:
+  // dron kaydının son türü (sunucu) → bu dron için yerel son seçim → son tercih → gündüz. Seçim oturuma (`camera`), tercihe ve dron kaydına kalıcı.
+  const camPrefs = createCamPrefs();
+  let camTouched = false;
+  const camCards = createCameraCards({ tr, value: camPrefs.type, palette: camPrefs.palette, onChange: t => { camTouched = true; camPrefs.setType(t); if (S.drone != null) camPrefs.rememberDrone(S.drone, t); }, onPalette: p => camPrefs.setPalette(p) });
+  function camForDrone() { if (camTouched) return; const t = (S.drone != null && (droneCam.get(S.drone) || camPrefs.typeForDrone(S.drone))) || camPrefs.type; camCards.set(t); }
+  const camNote = h('p', { class: 'small muted' }, '');
+  const stepCam = h('div', { class: 'card card-pad fs-step no-collapse fs-cam-step' }, h('h3', null, h('span', { class: 'fs-no' }, '4'), 'Kamera'), camNote, camCards.el);
   // ---------- 3b. kayıt seçenekleri (§17/§19): ☐ ekran kaydı (video) › ☐ Şirketten Haberler'de paylaş · ☐ uçuş logu (.bin; yalnız canlı) ----------
   const recOpts = recOptionsBox(tr, { getMode: () => S.mode });
 
@@ -636,8 +646,8 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     try {
       const model = modelBody(picker.selectionFor(activeType()), mock);
       s = S.mode === 'replay'
-        ? await be.create({ mode: 'replay', log_id: S.log, world: { ...S.world }, model })
-        : await be.create({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model, drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values(), layout: S.type === 'sabit_kanat' ? S.layout : undefined });   // §23 güç ve yakıt · §13.1 kontrol düzeni
+        ? await be.create({ mode: 'replay', log_id: S.log, world: { ...S.world }, model, camera: camCards.value })   // §22.3: kayıt bu simülatörden ise kaydın türü önceliklidir
+        : await be.create({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model, drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values(), layout: S.type === 'sabit_kanat' ? S.layout : undefined, camera: camCards.value });   // §23 güç ve yakıt · §13.1 kontrol düzeni · §22.3 kamera türü
     } catch (err) {
       const msg = { 400: S.mode === 'replay' ? 'Log açılamadı; analizi tamamlanmış bir .bin/.tlog seçin' : 'Geçersiz ayar; dünya değerlerini ve merkezi kontrol edin', 409: 'Oturum sınırı doldu; açık bir oturumu bitirin', 503: 'SITL hazır değil (ikili ya da boş port yok)' }[err?.status];
       toast(msg || err.message, 'err');
@@ -664,6 +674,8 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     const rp = S.mode === 'replay';
     stepType.hidden = rp; stepCenter.hidden = rp; stepLog.hidden = !rp; worldHint.hidden = !rp;
     worldNo.textContent = rp ? '2' : '3';
+    stepCam.querySelector('.fs-no').textContent = rp ? '3' : '4';
+    camNote.textContent = tr(rp ? 'Gimbal ve FPV kameralarının görüntü türü. Kayıt bu simülatörde yapıldıysa kaydın kamera türü kullanılır; uçuş içinde T ile değiştirilebilir.' : 'Gimbal ve FPV kameralarının görüntü türü; PiP penceresi de bu türle gösterir. Uçuş içinde T ile değiştirilebilir (Shift+T: termal paleti).');
     if (startBtn) { startBtn.disabled = !canWrite || (rp ? !logsAllowed : !centers.length); startBtn.textContent = tr(rp ? '▶ Oynat' : '▶ Başlat'); }
     clear(startNote, canWrite
       ? (rp ? tr('Kayıt sunucuda bir kez ayrıştırılır ve önbelleğe alınır; SITL ve Mission Planner köprüsü açılmaz.') : tr('En çok {n} eşzamanlı oturum · oturum süresi {m} dk', { n: limits.max_sessions ?? '—', m: limits.max_minutes ?? '—' }))
@@ -678,6 +690,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const body = h('div', { class: 'fs-wizard' },
     h('div', { class: 'fs-mode-row' }, h('span', { class: 'small muted' }, 'Kip'), modeSeg),
     stepType, stepCenter, stepLog, stepWorld,
+    stepCam,                        // §22.3 kamera türü
     powerSec.el,                    // §23 güç ve yakıt
     canWrite ? recOpts.el : null,   // §17/§19 kayıt seçenekleri (Başlat'ın üstünde)
     h('div', { class: 'fs-start-row' }, startNote));
@@ -811,7 +824,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const gimbalLbl = h('span', { class: 'small fs-gimbal', hidden: true }, '');
   const mhudBtn = h('button', { class: 'btn sm fs-mhud-btn', type: 'button', hidden: true, title: tr('Askeri HUD aç/kapa (H) · Shift+H renk'), onclick: () => { milHud?.toggle(); mhudBtn.classList.toggle('primary', !!milHud?.enabled); } }, 'HUD');
   // §22 FPV (pilot) kipi ayarları — yalnız FPV'de görünür, TEK kapsül "FPV 120° ▾" (alt çubuk sığsın; kayıt kipinde oynatma çubuğu da var) → ses menüsü
-  // kalıbında açılır menü: OSD (O), Analog efekt (fs.fpv.analog), PiP takip kamerası (fs.fpv.pip), Pervane/burun görünür (fs.fpv.nose), FOV kaydırıcısı (tekerlek)
+  // kalıbında açılır menü: OSD (O), Analog efekt (fs.fpv.analog), Pervane/burun görünür (fs.fpv.nose), FOV kaydırıcısı (tekerlek). PiP artık genel kamera PiP'i (§22.4; V)
   const fpvPrefs = createFpvPrefs();
   const fpvRow = (label, title, get, set) => {
     const inp = h('input', { type: 'checkbox', onchange: () => set(inp.checked) });
@@ -822,7 +835,6 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const fpvRows = [
     fpvRow('OSD', tr('FPV OSD aç/kapa (O)'), () => osd?.enabled, v => { osd?.setEnabled(v); drawFpvBtns(); }),
     fpvRow(tr('Analog efekt'), tr('Analog FPV efekti: doygunluk, tarama çizgisi, mesafe/RSSI ile artan parazit'), () => fpvPrefs.analog, v => { fpvPrefs.setAnalog(v); osd?.setAnalog(v); sim?.setFpvAnalog(v); drawFpvBtns(); }),
-    fpvRow(tr('PiP takip kamerası'), tr('Resim içinde resim: sağ üstte takip kamerası (20 fps)'), () => fpvPrefs.pip, v => { fpvPrefs.setPip(v); sim?.setPip(v); drawFpvBtns(); }),
     fpvRow(tr('Pervane/burun görünür'), tr('Pervane/burun görünür: kamera biraz geride, gövde ucu kadrajda'), () => fpvPrefs.nose, v => { fpvPrefs.setNose(v); sim?.setFpvNose(v); drawFpvBtns(); }),
   ];
   const fovInp = h('input', { type: 'range', min: 90, max: 150, step: 5, 'aria-label': 'FOV', oninput: () => { sim?.setPilotFov(Number(fovInp.value)); drawFpvBtns(); } });
@@ -830,11 +842,25 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const fpvMenu = h('div', { class: 'fs-audio-menu fs-fpv-menu', hidden: true }, ...fpvRows, h('div', { class: 'fs-audio-row' }, h('span', null, 'FOV'), fovInp, fovOut),
     h('div', { class: 'small muted' }, tr('O: OSD · tekerlek: FOV · C: kamera')));
   const fpvFovTxt = h('span', { class: 'fs-fpv-fov' }, '');
-  const fpvBtn = h('button', { class: 'btn sm fs-fpv-btn', type: 'button', title: tr('FPV ayarları: OSD, analog efekt, PiP, burun, görüş açısı'), onclick: () => { fpvMenu.hidden = !fpvMenu.hidden; } }, 'FPV ', fpvFovTxt, ' ▾');
+  const fpvBtn = h('button', { class: 'btn sm fs-fpv-btn', type: 'button', title: tr('FPV ayarları: OSD, analog efekt, burun, görüş açısı'), onclick: () => { fpvMenu.hidden = !fpvMenu.hidden; } }, 'FPV ', fpvFovTxt, ' ▾');
   const fpvCtl = h('span', { class: 'fs-audio pill-group fs-fpv-ctl', hidden: true }, fpvBtn, fpvMenu);
   const onDocClickFpv = e => { if (!fpvMenu.hidden && !fpvCtl.contains(e.target)) fpvMenu.hidden = true; };
   document.addEventListener('click', onDocClickFpv, true);
+  // §22.3–22.5 kamera türü + kamera PiP'i: tür oturumdan (sihirbazda seçilen; kayıtta kaydın türü) yoksa son tercih; PiP sürüklenebilir pencere
+  // (flightsim_camera.js; görüntü 3B tuvalinde, aynı WebGL bağlamı); alt çubukta "📷 Tür ▾" (T / Shift+T / V). Tür değişimi canlı oturumda sunucuya
+  // (`camera` komutu → kayıt satırı), tercih localStorage'a ve dron kaydına (fs.cam.byDrone) yazılır.
+  let sim = null, last = null, socket = null, destroyed = false, rc = null, worldReady = false, milHud = null, osd = null;   // rc: sanal kumanda (virtualRC) ya da null   // (kamera denetimleri getSim ile erken okur → burada tanımlı)
+  const camPrefs = createCamPrefs();
+  const camType0 = isCamType(session.camera) ? session.camera : camPrefs.type;
+  let camPip = null;   // sahne iskeleti kurulunca (stage.append sonrası)
+  const camCtl = createCameraCtl({ getSim: () => sim, tr, prefs: camPrefs, getPip: () => camPip,
+    onType: t => {
+      addEvent(tr('Kamera türü: {t}', { t: camTypeLabel(t, tr) }));
+      if (session.drone?.id != null) camPrefs.rememberDrone(session.drone.id, t);
+      if (!replay && canWrite) be.cmd(sid, 'camera', { type: t }).catch(() => {});   // §22.3: oturum/kayıt satırı son türü saklar
+    } });
   const drawFpvBtns = () => {
+    camCtl?.sync(); camPip?.layout();   // harekât kartı kipe göre gizlenir/görünür → PiP kenar boşluğu
     fpvRows.forEach(r => r.__sync());
     const fov = sim?.getPilotFov?.() ?? fpvPrefs.fov;
     fovInp.value = String(fov); fovOut.textContent = `${fov}°`; fpvFovTxt.textContent = `${fov}°`;
@@ -863,7 +889,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     timeLbl, clockLbl) : null;
   const bar = h('div', { class: 'fs-bar' },
     h('div', { class: 'pill-group' }, camBtns),
-    gimbalLbl, mhudBtn, fpvCtl, opsBtn,
+    gimbalLbl, mhudBtn, fpvCtl, camCtl.el, opsBtn,
     replay ? playBar : h('span', { class: 'spacer' }),
     canWrite && !replay ? h('div', { class: 'pill-group fs-cmds' },   // .fs-cmds: harekât paneli açıkken gizli (komutlar panelden)
       armBtn, modeSel,
@@ -896,14 +922,14 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   window.__fsRig = () => (sim?.rigDiag ? sim.rigDiag() : null);
   window.__fsCtrl = () => (sim?.ctrlState ? sim.ctrlState() : null);
   window.__fsTele = () => last;   // teşhis: son telemetri karesi (roll/pitch/alt_rel/mode/armed/servo)   // §13.1 kontrol yüzeyi teşhisi: servo/servo_fn/servo_rev → eksen girişleri → yüzey açıları (° arka kenar aşağı +)
-  ops = createOpsPanel(stage, { sid, session, type, modes, launch, canWrite, hub: !replay && !mock, mp: mpOpts, getSim: () => sim, cmdSim: (name, params) => cmd(name, params), onReset: () => reset(), onToggle: on => opsBtn.classList.toggle('primary', on),
+  ops = createOpsPanel(stage, { sid, session, type, modes, launch, canWrite, hub: !replay && !mock, mp: mpOpts, getSim: () => sim, cmdSim: (name, params) => cmd(name, params), onReset: () => reset(), onToggle: on => { opsBtn.classList.toggle('primary', on); camPip?.layout(); },
     speed: replay ? null : { onPick: f => cmd('speed', { factor: f }) } });   // §23: panel "Sim" grubunda hız seçici
   opsBtn.classList.toggle('primary', ops.enabled);
   const audio = createEngineAudio(stage, { type, launch, replay, tr, getSim: () => sim, getCrashed: () => !crash.hidden, getSpeed: () => player?.speed() ?? 1 });   // §16: düğmeyi alt çubuğa kendisi ekler; kamera/kalkış aşaması/çarpışma getter'lardan
   // §17 ekran kaydı: rozet üst şeride, anahtar alt çubuğa; 3B hazır olunca başlar (Başlat'ta alınan ekran paylaşımı akışı varsa o, yoksa 3B+HUD tuvali)
   const recText = () => [tr('Uçuş Simülatörü kaydı'), replay ? `${tr('kayıttan oynatma')}${session.replay?.file_name ? ` · ${session.replay.file_name}` : ''}` : [tr(TYPE_NAME[type] || type), session.center?.name, launch ? tr(launchLabel(launch, tr)) : null].filter(Boolean).join(' · '),
     clock(rec?.seconds ?? 0), fmtDateTime(session.created_at)].filter(Boolean).join(' · ');
-  const rec = mock || !canWrite ? null : createRecorder(stage, { sid, tr, getSim: () => sim, getHudCanvas: () => stage.querySelector('.fs-mhud'), getOsdCanvas: () => stage.querySelector('.fs-osd'), audio, text: recText, onEvent: (t, sev) => addEvent(t, sev) });   // §22: FPV OSD da yedek yolda kayda girer; kayıt kamerayı değiştirmez
+  const rec = mock || !canWrite ? null : createRecorder(stage, { sid, tr, getSim: () => sim, getHudCanvas: () => stage.querySelector('.fs-mhud'), getOsdCanvas: () => stage.querySelector('.fs-osd'), getOverlays: () => [camPip?.overlay()].filter(Boolean), audio, text: recText, onEvent: (t, sev) => addEvent(t, sev) });   // §22: FPV OSD da yedek yolda kayda girer; kayıt kamerayı değiştirmez
 
   // Tam alan yerleşimi (Canlı Uçuş iframe kalıbı): main#view mutlak konumlu, scroller kaydırmaz
   view.classList.add('ops-view');
@@ -928,17 +954,19 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   };
 
   // ---------- 3B ----------
-  let sim = null, last = null, socket = null, destroyed = false, rc = null, worldReady = false, milHud = null, osd = null;   // rc: sanal kumanda (virtualRC) ya da null
+  camPip = createCameraPip(mount, { getSim: () => sim, tr, prefs: camPrefs,   // §22.4 (iskelet DOM'da, `sim` tanımlandıktan sonra: kenar boşlukları gezinti kapsülü ve alt çubuktan)
+    insets: side => { const o = pipObstacleInsets(stage, mount, side); return { top: Math.max(56, Math.round(nav.getBoundingClientRect().bottom - mount.getBoundingClientRect().top) + 10), bottom: Math.max((bar.offsetHeight || 54) + 28, o.bottom || 0), right: o.right ?? 12 }; },
+    onSwap: () => drawFpvBtns() });
   let lastRouteToast = '', lastRouteToastAt = 0;   // §18: aynı MP görev bildirimi 3 sn içinde tekrar toast olmaz
   // Askeri HUD bağlamı (gimbal kamerası): getter'lar her karede okunur (3B'nin render ettiği yönelim, gimbal, çarpışma)
   const hudCtx = { world, session, replay, launch, fov: 78, t0: Date.parse(session.created_at) || Date.now(),
-    get pose() { return sim?.getPose?.() || null; }, get gimbalDeg() { return sim?.getGimbal() ?? 0; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; } };
+    get pose() { return sim?.getPose?.() || null; }, get gimbalDeg() { return sim?.getGimbal() ?? 0; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; } };
   milHud = createMilHud(stage, hudCtx, { tr });
   mhudBtn.classList.toggle('primary', milHud.enabled);
   // §22 FPV OSD bağlamı (pilot kamerası): yönelim 3B'den, FOV/PiP dikdörtgeni 3B'den, sanal kumanda açıkken alt satırlar yukarı
   const osdCtx = { session, replay, t0: hudCtx.t0,
     get pose() { return sim?.getPose?.() || null; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; },
-    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.pipRect; }, get rcOn() { return !!rc; } };
+    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; }, get rcOn() { return !!rc; } };
   osd = createFpvOsd(stage, osdCtx, { tr });
   drawFpvBtns();
   const progMsg = p => {   // gerçek arazi yükleme ilerlemesi (3B tuval üstünde)
@@ -983,6 +1011,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
         const s3 = await createFlightSim3D(mount, world, {
           type, model: session.model || session.airframe, launch, origin: { ...o },
           camera: fpvPrefs.cam, pilotFov: fpvPrefs.fov, fpvAnalog: fpvPrefs.analog, fpvNose: fpvPrefs.nose,   // §22: oturumlar arası kalıcı kamera/FPV tercihleri (localStorage)
+          camType: camType0, thermalPalette: camPrefs.palette, onGimbalZoom: () => camPip?.redraw(),   // §22.3 kamera türü (oturumun seçimi) + termal paleti
           onPilotFov: v => { fpvPrefs.setFov(v); drawFpvBtns(); },
           // Kamera değişimi: gimbal kamerası ('fpv') → gimbal etiketi + askeri HUD; FPV ('pilot') → OSD + FPV düğmeleri; ikisinde de harekât kartları gizli
           // (kullanıcı: "kamera görünümünde kontrol panelim gizlensin"), sanal kumanda çubukları görünür kalır (§14/§22)
@@ -998,7 +1027,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
         if (sim.terrainInfo && !worldReady) progMsg({ stage: 'done', real: sim.real, ...sim.terrainInfo });
         if (launch && session.launch?.phase) sim.setLaunchPhase(session.launch.phase);   // oturuma geç katılan izleyici: aşama sunucudan
         msg.hidden = true;
-        sim.setPip(fpvPrefs.pip);
+        camPip?.layout();   // §22.4: PiP dikdörtgeni + aç/kapa 3B'ye (sim.setPipRect / setPip)
         camBtns.forEach(b => b.classList.toggle('primary', b.dataset.cam === sim.getCamera()));   // kalıcı seçim (fs.cam) uygulanmış olabilir
         drawFpvBtns();
         const disp = takeStashedStream();   // §17: Başlat'ta alınan ekran paylaşımı (varsa); kayıt tercihi açıksa hemen başla (HAZIR beklenmez)
@@ -1314,7 +1343,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     if (replay) window.removeEventListener('keydown', onKeyReplay);
     player?.dispose();
     socket?.close();
-    milHud?.dispose(); osd?.dispose();
+    milHud?.dispose(); osd?.dispose(); camPip?.dispose(); camCtl.dispose();
     if (rec) { rec.abandon(); rec.dispose(); }   // §17: Bitir'siz çıkış → kayıt durur, parçalar akıtılır, sunucuda yarım kayıt (24 sa)
     audio.dispose(); ops?.dispose(); gauges.dispose();
     sim?.dispose();
@@ -1501,21 +1530,21 @@ function mockBackend(ctx) {
   let centersP = null;
   const centers = () => (centersP ??= api.get('/api/drone/centers').then(r => (Array.isArray(r) && r.length ? r.map(c => ({ id: c.id, name: c.name, lat: c.lat, lon: c.lon, alt: c.alt ?? 0, location_name: c.location_name })) : SAMPLE_CENTERS)).catch(() => SAMPLE_CENTERS));
   const mockModel = (type, model) => (model && typeof model === 'object' ? model : { id: model || ({ multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli' }[type] || 'builtin:caymaz'), source: 'builtin', type, ready: true });
-  const mk = async (type, centerId, world, model, power = null, layout = null) => {
+  const mk = async (type, centerId, world, model, power = null, layout = null, camera = null) => {
     const cs = await centers();
     const center = cs.find(c => String(c.id) === String(centerId)) || cs[0];
     const id = `mock-${++MOCK.seq}`;
     const mdl = mockModel(type, model);
     const s = { id, type, model: mdl, airframe: isPlane(type) ? ({ 'builtin:caymaz': 'caymaz', 'builtin:delta': 'delta' }[mdl.id] || null) : null, layout: type === 'sabit_kanat' ? (layout || layoutForModel(mdl) || 'classic') : null, center, world: { ...WORLD_DEFAULTS, ...(world || {}) }, state: 'HAZIR', udp_port: 14550 + MOCK.seq - 1, host: location.hostname,
       power: { ...(isPlane(type) ? { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25 } : { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25 }), elec_cells: 4, elec_mah: 10000, elec_w: 30, ...(power || {}) },   // §23 (sahte kip: göstergeler istemci modelinden)
-      launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: type === 'sabit_kanat' ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null },
+      launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: type === 'sabit_kanat' ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null }, camera: normCamType(camera),
       created_at: new Date().toISOString(), owner: { id: ctx.user?.id, name: ctx.user?.full_name || ctx.user?.username || '—' }, gcs: { connected: false, addr: null, since: null }, sitl: { pid: 0, port: 0, error: null } };
     s.flight = new MockFlight(s);
     MOCK.sessions.set(id, s);
     return s;
   };
   // Kayıt kipi sahte oturumu: SITL/UDP yok; `replay` metası + kareler (mockReplayData) hazır → HAZIR
-  const mkReplay = async (logId, world, model) => {
+  const mkReplay = async (logId, world, model, camera = null) => {
     const log = MOCK_LOGS.find(l => l.id === Number(logId)) || MOCK_LOGS[0];
     const cs = await centers();
     const c = cs[0];
@@ -1523,7 +1552,7 @@ function mockBackend(ctx) {
     const id = `mock-${++MOCK.seq}`;
     const s = { id, mode: 'replay', type: log.type, model: mockModel(log.type, model), center: { id: null, name: log.file_name, lat: data.home.lat, lon: data.home.lon, alt: data.home.alt }, world: { ...WORLD_DEFAULTS, ...(world || {}) },
       launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: log.type === 'sabit_kanat' ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null },
-      state: 'HAZIR', udp_port: null, host: location.hostname, created_at: new Date().toISOString(), owner: { id: ctx.user?.id, name: ctx.user?.full_name || ctx.user?.username || '—' },
+      state: 'HAZIR', udp_port: null, host: location.hostname, camera: normCamType(camera), created_at: new Date().toISOString(), owner: { id: ctx.user?.id, name: ctx.user?.full_name || ctx.user?.username || '—' },
       gcs: { connected: false, addr: null, since: null }, sitl: { pid: null, port: null, error: null },
       power: { ...(isPlane(log.type) ? { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25 } : { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25 }), elec_cells: 4, elec_mah: 10000, elec_w: 30 },   // §23.6: sahte kayıtta da kadranlar (gerçekte kaydın canlı oturum ayarları)
       replay: { log_id: log.id, file_name: log.file_name, size: log.size, progress: 100, frames: data.n, duration_s: data.duration_s, home: data.home, hz: data.hz, takeoff_t: data.takeoff_t, start_utc: data.start_utc, vehicle: data.vehicle, modes: data.modes } };
@@ -1553,11 +1582,11 @@ function mockBackend(ctx) {
     },
     create: async body => {
       if ([...MOCK.sessions.values()].filter(s => s.state !== 'KAPANDI').length >= 2) throw Object.assign(new Error('Oturum sınırı'), { status: 409 });
-      if (body.mode === 'replay') { const s = await mkReplay(body.log_id, body.world, body.model); MOCK.sessions.delete(s.id); s.id = `${s.id}r`; MOCK.sessions.set(s.id, s); return pub(s); }
-      return pub(await mk(body.type, body.center_id, body.world, body.model || body.airframe, body.power, body.layout));
+      if (body.mode === 'replay') { const s = await mkReplay(body.log_id, body.world, body.model, body.camera); MOCK.sessions.delete(s.id); s.id = `${s.id}r`; MOCK.sessions.set(s.id, s); return pub(s); }
+      return pub(await mk(body.type, body.center_id, body.world, body.model || body.airframe, body.power, body.layout, body.camera));
     },
     end: async id => { const s = MOCK.sessions.get(id); if (s) { s.state = 'KAPANDI'; s.flight?.end('Kullanıcı bitirdi'); MOCK.sessions.delete(id); } return { ok: true }; },
-    cmd: async (id, name, params) => { const s = MOCK.sessions.get(id); if (!s) throw Object.assign(new Error('Oturum yok'), { status: 404 }); if (s.mode === 'replay') { if (name !== 'reset') throw Object.assign(new Error('Kayıtta komut yok'), { status: 400 }); return { ok: true }; } s.flight.cmd(name, params || {}); return { ok: true }; },
+    cmd: async (id, name, params) => { const s = MOCK.sessions.get(id); if (!s) throw Object.assign(new Error('Oturum yok'), { status: 404 }); if (name === 'camera') { s.camera = normCamType(params?.type); return { ok: true, camera: s.camera }; } if (s.mode === 'replay') { if (name !== 'reset') throw Object.assign(new Error('Kayıtta komut yok'), { status: 400 }); return { ok: true }; } s.flight.cmd(name, params || {}); return { ok: true }; },
     socket: (id, handlers) => {
       const s = MOCK.sessions.get(id);
       if (!s) { handlers.fatal?.('notfound'); return { send() {}, close() {} }; }

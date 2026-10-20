@@ -6,7 +6,7 @@
 //   + yüzde (tele.batt_pct yoksa gerilimden hücre kestirimi), RSSI (tele.rssi yoksa 'RSSI --'), GPS uydu sayısı + fix, lat/lon; eve mesafe + EVE OKU (ok,
 //   gövde yönüne göre döner; GPS home'dan); uyarılar (kırmızı yanıp sönen): DÜŞÜK PİL (< %25), ALÇAK (armed, AGL < 10 m, hız > 3 m/s), ÇARPIŞMA, RSSI DÜŞÜK.
 // • Analog efekt (`fs.fpv.analog`, varsayılan kapalı): tarama çizgileri + rastgele ince parazit/kayma şeritleri (RSSI düşükse ya da eve uzaklıkla artan);
-//   renk doygunluğu 3B gölgelendiricisinde (sim.setFpvAnalog). PiP (`fs.fpv.pip`): 3B sağ üstte takip kamerası (sim.setPip) — OSD çerçeve + etiket çizer.
+//   renk doygunluğu 3B gölgelendiricisinde (sim.setFpvAnalog). PiP (§22.4) flightsim_camera.js'te (sürüklenebilir; kendi OSD'si) — burada yalnız FOV etiketi PiP'ten kaçar.
 // • Veri: update(tele) — flightsim.js `last` ya da replay karesi (aynı biçim); ctx getter'lı: pose (3B'nin render ettiği roll/pitch/yaw; yoksa tele), camMode,
 //   collision, session, t0, replay, fov (sim.getPilotFov), pipRect (sim.pipRect), pip (açık mı), rcOn (sanal kumanda çubukları görünür → alt satırlar yukarı).
 // • Performans: metin ölçümü yok (textAlign), tarama deseni bir kez; 60 fps'te < 1,5 ms hedef (SwiftShader ölçümü §22).
@@ -280,11 +280,9 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = 
     text(`${tr('FLY')} ${fmtClock(el)}`, cx, timeY, { align: 'center', px: F * 1.2, bold: true });
     if (ctx.replay) text('▸ REPLAY', cx, timeY + 20 * S, { align: 'center', px: F * 0.9, color: DIM });
     const rightX = W - m;
-    if (pr) {   // PiP çerçevesi + etiket (3B görüntü altta; burada yalnız çerçeve)
-      g.beginPath(); g.rect(pr.x - 1, pr.y - 1, pr.w + 2, pr.h + 2); stroke(WHITE, 1.6);
-      text(tr('TAKİP'), pr.x + 6 * S, pr.y + pr.h - 9 * S, { px: F * 0.8, color: DIM });
-      text(`FOV ${fov.toFixed(0)}°`, rightX, pr.y + pr.h + 14 * S, { align: 'right', px: F * 0.9, color: DIM });
-    } else text(`FOV ${fov.toFixed(0)}°`, rightX, topY, { align: 'right', px: F * 0.9, color: DIM });
+    // PiP penceresi (§22.4) kendi çerçeve/OSD'sini çizer (flightsim_camera.js); sağ üst köşedeyse FOV etiketi altına iner
+    if (pr && pr.x + pr.w > W - 40 * S && pr.y < topY + 30 * S) text(`FOV ${fov.toFixed(0)}°`, rightX, pr.y + pr.h + 14 * S, { align: 'right', px: F * 0.9, color: DIM });
+    else text(`FOV ${fov.toFixed(0)}°`, rightX, topY, { align: 'right', px: F * 0.9, color: DIM });
 
     // --- sol: hız (km/h) · sağ: irtifa (m) ---
     const kmh = gs * 3.6;
@@ -339,6 +337,9 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = 
     }
     // ipucu (sağ alt, küçük)
     text(tr('O: OSD · tekerlek: FOV · C: kamera'), rightX, by - 26 * S, { align: 'right', px: F * 0.75, base: 'bottom', color: 'rgba(244,246,248,.45)' });
+    // §22.4 kamera PiP'i: görüntüsü 3B tuvalde (bu katmanın altında) → PiP dikdörtgeni temizlenir, HUD/OSD yazıları PiP'in üstüne binmez
+    const pipR = typeof ctx.pipRect === 'function' ? ctx.pipRect() : ctx.pipRect;
+    if (pipR && pipR.w > 0) g.clearRect(pipR.x - 2, pipR.y - 2, pipR.w + 4, pipR.h + 4);
   }
 
   apply();

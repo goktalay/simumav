@@ -351,6 +351,9 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
       let wx = cx - total / 2;
       for (const w of warns) { box(wx, wy, bw, 24 * S, RED, on ? 'rgba(190,20,20,.9)' : 'rgba(60,0,0,.6)'); text(w, wx + bw / 2, wy + 12 * S, { align: 'center', px: F * 1.05, bold: true, color: on ? '#fff' : RED }); wx += bw + gap; }
     }
+    // §22.4 kamera PiP'i: görüntüsü 3B tuvalde (bu katmanın altında) → PiP dikdörtgeni temizlenir, HUD/OSD yazıları PiP'in üstüne binmez
+    const pipR = typeof ctx.pipRect === 'function' ? ctx.pipRect() : ctx.pipRect;
+    if (pipR && pipR.w > 0) g.clearRect(pipR.x - 2, pipR.y - 2, pipR.w + 4, pipR.h + 4);
   }
 
   apply();

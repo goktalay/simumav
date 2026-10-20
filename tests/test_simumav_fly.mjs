@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { createWizard, normLaunch, launchBody, speedScale, speedAngle, speedTicks, modelFor, worldFromTrack, countdownAt, needsLaunch, simType, STEPS, timeOfDay, AIRFRAMES, airframeOf, airframeForModel, airframeLabel, needsAirframe } from '../static/simumav/app/fly/wizard.js';
 import { HAND, handPoseAt, handReleaseTime, shimTelemetry, replayHandTimeline, replayHandPhaseAt, replayHandPhaseStart, handCfg, REPLAY_HAND_RELEASE } from '../static/simumav/app/fly/hand_launch.js';
+import { CAMERA_KEYS, cameraDefault, camTr } from '../static/simumav/app/fly/camera_pick.js';
 import { crossing, createGateTracker, gateLocal, localFrom, replayGatesAt, gateStats, MISS_FACTOR } from '../static/simumav/app/fly/gates.js';
 
 let n = 0;
@@ -196,5 +197,11 @@ test('kontrol düzeni (§13.1): kayıt → katalog modeli → anahtar tahmini �
   assert.equal(airframeOf({ type: 'plane', model_key: 'glb:rc_cessna', airframe: 'vtail' }), 'vtail', 'kayıt öncelikli'); assert.equal(airframeOf({ type: 'plane', model_key: 'lib-x' }, { airframe: 'elevon' }), 'elevon', 'katalog modeli');
   assert.equal(airframeOf({ type: 'plane', model_key: 'lib-x' }), 'classic'); assert.equal(airframeOf({ type: 'fpv', model_key: 'glb:talon_vtail', airframe: 'vtail' }), null); assert.equal(airframeOf(null), null);
   assert.equal(airframeForModel('glb:zephyr'), 'elevon'); assert.equal(airframeForModel(''), null); assert.equal(airframeLabel('vtail'), 'V-kuyruk (ruddervator)'); assert.equal(airframeLabel(null), '—');
+});
+test('kamera türü seçimi (camera_pick.js): day|thermal|night; varsayılan dron → yerel → son tercih → gündüz; metin → camera.* çevirisi', () => {
+  assert.deepEqual(CAMERA_KEYS, ['day', 'thermal', 'night']);
+  assert.equal(cameraDefault({ camera: 'night' }, 'thermal', 'day'), 'night'); assert.equal(cameraDefault(null, 'thermal'), 'thermal'); assert.equal(cameraDefault(null, null, 'x'), 'day');
+  const t = camTr(k => ({ 'camera.night': 'Night vision' }[k] ?? k));
+  assert.equal(t('Gece görüşü'), 'Night vision'); assert.equal(t('Termal kamera'), 'Termal kamera');
 });
 console.log(`\n${n} test geçti`);

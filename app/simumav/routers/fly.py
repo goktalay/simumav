@@ -50,6 +50,7 @@ class StartIn(BaseModel):
     record: Optional[RecordIn] = None
     power: Optional[dict] = None                   # §10 güç ve yakıt (sihirbaz): hangar ayarının üstüne; power.dogrula
     speedup: Any = None                            # §10 (bool/dize zorlaması yok: bridge.speedup_dogrula) başlangıç simülasyon hızı 1 | 2 | 4 | 8 (≤ SIMUMAV_MAX_SPEEDUP)
+    camera: Optional[str] = Field(None, max_length=8)   # HEPGO §22.3 kamera türü: day | thermal | night
 
 
 class RecStartIn(BaseModel):
@@ -85,7 +86,7 @@ async def start(body: StartIn, request: Request, user=User):
     launch = body.launch.model_dump(exclude_none=True) if isinstance(body.launch, LaunchIn) else {'method': body.launch or 'wheels'}
     try:
         out = await bridge.ucus_baslat(user, pilot, drone, track, mission, launch, body.record.model_dump() if body.record else None, request,
-                                       power=body.power, speedup=body.speedup)
+                                       power=body.power, speedup=body.speedup, camera=body.camera)
     except bridge.BridgeHata as e:
         if e.error == 'invalid' and str(e.message).startswith(('power', 'Yakıt')):
             db.audit_bagimsiz('power_reject', user['id'], auth.client_ip(request), e.message[:200])
@@ -120,6 +121,7 @@ def status(fid: int, request: Request, user=User):
     snap = out.get('snapshot') or {}
     out['launch'] = snap.get('launch') or {'method': f.get('launch') or 'wheels'}
     out['record'] = snap.get('record') or {'bin': True, 'video': False}
+    out['camera'] = snap.get('camera') or 'day'   # §22.3 (uçuşa geri dönüşte aynı tür)
     if d and d.get('mp'):
         out['mp'] = {'host': bridge.host_adi(request), 'port': d['mp']['port'], 'proto': 'tcp', 'locked_ip': d['mp']['locked_ip'], 'connected': d['mp']['connected']}
     else:

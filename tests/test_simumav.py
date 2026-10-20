@@ -443,10 +443,12 @@ def main():
         # ---- ikinci uçuş: launch nesnesi (hand, sabit kanat), GET /fly/{id} start biçimi, kayıt (video) REST akışı
         pl = c.post('/api/hangar', json={'name': 'Kanat', 'type': 'plane', 'model_key': 'builtin:delta'}, headers=H).json()
         r = c.post('/api/fly/start', json={'drone_id': pl['id'], 'pilot_id': pilot_id, 'track_id': t2['id'], 'launch': {'method': 'hand', 'hand_speed_ms': 9}}, headers=H); assert r.status_code == 422
-        r = c.post('/api/fly/start', json={'drone_id': pl['id'], 'pilot_id': pilot_id, 'track_id': t2['id'], 'launch': {'method': 'hand', 'hand_speed_ms': 7.5, 'hand_pitch_deg': 12}, 'record': {'video': True, 'bin': False}}, headers=H)
+        r = c.post('/api/fly/start', json={'drone_id': pl['id'], 'pilot_id': pilot_id, 'track_id': t2['id'], 'launch': 'wheels', 'camera': 'ir'}, headers=H); assert r.status_code == 422   # HEPGO §22.3 kamera türü enum
+        r = c.post('/api/fly/start', json={'drone_id': pl['id'], 'pilot_id': pilot_id, 'track_id': t2['id'], 'launch': {'method': 'hand', 'hand_speed_ms': 7.5, 'hand_pitch_deg': 12}, 'record': {'video': True, 'bin': False}, 'camera': 'thermal'}, headers=H)
         assert r.status_code == 201, r.text
         f2 = r.json(); fid2, sid2 = f2['flight_id'], f2['sim_id']
         g = c.get(f'/api/fly/{fid2}').json()
+        assert g['camera'] == 'thermal' and g['session']['camera'] == 'thermal' and flightsim.MANAGER.sessions[sid2].camera == 'thermal', (g.get('camera'), g['session'].get('camera'))
         assert g['flight_id'] == fid2 and g['sim_id'] == sid2 and g['ws'] == f'/ws/fly/{sid2}' and g['session']['id'] == sid2 and g['launch'] == {'method': 'hand', 'angle_deg': 15.0, 'release_kmh': 70.0, 'hand_speed_ms': 7.5, 'hand_pitch_deg': 12.0}
         assert g['record'] == {'bin': False, 'video': True} and g['drone']['name'] == 'Kanat' and g['track']['gates'] and g['mp']['port'] and g['pilot']['name'] == 'ali'
         for _ in range(100):
@@ -466,6 +468,11 @@ def main():
                 if m.get('t') == 'launch' and m.get('phase') == 'armed':
                     break
             assert m.get('t') == 'launch' and m.get('phase') == 'armed', m
+            ws.send_json({'t': 'cmd', 'rid': 'cam1', 'name': 'camera', 'params': {'type': 'night'}})   # uçuş içinde tür değişimi (sim yolu; SITL'e gitmez)
+            m = ws.receive_json()
+            while not (m.get('t') == 'res' and m.get('rid') == 'cam1'):
+                m = ws.receive_json()
+            assert m['ok'] is True and m.get('camera') == 'night' and flightsim.MANAGER.sessions[sid2].camera == 'night', m
         s2 = flightsim.MANAGER.sessions[sid2]; assert s2.launch.get('hand') and s2.launch['method'] == 'ramp' and s2.launch['hand_speed_ms'] == 7.5
         # kayıt: start → chunk (sıralı) → thumb → finish(kept) → file → flights.video_path; sahiplik
         r = c.post(f'/api/fly/{fid2}/rec/start', json={'mime': 'video/webm'}, headers=H); assert r.status_code == 201, r.text

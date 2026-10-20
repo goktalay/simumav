@@ -720,3 +720,36 @@ html[data-theme="dark"] .fs-rp-dev.green { color: #4ade80; } html[data-theme="da
 .fs-nav .fs-back:hover .fs-back-txt, .fs-nav .fs-back:focus-visible .fs-back-txt { max-width: 80px; opacity: 1; margin-left: 6px; }
 .fs-nav .fs-back:active { transform: scale(.96); }
 .fs-stage.fs-full .fs-nav .fs-back { height: 34px; min-width: 34px; }
+
+/* ---------- Uçuş Simülatörü §22.3–22.5: kamera PiP'i (sürüklenebilir; görüntü 3B tuvalinde) + kamera türü menüsü ---------- */
+.fs-pip { position: absolute; z-index: 7; box-sizing: border-box; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .55); box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 10px 28px rgba(0, 0, 0, .45); cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; outline: none; transition: left .18s ease, top .18s ease, width .18s ease, height .18s ease, border-color .15s; }
+.fs-pip[hidden] { display: none; }
+.fs-pip:hover, .fs-pip:focus-visible { border-color: #fff; }
+.fs-pip.dragging { cursor: grabbing; transition: none; border-color: var(--primary, #38bdf8); }
+.fs-pip.no-anim { transition: none; }
+.fs-pip-osd { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 9px; pointer-events: none; }
+.fs-pip-tools { position: absolute; top: 4px; right: 4px; display: flex; gap: 3px; opacity: 0; transition: opacity .15s; }
+.fs-pip:hover .fs-pip-tools, .fs-pip:focus-within .fs-pip-tools, .fs-pip.dragging .fs-pip-tools { opacity: 1; }
+@media (hover: none) { .fs-pip-tools { opacity: .9; } }
+.fs-pip-b { width: 24px; height: 22px; padding: 0; border-radius: 6px; border: 1px solid rgba(255, 255, 255, .25); background: rgba(11, 18, 32, .78); color: #e6e9ef; font: 700 11px/1 system-ui, sans-serif; cursor: pointer; }
+.fs-pip-b:hover { background: rgba(56, 120, 220, .85); }
+.fs-pip-grip { position: absolute; bottom: -2px; right: -2px; width: 16px; height: 16px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, .7) 50%, rgba(255, 255, 255, .7) 60%, transparent 60%, transparent 70%, rgba(255, 255, 255, .7) 70%, rgba(255, 255, 255, .7) 80%, transparent 80%); border-bottom-right-radius: 9px; }
+.fs-pip[data-corner$="r"] .fs-pip-grip { right: auto; left: -2px; cursor: nesw-resize; transform: scaleX(-1); border-bottom-right-radius: 0; border-bottom-left-radius: 9px; }
+.fs-cam-ctl[data-camtype="thermal"] .fs-cam-btn.primary { background: linear-gradient(90deg, #6d28d9, #ea580c); border-color: transparent; }
+.fs-cam-ctl[data-camtype="night"] .fs-cam-btn.primary { background: #15803d; border-color: #15803d; }
+.fs-cam-menu { min-width: 300px; }
+.fs-cam-menu .fs-cam-h { font-weight: 700; font-size: 12px; letter-spacing: .02em; }
+.fs-cam-menu .pill-group { display: inline-flex; flex-wrap: wrap; gap: 3px; background: rgba(255, 255, 255, .06); border-radius: 999px; padding: 3px; }
+.fs-cam-menu .btn { background: transparent; border-color: transparent; color: #e6e9ef; }
+.fs-cam-menu .btn.primary { background: var(--primary, #2563eb); color: #fff; }
+.fs-cam-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.fs-cam-row[hidden] { display: none; }
+.fs-cam-note { line-height: 1.35; max-width: 320px; }
+@media (prefers-reduced-motion: reduce) { .fs-pip, .fs-pip-tools { transition: none; } }
+.fs-cam-ico { display: inline-flex; vertical-align: -2px; margin-right: 4px; }
+.fs-bar:has(.fs-cam-menu:not([hidden])) { z-index: 9; }   /* menü açıkken kadranların (z 8) üstünde */
+.fs-cam-menu { min-width: 330px; max-width: min(380px, calc(100vw - 24px)); gap: 8px; }
+.fs-cam-menu .pill-group { border-radius: 10px; }
+.fs-cam-menu .fs-cam-types { display: grid; grid-template-columns: repeat(3, 1fr); }
+.fs-cam-menu .fs-cam-types .btn { white-space: normal; line-height: 1.2; height: auto; min-height: 30px; padding: 4px 6px; }
+.fs-cam-menu .fs-cam-row > .pill-group { flex: none; }

@@ -55,7 +55,18 @@ RC_PARAMLAR = (('SIM_RC_FAIL', 0), ('FS_THR_ENABLE', 0), ('THR_FAILSAFE', 0), ('
 
 TIP_ADLARI = {'multirotor': 'Multikopter', 'hexarotor': 'Hexakopter', 'helikopter': 'Helikopter', 'sabit_kanat': 'Sabit Kanat', 'vtol': 'VTOL'}
 PLANE_TIPLERI = ('sabit_kanat', 'vtol')
-KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}
+KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}
+# §22.3 kamera türü (gimbal/FPV kamerası ve PiP): sunucu yalnız enum doğrular; oturumda/kayıt satırında saklanır, kayıttan oynatma aynı türü açar
+KAMERA_TURLERI = ('day', 'thermal', 'night')
+
+
+def kamera_dogrula(v, varsayilan='day'):
+    """`camera`: None/boş → varsayılan; 'day' | 'thermal' | 'night' dışı → SimHata('invalid')."""
+    if v is None or v == '':
+        return varsayilan
+    if not isinstance(v, str) or v not in KAMERA_TURLERI:
+        raise SimHata('invalid', 'camera day | thermal | night olmalı')
+    return v
 
 # Sabit kanat kalkış yöntemi (§13): wheels (tekerlekli pist koşusu) · ramp (pnömatik fırlatma rampası; açı 10–30°) · vehicle (pickup üstünden bırakma; hız 40–110 km/h)
 LAUNCH_DEFAULTS = {'method': 'wheels', 'angle_deg': 15, 'release_kmh': 70}
@@ -577,8 +588,9 @@ class _UdpProto(asyncio.DatagramProtocol):
 # Oturum
 # ======================================================================
 class SimSession:
-    def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None, layout=None):
+    def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None):
         self.id = int(sid)
+        self.camera = kamera_dogrula(camera)   # §22.3 kamera türü (son seçim; `camera` komutu günceller → kayıt satırı)
         self.kimlik = KIMLIK_TABANI + self.id
         self.type, self.center, self.world, self.owner = tip, center, world, owner
         # §23 güç ve yakıt: doğrulanmış `power` (azami hız, yakıt L / km/L, batarya hücre/mAh/W) → GucDurumu (her telemetri karesinde entegre;
@@ -703,6 +715,7 @@ class SimSession:
                            'mount_neutral': list(self.montaj['neutral']), 'mount_reversed': list(self.montaj['reversed']), 'motor_skipped': list(self.montaj.get('motor_skipped') or [])},
                 'terrain': {**self.arazi, 'report': dict(self.arazi['report']) if self.arazi['report'] else None},   # §18 arazi sunumu sayaçları + son TERRAIN_REPORT
                 # §23 güç ve yakıt: ayarlar + anlık durum + azami hız uygulaması (itki ölçeği destek/gözlenen çarpan) + simülasyon hızı
+                'camera': self.camera,   # §22.3
                 'power': dict(self.power), 'power_state': self.guc.tele_alanlari(), 'speedup': self.guc.speedup,
                 'speed_scale': {'supported': bool(self.hiz_olcegi), 'thr_mul': flightsim_power.thr_mul_icin(self.power['max_speed_ms']) if self.power.get('max_speed_ms') else None,
                                 'thr_mul_sitl': self.thr_mul_sitl, 'stock_ms': round(flightsim_power.plane_tam_gaz_hizi(), 1)}}
@@ -1394,6 +1407,11 @@ class SimSession:
             if isinstance(f, bool) or not isinstance(f, (int, float)) or float(f) not in [float(x) for x in flightsim_power.SPEEDUPS]:
                 raise SimHata('invalid', f"speed.factor {' | '.join(str(x) for x in flightsim_power.SPEEDUPS)} olmalı")
             p = {'factor': float(f)}
+        if name == 'camera':   # §22.3: ön yüz türü değiştirdi → oturum (ve kapanışta kayıt satırı) son türü saklar; SITL'e gitmez
+            if p.get('type') is None:
+                raise SimHata('invalid', 'camera.type gerekir')
+            self.camera = kamera_dogrula(p.get('type'))
+            return {'ok': True, 'camera': self.camera}
         if name == 'reset':
             await self.reset()
             return {'ok': True}
@@ -1861,14 +1879,16 @@ class SimManager:
     def acik_sayisi(self):
         return len([s for s in self.sessions.values() if s.state != 'KAPANDI'])
 
-    async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None, layout=None):
+    async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None):
         """Yeni oturum: doğrulama (400) → limit (409) → SITL ikilisi (503) → UDP port (503, oturum içinde HATA) → görev.
         `model`: flightsim_models.coz ile çözülmüş kütüphane nesnesi (router); yoksa `airframe` ile dahili model.
         `drone` (§14, isteğe bağlı): Dron Envanteri kaydı {id, code, name, model} — harekât panelinde telemetri bu adla akar.
         `rec` (§19, isteğe bağlı): {bin: bool} — SITL DataFlash .BIN kaydı; kapanışta Uçuş Logları'na.
-        `power` (§23, isteğe bağlı): {max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w} — eksikler dron kaydı önerisi → tip varsayılanı."""
+        `power` (§23, isteğe bağlı): {max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w} — eksikler dron kaydı önerisi → tip varsayılanı.
+        `camera` (§22.3, isteğe bağlı): 'day' | 'thermal' | 'night' (varsayılan day)."""
         if rec is not None and not isinstance(rec, dict):
             raise SimHata('invalid', 'rec nesne olmalı')
+        camera = kamera_dogrula(camera)
         if tip not in drone_sitl.TIP_ESLEME:
             raise SimHata('invalid', 'Geçersiz dron tipi')
         try:
@@ -1914,15 +1934,17 @@ class SimManager:
         sid = self._next
         self._next += 1
         s = SimSession(sid, tip, {'id': center.get('id'), 'name': center.get('name'), 'lat': float(center['lat']), 'lon': float(center['lon']),
-                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout)
+                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout, camera)
         s.alt_not = alt_not
         self.sessions[sid] = s
         s.task = asyncio.get_running_loop().create_task(s.run())
         return s
 
-    async def ac_replay(self, log, world, owner, model=None):
+    async def ac_replay(self, log, world, owner, model=None, camera=None):
         """Kayıttan oynatma oturumu (mode 'replay'; flightsim_replay.ReplaySession): SITL/UDP yok. Doğrulama (400) → limit (409) → görev.
-        Log ayrıştırma oturum görevinde arka planda sürer (BASLIYOR → HAZIR / HATA)."""
+        Log ayrıştırma oturum görevinde arka planda sürer (BASLIYOR → HAZIR / HATA). `camera` (§22.3): kayıt bu simülatörden ise kaydın türü
+        (drone_sim_runs.camera) önceliklidir; değilse verilen tür, o da yoksa gündüz."""
+        camera = kamera_dogrula(camera)
         from .flightsim_replay import ReplaySession, UZANTILAR
         if not log or log.get('status') != 'TAMAM':
             raise SimHata('invalid', 'Uçuş logu bulunamadı ya da analizi tamamlanmadı')
@@ -1938,6 +1960,8 @@ class SimManager:
         s = ReplaySession(sid, log, world, owner, self)
         if model is not None:
             s.model = model
+        if s.camera is None:
+            s.camera = camera
         self.sessions[sid] = s
         s.task = asyncio.get_running_loop().create_task(s.run())
         return s

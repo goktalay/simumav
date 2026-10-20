@@ -132,6 +132,7 @@ def _oturum_alanlari(s):
         'center_id': center.get('id'), 'center_name': center.get('name'), 'lat': center.get('lat'), 'lon': center.get('lon'),
         'world': json.dumps(dict(getattr(s, 'world', None) or {}), ensure_ascii=False, default=str),
         'launch': json.dumps(dict(getattr(s, 'launch', None) or {}), ensure_ascii=False, default=str) if getattr(s, 'launch', None) else None,
+        'camera': getattr(s, 'camera', None),   # §22.3 kamera türü (son seçim)
         'layout': getattr(s, 'layout_etkin', None) or getattr(s, 'layout', None),   # §13.1 kontrol düzeni (SITL'de fiilen uçan; kayıttan oynatmada None)
         'started_at': s.created_at, 'ended_at': bitis, 'duration_s': sure, 'mode': mode, 'result': _sonuc(s, crashes),
         'end_reason': getattr(s, 'end_reason', None) or 'kapatildi', 'crash_count': crashes,

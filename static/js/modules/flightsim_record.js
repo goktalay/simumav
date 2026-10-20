@@ -90,7 +90,7 @@ function restRec() {
 
 // ======================================================================
 // Kayıtçı
-// opts: { sid, tr, getSim (3B: canvas, addFrameHook), getHudCanvas (askeri HUD tuvali ya da null), getOsdCanvas (FPV OSD tuvali §22 ya da null), audio (createEngineAudio nesnesi), displayStream (Başlat'ta
+// opts: { sid, tr, getSim (3B: canvas, addFrameHook), getHudCanvas (askeri HUD tuvali ya da null), getOsdCanvas (FPV OSD tuvali §22 ya da null), getOverlays (§22.4: [{canvas, x, y, w, h}] CSS px — PiP OSD), audio (createEngineAudio nesnesi), displayStream (Başlat'ta
 //         alınan akış ya da null), text: () => paylaşım metni (kullanıcının dilinde), onEvent(text, sev), rest (test: sahte), MR (test), now (test) }
 // ======================================================================
 export function createRecorder(stage, opts = {}) {
@@ -150,6 +150,9 @@ export function createRecorder(stage, opts = {}) {
         if (hud && !hud.hidden && hud.width) g.drawImage(hud, 0, 0, W, H);
         const osd = opts.getOsdCanvas?.();   // §22 FPV OSD (pilot kamerası); kayıt başlarken seçili kamera korunur
         if (osd && !osd.hidden && osd.width) g.drawImage(osd, 0, 0, W, H);
+        // §22.4 kamera PiP'i: görüntü zaten 3B tuvalde; PiP OSD tuvali (çerçeve, tür, gimbal, yakınlaştırma) dikdörtgenine ölçekli eklenir
+        const sx = W / Math.max(1, src.clientWidth || W), sy = H / Math.max(1, src.clientHeight || H);
+        for (const o of opts.getOverlays?.() || []) if (o?.canvas?.width) g.drawImage(o.canvas, o.x * sx, o.y * sy, o.w * sx, o.h * sy);
       } catch { /* tuval henüz boyutsuz */ }
     };
     if (sim.addFrameHook) unhook = sim.addFrameHook(draw);   // render SONRASI aynı turda (buffer henüz temizlenmemiş)
