@@ -28,6 +28,7 @@ import { showReport } from './flightsim_report.js';   // §18: Bitir'de özet ra
 import { runsTable, runsQuery } from './flightsim_runs.js';   // §21: Simülasyon Kayıtları tablosu (filtre/sıralama/sayfalama; Oynat/Rapor/Video/.bin; MASTER: parametre/script)
 import { camTypeLabel, pipObstacleInsets, createCamPrefs, createCameraCards, createCameraCtl, createCameraPip, isCamType, normCamType } from './flightsim_camera.js';   // §22.3–22.5: kamera türü (gündüz/termal/gece), sürüklenebilir kamera PiP'i, sihirbaz kartı
 import { createTargetsSection } from './flightsim_targets_ui.js';   // §24 sihirbaz "Hedefler" bölümü
+import { createTargetPreviews } from './flightsim_tgtview.js';   // §24.4 hedef kartlarında 3B önizleme (aynı WebGL bağlamı)
 import { createInterceptTracker } from './flightsim_targets.js';   // §24 kayıtta önleme olayları (sunucu HedefIzleyici eşleniği)
 import { createPowerGauges, createPowerSection, createPowerSim, createSpeedPill, elecText, fuelText, rangeText } from './flightsim_power.js';   // §23: güç ve yakıt (sihirbaz bölümü, göstergeler, güç paneli kadranları §23.6, kayıtta istemci modeli, hız kapsülü)
 
@@ -550,7 +551,10 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   // ---------- 3a''. hedefler (§24; isteğe bağlı, yalnız canlı kip): dairesel yörüngede sürekli uçan hedefler → önizlemede de çizilir ----------
   const tgMeta = meta.targets || { models: [] };
   let tgPrevT = 0;
-  const targetsSec = createTargetsSection({ h, tr, catalog: tgMeta.models || [], limits: tgMeta, onChange: () => { clearTimeout(tgPrevT); tgPrevT = setTimeout(() => preview?.setTargets?.(targetsSec.enriched()), 250); } });
+  // §24.4 hedef kartlarında 3B önizleme: sihirbazın dünya önizlemesinin (preview) renderer'ı paylaşılır — ikinci WebGL bağlamı yok
+  let tgViewer = null, tgViewerOf = null;
+  const tgPreviews = createTargetPreviews({ tr, getViewer: () => { if (!preview?.createModelViewer) return null; if (tgViewerOf !== preview) { tgViewer = preview.createModelViewer(); tgViewerOf = preview; } return tgViewer; } });
+  const targetsSec = createTargetsSection({ h, tr, catalog: tgMeta.models || [], limits: tgMeta, previews: tgPreviews, onChange: () => { clearTimeout(tgPrevT); tgPrevT = setTimeout(() => preview?.setTargets?.(targetsSec.enriched()), 250); } });
   // ---------- 3a'. kamera (§22.3): gündüz / termal / gece görüşü — önizlemeli kartlar (aynı formüllerle 2B tuvalde; ek WebGL bağlamı yok). Varsayılan:
   // dron kaydının son türü (sunucu) → bu dron için yerel son seçim → son tercih → gündüz. Seçim oturuma (`camera`), tercihe ve dron kaydına kalıcı.
   const camPrefs = createCamPrefs();
@@ -712,7 +716,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   let disposed = false;
   const m = modal({ title: tr('Yeni Simülasyon Başlat'), body, wide: true,
     actions: [{ label: tr('İptal et'), class: 'ghost fs-wizard-cancel' }, { label: tr('▶ Başlat'), class: 'primary fs-start', onClick: start }],
-    onClose: () => { disposed = true; clearTimeout(rebuildT); preview?.dispose(); preview = null; onClosed?.(); } });
+    onClose: () => { disposed = true; clearTimeout(rebuildT); tgPreviews.dispose(); preview?.dispose(); preview = null; onClosed?.(); } });
   m.el.classList.add('fs-wizard-modal');
   back = m.el.parentElement;
   startBtn = m.el.querySelector('.modal-foot .btn.primary');
@@ -733,7 +737,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   } catch (err) {
     clear(previewBox, h('div', { class: 'fs-preview-msg' }, tr('3B önizleme açılamadı: {e}', { e: err.message })));
   }
-  onLeave(() => { clearTimeout(rebuildT); preview?.dispose(); preview = null; });
+  onLeave(() => { clearTimeout(rebuildT); tgPreviews.dispose(); preview?.dispose(); preview = null; });
   return m;
 }
 
@@ -975,13 +979,15 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   let lastRouteToast = '', lastRouteToastAt = 0;   // §18: aynı MP görev bildirimi 3 sn içinde tekrar toast olmaz
   // Askeri HUD bağlamı (gimbal kamerası): getter'lar her karede okunur (3B'nin render ettiği yönelim, gimbal, çarpışma)
   const hudCtx = { world, session, replay, launch, fov: 78, t0: Date.parse(session.created_at) || Date.now(),
-    get pose() { return sim?.getPose?.() || null; }, get gimbalDeg() { return sim?.getGimbal() ?? 0; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; } };
+    get pose() { return sim?.getPose?.() || null; }, get gimbalDeg() { return sim?.getGimbal() ?? 0; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; },
+    targets: () => sim?.targetsHud?.() ?? null };   // §24.5 hedef sembolojisi (prizma/TLL/kenar okları)
   milHud = createMilHud(stage, hudCtx, { tr });
   mhudBtn.classList.toggle('primary', milHud.enabled);
   // §22 FPV OSD bağlamı (pilot kamerası): yönelim 3B'den, FOV/PiP dikdörtgeni 3B'den, sanal kumanda açıkken alt satırlar yukarı
   const osdCtx = { session, replay, t0: hudCtx.t0,
     get pose() { return sim?.getPose?.() || null; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; },
-    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; }, get rcOn() { return !!rc; } };
+    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; }, get rcOn() { return !!rc; },
+    targets: () => sim?.targetsHud?.() ?? null };   // §24.5
   osd = createFpvOsd(stage, osdCtx, { tr });
   drawFpvBtns();
   const progMsg = p => {   // gerçek arazi yükleme ilerlemesi (3B tuval üstünde)

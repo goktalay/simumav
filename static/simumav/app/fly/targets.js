@@ -1,12 +1,18 @@
 // SIMUMAV › Uç — "HEDEFLER" adımı (HEPGO §24; docs/simumav.md §11) + uçuş içi skor rozeti + rapor kartı. Oyun tarzı kartlar; metinler `targets.*`
 // i18n anahtarları (7 dil). Katalog GET /api/fly/targets (hedef GLB'leri + hangar GLB'leri; sınırlar). Kinematik/doğrulama HEPGO çekirdeğinin saf
 // modülünden: /sim/flightsim_targets.js (targetState, validateTargets, newTarget, scoreOf).
-// createTargetsStep({ h, t, catalog, limits, state, onChange }) → { el } · state: {items, radius_m} | null (wizard S.targets)
+// createTargetsStep({ h, t, catalog, limits, state, onChange }) → { el, value, dispose() } · state: {items, radius_m} | null (wizard S.targets)
+// HEPGO §24.4 3B önizleme: her kartta seçili hedef modeli döner (/sim/flightsim_tgtview.js). Bu adımda başka 3B sahne yok → TEK "stüdyo" WebGL bağlamı
+// (createFlightSim3D(…, {studio: true}); ilk kart çizilince açılır), adımdan çıkınca dispose() ile kapanır (index.js).
 // createScoreBadge({ h, t }) → { el, update(state) } · targetsReportCard({ h, t, sum }) → el | null
 
 const SIM = '/sim/';
-let modP = null;
+let modP = null, viewP = null;
 export const loadTargetsLib = () => (modP ??= import(`${SIM}flightsim_targets.js`));
+const loadViewLib = () => (viewP ??= import(`${SIM}flightsim_tgtview.js`));
+// Önizleme (HEPGO çekirdeği Türkçe metinleri) → targets.pv_* anahtarları
+const PVMSG = { 'Sürükle: döndür · tekerlek: yakınlaştır · çift tık: sıfırla': 'targets.pv_hint', 'seyir {c} · azami {x} km/h': 'targets.pv_speed', Boyut: 'targets.pv_size',
+  'ızgara': 'targets.pv_grid', '3B önizleme hazırlanıyor…': 'targets.pv_loading', 'Model yükleniyor…': 'targets.pv_model_loading', 'Model yüklenemedi': 'targets.pv_model_err' };
 const kmh = ms => Math.round(Number(ms) * 3.6);
 // Çekirdek (flightsim_targets.validateTargets) Türkçe metinleri → SIMUMAV i18n anahtarları
 const VMSG = { 'Hedef listesi geçersiz': 'targets.v_list', 'En çok 8 hedef': 'targets.v_max', 'bilinmeyen model': 'targets.v_model', 'irtifa 10–3000 m olmalı': 'targets.v_alt',
@@ -17,6 +23,23 @@ export async function createTargetsStep({ h, t, catalog = [], limits = {}, state
   const L = await loadTargetsLib();
   const S = { items: (state?.items || []).map(x => ({ ...x })), radius: num(state?.radius_m, num(limits.radius_default, L.RADIUS_DEFAULT)) };
   const modelOf = key => catalog.find(m => m.key === key) || null;
+  // 3B önizleme: tek stüdyo bağlamı (ilk istekte açılır; görünmez, DOM dışı tuval) + kart başına 2B tuval
+  let studio = null, studioP = null, viewer = null, gone = false, previews = null;
+  const getViewer = () => {
+    if (viewer || gone) return viewer;
+    studioP ??= import(`${SIM}flightsim3d.js`).then(M => M.createFlightSim3D(document.createElement('div'), null, { studio: true })).then(s => {
+      if (gone) { s.dispose(); return; }
+      studio = s; viewer = s.createModelViewer();
+    }).catch(err => { console.warn('hedef önizlemesi', err); });
+    return null;
+  };
+  try { const V = await loadViewLib(); previews = V.createTargetPreviews({ getViewer, tr: (s, p) => t(PVMSG[s] || s, p) }); } catch { previews = null; }
+  const prevEl = new WeakMap();
+  const previewOf = it => {
+    if (!previews) return null;
+    if (!prevEl.has(it)) prevEl.set(it, previews.attach(() => { const m = modelOf(it.model); return m ? { item: { model: m.key, glb_url: m.glb_url, orient: m.orient, has_prop: m.has_prop }, name: m.name, cruise_ms: m.cruise_ms, max_ms: m.max_ms } : null; }));
+    return prevEl.get(it);
+  };
   const list = h('div', { class: 'sm-tg-list' });
   const err = h('div', { class: 'sm-tg-err', hidden: true });
   const empty = h('div', { class: 'sm-tg-empty' }, h('b', null, '◎'), h('span', null, t('targets.empty')));
@@ -51,6 +74,7 @@ export async function createTargetsStep({ h, t, catalog = [], limits = {}, state
       del.addEventListener('click', () => { S.items.splice(k, 1); emit(); draw(); });
       return h('div', { class: 'sm-tg-card', 'data-target': String(k) },
         h('div', { class: 'sm-tg-head' }, h('span', { class: 'sm-tg-no' }, String(k + 1)), sel, del),
+        previewOf(it),
         h('div', { class: 'sm-tg-grid' },
           field('targets.alt', numInp(it, 'alt_m', L.ALT[0], L.ALT[1], 5), 'm'),
           field('targets.diameter', numInp(it, 'diameter_m', L.DIAMETER[0], L.DIAMETER[1], 50), 'm'),
@@ -74,7 +98,8 @@ export async function createTargetsStep({ h, t, catalog = [], limits = {}, state
     err);
   draw();
   emit();
-  return { el, get value() { return S.items.length ? { items: S.items, radius_m: S.radius } : null; } };
+  return { el, get value() { return S.items.length ? { items: S.items, radius_m: S.radius } : null; },
+    dispose() { gone = true; previews?.dispose(); previews = null; studio?.dispose(); studio = null; viewer = null; } };
 }
 
 const BADGE_ICON = { first: '◎', quick: '»', ace: '★', close: '✦', hunter: '✪' };   // yazı tipi bağımsız simgeler (emoji her cihazda yok)

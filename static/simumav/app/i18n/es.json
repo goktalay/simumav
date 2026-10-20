@@ -426,5 +426,14 @@
   "targets.v_alt": "la altitud debe ser 10–3000 m",
   "targets.v_diameter": "el diámetro debe ser 50–5000 m",
   "targets.v_speed": "la velocidad no puede superar el máximo del modelo",
-  "targets.v_offset": "el desplazamiento debe estar en ±20 km"
+  "targets.v_offset": "el desplazamiento debe estar en ±20 km",
+  "Tab: hedef": "Tab: objetivo",
+  "ÖNLEME": "INTERCEPCIÓN",
+  "targets.pv_hint": "Arrastrar: girar · rueda: zoom · doble clic: restablecer",
+  "targets.pv_speed": "crucero {c} · máx. {x} km/h",
+  "targets.pv_size": "Tamaño",
+  "targets.pv_grid": "cuadrícula",
+  "targets.pv_loading": "Preparando vista previa 3D…",
+  "targets.pv_model_loading": "Cargando modelo…",
+  "targets.pv_model_err": "No se pudo cargar el modelo"
 }

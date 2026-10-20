@@ -5,12 +5,14 @@
 // • Öğeler: suni ufuk + pitch merdiveni (±90°, 5°; roll ile döner; zenit/nadir), roll yayı, boresight (W), uçuş yolu vektörü (vn/ve/vd),
 //   heading şeridi (ev yönü + rüzgâr), hava hızı / irtifa bantları, dikey hız çubuğu, radar irtifa "R", sol alt (mod, ARM/SAFE, G, gaz,
 //   batarya, GPS), sağ alt (UTC, T+, lat/lon, HOME, gimbal), üst sağ (● REC, CAM 1 · EO, FOV), köşe çerçeveleri, hedef kutusu, uyarılar.
+// • §24.5 hedef sembolojisi (flightsim_tgthud.js; ctx.targets → sim.targetsHud): prizmalar, kilitli hedefe TD kutusu + veri bloğu, TLL, ekran dışı yön okları.
 // • Veri: update(tele, ctx) — tele: flightsim.js `last` ya da replay karesi (aynı biçim); ctx getter'lı nesne: pose (3B'nin render ettiği
 //   roll/pitch/yaw; yoksa tele), world, session, gimbalDeg, camMode, collision, t0 (canlı oturum başlangıcı, ms), replay (bool), fov.
 // • Performans: metin ölçümü yok (textAlign ile hizalama), kutu genişlikleri sabit; 60 fps'te < 2 ms hedef.
 // Dışa: createMilHud(stageEl, ctx, { tr }) → { update(tele), setCamMode(mode), toggle(), setEnabled(bool), cycleColor(), get enabled, dispose() }.
 
 import { launchHud } from './flightsim_launch.js';   // kalkış yöntemi satırı (§13)
+import { symbology, drawSymbology } from './flightsim_tgthud.js';   // §24.5 F-16 tarzı hedef sembolojisi (prizma, TD kutusu, TLL, kenar okları)
 
 const COLORS = [['green', '#9cff6a'], ['white', '#f2f5f0'], ['amber', '#ffbf47']];
 const RED = '#ff4444';
@@ -117,6 +119,7 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
     F = 12 * S;
     const t = tele || {};
     const pose = ctx.pose || null;
+    const tgd = typeof ctx.targets === 'function' ? ctx.targets() : null;   // §24.5 hedefler (3B'nin son kamerası + sınır kutuları) ya da null
     const roll = num(pose?.roll, num(t.roll, 0)), pitch = num(pose?.pitch, num(t.pitch, 0));
     const yawRad = num(pose?.yaw, num(t.yaw, null));
     const hdg = num(t.heading, yawRad != null ? ((yawRad / DEG) + 360) % 360 : 0);
@@ -336,7 +339,7 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
     if (homeDist != null) { text(`HOME ${homeDist >= 1000 ? (homeDist / 1000).toFixed(1) + ' km' : homeDist.toFixed(0) + ' m'} ${pad3(homeBrg)}°`, rxx, ry, { align: 'right', px: F * 0.95 }); ry += lh; }
     text(`GMB ${gimbal > 0 ? '+' : ''}${gimbal.toFixed(0)}°`, rxx, ry, { align: 'right', px: F * 0.95 }); ry += lh * 1.3;
     // HUD ipucu (sağ alt bloğun altında, küçük)
-    text(tr('H: HUD aç/kapa · Shift+H: renk'), rxx, ry, { align: 'right', px: F * 0.78, color: 'rgba(230,235,230,.6)' });
+    text(tr('H: HUD aç/kapa · Shift+H: renk') + (tgd ? ` · ${tr('Tab: hedef')}` : ''), rxx, ry, { align: 'right', px: F * 0.78, color: 'rgba(230,235,230,.6)' });
 
     // --- uyarılar (ortada üstte, kırmızı kutular; dolgu yanıp söner, metin hep okunur) ---
     const warns = [];
@@ -351,13 +354,18 @@ export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
       let wx = cx - total / 2;
       for (const w of warns) { box(wx, wy, bw, 24 * S, RED, on ? 'rgba(190,20,20,.9)' : 'rgba(60,0,0,.6)'); text(w, wx + bw / 2, wy + 12 * S, { align: 'center', px: F * 1.05, bold: true, color: on ? '#fff' : RED }); wx += bw + gap; }
     }
+    // --- §24.5 hedef sembolojisi: her hedefe tel kafes prizma (3B sınır kutusunun izdüşümü, en küçük boyut sınırlı), kilitli hedefe TD kutusu + veri bloğu,
+    //     boresight'tan Target Locator Line; ekran dışındakilere HUD kenarında (bantların içinde elips) yön oku + kilitliye sapma açısı ---
+    if (tgd) { tgSym = symbology(tgd, W, H, { S, bx: cx, by: cy, inset: { l: 64 * S, r: 64 * S, t: hsY + hsH + 34 * S, b: lay.bar + 46 * S } }); drawSymbology(g, tgSym, { color: C, S, F, tr, W, H }); } else tgSym = null;
     // §22.4 kamera PiP'i: görüntüsü 3B tuvalde (bu katmanın altında) → PiP dikdörtgeni temizlenir, HUD/OSD yazıları PiP'in üstüne binmez
     const pipR = typeof ctx.pipRect === 'function' ? ctx.pipRect() : ctx.pipRect;
     if (pipR && pipR.w > 0) g.clearRect(pipR.x - 2, pipR.y - 2, pipR.w + 4, pipR.h + 4);
   }
+  let tgSym = null;   // son çizilen semboloji (teşhis: Playwright)
 
   apply();
   canvas.__hud = {
+    targets: () => (tgSym ? { locked: tgSym.locked?.i ?? null, tll: !!tgSym.tll, items: tgSym.items.map(r => ({ i: r.i, on: r.on, arrow: r.arrow ? Math.round(r.arrow.ang) : null, prism: !!r.pts, hot: r.inside || r.flash })) } : null),
     update, setCamMode, toggle, setEnabled, cycleColor,
     get enabled() { return enabled; },
     get color() { return COLORS[colorIdx][0]; },

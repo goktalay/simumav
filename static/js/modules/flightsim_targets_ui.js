@@ -2,14 +2,23 @@
 // Her hedef: model (hedef modelleri + sistemdeki dron türleri; meta.targets.models), irtifa (m), yörünge çapı (m), hız (km/h; varsayılan modelin seyir
 // hızı, azami = modelin azami hızı), yön (saat yönü / tersi), yörünge merkezi (uçuş merkezinden doğu/kuzey ofset, m). Ortak: önleme yarıçapı (m).
 // `values()` → start gövdesi `targets` ({items, radius_m}) ya da undefined. ui.js içe aktarılmaz: `h`, `tr` parametre.
+// §24.4 3B önizleme: `previews` (flightsim_tgtview.createTargetPreviews; sihirbazın dünya önizlemesiyle AYNI WebGL bağlamı) verilirse her kartta seçili
+// modelin dönen 3B görüntüsü (sürükle/tekerlek), ölçek çubuğu, ad · seyir/azami hız · boyut. Önizleme öğesi hedef nesnesine bağlıdır (WeakMap): kartlar
+// yeniden çizilince (yön/model değişimi) tuval taşınır, görüntü sıfırlanmaz.
 import { DIAMETER, ALT, RADIUS, RADIUS_DEFAULT, TARGET_MAX, newTarget, validateTargets } from './flightsim_targets.js';
 
 const num = (v, d = null) => (v == null || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
 const kmh = ms => Math.round(Number(ms) * 3.6);
 
-export function createTargetsSection({ h, tr, catalog = [], limits = {}, onChange = () => {} }) {
+export function createTargetsSection({ h, tr, catalog = [], limits = {}, onChange = () => {}, previews = null }) {
   const S = { items: [], radius: num(limits.radius_default, RADIUS_DEFAULT) };
   const modelOf = key => catalog.find(m => m.key === key) || null;
+  const prevEl = new WeakMap();
+  const previewOf = it => {
+    if (!previews) return null;
+    if (!prevEl.has(it)) prevEl.set(it, previews.attach(() => { const m = modelOf(it.model); return m ? { item: { model: m.key, glb_url: m.glb_url, orient: m.orient, has_prop: m.has_prop }, name: m.name, cruise_ms: m.cruise_ms, max_ms: m.max_ms } : null; }));
+    return prevEl.get(it);
+  };
   const list = h('div', { class: 'fs-tg-list' });
   const err = h('div', { class: 'small fs-tg-err', hidden: true });
   const addBtn = h('button', { type: 'button', class: 'btn sm fs-tg-add', onclick: () => {
@@ -43,6 +52,7 @@ export function createTargetsSection({ h, tr, catalog = [], limits = {}, onChang
           h('span', { class: 'fs-tg-no' }, String(k + 1)),
           modelSelect(it, key => { it.model = key; const nm = modelOf(key); if (nm) it.speed_ms = nm.cruise_ms; draw(); changed(); }),
           h('button', { type: 'button', class: 'btn sm ghost fs-tg-del', title: tr('Hedefi kaldır'), onclick: () => { S.items.splice(k, 1); draw(); changed(); } }, '✕')),
+        previewOf(it),
         m?.desc ? h('div', { class: 'small muted fs-tg-desc' }, m.desc) : null,
         h('div', { class: 'fs-tg-grid' },
           row('İrtifa', numInp(it, 'alt_m', ALT[0], ALT[1], 5), 'm'),

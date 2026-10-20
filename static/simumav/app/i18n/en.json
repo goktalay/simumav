@@ -426,5 +426,14 @@
   "targets.v_alt": "altitude must be 10–3000 m",
   "targets.v_diameter": "orbit diameter must be 50–5000 m",
   "targets.v_speed": "speed cannot exceed the model maximum",
-  "targets.v_offset": "centre offset must be within ±20 km"
+  "targets.v_offset": "centre offset must be within ±20 km",
+  "Tab: hedef": "Tab: target",
+  "ÖNLEME": "INTERCEPT",
+  "targets.pv_hint": "Drag: rotate · wheel: zoom · double-click: reset",
+  "targets.pv_speed": "cruise {c} · max {x} km/h",
+  "targets.pv_size": "Size",
+  "targets.pv_grid": "grid",
+  "targets.pv_loading": "Preparing 3D preview…",
+  "targets.pv_model_loading": "Loading model…",
+  "targets.pv_model_err": "Model could not be loaded"
 }

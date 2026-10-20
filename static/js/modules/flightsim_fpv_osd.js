@@ -18,6 +18,7 @@ export const LS = { analog: 'fs.fpv.analog', pip: 'fs.fpv.pip', nose: 'fs.fpv.no
 export const LOW_BATT_PCT = 25, LOW_ALT_M = 10, LOW_RSSI = 30, LOW_FUEL_PCT = 20;
 export const CELL = { min: 3.5, max: 4.2, nominal: 3.8 };   // LiPo hücre gerilimleri (yüzde kestirimi)
 const DEG = Math.PI / 180;
+import { symbology, drawSymbology } from './flightsim_tgthud.js';   // §24.5 hedef sembolojisi (balıkgözü düzeltmeli izdüşüm 3B'den)
 import { gaugeLevel } from './flightsim_power.js';   // §23.6: güç çubuğu seviye eşikleri (yeşil ≥ 30 · sarı < 30 · kırmızı < 15 · bitti) kadranlarla aynı
 const WHITE = '#f4f6f8', DIM = 'rgba(244,246,248,.6)', RED = '#ff4a4a', YEL = '#ffd84a';
 const num = (v, d = null) => (v == null || Number.isNaN(Number(v)) ? d : Number(v));
@@ -336,14 +337,19 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = 
       for (const w of warns) { text(labels[w] || w, cx, wy, { align: 'center', px: F * 1.35, bold: true, color: on ? RED : 'rgba(255,74,74,.45)' }); wy += 24 * S; }
     }
     // ipucu (sağ alt, küçük)
-    text(tr('O: OSD · tekerlek: FOV · C: kamera'), rightX, by - 26 * S, { align: 'right', px: F * 0.75, base: 'bottom', color: 'rgba(244,246,248,.45)' });
+    // --- §24.5 hedef sembolojisi (askeri HUD ile aynı; OSD beyazı) — merkez işaretinden TLL; ekran dışı oklar üst/alt satırların içinde elipste ---
+    const tgd = typeof ctx.targets === 'function' ? ctx.targets() : null;
+    if (tgd) { tgSym = symbology(tgd, W, H, { S, bx: cx, by: cy, inset: { l: 90 * S, r: 90 * S, t: Math.max(topY + 40 * S, lay.nav + 40 * S), b: H - bottom + 60 * S } }); drawSymbology(g, tgSym, { color: WHITE, S, F: F * 0.95, tr, W, H }); } else tgSym = null;
+    text(tr('O: OSD · tekerlek: FOV · C: kamera') + (tgd ? ` · ${tr('Tab: hedef')}` : ''), rightX, by - 26 * S, { align: 'right', px: F * 0.75, base: 'bottom', color: 'rgba(244,246,248,.45)' });
     // §22.4 kamera PiP'i: görüntüsü 3B tuvalde (bu katmanın altında) → PiP dikdörtgeni temizlenir, HUD/OSD yazıları PiP'in üstüne binmez
     const pipR = typeof ctx.pipRect === 'function' ? ctx.pipRect() : ctx.pipRect;
     if (pipR && pipR.w > 0) g.clearRect(pipR.x - 2, pipR.y - 2, pipR.w + 4, pipR.h + 4);
   }
 
+  let tgSym = null;   // son çizilen semboloji (teşhis)
   apply();
   canvas.__osd = {
+    targets: () => (tgSym ? { locked: tgSym.locked?.i ?? null, tll: !!tgSym.tll, items: tgSym.items.map(r => ({ i: r.i, on: r.on, arrow: r.arrow ? Math.round(r.arrow.ang) : null, prism: !!r.pts, hot: r.inside || r.flash })) } : null),
     update, setCamMode, toggle, setEnabled, setAnalog, prefs,
     get enabled() { return enabled; }, get analog() { return analog; },
     stats: () => ({ drawMs: stats.n ? stats.ms / stats.n : 0, frames: stats.n }),

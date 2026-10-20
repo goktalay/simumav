@@ -426,5 +426,14 @@
   "targets.v_alt": "يجب أن يكون الارتفاع 10–3000 م",
   "targets.v_diameter": "يجب أن يكون القطر 50–5000 م",
   "targets.v_speed": "لا يمكن أن تتجاوز السرعة الحد الأقصى للنموذج",
-  "targets.v_offset": "يجب أن يكون إزاحة المركز ضمن ±20 كم"
+  "targets.v_offset": "يجب أن يكون إزاحة المركز ضمن ±20 كم",
+  "Tab: hedef": "Tab: الهدف",
+  "ÖNLEME": "اعتراض",
+  "targets.pv_hint": "اسحب: تدوير · العجلة: تكبير · نقر مزدوج: إعادة ضبط",
+  "targets.pv_speed": "الطيران {c} · الأقصى {x} كم/س",
+  "targets.pv_size": "الحجم",
+  "targets.pv_grid": "الشبكة",
+  "targets.pv_loading": "جارٍ تجهيز المعاينة ثلاثية الأبعاد…",
+  "targets.pv_model_loading": "جارٍ تحميل النموذج…",
+  "targets.pv_model_err": "تعذر تحميل النموذج"
 }

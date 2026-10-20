@@ -357,11 +357,13 @@ export async function openSession(view, start, picked, ctx = {}) {
   if (MAudio.AUDIO_MODELS && !MAudio.AUDIO_MODELS.jet) MAudio.AUDIO_MODELS.jet = { ...JET_AUDIO };   // jet modelleri: yüksek devirli ayrı ses modeli (dosyaya dokunmadan)
   const audio = MAudio.createEngineAudio(stage, { type: audioTypeFor(dType, drone.model_key), launch: launch && !isHand ? launch : null, replay: false, tr, getSim: () => sim, getCrashed: () => !crash.hidden, getSpeed: () => 1 });
   const hudCtx = { world, session, replay: false, launch: launch && !isHand ? launch : null, fov: 78, t0: Date.now(),
-    get pose() { return sim?.getPose?.() || null; }, get gimbalDeg() { return sim?.getGimbal() ?? 0; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; } };
+    get pose() { return sim?.getPose?.() || null; }, get gimbalDeg() { return sim?.getGimbal() ?? 0; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; },
+    targets: () => sim?.targetsHud?.() ?? null };   // §24.5 hedef sembolojisi (prizma/TLL/kenar okları)
   milHud = MHud.createMilHud(stage, hudCtx, { tr });
   mhudBtn.classList.toggle('primary', milHud.enabled);
   const osdCtx = { session, replay: false, t0: hudCtx.t0, get pose() { return sim?.getPose?.() || null; }, get camMode() { return sim?.getCamera(); }, get collision() { return !crash.hidden; },
-    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; }, get rcOn() { return !!rc; } };
+    get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; }, get rcOn() { return !!rc; },
+    targets: () => sim?.targetsHud?.() ?? null };   // §24.5
   osd = MOsd.createFpvOsd(stage, osdCtx, { tr });
   osd.setAnalog?.(fpvPrefs.analog);
   const recText = () => ['SIMUMAV', TYPE_LABEL[dType] || dType, drone.name, track.name, pilot?.name, launch ? launchLabelSm(launch) : null, fmtDateTime(session.created_at)].filter(Boolean).join(' · ');

@@ -426,5 +426,14 @@
   "targets.v_alt": "irtifa 10–3000 m olmalı",
   "targets.v_diameter": "yörünge çapı 50–5000 m olmalı",
   "targets.v_speed": "hız modelin azami hızını aşamaz",
-  "targets.v_offset": "merkez ofseti ±20 km olmalı"
+  "targets.v_offset": "merkez ofseti ±20 km olmalı",
+  "Tab: hedef": "Tab: hedef",
+  "ÖNLEME": "ÖNLEME",
+  "targets.pv_hint": "Sürükle: döndür · tekerlek: yakınlaştır · çift tık: sıfırla",
+  "targets.pv_speed": "seyir {c} · azami {x} km/h",
+  "targets.pv_size": "Boyut",
+  "targets.pv_grid": "ızgara",
+  "targets.pv_loading": "3B önizleme hazırlanıyor…",
+  "targets.pv_model_loading": "Model yükleniyor…",
+  "targets.pv_model_err": "Model yüklenemedi"
 }

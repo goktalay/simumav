@@ -223,7 +223,8 @@ async function renderWizard(view, ctx) {
     body.append(list, ms.length ? null : h('p', { class: 'small muted' }, tr('Bu parkur için kayıtlı görev yok (Görevler modülünden ekleyin).')));
   };
   // ---------- HEDEFLER (HEPGO §24; isteğe bağlı): katalog bir kez (GET /api/fly/targets); geçersiz girişte İleri kapalı ----------
-  let tgCat = null, tgErr = null;
+  let tgCat = null, tgErr = null, tgUi = null;
+  const dropTargetsUi = () => { tgUi?.dispose?.(); tgUi = null; };   // §24.4 önizleme stüdyo bağlamı adımdan çıkınca kapanır
   const stepTargets = async () => {
     const holder = h('div', { class: 'sm-tg-holder' }, h('p', { class: 'muted' }, tr('targets.loading')));
     body.append(holder);
@@ -231,6 +232,8 @@ async function renderWizard(view, ctx) {
     if (W.step() !== 'targets') return;
     const ui = await createTargetsStep({ h, t: tr, catalog: tgCat.models || [], limits: tgCat, state: W.state.targets,
       onChange: (v, e) => { W.set('targets', v); tgErr = e; nextBtn.disabled = !W.canNext() || !!tgErr; startBtn.disabled = !W.ready() || !!openFlight || !!tgErr; drawFoot2(); } });
+    if (W.step() !== 'targets' || destroyed) { ui.dispose?.(); return; }
+    dropTargetsUi(); tgUi = ui;
     clear(holder, ui.el);
   };
   const drawFoot2 = () => { const last = W.isLast(); if (!last) nextBtn.disabled = !W.canNext() || !!tgErr; drawFoot(); if (tgErr) { nextBtn.disabled = true; startBtn.disabled = true; } };
@@ -246,6 +249,7 @@ async function renderWizard(view, ctx) {
     clear(body);
     const k = W.step();
     if (k !== 'drone' && preview) { preview.dispose(); preview = null; previewBox = null; }   // 3B döngüsü yalnız dron adımında (diğer adımlarda CPU/GPU boşa dönmesin)
+    dropTargetsUi();   // hedef adımına dönülürse yeniden kurulur
     body.dataset.step = k;
     ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, power: stepPower, mission: stepMission, targets: stepTargets, pilot: stepPilot })[k]?.();
     drawSteps(); drawFoot();
@@ -274,12 +278,12 @@ async function renderWizard(view, ctx) {
     }
     s.camera = payload.camera;
     toast(tr('Uçuş başladı · MP tcp:{h}:{p}', { h: s.mp?.host || location.hostname, p: s.mp?.port ?? '—' }));
-    preview?.dispose(); preview = null; destroyed = true;
+    preview?.dispose(); preview = null; destroyed = true; dropTargetsUi();
     runLeave();
     ctx.track?.('flight_start', { drone_type: W.drone()?.type || 'unknown', launch: payload.launch?.method || payload.launch || 'wheels', world_mode: W.track()?.world_mode || 'unknown', mission: W.mission() ? 1 : 0 });
     await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.state.launch, record: W.state.record, power: s.power || W.state.power, speedup: s.speedup || W.state.speedup, targets: W.state.targets }, { ...ctx, meta: data.meta });
   };
-  onLeave(() => { destroyed = true; preview?.dispose(); preview = null; });
+  onLeave(() => { destroyed = true; preview?.dispose(); preview = null; dropTargetsUi(); });
   drawOpen();
   draw();
   return { wizard: W, draw, start, get openFlight() { return openFlight; } };

@@ -35,6 +35,7 @@ import { CTRL_RE, CTRL_MAX, controlInputs, surfaceTarget, easeSurface, layoutFor
 import { createTimeline } from './flightsim_interp.js';   // telemetri zaman çizgisi: uyarlanır gecikme tamponlu enterpolasyon (§5)
 import { createMissionLayer } from './flightsim_mission.js';   // §18: görev çizimi (tüp bacaklar, WP etiketleri, ikonlar) + iniş dairesi H
 import { targetState, targetsRelative, drawRadar, drawLabel, RADIUS_DEFAULT as TARGET_RADIUS } from './flightsim_targets.js';   // §24 hedefler (kinematik, radar, etiket)
+import { boxCorners, selectTarget, lockedIndex } from './flightsim_tgthud.js';   // §24.5 HUD hedef sembolojisi (prizma köşeleri, kilit)
 import { attitudeQuat } from './flightsim_interp.js';
 import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
 
@@ -274,7 +275,7 @@ function inRunway(x, y, headingDeg, margin = 0) {
 
 export async function createFlightSim3D(mountEl, world, opts = {}) {
   const { T, OrbitControls, GLTFLoader } = await loadLibs();
-  const preview = !!opts.preview;
+  const preview = !!opts.preview || !!opts.studio;   // §24.4 stüdyo kipi (yalnız model görüntüleyici) önizleme gibi: klavye/gölge yok
   let onCollision = opts.onCollision || null;
   const origin = { lat: num(opts.origin?.lat, 0), lon: num(opts.origin?.lon, 0) };
   const toLocal = (lat, lon) => ({ x: (lon - origin.lon) * 111320 * Math.cos(origin.lat * DEG), y: (lat - origin.lat) * 110574 });
@@ -333,6 +334,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // Isı değerleri mutlak; gölgelendirici termal kazancı (thermalGain: gece sahnesi aydınlatmasını normalize eder) uygular → malzeme ısı / kazanç ile çizilir
   const heatMat = v => { const k = Math.round(clamp(v, 0, 1) * 64); if (!heatMats.has(k)) heatMats.set(k, new T.MeshBasicMaterial({ color: new T.Color(k / 64, k / 64, k / 64), fog: true })); return heatMats.get(k); };
   const heatWorld = [];   // dünya içinden etiketli nesneler (su) — buildWorld her kurulumda boşaltır
+  const heatRoots = [];   // ek sıcak kökler (§24 hedef grubu): gövde ılık-sıcak, pervane/motor düğümleri (ad /prop|motor|engine/) sıcak
   let heatList = [], heatAt = -Infinity;
   const THERMAL_SKY = new T.Color(0.07, 0.07, 0.075), thermalSky = new T.Color();
   const collectHeat = now => {
@@ -348,6 +350,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     });
     add(drone.group, 0.74, 0.9);
     add(rig?.group, 0.58, 0.58);
+    for (const r of heatRoots) r.traverse(o => { if (o.isMesh) out.push({ o, m: heatMat((o.userData.heat ?? (/prop|motor|engine|blade/i.test(o.name + ' ' + (o.parent?.name || '')) ? 0.92 : 0.72)) / tg) }); });
     for (const o of heatWorld) out.push({ o, m: heatMat((o.userData.heat ?? 0.06) / tg) });
     out.tg = tg;
     heatList = out;
@@ -1280,6 +1283,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (preview || editable(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key >= '1' && e.key <= String(CAMERA_MODES.length)) { setCamera(Number(e.key)); e.preventDefault(); return; }
     if ((e.key === 'c' || e.key === 'C') && !e.shiftKey) { setCamera(nextCameraMode(camMode)); e.preventDefault(); return; }
+    if (e.key === 'Tab' && tg.items.length) { cycleTarget(e.shiftKey ? -1 : 1); e.preventDefault(); return; }   // §24.5 hedef kilidi
     if (keyLock && RC_KEYS.has(e.key.toLowerCase())) return;
     if (camMode === 'fpv' && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { setGimbal(e.key === 'ArrowUp' ? 5 : -5); e.preventDefault(); return; }
     if (camMode === 'fpv' && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_')) { setGimbalZoom(camFx.zoom * (e.key === '-' || e.key === '_' ? 1 / GIMBAL_ZOOM.step : GIMBAL_ZOOM.step)); e.preventDefault(); return; }
@@ -1378,8 +1382,11 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // Zaman: canlıda zaman çizgisinin oynatma başı (kaynak = SITL time_boot_ms → t = play/1000; dron ile aynı gecikme), kayıtta karenin `tt`'si
   // (t0 + kare t). Modeller dron gibi ×MODEL_SCALE; yatış (koordineli dönüş) + yön; pervaneler döner; ad/uzaklık etiketi (ekran boyutlu sprite),
   // yörünge çizgisi (soluk), önlemede genişleyen halka; radar (2B canvas, sağ üst köşe altı; setRadarVisible).
-  const tg = { cfg: null, items: [], group: new T.Group(), seq: 0, rel: [], lastRel: 0, radar: null, radarOn: !preview, flash: new Map(), shown: false };
+  // §24.5 HUD sembolojisi (flightsim_tgthud.js): targetsHud() son render edilen kameranın pozu + hedeflerin yönlendirilmiş sınır kutusu köşeleri (dünya);
+  // tg.sel kilit durumu (oto = en yakın; Tab / Shift+Tab döngü). HUD/OSD son 3 sn'de sembolojiyi çizdiyse (tg.hudAt) araç kameralarında sahne etiketleri gizlenir.
+  const tg = { cfg: null, items: [], group: new T.Group(), seq: 0, rel: [], lastRel: 0, radar: null, radarOn: !preview, flash: new Map(), shown: false, sel: { i: null, auto: true }, hudAt: -Infinity };
   scene.add(tg.group);
+  heatRoots.push(tg.group);   // termal: hedefler sıcak görünsün (§22.3)
   const targetTime = () => {
     if (preview) return performance.now() / 1000;                     // sihirbaz önizlemesi: yerel saat
     const l = tele.last;
@@ -1408,7 +1415,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   };
   async function setTargets(cfg) {
     const seq = ++tg.seq;
-    disposeGroup(tg.group); tg.items = []; tg.rel = []; tg.flash.clear();
+    disposeGroup(tg.group); tg.items = []; tg.rel = []; tg.flash.clear(); tg.sel = { i: null, auto: true };
     tg.cfg = cfg && Array.isArray(cfg.items) && cfg.items.length ? { ...cfg, radius_m: num(cfg.radius_m, TARGET_RADIUS) } : null;
     if (tg.radar) tg.radar.style.display = tg.radarOn && tg.cfg ? '' : 'none';
     if (!tg.cfg) return;
@@ -1431,7 +1438,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       flash.visible = false; flash.renderOrder = 19; root.add(flash);   // önleme: hedefte genişleyen parlak halka (billboard)
       const ring = orbitLine(it);
       tg.group.add(root, ring);
-      tg.items.push({ it, root, body, props: built.props || [], spr, cv, tex, flash, ring, key: '' });
+      const lc = boxCorners(bb.min.toArray(), bb.max.toArray()).map(c => new T.Vector3(...c));   // gövde çerçevesinde sınır kutusu köşeleri (×MODEL_SCALE; HUD prizması)
+      tg.items.push({ it, root, body, props: built.props || [], spr, cv, tex, flash, ring, key: '', lc });
     }
     if (!tg.radar && !preview) {
       tg.radar = document.createElement('canvas');
@@ -1453,6 +1461,35 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     return ringTex;
   };
   function flashTarget(i) { tg.flash.set(Number(i), performance.now()); }
+  // §24.5 HUD sembolojisi verisi (flightsim_tgthud.symbology girişi). Kamera: SON render edilen ana kamera (matrixWorld); FPV ('pilot') kipinde balıkgözü
+  // katsayıları (CAM_FRAG k/scale) da verilir. Hedef yoksa / zaman yoksa null. Her çağrı tg.hudAt'i günceller (sahne etiketleri gizlenir).
+  const hudV = new T.Vector3();
+  function targetsHud() {
+    if (preview || !tg.cfg || !tg.items.length || !tg.group.visible) return null;
+    const t = targetTime();
+    if (t == null) return null;
+    tg.hudAt = performance.now();
+    camera.updateMatrixWorld();
+    const e = camera.matrixWorld.elements, pilot = camMode === 'pilot';
+    const view = { pos: [e[12], e[13], e[14]], right: [e[0], e[1], e[2]], up: [e[4], e[5], e[6]], fwd: [-e[8], -e[9], -e[10]], tanV: Math.tan(camera.fov * DEG / 2), aspect: camera.aspect,
+      k: pilot ? POST_K : 0, scale: pilot ? 1 / (1 + POST_K * 0.5) : 1 };
+    const P = cur.pos, R = tg.cfg.radius_m, now = performance.now();
+    const items = tg.items.map(x => {
+      const st = targetState(x.it, t), c = [x.root.position.x, x.root.position.y, x.root.position.z];
+      x.body.updateWorldMatrix(true, false);
+      const corners = x.lc.map(v => hudV.copy(v).applyMatrix4(x.body.matrixWorld).toArray());
+      const dist = Math.hypot(c[0] - P.x, c[1] - P.y, c[2] - P.z), f0 = tg.flash.get(x.it.i);
+      return { i: x.it.i, name: x.it.name, center: c, corners, vel: [st.vx, st.vy, 0], dist, dz: c[2] - P.z, inside: dist <= R, flash: f0 != null && now - f0 < 2000 };
+    });
+    return { view, radius: R, sel: { ...tg.sel }, player: { pos: [P.x, P.y, P.z], vel: [cur.vel.x, cur.vel.y, cur.vel.z] }, items };
+  }
+  // Tab / Shift+Tab: kilitli hedef döngüsü (oto → en yakının bir sonrakine); 0 → doğrula
+  function cycleTarget(step = 1) {
+    if (!tg.cfg) return null;
+    const P = cur.pos, list = tg.items.map(x => ({ i: x.it.i, dist: x.root.position.distanceTo(P) }));
+    tg.sel = selectTarget(list, tg.sel, step);
+    return lockedIndex(list, tg.sel);
+  }
   const tgQ = new T.Quaternion();
   function updateTargets(now, rawDt) {
     if (!tg.items.length) return;
@@ -1462,6 +1499,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (!has) return;
     const R = tg.cfg.radius_m;
     const rate = 70;   // rad/s pervane (sabit seyir devri)
+    const hudLabelsOff = now - tg.hudAt < 3000;   // yavaş karede (yazılım WebGL) de kararlı
     for (const x of tg.items) {
       const st = targetState(x.it, t);
       x.root.position.set(st.x, st.y, st.z);
@@ -1472,6 +1510,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
         if (p.userData.disc) p.userData.disc.material.opacity = 0.4;
         if (p.userData.blades) for (const b of p.userData.blades) b.visible = false;
       }
+      x.spr.visible = !(hudLabelsOff && (camMode === 'fpv' || camMode === 'pilot'));   // HUD/OSD prizması çiziliyorsa sahne etiketi tekrar etmesin
       const f0 = tg.flash.get(x.it.i);
       if (f0 != null) {
         const u = (now - f0) / 2000;
@@ -1490,6 +1529,83 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       });
       if (tg.radar && tg.radarOn) drawRadar(tg.radar.getContext('2d'), tg.radar.width, tg.radar.height, tg.rel, { radius: R });
     }
+  }
+
+  // ---------- §24.4 sihirbaz hedef önizlemesi: model görüntüleyici (AYNI WebGL bağlamı; ikinci bağlam açılmaz) ----------
+  // Ayrı küçük sahne (ışıklar + 1 m'lik zemin ızgarası) → render hedefi → readRenderTargetPixels → kartın 2B tuvali (putImageData). Kart başına bağlam yok:
+  // çağıran (flightsim_tgtview.js) her karede tek kartı çizer. Modeller anahtar başına bir kez kurulur (gerçek boyut, ×1 — uçuşta ×MODEL_SCALE).
+  // render(cv, it, {az, el, zoom}) → {size [x, y, z] m, ppm (merkez derinliğinde piksel/metre)} | null (model yükleniyor). Sim dispose'unda temizlenir.
+  const viewers = new Set();
+  function createModelViewer() {
+    const sc = new T.Scene(); sc.background = new T.Color(0x0b1418);
+    sc.add(new T.HemisphereLight(0xe4eeff, 0x26302a, 1.5));
+    const d1 = new T.DirectionalLight(0xffffff, 2.4); d1.position.set(2, -1.6, 3); sc.add(d1);
+    const d2 = new T.DirectionalLight(0x9fc4ff, 0.8); d2.position.set(-2, 2, 1); sc.add(d2);
+    const cam = new T.PerspectiveCamera(30, 16 / 9, 0.01, 2000); cam.up.set(0, 0, 1);
+    const cache = new Map();
+    let rt = null, buf = null, img = null, shown = null, grid = null, gridKey = '', disposedV = false;
+    const keyOf = it => `${it.model || ''}|${it.glb_url || ''}`;
+    const load = it => {
+      const k = keyOf(it);
+      if (!cache.has(k)) {
+        const ent = { ready: false, err: null, holder: null, size: null, props: [] };
+        cache.set(k, ent);
+        buildTargetModel(it, MAT()).catch(() => buildDelta(MAT())).then(built => {
+          if (disposedV) { disposeGroup(built.grp); return; }
+          const holder = new T.Group(); holder.add(built.grp);
+          const bb = new T.Box3().setFromObject(built.grp), c = bb.getCenter(new T.Vector3());
+          built.grp.position.set(-c.x, -c.y, -bb.min.z);   // tabanı ızgaraya otur, yatayda ortala
+          Object.assign(ent, { ready: true, holder, size: bb.getSize(new T.Vector3()).toArray(), props: built.props || [] });
+        }).catch(err => { ent.err = err; });
+      }
+      return cache.get(k);
+    };
+    const setGrid = size => {
+      const L = Math.max(size[0], size[1], 0.3), step = L > 6 ? 1 : L > 2.5 ? 0.5 : L > 1 ? 0.25 : 0.1, n = Math.max(6, Math.ceil(L * 1.3 / step / 2) * 2), key = `${step}|${n}`;
+      if (key === gridKey) return step;
+      if (grid) { sc.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
+      grid = new T.GridHelper(n * step, n, 0x3cff9a, 0x1f5a3e); grid.rotation.x = Math.PI / 2;
+      grid.material.transparent = true; grid.material.opacity = 0.55; grid.material.depthWrite = false;
+      sc.add(grid); gridKey = key;
+      return step;
+    };
+    const flipInto = (cv, w, h) => {
+      const g2 = cv.getContext('2d');
+      if (!img || img.width !== w || img.height !== h) img = g2.createImageData(w, h);
+      for (let y = 0; y < h; y++) img.data.set(buf.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);   // WebGL alt-üst → canvas
+      g2.putImageData(img, 0, 0);
+    };
+    const v = {
+      preload: it => { load(it); },
+      render(cv, it, { az = 0.8, el = 0.35, zoom = 1, spin = 0 } = {}) {
+        if (disposedV || disposed) return null;
+        const ent = load(it);
+        if (!ent.ready) return ent.err ? { error: String(ent.err?.message || ent.err) } : null;
+        const w = cv.width, h = cv.height;
+        if (shown !== ent.holder) { if (shown) sc.remove(shown); sc.add(ent.holder); shown = ent.holder; }
+        const step = setGrid(ent.size);
+        for (const p of ent.props) { const ax = p.userData.axis || 'z'; p.rotation[ax] = (p.rotation[ax] + spin * (p.userData.dir || 1)) % (2 * Math.PI); if (p.userData.disc) p.userData.disc.material.opacity = 0.35; if (p.userData.blades) for (const b of p.userData.blades) b.visible = false; }
+        const rad = Math.max(ent.size[0], ent.size[1], ent.size[2], 0.2) * 0.5, tz = ent.size[2] * 0.45;
+        const dist = rad / Math.tan(cam.fov * DEG / 2) * 1.2 / clamp(zoom, 0.4, 4);
+        cam.aspect = w / Math.max(1, h); cam.near = Math.max(0.005, dist / 200); cam.far = dist * 20; cam.updateProjectionMatrix();
+        cam.position.set(Math.cos(el) * Math.sin(az) * dist, -Math.cos(el) * Math.cos(az) * dist, tz + Math.sin(el) * dist); cam.lookAt(0, 0, tz);
+        if (!rt || rt.width !== w || rt.height !== h) { rt?.dispose(); rt = new T.WebGLRenderTarget(w, h, { samples: 4 }); rt.texture.colorSpace = T.SRGBColorSpace; buf = new Uint8Array(w * h * 4); }
+        const prev = renderer.getRenderTarget(), sh = renderer.shadowMap.autoUpdate; renderer.shadowMap.autoUpdate = false;
+        renderer.setRenderTarget(rt); renderer.render(sc, cam); renderer.readRenderTargetPixels(rt, 0, 0, w, h, buf);
+        renderer.setRenderTarget(prev); renderer.shadowMap.autoUpdate = sh;
+        flipInto(cv, w, h);
+        return { size: ent.size.slice(), ppm: h / (2 * dist * Math.tan(cam.fov * DEG / 2)), grid: step };
+      },
+      dispose() {
+        if (disposedV) return;
+        disposedV = true; viewers.delete(v);
+        for (const ent of cache.values()) if (ent.holder) disposeGroup(ent.holder);
+        cache.clear(); rt?.dispose(); rt = null;
+        if (grid) { grid.geometry.dispose(); grid.material.dispose(); }
+      },
+    };
+    viewers.add(v);
+    return v;
   }
 
   // ---------- boyut ----------
@@ -1746,6 +1862,11 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const frameHooks = new Set();   // §17 ekran kaydı: her karede render edilen tuvali okuyan kancalar (drawImage → birleşik kayıt tuvali)
 
   // ---------- kurulum ----------
+  // §24.4 stüdyo kipi (SIMUMAV hedef adımı: o adımda başka 3B sahne yok → tek bağlam): dünya/dron/kare döngüsü kurulmaz; yalnız model görüntüleyici
+  if (opts.studio) {
+    canvas.style.display = 'none';
+    return { createModelViewer, dispose, canvas, get studio() { return true; } };
+  }
   await buildWorld(world);
   await setType(opts.type, opts.model ?? opts.airframe);
   buildRig();
@@ -1782,6 +1903,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
 
   function dispose() {
     disposed = true;
+    [...viewers].forEach(v => v.dispose());
     buildSeq++;   // bekleyen gerçek arazi yüklemesi sonuçlarını kullanmaz
     realCache = null;
     g3d?.dispose(); g3d = null;
@@ -1839,7 +1961,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     getPose: () => { tmpE.setFromQuaternion(viewQuat(cur.q), 'ZXY'); return { roll: tmpE.y, pitch: tmpE.x, yaw: -tmpE.z }; },   // render edilen (enterpolasyonlu) yönelim, rad (FPV HUD; §25 tailsitter askıda VTOL görünümü)
     getBodyPose: () => { tmpE.setFromQuaternion(cur.q, 'ZXY'); return { roll: tmpE.y, pitch: tmpE.x, yaw: -tmpE.z, hover: hoverFactor(cur.q) }; },   // §25 teşhis: gövde (SITL fiziği) yönelimi + askı oranı
     // §24 hedefler
-    setTargets, flashTarget, targetsInfo: () => tg.rel.map(r => ({ i: r.i, name: r.name, dist: Math.round(r.dist), horiz: Math.round(r.horiz), dz: Math.round(r.dz), bearing: Math.round(r.bearing), rel: Math.round(r.rel), inside: r.inside })),
+    createModelViewer,   // §24.4 sihirbaz hedef önizlemesi (aynı bağlam)
+    setTargets, flashTarget, targetsHud, cycleTarget, get targetLock() { return tg.cfg ? { ...tg.sel } : null; }, targetsInfo: () => tg.rel.map(r => ({ i: r.i, name: r.name, dist: Math.round(r.dist), horiz: Math.round(r.horiz), dz: Math.round(r.dz), bearing: Math.round(r.bearing), rel: Math.round(r.rel), inside: r.inside })),
     get targetTime() { return targetTime(); }, setRadarVisible: v => { tg.radarOn = !!v; if (tg.radar) tg.radar.style.display = tg.radarOn && tg.cfg ? '' : 'none'; },
     canvas,
     addFrameHook: fn => { frameHooks.add(fn); return () => frameHooks.delete(fn); },   // §17: render sonrası kanca (kayıt birleşimi)

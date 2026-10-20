@@ -426,5 +426,14 @@
   "targets.v_alt": "высота должна быть 10–3000 м",
   "targets.v_diameter": "диаметр должен быть 50–5000 м",
   "targets.v_speed": "скорость не может превышать максимум модели",
-  "targets.v_offset": "смещение центра — в пределах ±20 км"
+  "targets.v_offset": "смещение центра — в пределах ±20 км",
+  "Tab: hedef": "Tab: цель",
+  "ÖNLEME": "ПЕРЕХВАТ",
+  "targets.pv_hint": "Перетаскивание: вращение · колесо: масштаб · двойной щелчок: сброс",
+  "targets.pv_speed": "крейсер {c} · макс. {x} км/ч",
+  "targets.pv_size": "Размер",
+  "targets.pv_grid": "сетка",
+  "targets.pv_loading": "Подготовка 3D-просмотра…",
+  "targets.pv_model_loading": "Загрузка модели…",
+  "targets.pv_model_err": "Не удалось загрузить модель"
 }

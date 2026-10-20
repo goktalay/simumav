@@ -529,3 +529,7 @@ doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
   yok), kartlarla model/irtifa/çap/hız/yön/merkez ofseti, önleme yarıçapı; geçersizse İleri/BAŞLA kapalı. `fly/start` `targets` ({items ≤ 8, radius_m 5–200};
   `bridge.hedefler_dogrula` → 422). Snapshot'a ve çekirdek oturuma gider; WS `target` → skor rozeti (üst çubuk "◎ 1/3 · 712 puan"), büyük "ÖNLEME" bandı, ses;
   uçuş sonu raporunda oyun kartı (puan, rozetler, hedef satırları; HEPGO `.fs-rp-targets` gizli) ve `flights.summary.targets`. 7 dil `targets.*`.
+- **Hedef 3B önizlemesi + HUD sembolojisi (HEPGO §24.4/§24.5):** HEDEFLER adımında her kartta dönen 3B model (sürükle/tekerlek; ölçek çubuğu, ad · hız · boyut) —
+  bu adımda başka sahne olmadığından tek "stüdyo" WebGL bağlamı (`createFlightSim3D(…, {studio: true})`), adımdan çıkınca kapanır (`index.js dropTargetsUi`).
+  Uçuşta gimbal HUD'u ve FPV OSD'si F-16 tarzı prizma + TD kutusu + TLL + ekran dışı yön oku çizer (Tab ile hedef kilidi; önlemede "ÖNLEME" yanıp söner) —
+  çekirdek modüller `/sim/flightsim_tgthud.js`, `/sim/flightsim_tgtview.js` (`flightsim*.js` manifest kalıbı). Metinler `targets.pv_*` + "Tab: hedef", "ÖNLEME" (7 dil).

@@ -426,5 +426,14 @@
   "targets.v_alt": "Höhe muss 10–3000 m sein",
   "targets.v_diameter": "Kreisdurchmesser muss 50–5000 m sein",
   "targets.v_speed": "Geschwindigkeit darf das Modellmaximum nicht überschreiten",
-  "targets.v_offset": "Mittelpunktversatz muss innerhalb ±20 km liegen"
+  "targets.v_offset": "Mittelpunktversatz muss innerhalb ±20 km liegen",
+  "Tab: hedef": "Tab: Ziel",
+  "ÖNLEME": "ABFANG",
+  "targets.pv_hint": "Ziehen: drehen · Rad: zoomen · Doppelklick: zurücksetzen",
+  "targets.pv_speed": "Reise {c} · max. {x} km/h",
+  "targets.pv_size": "Größe",
+  "targets.pv_grid": "Raster",
+  "targets.pv_loading": "3D-Vorschau wird vorbereitet…",
+  "targets.pv_model_loading": "Modell wird geladen…",
+  "targets.pv_model_err": "Modell konnte nicht geladen werden"
 }
