@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS drones (
     color TEXT NOT NULL DEFAULT '#ff6a00',
     preview TEXT,                               -- dönen 3B için GLB yolu (statik; kullanıcıdan alınmaz)
     airframe TEXT,                              -- kontrol düzeni (sabit kanat ailesi): classic | elevon | vtail; NULL → katalog modelinin düzeni (bridge.model_airframe)
+    power TEXT,                                 -- JSON güç ve yakıt (§10, power.py): {engine, max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w,
+                                                --   fuel_km_per_l_last?, elec_w_last?, measured_at?}; NULL → katalog modelinin varsayılanı
     is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
@@ -166,8 +168,11 @@ def connect():
 def init():
     with connect() as conn:
         conn.executescript(SCHEMA)
-        if 'airframe' not in {r[1] for r in conn.execute('PRAGMA table_info(drones)')}:   # eski taban: kontrol düzeni sütunu (HEPGO §13.1)
+        kolonlar = {r[1] for r in conn.execute('PRAGMA table_info(drones)')}
+        if 'airframe' not in kolonlar:   # eski taban: kontrol düzeni sütunu (HEPGO §13.1)
             conn.execute('ALTER TABLE drones ADD COLUMN airframe TEXT')
+        if 'power' not in kolonlar:      # eski taban: güç ve yakıt (§10); NULL = model varsayılanı → mevcut dronlar bozulmaz
+            conn.execute('ALTER TABLE drones ADD COLUMN power TEXT')
         cur = conn.execute('SELECT version FROM schema_version').fetchone()
         ver = cur[0] if cur else 0
         for v, sqls in _MIGRATIONS:

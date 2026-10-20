@@ -1,9 +1,25 @@
 // Replay adaptörü (ops/): /api/ops/{id}/replay (flightsim_replay çıktısı: {fields, frames, hz, duration_s, home, events})
 // → HEPGO replay3d.js'in Cesium yükleyici/görüntüleyicisi ile 3B oynatma; Cesium açılamazsa 2B canvas oynatma.
+// §10 güç ve yakıt: uçuşun ayarları (summary.power.settings ya da snapshot.power) varsa HEPGO kadranları (/sim/flightsim_power.js createPowerGauges)
+// oynatma çubuğunun üstünde; değerler HEPGO kayıttan oynatmasındaki gibi karelerden createPowerSim ile oynatıcı zamanında (atlama/başa dönüşte rebuild).
 import * as api from '../core/api.js';
 import { h, clear, svg, fmtDur } from '../core/dom.js';
 import { t } from '../i18n/i18n.js';
 import { btn, toastErr, PLAY_SVG, PAUSE_SVG } from '../ui/components.js';
+import { trPower, localizeUnits, powerReportCard } from '../fly/power.js';
+import { h as hSim } from '../fly/simui.js';   // HEPGO kadran modülü `html` özniteliğiyle SVG yazar (core/dom h desteklemez)
+
+const POWER_CSS = new URL('../fly/power.css', import.meta.url).href;
+const ensurePowerCss = () => { if (!document.querySelector(`link[href="${POWER_CSS}"]`)) document.head.append(h('link', { rel: 'stylesheet', href: POWER_CSS })); };
+/** Kaydın güç ayarı (çekirdek ALANLAR): özet → anlık görüntü; yoksa null (gösterge yok). */
+export function replayPowerSettings(flight) {
+  const s = flight?.summary?.power?.settings || flight?.snapshot?.power || null;
+  if (!s) return null;
+  const out = {};
+  for (const k of ['max_speed_ms', 'fuel_l', 'fuel_km_per_l', 'elec_cells', 'elec_mah', 'elec_w']) out[k] = s[k] ?? null;
+  if (s.engine === 'electric') out.fuel_l = 0;
+  return out;
+}
 
 export async function openReplay(root, ctx, id) {
   const sc = h('div', { class: 'screen' });
@@ -34,24 +50,63 @@ export async function openReplay(root, ctx, id) {
   const kv = (k, v) => h('div', { class: 'kv' }, h('span', {}, k), h('b', {}, v));
   const head = h('div', { class: 'replay-head' }, h('b', {}, `${flight.drone?.name || ''} · ${flight.track?.name || ''}`), h('span', { class: `badge ${flight.result || ''}` }, t(`result.${flight.result || 'ok'}`)));
   const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
-  const updateTele = fr => clear(tele, head, kv(t('tele.alt'), `${f1(get(fr, 'alt_rel'))} m`), kv(t('tele.gs'), `${f1((get(fr, 'gs') || 0) * 3.6)} km/h`), kv(t('tele.hdg'), `${Math.round(get(fr, 'hdg') ?? get(fr, 'yaw') ?? 0)}°`), kv(t('tele.mode'), (data.modes || [])[get(fr, 'mode')] ?? get(fr, 'mode') ?? '—'), kv(t('tele.batt'), get(fr, 'batt_pct') != null ? `${Math.round(get(fr, 'batt_pct'))}%` : '—'));
+  // §10 güç: istemci modeli (HEPGO createPowerSim) + kadranlar
+  const pset = replayPowerSettings(flight);
+  let MP = null, psim = null, gauges = null, pLastT = null;
+  if (pset) {
+    try {
+      MP = await import('/sim/flightsim_power.js'); ensurePowerCss();
+      psim = MP.createPowerSim(pset);
+      sc.classList.add('sm-replay-power');
+      const trP = trPower(t);
+      gauges = MP.createPowerGauges(sc, { h: hSim, tr: trP, getSettings: () => pset, getSummary: () => psim.summary(), plane: ['plane', 'vtol', 'interceptor'].includes(flight.drone?.type) });
+      gauges.el.classList.add('sm-game');
+    } catch (e) { console.warn('güç kadranları yok:', e.message); psim = null; gauges = null; }
+  }
+  const units = { min: t('power.u_min'), h: t('power.u_h') };
+  const pwKv = () => {
+    if (!psim) return [];
+    const st = psim.state(), out = [];
+    if (st.fuel) out.push(h('div', { class: `kv pw ${st.fuel.empty ? 'bad' : ''}` }, h('span', {}, t('power.g_fuel')), h('b', {}, `${st.fuel.l.toFixed(2)} L · ${Math.round(st.fuel.pct)}%`)));
+    if (st.elec) out.push(h('div', { class: `kv pw elec ${st.elec.empty ? 'bad' : ''}` }, h('span', {}, t('power.g_batt')), h('b', {}, `${Math.round(st.elec.pct)}% · ${st.elec.v.toFixed(1)} V`)));
+    return out;
+  };
+  const powerStep = (fr, tt) => {
+    if (!psim) return;
+    if (pLastT == null || tt < pLastT || tt - pLastT > 2) { psim.rebuild(data, tt); gauges?.reset(); }   // atlama / başa dönüş: baştan o ana
+    else psim.step({ groundspeed: get(fr, 'gs'), throttle: get(fr, 'thr'), armed: !!get(fr, 'armed'), servo: ix.servo != null ? get(fr, 'servo') : null }, get(fr, 't'));
+    pLastT = tt;
+    const st = psim.state();
+    gauges?.update({ t: tt, groundspeed: get(fr, 'gs'), airspeed: get(fr, 'as'), throttle: get(fr, 'thr'), armed: !!get(fr, 'armed'), alt_rel: get(fr, 'alt_rel'), fuel: st.fuel, elec: st.elec, speedup: 1 });
+    if (gauges && units.min !== 'dk') for (const sub of gauges.el.querySelectorAll('.fs-gauge-sub')) { const v = localizeUnits(sub.textContent, units); if (v !== sub.textContent) sub.textContent = v; }
+  };
+  const updateTele = fr => clear(tele, head, kv(t('tele.alt'), `${f1(get(fr, 'alt_rel'))} m`), kv(t('tele.gs'), `${f1((get(fr, 'gs') || 0) * 3.6)} km/h`), kv(t('tele.hdg'), `${Math.round(get(fr, 'hdg') ?? get(fr, 'yaw') ?? 0)}°`), kv(t('tele.mode'), (data.modes || [])[get(fr, 'mode')] ?? get(fr, 'mode') ?? '—'), psim ? null : kv(t('tele.batt'), get(fr, 'batt_pct') != null ? `${Math.round(get(fr, 'batt_pct'))}%` : '—'), pwKv());
 
   // ---------- 3B (Cesium) ----------
   let view = null;
   try { view = await cesiumView(stage, data, frames, ix, flight); }
   catch (e) { console.warn('Cesium replay yok, 2B yedek:', e.message); view = canvasView(stage, data, frames, ix); }
   sc.append(hud, tele);
+  if (gauges) sc.append(gauges.el);
+  // uçuş sonu güç özeti (ölçülen km/L, ortalama W, bitme anları) — sağ üstte katlanır kart
+  const pcard = flight.summary?.power ? powerReportCard({ h, t, pw: flight.summary.power }) : null;
+  if (pcard) {
+    const box = h('div', { class: 'replay-power-card' }, pcard);
+    pcard.querySelector('h3')?.addEventListener('click', () => box.classList.toggle('min'));
+    sc.append(box);
+  }
 
   const loop = now => {
     const dt = (now - last) / 1000; last = now;
     if (playing) { tcur += dt * speed; if (tcur > T1) tcur = T0; }
     const fr = frameAt(tcur);
     slider.value = Math.round(((tcur - T0) / dur) * 1000); timeEl.textContent = fmtDur(tcur - T0);
-    view.update(fr, tcur); updateTele(fr);
+    view.update(fr, tcur); powerStep(fr, tcur); updateTele(fr);
     raf = requestAnimationFrame(loop);
   };
   raf = requestAnimationFrame(loop);
-  return () => { cancelAnimationFrame(raf); view.dispose(); };
+  window.__smReplay = { get t() { return tcur; }, seek: v => { tcur = v; }, get power() { return psim?.summary() || null; }, gauges };   // teşhis (Playwright)
+  return () => { cancelAnimationFrame(raf); view.dispose(); gauges?.dispose(); delete window.__smReplay; };
 }
 
 async function cesiumView(stage, data, frames, ix, flight) {

@@ -25,7 +25,8 @@ from pathlib import Path
 from . import config, db  # noqa: F401 — config önce: çekirdek yollarını yönlendirir
 from .. import config as core_config  # noqa: E402
 from .. import db as core_db  # noqa: E402
-from .. import drone_sitl, flightsim, flightsim_models, flightsim_replay  # noqa: E402
+from .. import drone_sitl, flightsim, flightsim_models, flightsim_power, flightsim_replay  # noqa: E402
+from . import power as guc  # noqa: E402
 
 TIP_ESLEME = {'multirotor': 'multirotor', 'fpv': 'multirotor', 'plane': 'sabit_kanat', 'interceptor': 'sabit_kanat', 'heli': 'helikopter', 'vtol': 'vtol'}
 TYPES = tuple(TIP_ESLEME)
@@ -105,7 +106,7 @@ PARAM_AD_IZIN = frozenset({'ANGLE_MAX', 'SCALING_SPEED', 'STAB_PITCH_DOWN', 'FBW
                            'TRIM_THROTTLE', 'CRUISE_ALT_FLOOR', 'MIN_GROUNDSPEED', 'STALL_PREVENTION'})
 PARAM_YASAK_ONEK = ('SERIAL', 'LOG_', 'SYSID', 'BRD_', 'SCR_', 'NET_', 'SR0_', 'SR1_', 'SR2_', 'SR3_', 'MAV', 'FENCE_', 'GPS', 'INS_', 'COMPASS_',
                     'AHRS_', 'EK2_', 'EK3_', 'FS_', 'ARMING_', 'RC', 'CAN_', 'BATT', 'DEV_', 'STAT_', 'FORMAT_', 'MIS_', 'RALLY_', 'TERRAIN_', 'SIM_WIND',
-                    'SIM_GPS', 'SIM_RC', 'SIM_SPEEDUP', 'FLTMODE_CH')
+                    'SIM_GPS', 'SIM_RC', 'SIM_SPEEDUP', 'SIM_PLN', 'SIM_SRV', 'FLTMODE_CH')   # SIM_SPEEDUP / SIM_PLN_THR_MUL yalnız sunucu (§10)
 PARAM_MAX = 60
 PARAM_DEGER = (-1e6, 1e6)
 
@@ -512,12 +513,30 @@ def _world(track, drone_type, launch):
     return out
 
 
-async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None):
-    """Kotalar → çekirdek oturum → flights satırı → MP köprüsü. Dönüş: {flight_id, sim_id, mp, ws}. Hatalar BridgeHata."""
+def speedup_dogrula(f):
+    """Başlangıç / canlı simülasyon hızı: 1 | 2 | 4 | 8 ve ≤ config.MAX_SPEEDUP (sunucu üst sınırı, §10). Hatalı → BridgeHata 422."""
+    if f is None:
+        return 1
+    if isinstance(f, bool) or not isinstance(f, (int, float)) or float(f) not in [float(x) for x in flightsim_power.SPEEDUPS]:
+        raise BridgeHata(422, 'invalid', 'speedup 1 | 2 | 4 | 8 olmalı')
+    if float(f) > config.MAX_SPEEDUP:
+        raise BridgeHata(422, 'speedup_limit', f'Bu sunucuda simülasyon hızı en çok {config.MAX_SPEEDUP}×', max_speedup=config.MAX_SPEEDUP)
+    return int(f)
+
+
+async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None, power=None, speedup=None):
+    """Kotalar → çekirdek oturum → flights satırı → MP köprüsü. Dönüş: {flight_id, sim_id, mp, ws, power, speedup}. Hatalar BridgeHata.
+    `power` (§10): sihirbaz gövdesi — hangar ayarının üstüne power.dogrula ile (sınırlar, yakıt yalnız uçakta); çekirdeğe TAM power sözlüğü gider.
+    `speedup`: başlangıç simülasyon hızı (≤ MAX_SPEEDUP); SITL hazır olunca `speed` komutuyla yazılır."""
     launch = launch_dogrula(launch)
     if drone['type'] not in TIP_ESLEME:
         raise BridgeHata(422, 'invalid', 'Dron tipi geçersiz')
     params = params_dogrula(db.j(drone.get('params')))
+    try:
+        core_power, power_ayar = guc.ucus_power(drone, power)
+    except guc.GucHata as e:
+        raise BridgeHata(422, 'invalid', str(e))
+    speedup = speedup_dogrula(speedup)
     async with _KILIT:
         fid, _a = aktif_ucus(user['id'])
         if fid is not None:
@@ -538,6 +557,9 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
             # drone_params.kaydet TKOFF_* gibi oturum adlarını hariç tutar; SIMUMAV beyaz listesi geçerli → doğrudan yazılır (aynı tablo, çekirdek yukle() okur)
             with core_db.connect() as conn:
                 conn.execute('DELETE FROM drone_sitl_params WHERE drone_id = ?', (int(drone['id']),))
+                # §10: çekirdeğin dron seçenekleri (ölçüm önerileri) SIMUMAV'da kullanılmaz — güç ayarı drones.power'dan TAM gelir; kimlik yeniden
+                # kullanılırsa önceki sahibin ölçümü kalmasın
+                conn.execute('DELETE FROM drone_sitl_options WHERE drone_id = ?', (int(drone['id']),))
                 conn.executemany('INSERT INTO drone_sitl_params (drone_id, name, value, ptype, updated_at, updated_by, source) VALUES (?,?,?,?,?,?,?)',
                                  [(int(drone['id']), ad, float(deger), 9, core_db.now(), user['id'], 'hepgo') for ad, deger in params.items()])
                 conn.commit()
@@ -551,7 +573,8 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         owner = {'id': user['id'], 'name': user['display_name']}
         core_drone = {'id': drone['id'], 'code': drone['name'], 'name': drone['name'], 'model': drone['model_key'], 'protocol': 'sanal'}
         try:
-            s = await flightsim.MANAGER.ac(ctip, center, world, owner, None, mdl, core_drone, {'bin': bool((record or {}).get('bin', True))}, layout=drone_airframe(drone))
+            s = await flightsim.MANAGER.ac(ctip, center, world, owner, None, mdl, core_drone, {'bin': bool((record or {}).get('bin', True))}, power=core_power,
+                                          layout=drone_airframe(drone))
         except flightsim.SimHata as e:
             kod = {'invalid': 422, 'limit': 429, 'sitl': 503}.get(e.kod, 400)
             raise BridgeHata(kod, e.kod, str(e))
@@ -563,7 +586,8 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
                           'gates': db.j(track.get('gates'), []) if isinstance(track.get('gates'), str) else list(track.get('gates') or []),
                           'wind': db.j(track.get('wind')) if isinstance(track.get('wind'), str) else (track.get('wind') or {}), 'time_of_day': track.get('time_of_day'), 'weather': track.get('weather')},
                 'mission': {'id': mission['id'], 'name': mission['name'], 'kind': mission['kind'], 'plan': db.j(mission.get('plan'))} if mission else None,
-                'launch': launch, 'record': {'bin': bool((record or {}).get('bin', True)), 'video': bool((record or {}).get('video'))}}
+                'launch': launch, 'record': {'bin': bool((record or {}).get('bin', True)), 'video': bool((record or {}).get('video'))},
+                'power': power_ayar, 'speedup': speedup}
         with db.connect() as conn:
             fid = conn.execute('INSERT INTO flights (user_id, pilot_id, drone_id, track_id, mission_id, launch, started_at, mp_port, snapshot, created_at, updated_at) '
                                'VALUES (?,?,?,?,?,?,?,?,?,?,?)', (user['id'], pilot['id'], drone['id'], track['id'], mission['id'] if mission else None, launch['method'],
@@ -584,10 +608,63 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         _AKTIF[fid] = a
         a['task'] = loop.create_task(_izle(fid, s, mp))
         a['orphan'] = loop.create_task(_yetim_denetim(fid, a))
+        a['guard'] = loop.create_task(_guc_bekci(s, speedup))
     if mission and mission.get('plan'):
         loop.create_task(_gorev_yukle(s, mission))
     return {'flight_id': fid, 'sim_id': s.id, 'mp': {'host': host_adi(request), 'port': port, 'proto': 'tcp'} if mp else None,
-            'ws': f'/ws/fly/{s.id}', 'state': s.state}
+            'ws': f'/ws/fly/{s.id}', 'state': s.state, 'power': power_ayar, 'speedup': speedup}
+
+
+GUC_BEKCI_S = 1.0       # bekçi aralığı (sn)
+
+
+def _sitl_hazir(s):
+    return s.state == 'HAZIR' and (s.sahte is not None or getattr(s, '_heartbeat_alindi', False))
+
+
+async def _guc_bekci(s, speedup):
+    """§10 sunucu tarafı güvence: (1) başlangıç simülasyon hızı SITL hazır olunca yazılır; (2) SIM_SPEEDUP > MAX_SPEEDUP (Mission Planner ya da
+    panel PARAM_SET ile) → geri çekilir (audit `speed_clamp`); (3) yamalı ikilide SIM_PLN_THR_MUL oturumun azami hız çarpanından saparsa (MP'den
+    elle) yeniden yazılır (audit `thr_mul_clamp`). Oturum kapanınca biter. Hata uçuşu düşürmez."""
+    yazildi = speedup <= 1
+    try:
+        bitis = time.time() + 120
+        while not yazildi and s.state != 'KAPANDI' and time.time() < bitis:
+            if _sitl_hazir(s):
+                try:
+                    await s.komut('speed', {'factor': speedup})
+                except flightsim.SimHata:
+                    pass
+                yazildi = True
+                break
+            await asyncio.sleep(0.25)
+        hazir_t = None
+        while s.state != 'KAPANDI':
+            await asyncio.sleep(GUC_BEKCI_S)
+            if not _sitl_hazir(s):
+                hazir_t = None
+                continue
+            hazir_t = hazir_t or time.time()
+            g = getattr(s, 'guc', None)
+            if g is not None and float(g.speedup or 1) > config.MAX_SPEEDUP:
+                db.audit_bagimsiz('speed_clamp', (s.owner or {}).get('id'), None, f'sim {s.id}: SIM_SPEEDUP {g.speedup:g} > {config.MAX_SPEEDUP}')
+                try:
+                    await s.komut('speed', {'factor': config.MAX_SPEEDUP})
+                except flightsim.SimHata:
+                    pass
+                s._olay(f'Simülasyon hızı bu sunucuda en çok {config.MAX_SPEEDUP}× — {g.speedup:g}× isteği geri çekildi', 4)
+            if s.sahte is None and getattr(s, 'hiz_olcegi', False) and time.time() - hazir_t > 5:
+                beklenen = next((d for a, d in s.hiz_parametreleri() if a == flightsim_power.SIM_PLN_THR_MUL), None)
+                gozlenen = getattr(s, 'thr_mul_sitl', None)
+                if beklenen is not None and gozlenen is not None and abs(float(gozlenen) - float(beklenen)) > 1e-3:
+                    db.audit_bagimsiz('thr_mul_clamp', (s.owner or {}).get('id'), None, f'sim {s.id}: SIM_PLN_THR_MUL {gozlenen:g} ≠ {beklenen:g}')
+                    s._param_set(((flightsim_power.SIM_PLN_THR_MUL, beklenen),))
+                    s.thr_mul_sitl = None   # yankı gelince yeniden denetlenir
+                    s._olay('SITL itki çarpanı (SIM_PLN_THR_MUL) sunucu tarafından korunur — dronun azami hızına geri yazıldı', 4)
+    except asyncio.CancelledError:
+        pass
+    except Exception:   # noqa: BLE001
+        pass
 
 
 def _ip(request):
@@ -698,8 +775,9 @@ async def _izle(fid, s, mp):
         except Exception:   # noqa: BLE001
             pass
         a = _AKTIF.pop(fid, None)
-        if a and a.get('orphan') is not None and not a['orphan'].done():
-            a['orphan'].cancel()
+        for k in ('orphan', 'guard'):
+            if a and a.get(k) is not None and not a[k].done():
+                a[k].cancel()
 
 
 def _sonuc(s, run):
@@ -738,6 +816,15 @@ def _ucus_kapanis(fid, s):
     if gr is not None:
         ozet = dict(ozet or {'v': 1})
         ozet['gates'] = gr
+    # §10 güç ve yakıt: GucDurumu özeti her zaman özete (görev özeti boş olsa da) + SIMUMAV ayarı (engine dâhil); ölçümler drona
+    g_ozet = None
+    try:
+        g_ozet = s.guc.ozet() if getattr(s, 'guc', None) is not None else None
+    except Exception:   # noqa: BLE001
+        g_ozet = None
+    if g_ozet is not None:
+        ozet = dict(ozet or {'v': 1})
+        ozet['power'] = g_ozet
     t = db.now()
     sure = int(time.time() - s.started)
     with db.connect() as conn:
@@ -747,6 +834,14 @@ def _ucus_kapanis(fid, s):
         conn.execute('UPDATE flights SET ended_at = ?, duration_s = ?, result = ?, summary = ?, bin_path = ?, params_path = ?, core_log_id = ?, core_run_id = ?, updated_at = ? WHERE id = ?',
                      (t, sure, _sonuc(s, run), json.dumps(ozet, ensure_ascii=False, default=str) if ozet else None, bin_rel, params_rel, log_id, rid, t, fid))
         conn.execute('DELETE FROM sim_runs_link WHERE flight_id = ?', (fid,))
+        if g_ozet is not None and f.get('drone_id'):
+            try:
+                yazilan = guc.olcum_yaz(conn, f['drone_id'], f['user_id'], g_ozet)
+            except Exception:   # noqa: BLE001 — ölçüm yazımı kapanışı düşürmesin
+                yazilan = {}
+            if yazilan:
+                ozet['power']['drone_written'] = yazilan
+                conn.execute('UPDATE flights SET summary = ? WHERE id = ?', (json.dumps(ozet, ensure_ascii=False, default=str), fid))
         if f.get('pilot_id'):
             conn.execute('UPDATE pilots SET flights = flights + 1, hours = hours + ? WHERE id = ?', (sure / 3600.0, f['pilot_id']))
         db.audit(conn, 'fly_stop', f['user_id'], None, f'flight {fid} {sure}s {s.end_reason}')

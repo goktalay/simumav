@@ -107,6 +107,10 @@ QUOTA = {'drones': 20, 'pilots': 20, 'tracks': 20, 'missions': 50, 'flights': 10
 RATE = {'session': (10, 60), 'write': (60, 60), 'read': (300, 60), 'ws': (100, 1),
         'support': (5, 3600), 'support_reply': (30, 3600)}   # (adet, pencere sn); support: talep açma 5/sa/kullanıcı (§9)
 SUPPORT_MAX_BYTES = 3 * 1024 * 1024       # destek eki (PNG/JPG) ≤ 3 MB (§9)
+# Simülasyon hızı (SITL SIM_SPEEDUP, §10): kullanıcının seçebileceği üst sınır. SITL n× hızda ≈ n kat CPU harcar ve .bin kaydı n kat hızlı büyür
+# (SIM_BIN_MAX_MB sınırı aynı) → genel sunucuda varsayılan 4×; 1 | 2 | 4 | 8 dışı değer en yakın alt değere iner. MP/panel üzerinden daha yüksek
+# değer yazılırsa bekçi (bridge._guc_bekci) geri çeker.
+MAX_SPEEDUP = max([x for x in (1, 2, 4, 8) if x <= max(1, int(os.environ.get('SIMUMAV_MAX_SPEEDUP', '4') or 4))])
 
 # ---- HEPGO'ya özgü modüllerin SIMUMAV karşılıkları (app.config/app.db/app.drone_hub/app.feed/app.flightlog/app.flight_analysis → shim) ----
 from . import shim  # noqa: E402

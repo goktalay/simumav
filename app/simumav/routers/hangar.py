@@ -1,4 +1,6 @@
-"""`/api/hangar` — dronlar (≤ 20) ve katalog (flightsim_models dahili modeller + prosedürel şablonlar)."""
+"""`/api/hangar` — dronlar (≤ 20) ve katalog (flightsim_models dahili modeller + prosedürel şablonlar).
+Güç ve yakıt (§10): `power` {engine, max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w} — power.dogrula (sunucu sınırları; ölçüm
+alanları *_last yalnız sunucu yazar); `null`/eksik → katalog modelinin varsayılanı; PUT `power: {}` gövdesi değişmez, `reset_power: true` varsayılana döner."""
 import json
 import re
 from typing import Optional
@@ -6,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from .. import auth, bridge, db
+from .. import auth, bridge, config, db, power
 from .common import User, drone_api, hata_cevir, kota, sahip
 
 router = APIRouter(prefix='/api/hangar')
@@ -20,6 +22,7 @@ class DroneIn(BaseModel):
     params: Optional[dict] = None
     color: Optional[str] = Field('#ff6a00', max_length=7)
     airframe: Optional[str] = Field(None, max_length=12)   # kontrol düzeni classic | elevon | vtail (sabit kanat ailesi); eksik → katalog modelinin düzeni
+    power: Optional[dict] = None                           # güç ve yakıt (§10); eksik → modelin varsayılanı
 
 
 class DronePatch(BaseModel):
@@ -29,6 +32,16 @@ class DronePatch(BaseModel):
     color: Optional[str] = Field(None, max_length=7)
     is_default: Optional[bool] = None
     airframe: Optional[str] = Field(None, max_length=12)
+    power: Optional[dict] = None
+    reset_power: Optional[bool] = None
+
+
+def _guc(tip, govde, taban, request, user):
+    try:
+        return power.dogrula(tip, govde, taban)
+    except power.GucHata as e:
+        db.audit_bagimsiz('power_reject', user['id'], auth.client_ip(request), str(e)[:200])
+        raise auth.hata(422, 'invalid', str(e))
 
 
 def _dogrula(tip, model_key, params, color, request, user):
@@ -47,7 +60,12 @@ def _dogrula(tip, model_key, params, color, request, user):
 
 @router.get('/catalog')
 def catalog(user=User):
-    return bridge.katalog()
+    out = bridge.katalog()
+    for t in out['types']:   # §10: her modelin güç varsayılanı (sihirbaz/hangar önizlemesi)
+        for m in t['models']:
+            m['power'] = power.varsayilan(t['key'], m['key'])
+    out['power'] = power.api_bilgisi(config.MAX_SPEEDUP)
+    return out
 
 
 @router.get('')
@@ -64,11 +82,12 @@ def add_drone(body: DroneIn, request: Request, user=User):
         airframe = bridge.airframe_dogrula(body.type, body.airframe, body.model_key)
     except bridge.BridgeHata as e:
         hata_cevir(e)
+    pw = power.kayit_json(_guc(body.type, body.power, power.varsayilan(body.type, body.model_key), request, user)) if body.power is not None else None
     t = db.now()
     with db.connect() as conn:
         kota(conn, 'drones', user, request)
-        did = conn.execute('INSERT INTO drones (user_id, name, type, model_key, params, color, airframe, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
-                           (user['id'], body.name.strip(), body.type, body.model_key, json.dumps(params), body.color or '#ff6a00', airframe, t, t)).lastrowid
+        did = conn.execute('INSERT INTO drones (user_id, name, type, model_key, params, color, airframe, power, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                           (user['id'], body.name.strip(), body.type, body.model_key, json.dumps(params), body.color or '#ff6a00', airframe, pw, t, t)).lastrowid
         conn.commit()
         return drone_api(sahip(conn, 'drones', did, user))
 
@@ -83,11 +102,20 @@ def update_drone(did: int, body: DronePatch, request: Request, user=User):
             airframe = bridge.airframe_dogrula(d['type'], body.airframe, model_key) if (body.airframe is not None or (body.model_key and body.model_key != d['model_key'])) else d.get('airframe')
         except bridge.BridgeHata as e:
             hata_cevir(e)
+        # güç (§10): gönderilmişse mevcut etkin ayarın üstüne doğrulanır (ölçümler korunur); reset_power → NULL (model varsayılanı);
+        # model değişip güç gönderilmediyse ve kayıt varsayılanla çalışıyorsa NULL kalır (yeni modelin varsayılanı)
+        pw = d.get('power')
+        if body.reset_power:
+            pw = None
+        elif body.power is not None:
+            dd = {**d, 'model_key': model_key}
+            mevcut = power.kayit_oku(dd)
+            pw = power.kayit_json(_guc(d['type'], body.power, {k: mevcut.get(k) for k in power.GIRIS_ALANLARI}, request, user), power.ham(d))
         if body.is_default:
             conn.execute('UPDATE drones SET is_default = 0 WHERE user_id = ?', (user['id'],))
-        conn.execute('UPDATE drones SET name = ?, model_key = ?, params = ?, color = ?, is_default = ?, airframe = ?, updated_at = ? WHERE id = ?',
+        conn.execute('UPDATE drones SET name = ?, model_key = ?, params = ?, color = ?, is_default = ?, airframe = ?, power = ?, updated_at = ? WHERE id = ?',
                      ((body.name or d['name']).strip(), model_key, json.dumps(params), body.color or d['color'],
-                      1 if body.is_default else (0 if body.is_default is False else d['is_default']), airframe, db.now(), did))
+                      1 if body.is_default else (0 if body.is_default is False else d['is_default']), airframe, pw, db.now(), did))
         conn.commit()
         return drone_api(sahip(conn, 'drones', did, user))
 

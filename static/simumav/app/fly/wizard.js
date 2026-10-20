@@ -1,11 +1,13 @@
 // SIMUMAV › Uç — sihirbaz adım makinesi ve tip eşlemeleri (saf; DOM yok; node ile test edilir: tests/test_simumav_fly.mjs).
-// Adımlar: drone → track → launch (yalnız sabit kanat / interceptor / VTOL) → mission (isteğe bağlı) → pilot (+ kayıt seçenekleri) → BAŞLA.
-// Çıktı: `payload()` → POST /api/fly/start gövdesi (docs/simumav.md §4): {drone_id, pilot_id, track_id, mission_id?, launch, record:{video,bin}}.
+// Adımlar: drone → track → launch (yalnız sabit kanat / interceptor / VTOL) → power (güç ve yakıt + simülasyon hızı, §10) → mission (isteğe bağlı)
+// → pilot (+ kayıt seçenekleri) → BAŞLA.
+// Çıktı: `payload()` → POST /api/fly/start gövdesi (docs/simumav.md §4): {drone_id, pilot_id, track_id, mission_id?, launch, record:{video,bin},
+// power? (power.js createPowerState.body()), speedup? (> 1 ise)}.
 // Tip eşlemesi: SIMUMAV dron türleri (§3 drones.type) → HEPGO simülatör tipleri (flightsim*.js): plane/interceptor → sabit_kanat, heli → helikopter,
 // fpv/multirotor → multirotor, vtol → vtol. Interceptor özel: hız ölçeği 600 km/h, ses modeli yüksek devir. FPV: başlangıç kamerası FPV.
 
-export const STEPS = ['drone', 'track', 'launch', 'mission', 'pilot'];
-export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', mission: 'Görev (isteğe bağlı)', pilot: 'Pilot ve kayıt' };
+export const STEPS = ['drone', 'track', 'launch', 'power', 'mission', 'pilot'];
+export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', pilot: 'Pilot ve kayıt' };
 
 // SIMUMAV türü → HEPGO simülatör tipi
 export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'sabit_kanat', vtol: 'vtol' };
@@ -109,6 +111,8 @@ export function createWizard(data = {}, init = {}) {
     pilot_id: init.pilot_id ?? (data.pilots || []).find(p => p.is_default)?.id ?? (data.pilots || [])[0]?.id ?? null,
     launch: normLaunch(init.launch),
     record: { video: !!init.record?.video, bin: init.record?.bin !== false },
+    power: init.power ?? null,          // §10: güç gövdesi (power.js body()); dron değişince sıfırlanır (adım yeniden kurar)
+    speedup: init.speedup ?? 1,         // §10: başlangıç simülasyon hızı
   };
   let i = 0;
   const drone = () => (data.drones || []).find(d => d.id === S.drone_id) || null;
@@ -129,7 +133,8 @@ export function createWizard(data = {}, init = {}) {
   const set = (k, v) => {
     if (k === 'launch') S.launch = normLaunch({ ...S.launch, ...(v || {}) });
     else if (k === 'record') S.record = { ...S.record, ...(v || {}) };
-    else if (k === 'drone_id') { S.drone_id = v; i = Math.min(i, steps().length - 1); if (S.mission_id != null) { /* görev parkura bağlı; dron değişince korunur */ } }
+    else if (k === 'drone_id') { if (v !== S.drone_id) S.power = null; S.drone_id = v; i = Math.min(i, steps().length - 1); if (S.mission_id != null) { /* görev parkura bağlı; dron değişince korunur */ } }
+    else if (k === 'speedup') S.speedup = [1, 2, 4, 8].includes(Number(v)) ? Number(v) : 1;
     else if (k === 'track_id') { if (v !== S.track_id) S.mission_id = null; S.track_id = v; }   // parkur değişti → görev sıfırlanır (§3 missions.track_id)
     else if (k in S) S[k] = v;
   };
@@ -139,6 +144,8 @@ export function createWizard(data = {}, init = {}) {
     const body = { drone_id: S.drone_id, pilot_id: S.pilot_id, track_id: S.track_id, record: { video: !!S.record.video, bin: !!S.record.bin } };
     if (S.mission_id != null) body.mission_id = S.mission_id;
     body.launch = needsLaunch(type()) ? launchBody(S.launch) : { method: 'wheels' };   // kopter/heli: alan zorunlu; `wheels` nötr değer
+    if (S.power) body.power = { ...S.power };
+    if (S.speedup > 1) body.speedup = S.speedup;
     return body;
   };
   const missionsFor = () => (data.missions || []).filter(m => S.track_id == null || m.track_id === S.track_id);

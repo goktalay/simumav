@@ -1,0 +1,242 @@
+/* SIMUMAV — GÜÇ VE YAKIT stilleri (docs/simumav.md §10; power.js). Uç sihirbazı + sahne (fly/index.js ensureCss), Operasyon replay (ops/replay.js) ve
+   Hangar (hangar/index.js) yükler. İçerik: (1) HEPGO app.css §23.6 güç paneli kopyası (.fs-gauges; createPowerGauges — HEPGO dosyasına dokunulmaz),
+   (2) SIMUMAV oyun teması + tüm kamera kiplerinde görünürlük, uyarı bandı, sihirbaz adımı, rapor kartı, hangar güç özeti/düzenleyici. */
+/* ---- app.css 9355–9443 KOPYASI: Uçuş Simülatörü §23.6 güç paneli (.fs-gauges; flightsim_power.js createPowerGauges) — koyu tema sabit.
+   SIMUMAV ekleri/ezmeleri (tüm kamera kiplerinde görünür, oyun teması) fly.css'te (§10). ---- */
+/* ===== Uçuş Simülatörü §23.6: güç paneli (.fs-gauges; flightsim_power.js createPowerGauges) — otomobil gösterge paneli tarzı DÖRT analog kadran
+   (YAKIT küçük · HIZ büyük · MOTOR büyük · BATARYA küçük), takip/serbest/yer kiplerinde alt çubuğun hemen üstünde YATAYDA TAM ORTADA, harekât panelinden
+   bağımsız (panel açıkken panelin solundaki boş alanın ortasında). Renkler TEMAYA GÖRE --fsg-* değişkenlerinden: açık temada beyaz/açık gri yüzey, siyah ibre,
+   koyu dijital; koyu temada (html[data-theme=dark]) antrasit yüzey, açık çentik/rakam/ibre/dijital. Kırmızı/mavi bölgeler iki temada aynı. Sanal kumanda
+   açıkken küçülüp yukarı kayar (çubuklar kenarlarda); FPV OSD (fs-osd-on) ve gimbal HUD (fs-mhud-on) kendi çizimlerini yapar → gizli. Büyük 150 px, küçük
+   110 px (1440); ≥ 1800 px ölçek 1.2; ≤ 1300 px 0.9; ≤ 760 px iki satır (hız + motor üstte, yakıt + batarya altta). Tıklanınca .fs-power-pop ayrıntı kutusu. */
+.fs-gauges { --fsg-face: #f7f8fa; --fsg-face2: #eceef3; --fsg-ring: rgba(255, 255, 255, .92); --fsg-edge: #d9dde6; --fsg-tick: #aab1bf; --fsg-tick2: #d2d7e0; --fsg-num: #9aa2b1;
+  --fsg-needle: #1c2130; --fsg-pin: #2a3040; --fsg-pin2: #e6e9ef; --fsg-digit: #1f2533; --fsg-unit: #8b93a3; --fsg-sub: rgba(255, 255, 255, .92); --fsg-lbl: rgba(255, 255, 255, .85); --fsg-ico: #7c8595;
+  --fsg-red: #e2443a; --fsg-blue: #2f8fe0; --fsg-shadow: 0 8px 22px rgba(0, 0, 0, .28), 0 1px 0 rgba(255, 255, 255, .6) inset;
+  position: absolute; left: 50%; bottom: calc(var(--fs-bar-h) + 8px); z-index: 8; display: flex; align-items: flex-end; justify-content: center; gap: 2px; padding: 0 6px;
+  transform: translateX(-50%); transform-origin: bottom center; color: var(--fsg-digit); font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* SIMUMAV: sahne her zaman koyu → app.css html[data-theme=dark] değerleri */
+  --fsg-face: #2a2f3a; --fsg-face2: #1f242e; --fsg-ring: rgba(96, 104, 122, .9); --fsg-edge: #454c5c; --fsg-tick: #aab2c2; --fsg-tick2: #5c6474; --fsg-num: #b4bccb;
+  --fsg-needle: #eef1f6; --fsg-pin: #cfd5e0; --fsg-pin2: #2a2f3a; --fsg-digit: #f3f5f9; --fsg-unit: #9ba4b5; --fsg-sub: rgba(255, 255, 255, .92); --fsg-ico: #9ba4b5; --fsg-shadow: 0 8px 22px rgba(0, 0, 0, .55), 0 1px 0 rgba(255, 255, 255, .08) inset; }
+.fs-gauges[hidden] { display: none; }
+.fs-stage.fs-ops:not(.fs-fpv) .fs-gauges { left: 50%; }   /* kullanıcı isteği: panel açıkken de ekranın yatay ortası */
+.fs-stage.fs-replay.fs-ops:not(.fs-fpv) .fs-gauges { left: 50%; }
+.fs-stage.rc-on .fs-gauges { bottom: calc(var(--fs-bar-h) + 58px); transform: translateX(-50%) scale(.86); }   /* sanal kumanda: klavye ipucu şeridinin üstünde, küçük (çubuklar kenarlarda) */
+.fs-stage.rc-on.fs-ops:not(.fs-fpv) .fs-gauges { bottom: calc(var(--fs-bar-h) + 170px); }   /* panel + sanal kumanda: sol çubuğun üstüne kayar */
+.fs-stage.fs-osd-on .fs-gauges, .fs-stage.fs-mhud-on .fs-gauges { display: none; }   /* FPV OSD / gimbal HUD kendi güç çubuklarını çizer */
+.fs-stage.fs-power-on .fs-hud .fs-row-fuel { display: none; }   /* sağ HUD'daki yakıt satırı kadranla çift olmasın */
+.fs-stage.fs-power-on:not(.fs-osd-on):not(.fs-mhud-on) .fs-events { bottom: calc(var(--fs-bar-h) + 196px); }   /* ortadaki olay şeridi kadranların üstüne */
+.fs-stage.fs-power-on.rc-on:not(.fs-osd-on):not(.fs-mhud-on) .fs-events { bottom: calc(var(--fs-bar-h) + 214px); }
+.fs-gauge { position: relative; display: flex; flex-direction: column; align-items: center; gap: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; padding: 0; margin: 0; }
+.fs-gauge[hidden] { display: none; }
+.fs-gauge.big { width: 150px; } .fs-gauge.small { width: 110px; margin-bottom: 6px; }
+.fs-gauge-dial { position: relative; display: block; width: 100%; aspect-ratio: 1; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, .25)); transition: filter .2s; }
+.fs-gauge:hover .fs-gauge-dial, .fs-gauges.open .fs-gauge-dial { filter: drop-shadow(0 8px 14px rgba(0, 0, 0, .35)) brightness(1.03); }
+.fs-gauge-dial svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.fs-gauge-ring { fill: none; stroke: var(--fsg-ring); stroke-width: 5; stroke-linecap: round; }
+.fs-gauge-face { fill: var(--fsg-face); stroke: var(--fsg-edge); stroke-width: .8; transition: fill .3s; }
+.fs-gauge-zone { fill: none; stroke-width: 3.6; stroke-linecap: butt; }
+.fs-gauge-zone.red { stroke: var(--fsg-red); } .fs-gauge-zone.blue { stroke: var(--fsg-blue); }
+.fs-gauge-zone[hidden] { display: none; }
+.fs-gauge-tick { stroke: var(--fsg-tick2); stroke-width: .9; stroke-linecap: round; }
+.fs-gauge-tick.major { stroke: var(--fsg-tick); stroke-width: 1.5; }
+.fs-gauge-num { fill: var(--fsg-num); font-size: 6.4px; font-weight: 600; text-anchor: middle; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.fs-gauge.small .fs-gauge-num { font-size: 7px; }
+.fs-gauge-needle path { fill: var(--fsg-needle); filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .35)); }
+.fs-gauge-pin { fill: var(--fsg-pin); } .fs-gauge-pin2 { fill: var(--fsg-pin2); }
+.fs-gauge-warn path { fill: var(--fsg-red); stroke: none; } .fs-gauge-warn path.w { fill: none; stroke: var(--fsg-face); stroke-width: 1.3; stroke-linecap: round; }
+.fs-gauge-warn[hidden] { display: none; }
+.fs-gauge-warn { animation: fs-gauge-blink .7s steps(1) infinite; }
+.fs-gauge-ico { position: absolute; left: 50%; top: 55.5%; width: 9.5%; height: 9.5%; transform: translateX(-50%); color: var(--fsg-ico); }
+.fs-gauge-ico[hidden] { display: none; }
+.fs-gauge-ico svg { width: 100%; height: 100%; display: block; }
+.fs-gauge-digits { position: absolute; left: 8%; right: 8%; top: 67%; display: flex; flex-direction: column; align-items: center; line-height: 1; }
+.fs-gauge-main { font-size: 15px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--fsg-digit); transition: color .3s; }
+.fs-gauge.big .fs-gauge-main { font-size: 22px; }
+.fs-gauge-unit { margin-top: 2px; font-size: 7px; font-weight: 700; letter-spacing: .12em; color: var(--fsg-unit); text-transform: uppercase; }
+.fs-gauge.big .fs-gauge-unit { font-size: 8.5px; }
+.fs-gauge-unit[hidden] { display: none; }
+.fs-gauge-sub { position: absolute; left: -12%; right: -12%; top: 93%; text-align: center; font-size: 9.5px; font-weight: 600; color: var(--fsg-sub); font-variant-numeric: tabular-nums; white-space: nowrap; line-height: 1.2; text-shadow: 0 1px 2px rgba(0, 0, 0, .7), 0 0 6px rgba(0, 0, 0, .45); }
+.fs-gauge.big .fs-gauge-sub { top: 92%; font-size: 10px; }
+.fs-gauge-sub[hidden] { display: none; }
+.fs-gauge-lbl { margin-top: 12px; font-size: 8.5px; font-weight: 700; letter-spacing: .16em; color: var(--fsg-lbl); text-transform: uppercase; line-height: 1; text-shadow: 0 1px 2px rgba(0, 0, 0, .6); }
+.fs-gauge-badge { position: absolute; left: 50%; top: -6px; transform: translateX(-50%); z-index: 2; padding: 2px 8px; border-radius: 999px; background: #dc2626; color: #fff; font-size: 9px; font-weight: 800; letter-spacing: .08em; white-space: nowrap; box-shadow: 0 0 0 1px rgba(255, 255, 255, .3), 0 2px 10px rgba(220, 38, 38, .7); }
+.fs-gauge-badge[hidden] { display: none; }
+.fs-gauge[data-level="low"] .fs-gauge-main { color: #d98c00; }
+.fs-gauge[data-level="low"] .fs-gauge-main { color: #fcd34d; }
+.fs-gauge[data-level="crit"] .fs-gauge-main, .fs-gauge[data-level="empty"] .fs-gauge-main, .fs-gauge.warn .fs-gauge-main { color: var(--fsg-red); }
+.fs-gauge[data-level="crit"] .fs-gauge-ico, .fs-gauge[data-level="empty"] .fs-gauge-ico { color: var(--fsg-red); }
+.fs-gauge[data-level="crit"] .fs-gauge-face, .fs-gauge.warn .fs-gauge-face { animation: fs-gauge-face-pulse 1s ease-in-out infinite; }   /* kritik: kadran yüzeyi kırmızı nabız */
+.fs-gauge[data-level="empty"] .fs-gauge-face { fill: color-mix(in srgb, var(--fsg-face) 82%, var(--fsg-red)); }
+.fs-gauge[data-level="empty"] .fs-gauge-sub { opacity: .7; }
+.fs-gauges.no-fuel::before { content: attr(data-nofuel); align-self: center; margin: 0 8px 46px 0; padding: 3px 9px; border-radius: 999px; font-size: 8.5px; font-weight: 800; letter-spacing: .14em; color: #fff; background: rgba(47, 143, 224, .85); box-shadow: 0 2px 8px rgba(0, 0, 0, .35); }   /* elektrikli dron: yakıt kadranı yerine rozet */
+@keyframes fs-gauge-face-pulse { 0%, 100% { fill: var(--fsg-face); } 50% { fill: color-mix(in srgb, var(--fsg-face) 72%, var(--fsg-red)); } }
+@keyframes fs-gauge-blink { 0%, 100% { opacity: 1; } 50% { opacity: .15; } }
+/* ayrıntı kutusu: kadranların üstünde, HEPGO tema değişkenleri */
+.fs-power-pop { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(100% + 10px); width: 318px; z-index: 9; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); padding: 10px 12px 8px; font-size: 12px; cursor: default; }
+.fs-power-pop[hidden] { display: none; }
+.fs-power-pop-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 13px; }
+.fs-power-x { border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px; border-radius: 6px; }
+.fs-power-x:hover { background: var(--surface-2); color: var(--text); }
+.fs-power-rows { display: grid; gap: 2px; }
+.fs-power-row { display: grid; grid-template-columns: 1fr 1.1fr 1.4fr; gap: 8px; padding: 3px 0; border-top: 1px solid var(--border); font-variant-numeric: tabular-nums; align-items: baseline; }
+.fs-power-row > span:first-child { color: var(--muted); }
+.fs-power-row > span[hidden] { display: none; }
+.fs-power-row.fs-power-head { border-top: 0; font-size: 9.5px; font-weight: 700; letter-spacing: .12em; color: var(--muted); padding-bottom: 1px; }
+.fs-power-span { grid-column: 2 / -1; }
+.fs-power-foot { margin-top: 6px; color: var(--muted); line-height: 1.35; }
+@media (min-width: 1800px) { .fs-gauges { transform: translateX(-50%) scale(1.2); } .fs-stage.rc-on .fs-gauges { transform: translateX(-50%) scale(1.03); } }
+@media (max-width: 1300px) { .fs-gauges { transform: translateX(-50%) scale(.9); } .fs-stage.rc-on .fs-gauges { transform: translateX(-50%) scale(.78); } }
+@media (max-width: 760px) {   /* mobil: iki satır — hız + motor üstte, yakıt + batarya altta */
+  .fs-gauges, .fs-stage.fs-ops:not(.fs-fpv) .fs-gauges { left: 50%; display: grid; grid-template-columns: 1fr 1fr; justify-items: center; align-items: end; gap: 0 10px; transform: translateX(-50%) scale(.8); }
+  .fs-gauge.big { width: 140px; order: 1; } .fs-gauge.small { width: 110px; order: 2; margin-bottom: 0; }
+  .fs-gauge-lbl { margin-top: 4px; }
+  .fs-stage.rc-on .fs-gauges, .fs-stage.rc-on.fs-ops:not(.fs-fpv) .fs-gauges { bottom: calc(var(--fs-bar-h) + 232px); transform: translateX(-50%) scale(.7); }   /* sanal kumanda çubuklarının üstünde */
+  .fs-power-pop { width: calc(100vw - 24px); }
+}
+
+/* ===== §10 GÜÇ VE YAKIT (power.js) — sihirbaz adımı, sahnede analog kadranlar (HEPGO .fs-gauges; fly-sim.css kopyası) oyun teması, uyarı bandı, rapor kartı ===== */
+/* --- sihirbaz "Güç ve yakıt" adımı --- */
+.sm-pw-head h2 { margin: 0; font-size: 24px; letter-spacing: .04em; }
+.sm-pw-head p { margin: 4px 0 16px; }
+.sm-pw { display: grid; gap: 16px; }
+.sm-pw-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.sm-pw-stat { position: relative; display: grid; grid-template-columns: 40px 1fr; grid-template-rows: auto auto; column-gap: 12px; align-items: center; padding: 14px 16px; border-radius: 16px; border: 1px solid rgba(255,255,255,.1); background: linear-gradient(150deg, rgba(56,189,248,.14), rgba(15,23,42,.6)); overflow: hidden; }
+.sm-pw-stat::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 0 0, rgba(255,255,255,.08), transparent 60%); pointer-events: none; }
+.sm-pw-stat.fuel { background: linear-gradient(150deg, rgba(245,158,11,.2), rgba(15,23,42,.6)); }
+.sm-pw-stat.elec { background: linear-gradient(150deg, rgba(52,211,153,.16), rgba(15,23,42,.6)); }
+.sm-pw-stat .sm-pw-ico { grid-row: span 2; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 12px; background: rgba(255,255,255,.08); color: #38bdf8; }
+.sm-pw-stat.fuel .sm-pw-ico { color: #fbbf24; } .sm-pw-stat.elec .sm-pw-ico { color: #34d399; }
+.sm-pw-ico svg { width: 24px; height: 24px; }
+.sm-pw-stat b { font-size: 21px; color: #fff; line-height: 1.1; }
+.sm-pw-stat small { font-size: 11.5px; color: #a3adbd; letter-spacing: .06em; text-transform: uppercase; }
+.sm-pw-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.sm-pw-grid.one { grid-template-columns: minmax(0, 640px); }
+@media (max-width: 860px) { .sm-pw-grid { grid-template-columns: 1fr; } }
+.sm-pw-col { padding: 16px 18px; border-radius: 18px; border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.035); display: grid; gap: 4px; align-content: start; }
+.sm-pw-col h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; font-size: 13px; letter-spacing: .16em; text-transform: uppercase; color: #cbd5e1; }
+.sm-pw-col h3 .sm-pw-ico { width: 22px; height: 22px; color: #fbbf24; } .sm-pw-col.batt h3 .sm-pw-ico { color: #34d399; }
+.sm-pw-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+.sm-pw-seg-btn { display: grid; grid-template-columns: 30px 1fr; grid-template-rows: auto auto; column-gap: 10px; align-items: center; text-align: left; padding: 10px 12px; border-radius: 14px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); color: #cbd5e1; font: inherit; cursor: pointer; transition: transform .15s, border-color .15s, background .15s; }
+.sm-pw-seg-btn .sm-pw-ico { grid-row: span 2; width: 30px; height: 30px; }
+.sm-pw-seg-btn b { font-size: 14px; color: #e2e8f0; } .sm-pw-seg-btn small { font-size: 11px; color: #94a3b8; }
+.sm-pw-seg-btn:hover { transform: translateY(-2px); border-color: rgba(255,255,255,.25); }
+.sm-pw-seg-btn.on { border-color: #38bdf8; background: rgba(56,189,248,.14); box-shadow: 0 0 0 2px rgba(56,189,248,.35); }
+.sm-pw-seg-btn[data-engine="fuel"].on { border-color: #f59e0b; background: rgba(245,158,11,.14); box-shadow: 0 0 0 2px rgba(245,158,11,.35); }
+.sm-pw-seg-btn[data-engine="fuel"] .sm-pw-ico { color: #fbbf24; } .sm-pw-seg-btn[data-engine="electric"] .sm-pw-ico { color: #34d399; }
+.sm-pw-field { display: grid; gap: 6px; padding: 10px 0; border-top: 1px dashed rgba(255,255,255,.08); }
+.sm-pw-field:first-of-type { border-top: 0; }
+.sm-pw-lbl { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13.5px; font-weight: 600; color: #e2e8f0; }
+.sm-pw-ctl { display: grid; grid-template-columns: 1fr 132px; gap: 12px; align-items: center; }
+.sm-pw-range { width: 100%; accent-color: #38bdf8; }
+.sm-pw-col.motor .sm-pw-range { accent-color: #f59e0b; } .sm-pw-col.batt .sm-pw-range { accent-color: #34d399; }
+.sm-pw-val { display: flex; align-items: center; gap: 6px; padding: 0 10px; height: 36px; border-radius: 10px; border: 1px solid rgba(255,255,255,.14); background: rgba(5,10,20,.55); }
+.sm-pw-val:focus-within { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,.3); }
+.sm-pw-inp { width: 100%; min-width: 0; border: 0; background: transparent; color: #fff; font-size: 15px; font-weight: 700; text-align: right; outline: none; -moz-appearance: textfield; }
+.sm-pw-inp::-webkit-outer-spin-button, .sm-pw-inp::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.sm-pw-val i { font-style: normal; font-size: 11px; color: #94a3b8; letter-spacing: .06em; }
+.sm-pw-hint { color: #8391b3; font-size: 11.5px; line-height: 1.4; }
+.sm-pw-chip { display: inline-flex; align-items: center; gap: 3px; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; white-space: nowrap; border: 1px solid transparent; font-family: inherit; }
+.sm-pw-chip.hangar { background: rgba(148,163,184,.14); color: #a3adbd; }
+.sm-pw-chip.sug { cursor: pointer; background: rgba(167,139,250,.14); color: #c4b5fd; border-color: rgba(167,139,250,.45); animation: sm-pw-glow 2.4s ease-in-out infinite; }
+.sm-pw-chip.sug.on { background: linear-gradient(90deg, #a78bfa, #38bdf8); color: #0b1020; border-color: transparent; animation: none; }
+.sm-pw-chip.sug:hover { filter: brightness(1.15); }
+@keyframes sm-pw-glow { 0%, 100% { box-shadow: 0 0 0 0 rgba(167,139,250,0); } 50% { box-shadow: 0 0 12px 1px rgba(167,139,250,.45); } }
+.sm-pw-speed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding: 14px 18px; border-radius: 18px; border: 1px solid rgba(255,255,255,.1); background: linear-gradient(120deg, rgba(167,139,250,.12), rgba(56,189,248,.06)); }
+.sm-pw-speed > div:first-child { display: grid; gap: 2px; } .sm-pw-speed b { font-size: 15px; } .sm-pw-speed small { color: #a3adbd; font-size: 12px; max-width: 560px; }
+.sm-pw-spds { display: flex; gap: 8px; }
+.sm-pw-spd { min-width: 58px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.14); background: rgba(5,10,20,.5); color: #cbd5e1; font: 800 17px Consolas, Menlo, monospace; cursor: pointer; transition: transform .15s, background .15s; }
+.sm-pw-spd:hover { transform: translateY(-2px); }
+.sm-pw-spd.on { background: linear-gradient(135deg, #a78bfa, #38bdf8); color: #0b1020; border-color: transparent; box-shadow: 0 6px 18px rgba(56,189,248,.35); }
+.sm-pw-note { margin: 0; font-size: 12.5px; color: #94a3b8; }
+@media (prefers-reduced-motion: reduce) { .sm-pw-chip.sug { animation: none; } }
+
+/* --- sahne: HEPGO kadranları oyun temasında (koyu cam, neon çerçeve) ve TÜM kamera kiplerinde (FPV/gimbal'da da; küçük + yarı saydam) --- */
+.fs-gauges.sm-game { --fsg-face: #0c1424; --fsg-ring: rgba(56,189,248,.55); --fsg-edge: rgba(56,189,248,.35); --fsg-tick: #9fb4d8; --fsg-tick2: #3b4a66; --fsg-num: #9fb4d8;
+  --fsg-needle: #ff8a3d; --fsg-pin: #e8eefb; --fsg-pin2: #0c1424; --fsg-digit: #f1f6ff; --fsg-unit: #7f93b8; --fsg-ico: #7f93b8; --fsg-red: #ff4d5e; --fsg-blue: #38bdf8; z-index: 6; }
+.fs-gauges.sm-game .fs-gauge-dial { filter: drop-shadow(0 0 10px rgba(56,189,248,.25)) drop-shadow(0 8px 14px rgba(0,0,0,.55)); }
+.fs-gauges.sm-game .fs-gauge[data-g="fuel"] { --fsg-ring: rgba(251,191,36,.6); --fsg-edge: rgba(251,191,36,.35); }
+.fs-gauges.sm-game .fs-gauge[data-g="elec"] { --fsg-ring: rgba(52,211,153,.6); --fsg-edge: rgba(52,211,153,.35); }
+.fs-gauges.sm-game .fs-gauge-lbl { color: #cfe3ff; letter-spacing: .2em; }
+.fs-gauges.sm-game .fs-gauge[data-level="crit"] .fs-gauge-dial, .fs-gauges.sm-game .fs-gauge[data-level="empty"] .fs-gauge-dial { filter: drop-shadow(0 0 14px rgba(255,77,94,.55)) drop-shadow(0 8px 14px rgba(0,0,0,.55)); }
+.fs-gauges.sm-game.no-fuel::before { background: linear-gradient(90deg, #059669, #0ea5e9); }
+.sm-fly-stage.fs-osd-on .fs-gauges, .sm-fly-stage.fs-mhud-on .fs-gauges { display: flex; opacity: .9; transform: translateX(-50%) scale(.7); bottom: calc(var(--fs-bar-h, 54px) + 4px); }
+.sm-fly-stage.fs-osd-on .fs-gauges { transform: translateX(-50%) scale(.66); bottom: calc(var(--fs-bar-h, 54px) + 64px); }   /* FPV OSD: alt ortadaki RSSI/SAT/koordinat satırlarının üstünde */
+.sm-fly-stage.fs-fpv .fs-net { top: 84px; bottom: auto; }   /* FPV/gimbal: sol alttaki OSD pil/yakıt bloğu ve HUD satırlarıyla çakışmasın */
+.sm-fly-stage.fs-osd-on .fs-gauge-dial, .sm-fly-stage.fs-mhud-on .fs-gauge-dial { filter: drop-shadow(0 4px 8px rgba(0,0,0,.6)); }
+.sm-fly-stage.fs-osd-on .fs-gauge-face, .sm-fly-stage.fs-mhud-on .fs-gauge-face { fill-opacity: .72; }
+.sm-fly-stage.fs-osd-on.rc-on .fs-gauges, .sm-fly-stage.fs-mhud-on.rc-on .fs-gauges { bottom: calc(var(--fs-bar-h, 54px) + 58px); transform: translateX(-50%) scale(.62); }
+.sm-fly-stage.fs-power-on .fs-speed-gauge { display: none; }   /* HIZ kadranı güç panelinde (çift hız göstergesi olmasın) */
+.sm-fly-stage.fs-power-on.fs-osd-on .fs-events, .sm-fly-stage.fs-power-on.fs-mhud-on .fs-events { bottom: calc(var(--fs-bar-h, 54px) + 150px); }
+.sm-fly-stage.fs-power-on .fs-net { left: 14px; }
+@media (max-width: 760px) { .sm-fly-stage.fs-osd-on .fs-gauges, .sm-fly-stage.fs-mhud-on .fs-gauges { display: grid; transform: translateX(-50%) scale(.6); } }
+/* simülasyon hızı kapsülü (alt çubuk) */
+.sm-speed-pill { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: rgba(255,255,255,.08); }
+.sm-speed-pill .fs-speed-btn { height: 24px; min-width: 32px; padding: 0 6px; border-radius: 999px; font: 700 11.5px Consolas, Menlo, monospace; }
+.sm-speed-pill.fast .fs-speed-btn.primary { background: linear-gradient(135deg, #a78bfa, #38bdf8); border-color: transparent; color: #0b1020; }
+/* yakıt/batarya uyarı bandı (oyun bildirimi) */
+.sm-pw-alert { position: absolute; left: 50%; top: 18%; z-index: 9; transform: translateX(-50%); display: grid; justify-items: center; gap: 4px; padding: 14px 34px 12px; border-radius: 16px; pointer-events: none; text-align: center;
+  background: linear-gradient(180deg, rgba(127,29,29,.88), rgba(69,10,10,.82)); border: 1px solid rgba(255,77,94,.75); box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset, 0 0 40px rgba(255,77,94,.45); animation: sm-pw-alert-in .35s cubic-bezier(.22,1,.36,1) both; }
+.sm-pw-alert b { font-size: clamp(20px, 3.2vw, 34px); font-weight: 900; letter-spacing: .16em; color: #fff; text-shadow: 0 0 18px rgba(255,77,94,.9); animation: sm-pw-blink .9s ease-in-out 3; }
+.sm-pw-alert small { font-size: 12.5px; letter-spacing: .08em; color: #fecaca; }
+.sm-pw-alert.low { background: linear-gradient(180deg, rgba(120,72,6,.88), rgba(66,40,4,.82)); border-color: rgba(251,191,36,.75); box-shadow: 0 0 40px rgba(251,191,36,.35); }
+.sm-pw-alert.low b { text-shadow: 0 0 18px rgba(251,191,36,.9); animation: none; } .sm-pw-alert.low small { color: #fde68a; }
+.sm-pw-alert[hidden] { display: none; }
+@keyframes sm-pw-alert-in { from { transform: translate(-50%, -18px) scale(.9); } to { transform: translate(-50%, 0) scale(1); } }   /* opaklık yok: zamanlayıcı yavaşlasa da bant okunur kalır */
+@keyframes sm-pw-blink { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .sm-pw-alert, .sm-pw-alert b { animation: none; } }
+/* --- uçuş sonu rapor kartı (HEPGO .fs-rp-power bölümü gizli: aynı veri oyun kartında) --- */
+.sm-report .fs-rp-power { display: none; }
+.sm-pw-report { margin: 0 0 14px; padding: 14px 16px; border-radius: 16px; border: 1px solid rgba(56,189,248,.28); background: linear-gradient(150deg, rgba(56,189,248,.1), rgba(167,139,250,.06)); display: grid; gap: 12px; }
+.sm-pw-report h3 { margin: 0; font-size: 14px; letter-spacing: .14em; text-transform: uppercase; color: #e2e8f0; }
+.sm-pw-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 10px; }
+.sm-pw-tile { display: grid; justify-items: center; gap: 2px; padding: 10px 8px; border-radius: 12px; background: rgba(5,10,20,.45); border: 1px solid rgba(255,255,255,.08); }
+.sm-pw-tile b { font-size: 22px; color: #fff; } .sm-pw-tile b i { font-style: normal; font-size: 12px; color: #94a3b8; }
+.sm-pw-tile small { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: #a3adbd; text-align: center; }
+.sm-pw-tile.ok b { color: #34d399; } .sm-pw-tile.bad b { color: #ff6b7a; }
+.sm-pw-bars { display: grid; gap: 8px; }
+.sm-pw-bar { display: grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center; font-size: 12px; color: #cbd5e1; }
+.sm-pw-bar-track { height: 10px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+.sm-pw-bar-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #22c55e, #34d399); }
+.sm-pw-bar-track i.low { background: linear-gradient(90deg, #f59e0b, #fbbf24); } .sm-pw-bar-track i.crit { background: linear-gradient(90deg, #dc2626, #f87171); }
+.sm-pw-events { margin: 0; padding: 0 0 0 18px; color: #fca5a5; font-size: 12.5px; }
+.sm-pw-written { margin: 0; font-size: 12.5px; color: #c4b5fd; } .sm-pw-sub { margin: 0; font-size: 12px; color: #94a3b8; }
+/* --- Operasyon replay: kadranlar oynatma çubuğunun üstünde (ops/replay.js; createPowerSim ile karelerden) --- */
+.sm-replay-power { --fs-bar-h: 84px; --surface: #171e29; --surface-2: #1d2532; --text: #e4e9f1; --muted: #a3adbd; --border: #2a3444; }
+.sm-replay-power .fs-gauges { transform: translateX(-50%) scale(.82); }
+@media (max-width: 760px) { .sm-replay-power .fs-gauges { transform: translateX(-50%) scale(.62); } }
+.replay-tele .kv.pw b { color: #fbbf24; } .replay-tele .kv.pw.elec b { color: #34d399; } .replay-tele .kv.pw.bad b { color: #ff6b7a; }
+.replay-power-card { position: absolute; top: 80px; inset-inline-end: 20px; width: min(360px, calc(100vw - 40px)); z-index: 3; backdrop-filter: blur(10px); }
+.replay-power-card .sm-pw-report { margin: 0; background: linear-gradient(150deg, rgba(10,18,34,.86), rgba(20,16,40,.8)); }
+.replay-power-card h3 { cursor: pointer; user-select: none; }
+.replay-power-card.min .sm-pw-report > :not(h3) { display: none; }
+@media (max-width: 760px) { .replay-power-card { top: auto; bottom: 150px; } .replay-power-card:not(.min) .sm-pw-bars, .replay-power-card:not(.min) .sm-pw-events { display: none; } }
+/* --- Hangar: seçili dronun güç özeti (dönen modelin üstünde, sağ üst) + kart etiketi + düzenleyici penceresi --- */
+.hangar-power { position: absolute; top: 14px; inset-inline-end: 14px; z-index: 2; display: grid; justify-items: end; gap: 10px; max-width: min(460px, 60%); }
+.pw-summary { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; }
+.pw-engine { display: inline-flex; align-items: center; height: 26px; padding: 0 12px; border-radius: 999px; font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: #052e16; background: linear-gradient(90deg, #34d399, #38bdf8); box-shadow: 0 0 18px rgba(52,211,153,.35); }
+.pw-engine.fuel { color: #3b1d00; background: linear-gradient(90deg, #fbbf24, #fb923c); box-shadow: 0 0 18px rgba(251,191,36,.35); }
+.pw-chip { display: grid; grid-template-columns: 22px auto; grid-template-rows: auto auto; column-gap: 8px; align-items: center; padding: 7px 12px 7px 10px; border-radius: 12px; background: var(--glass, rgba(8,12,24,.62)); border: 1px solid var(--card-border, rgba(142,170,230,.18)); backdrop-filter: blur(8px); }
+.pw-chip .sm-pw-ico { grid-row: span 2; width: 22px; height: 22px; color: var(--accent, #38bdf8); }
+.pw-chip .sm-pw-ico svg { width: 20px; height: 20px; }
+.pw-chip.fuel .sm-pw-ico { color: #fbbf24; } .pw-chip.elec .sm-pw-ico { color: #34d399; }
+.pw-chip b { font-size: 14px; line-height: 1.1; color: var(--fg, #e8eefb); } .pw-chip small { font-size: 10.5px; color: var(--fg-dim, #9aa8c7); letter-spacing: .04em; }
+.pw-measured { padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; color: #c4b5fd; background: rgba(167,139,250,.14); border: 1px solid rgba(167,139,250,.4); }
+.pw-edit-btn { height: 34px; padding: 0 14px; gap: 6px; border-radius: 999px; }
+.pw-edit-btn svg { width: 15px; height: 15px; color: #fbbf24; }
+.mini-btn.pw svg { color: #fbbf24; }
+.pw-tag { padding: 1px 8px; border-radius: 999px; font-size: 11px !important; font-weight: 700; color: #6ee7b7 !important; background: rgba(52,211,153,.12); }
+.pw-tag.fuel { color: #fcd34d !important; background: rgba(251,191,36,.12); }
+.pw-editor { display: grid; gap: 10px; max-height: min(72vh, 760px); overflow: auto; padding-right: 4px; }
+.pw-editor .sm-pw-stat b, .pw-editor .sm-pw-inp { color: var(--fg, #fff); }
+[data-theme="light"] .pw-editor .sm-pw-col, [data-theme="light"] .pw-editor .sm-pw-stat { background: rgba(255,255,255,.7); border-color: rgba(15,26,51,.12); }
+[data-theme="light"] .pw-editor .sm-pw-lbl, [data-theme="light"] .pw-editor .sm-pw-col h3, [data-theme="light"] .pw-editor .sm-pw-seg-btn b { color: var(--fg); }
+[data-theme="light"] .pw-editor .sm-pw-val { background: #fff; border-color: rgba(15,26,51,.18); }
+@media (max-width: 760px) { .hangar-power { position: static; max-width: none; justify-items: center; margin: 8px; } .pw-summary { justify-content: center; } }
+.pw-tag { display: inline-flex; align-items: center; gap: 4px; }
+.pw-tag .sm-pw-ico { display: inline-grid; width: 12px; height: 12px; } .pw-tag .sm-pw-ico svg { width: 12px; height: 12px; }
+/* kopter (yalnız batarya): tek kart, alanlar yan yana */
+.sm-pw-grid.one { grid-template-columns: 1fr; }
+.sm-pw-grid.one .sm-pw-col { grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 26px; align-items: start; }
+.sm-pw-grid.one .sm-pw-col h3 { grid-column: 1 / -1; }
+.sm-pw-grid.one .sm-pw-field { border-top: 0; }
+@media (max-width: 860px) { .sm-pw-grid.one .sm-pw-col { grid-template-columns: 1fr; } }

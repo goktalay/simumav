@@ -3,7 +3,26 @@
 import * as api from '../core/api.js';
 import { h, clear, svg } from '../core/dom.js';
 import { t } from '../i18n/i18n.js';
-import { screen, plusButton, btn, miniBtn, hSelector, statsBars, toast, toastErr, confirmDlg, promptDlg, loading, EDIT_SVG, TRASH_SVG, STAR_SVG } from '../ui/components.js';
+import { screen, plusButton, btn, miniBtn, hSelector, statsBars, toast, toastErr, confirmDlg, promptDlg, loading, modal, EDIT_SVG, TRASH_SVG, STAR_SVG } from '../ui/components.js';
+import { createPowerStep, powerSummary, powerTag } from '../fly/power.js';
+
+// §10 güç ve yakıt: stiller (fly/power.css) + düzenleyici (fly/power.js createPowerStep; simülasyon hızı yok, öneri tıkla-uygula)
+const POWER_CSS = new URL('../fly/power.css', import.meta.url).href;
+const ensurePowerCss = () => { if (!document.querySelector(`link[href="${POWER_CSS}"]`)) document.head.append(h('link', { rel: 'stylesheet', href: POWER_CSS })); };
+const BOLT_SVG = '<path fill="currentColor" d="M13 2 4 14h7l-1 8 9-12h-7z"/>';
+let powerInfo = null;   // katalog `power` (sınırlar)
+export function openPowerEditor(drone, { onSaved, limits } = {}) {
+  ensurePowerCss();
+  let ps = null;
+  const ui = createPowerStep({ h, t, drone, limits, showSpeed: false, autoSuggest: false, onChange: x => { ps = x; } });
+  ps = ui.ps;
+  const body = h('div', { class: 'pw-editor' }, h('p', { class: 'sub' }, t('power.editor_sub')), ui.el);
+  modal({ title: `⚡ ${t('power.title')} · ${drone.name}`, body, wide: true, actions: [
+    { label: t('power.reset_defaults'), cls: 'ghost', onClick: async () => { try { const d = await api.put(`/api/hangar/${drone.id}`, { reset_power: true }); toast(t('common.saved'), 'ok'); onSaved?.(d); } catch (e) { toastErr(e); return false; } } },
+    { label: t('common.cancel'), cls: 'ghost' },
+    { label: t('common.save'), cls: 'primary', onClick: async () => { try { const d = await api.put(`/api/hangar/${drone.id}`, { power: ps.body() }); toast(t('common.saved'), 'ok'); sfx.select(); onSaved?.(d); } catch (e) { toastErr(e); return false; } } },
+  ] });
+}
 import { stagger } from '../ui/transition.js';
 import { loadThree, makeStage, lights } from '../core/three.js';
 import { buildDrone, animateDrone, loadGlb, TYPE_TEMPLATE } from './procmodels.js';
@@ -48,7 +67,9 @@ export async function mount(root, ctx) {
   const sc = screen({ title: t('hangar.title'), sub: t('hangar.sub') });
   const stageBox = h('div', { class: 'model-stage' });
   const caption = h('div', { class: 'model-caption' });
-  stageBox.append(caption);
+  const powerBox = h('div', { class: 'hangar-power' });   // §10 seçili dronun güç özeti + düzenle
+  stageBox.append(caption, powerBox);
+  ensurePowerCss();
   const strip = h('div', { class: 'strip' });
   sc.append(stageBox, strip);
   clear(root, sc);
@@ -63,17 +84,21 @@ export async function mount(root, ctx) {
     selected = d;
     clear(caption, h('h2', { class: 'title xl' }, d ? d.name : t('hangar.empty_title')), h('p', { class: 'sub' }, d ? `${t(`types.${d.type}`)} · ${modelLabel(d)}${d.airframe ? ` · ${t(`airframe.${d.airframe}`)}` : ''}` : t('hangar.empty_sub')));   // §13.1 düzen
     for (const c of strip.children) c.classList.toggle('sel', c.dataset.id === String(d?.id));
+    clear(powerBox, d ? [powerSummary({ h, t, drone: d }), btn([svg('0 0 24 24', BOLT_SVG), ` ${t('power.edit')}`], () => editPower(d), 'pw-edit-btn')] : null);
     viewer?.setModel(d);
   };
+  const editPower = d => openPowerEditor(d, { limits: powerInfo?.limits, onSaved: async () => { await load(); } });
 
   const card = d => {
     const c = h('div', { class: 'card lift strip-card', tabindex: '0', role: 'button', dataset: { id: String(d.id) }, onclick: () => select(d), onkeydown: e => { if (e.key === 'Enter') select(d); } },
       h('div', { class: 'row-actions' },
         miniBtn(svg('0 0 24 24', STAR_SVG), () => setDefault(d), d.is_default ? 'on' : '', t('common.default')),
         miniBtn(svg('0 0 24 24', EDIT_SVG), () => rename(d), '', t('common.rename')),
+        miniBtn(svg('0 0 24 24', BOLT_SVG), () => editPower(d), 'pw', t('power.edit')),
         miniBtn(svg('0 0 24 24', TRASH_SVG), () => remove(d), 'danger', t('common.delete'))),
       h('div', { class: 'thumb' }, h('span', { class: 'badge', style: null }, t(`types.${d.type}`))),
-      h('b', {}, d.name), h('small', {}, d.is_default ? `★ ${t('common.default')}` : modelLabel(d)), d.airframe ? h('small', { class: 'airframe-tag' }, t(`airframe.${d.airframe}`)) : null);   // §13.1
+      h('b', {}, d.name), h('small', {}, d.is_default ? `★ ${t('common.default')}` : modelLabel(d)), d.airframe ? h('small', { class: 'airframe-tag' }, t(`airframe.${d.airframe}`)) : null,   // §13.1
+      powerTag({ h, p: d.power }));   // §10
     const sw = h('i', { class: 'swatch on' }); sw.style.background = d.color || '#38bdf8'; sw.style.width = '22px'; sw.style.height = '22px';
     c.querySelector('.thumb').append(sw);
     c.addEventListener('pointerenter', () => sfx.takeoff());   // kart hover: kalkış sesi
@@ -89,6 +114,7 @@ export async function mount(root, ctx) {
 
   const load = async () => {
     try { drones = (await api.get('/api/hangar')).drones || []; } catch (e) { toastErr(e); drones = []; }
+    if (!powerInfo) api.get('/api/meta').then(m => { powerInfo = m?.power || null; }).catch(() => {});
     renderStrip();
   };
   const rename = async d => { const name = await promptDlg(t('common.rename'), { value: d.name }); if (!name) return; try { await api.put(`/api/hangar/${d.id}`, { name }); toast(t('common.saved'), 'ok'); await load(); } catch (e) { toastErr(e); } };
@@ -149,7 +175,8 @@ export async function mount(root, ctx) {
       const paint = () => { for (const c of grid.children) c.classList.toggle('sel', c.dataset.key === draft.model_key); pv?.setModel({ type: draft.type, model_key: draft.model_key, color: draft.color, glb: models.find(m => m.key === draft.model_key)?.glb }); if (needsAirframe(draft.type)) paintAf(); };
       for (const m of models) grid.append(h('div', { class: 'card lift strip-card', tabindex: '0', dataset: { key: m.key }, onclick: () => { if (m.key !== draft.model_key) draft.airframe = null; draft.model_key = m.key; paint(); } },
         h('div', { class: 'thumb' }, m.thumb ? h('img', { src: m.thumb, alt: '' }) : h('span', { class: 'badge accent' }, m.key.startsWith('proc:') ? 'PROC' : 'GLB')), h('b', {}, m.label || m.key),
-        m.airframe ? h('small', { class: 'airframe-tag' }, t(`airframe.${m.airframe}`)) : null));
+        m.airframe ? h('small', { class: 'airframe-tag' }, t(`airframe.${m.airframe}`)) : null,
+        powerTag({ h, p: m.power, extra: m.power?.engine === 'fuel' ? ` · ${m.power.max_speed_ms} m/s` : ' mAh' })));   // §10 güç varsayılanı
       clear(body, stage3, grid, afBox, h('div', { class: 'btn-row' }, btn(t('common.back'), () => openWizard(), 'ghost'), btn(t('common.next'), () => stepColor(), 'primary lg')));
       if (pv) { stage3.append(prevHost); pv.stage.resize(); }
       paint();

@@ -13,7 +13,7 @@ import json
 import re
 import secrets
 import time
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -48,6 +48,8 @@ class StartIn(BaseModel):
     mission_id: Optional[int] = None
     launch: Union[LaunchIn, str, None] = None     # {method, angle_deg, release_kmh, hand_speed_ms, hand_pitch_deg} ya da yalnız yöntem adı
     record: Optional[RecordIn] = None
+    power: Optional[dict] = None                   # §10 güç ve yakıt (sihirbaz): hangar ayarının üstüne; power.dogrula
+    speedup: Any = None                            # §10 (bool/dize zorlaması yok: bridge.speedup_dogrula) başlangıç simülasyon hızı 1 | 2 | 4 | 8 (≤ SIMUMAV_MAX_SPEEDUP)
 
 
 class RecStartIn(BaseModel):
@@ -82,8 +84,11 @@ async def start(body: StartIn, request: Request, user=User):
             raise auth.hata(422, 'invalid', 'Görev bu parkura ait değil')
     launch = body.launch.model_dump(exclude_none=True) if isinstance(body.launch, LaunchIn) else {'method': body.launch or 'wheels'}
     try:
-        out = await bridge.ucus_baslat(user, pilot, drone, track, mission, launch, body.record.model_dump() if body.record else None, request)
+        out = await bridge.ucus_baslat(user, pilot, drone, track, mission, launch, body.record.model_dump() if body.record else None, request,
+                                       power=body.power, speedup=body.speedup)
     except bridge.BridgeHata as e:
+        if e.error == 'invalid' and str(e.message).startswith(('power', 'Yakıt')):
+            db.audit_bagimsiz('power_reject', user['id'], auth.client_ip(request), e.message[:200])
         if e.error in ('server_full', 'flight_open'):
             db.audit_bagimsiz('quota', user['id'], auth.client_ip(request), e.message)
         hata_cevir(e)
@@ -290,9 +295,26 @@ async def c_close(sid: int, user=User):
     return {'ok': True, 'bin': getattr(s, 'bin_sonuc', None)}
 
 
+def guvenlik_komut(name, params):
+    """§10: SIMUMAV'a özgü komut sınırları (çekirdek doğrulamasından ÖNCE). `speed` ≤ MAX_SPEEDUP; hub `param_set` SIM_* (SIM_BATT_ hariç:
+    SIM_SPEEDUP, SIM_PLN_THR_MUL, SIM_WIND…) adlarını reddeder — bunlar yalnız sunucu tarafından yazılır. Dönüş: hata metni ya da None."""
+    if name == 'speed':
+        f = (params or {}).get('factor')
+        if isinstance(f, (int, float)) and not isinstance(f, bool) and float(f) > config.MAX_SPEEDUP:
+            return f'Bu sunucuda simülasyon hızı en çok {config.MAX_SPEEDUP}×'
+    if name == 'param_set':
+        ad = str((params or {}).get('name') or '').strip().upper()
+        if ad.startswith('SIM_') and not ad.startswith('SIM_BATT_'):
+            return f'{ad[:20]} yalnız sunucu tarafından ayarlanır'
+    return None
+
+
 @compat.post('/sessions/{sid}/cmd')
 async def c_cmd(sid: int, body: CmdIn, user=User):
     s = _oturum(sid, user)
+    red = guvenlik_komut(body.name, body.params)
+    if red:
+        raise auth.hata(400, 'invalid', red)
     try:
         return await s.komut(body.name, body.params or {}, kaynak=user['id'])
     except flightsim.SimHata as e:
@@ -502,6 +524,11 @@ async def _sim_ws(ws, sid):
                 name = str(msg.get('name') or '')[:30]
                 rid = str(msg.get('rid') or secrets.token_hex(8))[:40]
                 params = msg.get('params') if isinstance(msg.get('params'), dict) else {}
+                red = guvenlik_komut(name, params)
+                if red:
+                    db.audit_bagimsiz('cmd_reject', user['id'], None, f'{name}: {red}'[:200])
+                    yanit(rid=rid, name=name, ok=False, error=red)
+                    continue
                 b = getattr(s, 'hub', None)
                 if msg.get('bridge_id') is not None and b is not None:
                     try:
@@ -619,6 +646,10 @@ async def ws_live(ws: WebSocket):
                     bid = None
                 if bid is None or bid not in v.allowed:
                     v.put(json.dumps({'t': 'res', 'rid': rid, 'ok': False, 'error': 'Bu oturum size ait değil'}, ensure_ascii=False))
+                    continue
+                red = guvenlik_komut(str(msg.get('name') or ''), msg.get('params') if isinstance(msg.get('params'), dict) else {})
+                if red:
+                    v.put(json.dumps({'t': 'res', 'rid': rid, 'ok': False, 'error': red}, ensure_ascii=False))
                     continue
 
                 async def run_cmd(m=msg, rid=rid, bid=bid):

@@ -1,7 +1,7 @@
 """Router ortak yardımcıları: sahiplik, kota, hata çevirimi, yanıt biçimleri."""
 from fastapi import Depends, HTTPException
 
-from .. import auth, bridge, config, db
+from .. import auth, bridge, config, db, power
 
 User = Depends(auth.require_user)
 
@@ -36,7 +36,8 @@ def drone_api(d):
     g = bridge.model_gorsel(d.get('model_key'))
     return {**d, 'params': db.j(d.get('params')), 'is_default': bool(d.get('is_default')), 'proc': g['proc'],
             'preview': d.get('preview') or g['preview'], 'orient': g['orient'], 'has_prop': g['has_prop'], 'model_label': g['label'],
-            'airframe': bridge.drone_airframe(d)}   # kontrol düzeni (HEPGO §13.1): sütun → katalog modeli → classic; kopter/heli/VTOL None
+            'airframe': bridge.drone_airframe(d),   # kontrol düzeni (HEPGO §13.1): sütun → katalog modeli → classic; kopter/heli/VTOL None
+            'power': power.kayit_oku(d)}            # güç ve yakıt (§10): etkin ayar + defaults + son uçuş ölçümü (measured)
 
 
 def _glb(model_key):

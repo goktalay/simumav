@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .. import auth, bridge, config, db
+from .. import auth, bridge, config, db, power
 
 router = APIRouter(prefix='/api/meta')
 
@@ -21,5 +21,6 @@ def meta(request: Request):
            'mission_kinds': list(bridge.KINDS), 'weather': list(bridge.WEATHER), 'time_of_day': list(bridge.TIME_OF_DAY), 'world_modes': list(bridge.WORLD_MODES),
            'mp': {'proto': 'tcp', 'port_range': [config.MP_PORT_BASE, config.MP_PORT_BASE + config.MP_PORT_COUNT - 1], 'host': bridge.host_adi(request)},
            'active_flights': bridge.aktif_sayisi(), 'authenticated': u is not None,
+           'power': power.api_bilgisi(config.MAX_SPEEDUP),   # §10 güç/yakıt sınırları + simülasyon hızı seçenekleri (sunucu üst sınırıyla)
            'maps_key': config.GOOGLE_KEY if u is not None else None}
     return JSONResponse(out, headers={'Cache-Control': 'no-store'})

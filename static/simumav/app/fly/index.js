@@ -4,15 +4,17 @@
 // Sihirbaz (oyun tadında, 5 adım; wizard.js saf adım makinesi): 1 dron (kütüphane kartları + dönen 3B önizleme, /api/hangar) · 2 parkur (/api/tracks;
 // dünya kipi + halka sayısı) · 3 kalkış yöntemi (yalnız plane/interceptor/vtol: Rampa / Araç Üstü / Tekerlekli / ELDEN ATIŞ; açı/hız) · 4 görev
 // (isteğe bağlı, /api/missions?track_id=) · 5 pilot (/api/crew; varsayılan seçili) + kayıt seçenekleri (video / .bin) → BAŞLA (geri sayım) →
+// (3b: "Güç ve yakıt" — power.js createPowerStep: hangar değerleri ön dolu, son uçuş ölçümü "Önerilen", simülasyon hızı ≤ meta.power.max_speedup; §10)
 // session.js openSession. Stiller: ./fly.css (sihirbaz + sahne ekleri) ve ./fly-sim.css (HEPGO fs-* kopyası) bir kez eklenir.
 import { clear, h, toast, toastError, confirmDialog, fmtDuration, t as tr, onLeave, runLeave } from './simui.js';
 import { net } from './net.js';
 import { COUNTDOWN_S, LAUNCH_LIMITS, LAUNCH_METHODS_SM, STEP_TITLES, TYPE_LABEL, WORLD_MODE_LABEL, airframeLabel, airframeOf, countdownAt, createWizard, launchLabelSm, modelFor, needsAirframe, needsLaunch, simType, speedScale, worldFromTrack } from './wizard.js';
 import { openSession, startFlight, fetchMeta } from './session.js';
+import { canFuel, createPowerStep, powerOf } from './power.js';
 
 const here = new URL('.', import.meta.url);
 function ensureCss() {
-  for (const f of ['fly-sim.css', 'fly.css']) {
+  for (const f of ['fly-sim.css', 'fly.css', 'power.css']) {
     const href = new URL(f, here).href;
     if (!document.querySelector(`link[href="${href}"]`)) document.head.append(h('link', { rel: 'stylesheet', href }));
   }
@@ -45,8 +47,8 @@ async function resumeFlight(view, fid, ctx) {
   try {
     const f = await net.get(`/api/fly/${encodeURIComponent(fid)}`);
     if (!f || f.ended_at || f.state === 'KAPANDI') { toast(tr('Uçuş bitmiş; Operasyon\'da raporu görebilirsiniz')); return (ctx.go || (h => { location.hash = h; }))('#/ops'); }
-    const start = { flight_id: f.flight_id ?? f.id ?? fid, sim_id: f.sim_id, mp: f.mp, ws: f.ws, session: f.session, drone: f.drone, track: f.track, pilot: f.pilot, mission: f.mission, launch: f.launch, record: f.record };
-    return openSession(view, start, { drone: f.drone, track: f.track, pilot: f.pilot, mission: f.mission, launch: f.launch, record: f.record }, ctx);
+    const start = { flight_id: f.flight_id ?? f.id ?? fid, sim_id: f.sim_id, mp: f.mp, ws: f.ws, session: f.session, drone: f.drone, track: f.track, pilot: f.pilot, mission: f.mission, launch: f.launch, record: f.record, power: f.snapshot?.power, speedup: f.snapshot?.speedup };
+    return openSession(view, start, { drone: f.drone, track: f.track, pilot: f.pilot, mission: f.mission, launch: f.launch, record: f.record, power: f.snapshot?.power, speedup: f.snapshot?.speedup }, ctx);
   } catch (err) { toastError(err); clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Uçuş açılamadı: {e}', { e: err.message })), h('button', { class: 'btn primary', type: 'button', onclick: () => (ctx.go || (h => { location.hash = h; }))('#/fly') }, 'Sihirbaza dön'))); }
 }
 
@@ -112,7 +114,20 @@ async function renderWizard(view, ctx) {
     prevBtn.disabled = W.index() === 0; nextBtn.hidden = last; nextBtn.disabled = !W.canNext(); startBtn.hidden = !last; startBtn.disabled = !W.ready() || !!openFlight;
     startBtn.title = openFlight ? tr('Önce süren uçuşunuza dönün ya da bitirin') : '';
     const d = W.drone(), t = W.track(), p = W.pilot(), m = W.mission();
-    clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : null, m ? m.name : null, p ? p.name : null].filter(Boolean).join(' · '));
+    const pw = W.state.power || (d ? powerOf(d) : null);
+    const pwTxt = pw ? `⚡ ${pw.engine === 'fuel' ? `${pw.fuel_l} L` : tr('power.engine_electric')} · ${Math.round(pw.elec_cells)}S${W.state.speedup > 1 ? ` · ${W.state.speedup}×` : ''}` : null;
+    clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : null, pwTxt, m ? m.name : null, p ? p.name : null].filter(Boolean).join(' · '));
+  };
+  // ---------- §10 güç ve yakıt adımı (dron değişince ön ayar sıfırlanır) ----------
+  let powerPreset = null;
+  const stepPower = () => {
+    const d = W.drone(), mp = data.meta.power || {};
+    if (powerPreset && powerPreset.drone_id !== d?.id) powerPreset = null;
+    const ui = createPowerStep({ h, t: tr, drone: d, limits: mp.limits || undefined, speedups: mp.speedups || [1, 2, 4], preset: powerPreset || { speedup: W.state.speedup },
+      onChange: ps => { W.set('power', ps.body()); W.set('speedup', ps.speedup); powerPreset = { drone_id: d?.id, values: { ...ps.values }, applied: [...ps.state.applied], speedup: ps.speedup }; drawFoot(); } });
+    W.set('power', ui.ps.body()); W.set('speedup', ui.ps.speedup);
+    powerPreset = { drone_id: d?.id, values: { ...ui.ps.values }, applied: [...ui.ps.state.applied], speedup: ui.ps.speedup };
+    body.append(h('div', { class: 'sm-pw-head' }, h('h2', null, '⚡ ', tr('power.title')), h('p', { class: 'muted' }, tr(canFuel(d?.type) ? 'power.step_sub' : 'power.step_sub_copter', { name: d?.name || '' }))), ui.el);
   };
   const card = (sel, { icon, title, sub, badge, onClick, cls = '' }) => h('button', { type: 'button', class: `sm-card ${sel ? 'sel' : ''} ${cls}`, onclick: onClick }, icon || null, h('b', null, title), sub ? h('span', { class: 'sm-card-sub' }, sub) : null, badge ? h('span', { class: 'sm-card-badge' }, badge) : null);
 
@@ -210,7 +225,7 @@ async function renderWizard(view, ctx) {
     const k = W.step();
     if (k !== 'drone' && preview) { preview.dispose(); preview = null; previewBox = null; }   // 3B döngüsü yalnız dron adımında (diğer adımlarda CPU/GPU boşa dönmesin)
     body.dataset.step = k;
-    ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, mission: stepMission, pilot: stepPilot })[k]?.();
+    ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, power: stepPower, mission: stepMission, pilot: stepPilot })[k]?.();
     drawSteps(); drawFoot();
     root.classList.remove('sm-anim'); void root.offsetWidth; root.classList.add('sm-anim');
   };
@@ -228,7 +243,8 @@ async function renderWizard(view, ctx) {
     if (destroyed) return;
     let s;
     try { s = await startFlight(payload); } catch (err) {
-      const m = { 429: 'Sunucu dolu; bekleme odası — biraz sonra yeniden deneyin', 409: 'Zaten süren bir uçuşunuz var: uçuşa dönün ya da bitirin', 400: 'Geçersiz ayar; dron/parkur/kalkış değerlerini kontrol edin', 503: 'SITL hazır değil' }[err?.status];
+      const m = { 429: 'Sunucu dolu; bekleme odası — biraz sonra yeniden deneyin', 409: 'Zaten süren bir uçuşunuz var: uçuşa dönün ya da bitirin', 400: 'Geçersiz ayar; dron/parkur/kalkış değerlerini kontrol edin', 503: 'SITL hazır değil' }[err?.status]
+        || (err?.status === 422 ? `${tr('power.start_invalid')}: ${err.message}` : null);
       toast(m || err.message, 'err'); countdown.hidden = true; starting = false; startBtn.disabled = false;
       if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
       if (err?.status === 409) await showOpenFromError(err);
@@ -238,7 +254,7 @@ async function renderWizard(view, ctx) {
     preview?.dispose(); preview = null; destroyed = true;
     runLeave();
     ctx.track?.('flight_start', { drone_type: W.drone()?.type || 'unknown', launch: payload.launch?.method || payload.launch || 'wheels', world_mode: W.track()?.world_mode || 'unknown', mission: W.mission() ? 1 : 0 });
-    await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.state.launch, record: W.state.record }, { ...ctx, meta: data.meta });
+    await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.state.launch, record: W.state.record, power: s.power || W.state.power, speedup: s.speedup || W.state.speedup }, { ...ctx, meta: data.meta });
   };
   onLeave(() => { destroyed = true; preview?.dispose(); preview = null; });
   drawOpen();

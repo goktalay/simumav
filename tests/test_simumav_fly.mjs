@@ -22,10 +22,10 @@ const DATA = {
 };
 
 console.log('wizard.js');
-test('varsayılanlar: varsayılan dron/parkur/pilot seçili; adımlar kopterde 4 (kalkış yok), sabit kanatta 5', () => {
+test('varsayılanlar: varsayılan dron/parkur/pilot seçili; adımlar kopterde 5 (kalkış yok), sabit kanatta 6 (güç ve yakıt her tipte)', () => {
   const W = createWizard(DATA);
   assert.equal(W.state.drone_id, 1); assert.equal(W.state.track_id, 10); assert.equal(W.state.pilot_id, 100);
-  assert.deepEqual(W.steps(), ['drone', 'track', 'mission', 'pilot']);
+  assert.deepEqual(W.steps(), ['drone', 'track', 'power', 'mission', 'pilot']);
   W.set('drone_id', 2); assert.deepEqual(W.steps(), STEPS);
   W.set('drone_id', 3); assert.ok(needsLaunch('interceptor')); assert.equal(simType('interceptor'), 'sabit_kanat');
   assert.equal(simType('fpv'), 'multirotor'); assert.equal(simType('heli'), 'helikopter'); assert.equal(simType('vtol'), 'vtol');
@@ -33,7 +33,7 @@ test('varsayılanlar: varsayılan dron/parkur/pilot seçili; adımlar kopterde 4
 test('ileri/geri: canNext, isLast, goto yalnız geriye; parkur değişince görev sıfırlanır; görevler parkura süzülür', () => {
   const W = createWizard(DATA, { drone_id: 2 });
   assert.equal(W.step(), 'drone'); assert.ok(W.canNext()); assert.ok(W.next()); assert.equal(W.step(), 'track');
-  assert.ok(W.next()); assert.equal(W.step(), 'launch'); assert.ok(W.next()); assert.equal(W.step(), 'mission');
+  assert.ok(W.next()); assert.equal(W.step(), 'launch'); assert.ok(W.next()); assert.equal(W.step(), 'power'); assert.ok(W.next()); assert.equal(W.step(), 'mission');
   assert.deepEqual(W.missionsFor().map(m => m.id), [7]);
   W.set('mission_id', 7); assert.equal(W.mission().name, 'Halka turu');
   W.set('track_id', 11); assert.equal(W.state.mission_id, null, 'parkur değişti → görev sıfır'); assert.deepEqual(W.missionsFor().map(m => m.id), [8]);
@@ -53,6 +53,11 @@ test('payload: start gövdesi (§4) — kopterde launch wheels nötr; sabit kana
   assert.equal(normLaunch({ method: 'vehicle', release_kmh: 10 }).release_kmh, 40);
   assert.deepEqual(launchBody({ method: 'wheels' }), { method: 'wheels', angle_deg: 15, release_kmh: 70 });
   const W2 = createWizard({ drones: [], tracks: [], pilots: [] }); assert.equal(W2.payload(), null); assert.equal(W2.ready(), false);
+  // §10 güç ve yakıt + simülasyon hızı: yalnız ayarlanınca gövdede; dron değişince güç sıfırlanır; geçersiz hız → 1
+  W.set('power', { engine: 'fuel', fuel_l: 3 }); W.set('speedup', 4);
+  assert.deepEqual(W.payload().power, { engine: 'fuel', fuel_l: 3 }); assert.equal(W.payload().speedup, 4);
+  W.set('speedup', 3); assert.equal(W.payload().speedup, undefined);
+  W.set('drone_id', 3); assert.equal(W.state.power, null); assert.equal(W.payload().power, undefined);
 });
 test('hız ölçeği: interceptor 600 km/h, çentikler 100\'lük; iğne −120°…+120°; kopter 100', () => {
   assert.equal(speedScale('interceptor'), 600); assert.equal(speedScale('multirotor'), 100); assert.equal(speedScale('plane'), 200);

@@ -11,6 +11,8 @@ export const SFX_DEFS = {
   takeoff: { type: 'noise', f0: 240, f1: 2400, dur: 0.5, gain: 0.3, tone: { f0: 180, f1: 520 } },
   land: { type: 'noise', f0: 900, f1: 180, dur: 0.42, gain: 0.34, tone: { f0: 140, f1: 70 } },
   tick: { type: 'sine', f0: 1200, f1: 1200, dur: 0.03, gain: 0.12 },
+  alarm: { type: 'square', f0: 980, f1: 760, dur: 0.2, gain: 0.18 },      // §10 yakıt/batarya bitti: üç darbe (alarm())
+  caution: { type: 'triangle', f0: 740, f1: 740, dur: 0.16, gain: 0.2 },  // §10 düşük yakıt/batarya: tek darbe
 };
 /** Saf zarf: t∈[0,dur] → kazanç (hızlı atak, üstel sönüm). */
 export const env = (t, dur, g = 1) => (t < 0 || t > dur ? 0 : g * Math.min(1, t / (dur * 0.08)) * Math.exp(-4.5 * t / dur));
@@ -70,6 +72,8 @@ export const sweep = () => play('sweep');
 export const takeoff = () => play('takeoff');
 export const land = () => play('land');
 export const tick = () => play('tick');
+export const alarm = () => { play('alarm'); setTimeout(() => play('alarm'), 240); setTimeout(() => play('alarm'), 480); };
+export const caution = () => play('caution');
 
 // ---------- Motor sesi (döngü): testere + alt harmonik, alçak geçiren, hafif LFO titreşimi ----------
 const engines = new Set();

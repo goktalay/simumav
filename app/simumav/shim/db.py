@@ -34,13 +34,19 @@ CREATE TABLE IF NOT EXISTS drone_sim_runs (
     world TEXT, launch TEXT, started_at TEXT NOT NULL, ended_at TEXT, duration_s INTEGER, mode TEXT NOT NULL DEFAULT 'sitl',
     result TEXT NOT NULL DEFAULT 'tamam', end_reason TEXT, crash_count INTEGER NOT NULL DEFAULT 0, summary_event_id INTEGER,
     bin_log_id INTEGER, source_log_id INTEGER, video_rec_id TEXT, video_post_id INTEGER, video_path TEXT,
-    params_path TEXT, params_count INTEGER NOT NULL DEFAULT 0, scripts_path TEXT, scripts_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    params_path TEXT, params_count INTEGER NOT NULL DEFAULT 0, scripts_path TEXT, scripts_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+    power TEXT, fuel_used_l REAL, fuel_km_per_l REAL, elec_wh REAL, elec_w_avg REAL, speedup_max REAL, layout TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_drone_sim_runs_started ON drone_sim_runs(started_at);
 CREATE INDEX IF NOT EXISTS ix_drone_sim_runs_owner ON drone_sim_runs(owner_id);
 CREATE TABLE IF NOT EXISTS drone_sitl_params (
     drone_id INTEGER NOT NULL, name TEXT NOT NULL, value REAL NOT NULL, ptype INTEGER, updated_at TEXT NOT NULL, updated_by INTEGER,
     source TEXT NOT NULL DEFAULT 'hepgo', PRIMARY KEY (drone_id, name)
+);
+-- HEPGO §23 dron simülasyon seçenekleri (çekirdek flightsim_runs.kaydet ölçümleri yazar). SIMUMAV bunları OKUMAZ (güç ayarı simumav.db
+-- drones.power; docs/simumav.md §10) — tablo yalnız çekirdek yazımı hata vermesin diye var; uçuş açılışında dronun satırları silinir.
+CREATE TABLE IF NOT EXISTS drone_sitl_options (
+    drone_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by INTEGER, PRIMARY KEY (drone_id, key)
 );
 CREATE TABLE IF NOT EXISTS flight_logs (
     id INTEGER PRIMARY KEY, task_id INTEGER, file TEXT NOT NULL, file_name TEXT NOT NULL, size INTEGER NOT NULL,
@@ -62,9 +68,19 @@ def connect():
     return conn
 
 
+# Sonradan eklenen drone_sim_runs sütunları (HEPGO app/db.py ile aynı): §23 güç ve yakıt + §13.1 kontrol düzeni. Eksikken çekirdeğin
+# flightsim_runs.kaydet INSERT'i düşüyordu ("Simülasyon kaydı yazılamadı" → uçuşun .param dökümü / run satırı yok) — eski core.db'ye ALTER.
+RUN_EK_SUTUNLAR = (('power', 'TEXT'), ('fuel_used_l', 'REAL'), ('fuel_km_per_l', 'REAL'), ('elec_wh', 'REAL'), ('elec_w_avg', 'REAL'), ('speedup_max', 'REAL'),
+                   ('layout', 'TEXT'))
+
+
 def init():
     with connect() as conn:
         conn.executescript(SCHEMA)
+        kol = {r[1] for r in conn.execute('PRAGMA table_info(drone_sim_runs)')}
+        for ad, ddl in RUN_EK_SUTUNLAR:
+            if ad not in kol:
+                conn.execute(f'ALTER TABLE drone_sim_runs ADD COLUMN {ad} {ddl}')
         conn.commit()
 
 

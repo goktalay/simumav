@@ -102,7 +102,7 @@ tests/test_simumav.py   REST + oturum + bridge (SITL yok) · tests/test_simumav_
   — kayıtta otomatik `p01` + ad = hesap adı, is_default=1.
 - `drones(id, user_id, name, type ('multirotor'|'plane'|'heli'|'fpv'|'interceptor'|'vtol'), model_key (flightsim_models
   anahtarı ya da 'proc:<şablon>'), params JSON (SITL parametre farkları; interceptor: ARSPD_FBW_MAX 170 m/s ≈ 600 km/h,
-  THR_MAX 100, hızlı rate PID'ler), color, preview (dönen 3B için GLB yolu), is_default)`
+  THR_MAX 100, hızlı rate PID'ler), color, preview (dönen 3B için GLB yolu), airframe, power JSON (güç ve yakıt §10; NULL = model varsayılanı), is_default)`
   — kayıtta otomatik **1 hazır FPV dron** (`type 'fpv'`, model 'glb:iris_fpv', ad "FPV-1").
 - `tracks(id, user_id, name, lat, lon, alt_mode 'terrain', radius_m, wind {speed_ms, dir_deg, gust}, time_of_day, weather,
   world_mode ('real'|'google3d'|'procedural' — HEPGO'daki üç kip: Gerçek arazi / Google 3B / Prosedürel; varsayılan 'google3d'),
@@ -131,7 +131,9 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
 - `GET /api/hangar` → `{drones:[{id,name,type,model_key,params,color,preview (GLB|null),proc,is_default,airframe}], quota}`; `POST /api/hangar {name ≤40,type,model_key,params?,color '#rrggbb',airframe?}`
   (201); `PUT /api/hangar/{id} {name?,model_key?,params?,color?,is_default?,airframe?}`; `airframe` = kontrol düzeni classic|elevon|vtail (HEPGO docs/ucus-simulatoru.md §13.1;
   yalnız plane/interceptor; eksikse katalog modelinin düzeni — talon_vtail vtail, zephyr/interceptor/caymaz elevon, cessna/believer classic; bilinmeyen 422; kopterde null; uçuş açılışında çekirdeğe `layout` olarak gider); `DELETE` (uçuştaki dron 409 `in_use`); kota 20 → 409 `quota`;
-  params beyaz liste dışı → 422 `param_rejected` + `name`.
+  params beyaz liste dışı → 422 `param_rejected` + `name`. Güç ve yakıt (§10): POST/PUT `power {engine, max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah,
+  elec_w}` (kısmi; sınır dışı/bilinmeyen/ölçüm alanı → 422 `invalid`, audit `power_reject`), PUT `reset_power: true` → model varsayılanı; her dron kaydında
+  `power {…, defaults, measured:{fuel_km_per_l, elec_w, at}|null}`; katalog modellerinde `power` (varsayılan) + kökte `power` (sınırlar, hız seçenekleri).
   `GET /api/hangar/catalog` → `{types:[{key,label,models:[{key,label,glb,thumb,defaults,proc,desc,orient?,has_prop?}]}]}` — her tipte önce **gerçekçi GLB
   modeller** (`glb:*`, static/simumav/models/*.glb, kaynak/lisans LICENSES.md, üretim tools/simumav_models_build.py; ilk model tipin varsayılanı): fpv `glb:iris_fpv`
   (3DR Iris + FPV kamera), multirotor `glb:iris` / `glb:x500` / `glb:typhoon_h480` (hexa), plane `glb:rc_cessna` / `glb:believer`, interceptor `glb:jet` / `glb:zephyr`,
@@ -151,8 +153,8 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
   YA DA oyun arayüzü editörünün biçimi `{kind, route:{points:[{seq,cmd,lat,lon,alt_rel,frame}]}, shape, params, order, laps}` (`bridge.plan_items` SITL yüklemesinde items'a çevirir)
   ≤ 500 öğe, parkur yarıçapı içinde, z 0–1000, kalibrasyon/reboot komutları yasak; `fpv_gates` planı `{order:[halka i…], laps 1–10}`; red 422 `plan_rejected`.
 - `POST /api/fly/start {drone_id, pilot_id, track_id, mission_id?, launch: {method wheels|ramp|vehicle|hand, angle_deg 10–30, release_kmh 40–110,
-  hand_speed_ms 6–8, hand_pitch_deg 10–15} | 'yöntem', record:{bin (vars. true), video}}` → 201
-  `{flight_id, sim_id, mp:{host,port,proto:'tcp'}|null, ws:'/ws/fly/<sim_id>', state}`; 409 `flight_open` (`flight_id`, `sim_id` — ön yüz "Süren uçuşunuz var"
+  hand_speed_ms 6–8, hand_pitch_deg 10–15} | 'yöntem', record:{bin (vars. true), video}, power?, speedup? (§10)}` → 201
+  `{flight_id, sim_id, mp:{host,port,proto:'tcp'}|null, ws:'/ws/fly/<sim_id>', state, power, speedup}`; 409 `flight_open` (`flight_id`, `sim_id` — ön yüz "Süren uçuşunuz var"
   kartı: Uçuşa dön `#/fly/{id}` / Uçuşu bitir), 429 `server_full` (`retry_after`, `Retry-After`), 422 görev başka parkura ait, 503 `sitl`/`no_port`. Görev planı
   SITL hazır olunca `mission_upload` ile yüklenir. `GET /api/fly/current` → kullanıcının açık uçuşu `{flight_id, sim_id, started_at, state, elapsed_s,
   remaining_s, drone, track, pilot, mission, launch, ws, ws_seen, mp}` ya da `null`. Yetim denetimi: `SIMUMAV_ORPHAN_S` (vars. 90 sn) boyunca hiç WS bağlanmayan
@@ -452,3 +454,58 @@ oran 10/dk/IP; hata halinde sürüm klasörü silinir. Parçalı uç (`/part`) v
 - **Testler:** `tests/test_simumav.py` (sahte hesap servisi `tests/simumav_fake_mt.py`: oluştur/ek/bağlam/liste/ayrıntı/yanıt/oran 429/413/422/CSRF/503/audit),
   `central/sshmaster_server/tests/test_mastertool.py` (sv gizli yolu, 403/422/404/401, IP oranı yok, e-posta bağlantısı), `tests/test_sshmaster_admin.py`
   (etiket SIMUMAV, `source` filtresi), `node tests/test_simumav_ui.mjs`, Playwright `tests/simumav_support_shots.py` (/tmp/simumav-ticket/).
+
+## 10. Güç ve yakıt — HEPGO §23'ün SIMUMAV'a taşınması (`app/simumav/power.py`, `static/simumav/app/fly/power.js|power.css`)
+
+Kullanıcı isteği: "HEPGO'ya eklediğimiz benzin ve pil detayını ve göstergelerini SIMUMAV sistemine ekleyelim." Çekirdek (`app/flightsim_power.py` GucDurumu,
+`SimSession(power=…)`, `tele.fuel/elec/speedup`, WS `warn fuel_empty|elec_empty`, `SIM_PLN_THR_MUL`/`SIM_SPEEDUP`) ve ön yüz kadranları
+(`static/js/modules/flightsim_power.js` createPowerGauges / createPowerSim / createSpeedPill) DEĞİŞTİRİLMEDEN kullanılır; SIMUMAV yalnız veri modeli,
+doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
+
+- **Veri:** `drones.power` JSON (göç: `ALTER TABLE drones ADD COLUMN power TEXT`, mevcut kayıtlar NULL → katalog modelinin varsayılanı; veri bozulmaz).
+  Alanlar `engine 'fuel'|'electric'`, `max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w` + YALNIZ sunucunun yazdığı ölçümler
+  `fuel_km_per_l_last, elec_w_last, measured_at`. Kurallar HEPGO `dogrula` ile aynı: yakıtlı motor yalnız sabit kanat ailesinde (plane / interceptor /
+  vtol → çekirdek sabit_kanat | vtol); kopterde (multirotor / fpv / heli) elektrikli, yakıt 0, azami hız null (gövdede gelirse yok sayılır). Elektrikli uçakta
+  yakıt 0 (gösterge yok). Sınırlar çekirdeğin `SINIRLAR` tablosu (azami hız 5–150 m/s, yakıt 0–500 L, 0,5–500 km/L, 1–16 S, 100–200 000 mAh, 0–2000 W);
+  yakıtlı motorda depo ≥ 0,1 L. Kötü niyetli giriş: nesne değil / > 12 anahtar / bilinmeyen anahtar / `*_last` / bool / NaN / ∞ / dize → 422 + audit
+  `power_reject`. Bozuk (elle değiştirilmiş) kayıt okunurken varsayılana düşer.
+- **Hazır modellerin varsayılanları** (`power.MODEL_VARSAYILAN`): FPV-1 (`glb:iris_fpv`) 4S 1500 mAh 180 W (≈ 7 dk) · Iris 3S 5100 / 180 W · X500 4S 5000 /
+  220 W · Typhoon H480 4S 5400 / 260 W · heli 6S 5000 / 450 W (kopterde W = motor + elektronik ortalaması → uçuş süresi) · RC Cessna elektrikli 28 m/s
+  3S 2200 / 120 W · Believer 30 m/s 6S 10 000 / 200 W · Talon 28 m/s 4S 10 000 / 150 W · CAYMAZ (`builtin:caymaz`) HEPGO değerleri 45 m/s 5 L 25 km/L 4S
+  10 000 / 30 W · Standard VTOL yakıtlı 30 m/s 4 L 20 km/L 6S 16 000 / 120 W · jet / proc:interceptor yakıtlı 150 m/s (çekirdek üst sınırı; eski 170 m/s
+  AIRSPEED_MAX yerine) 6 L 20 km/L · Zephyr elektrikli 120 m/s.
+- **Uçuş açılışı:** `POST /api/fly/start {…, power?, speedup?}` → `power.ucus_power`: hangar ayarı + sihirbaz gövdesi aynı doğrulamayla → çekirdeğe TAM
+  `power` sözlüğü (`MANAGER.ac(power=…)`; çekirdeğin `drone_sitl_options` önerisi kullanılmaz — SIMUMAV dron kimlikleri yeniden kullanılabilir, açılışta o
+  kimliğin satırları silinir). Yanıt ve `flights.snapshot` `power` (engine dâhil) + `speedup` taşır. `speedup` 1|2|4|8 ve ≤ `SIMUMAV_MAX_SPEEDUP`
+  (varsayılan **4**: SITL n× hızda ≈ n kat CPU, .bin n kat hızlı büyür) → aksi 422 `invalid`/`speedup_limit`; SITL hazır olunca bekçi `speed` komutuyla yazar.
+- **Sunucu güvencesi (§7):** `speed` komutu WS + REST uyumluluk ucunda `> MAX_SPEEDUP` → red; hub `param_set` `SIM_*` adlarını (SIM_BATT_ hariç; SIM_SPEEDUP,
+  SIM_PLN_THR_MUL, SIM_WIND…) reddeder (audit `cmd_reject`); hangar `params` beyaz listesi `SIM_PLN`/`SIM_SRV` öneklerini de yasaklar. Mission Planner
+  (ham MAVLink TCP) PARAM_SET ile yazarsa **bekçi** (`bridge._guc_bekci`, 1 sn): SITL'in bildirdiği SIM_SPEEDUP > üst sınır → geri çeker (audit
+  `speed_clamp`, sarı olay); yamalı ikilide SIM_PLN_THR_MUL oturumun azami hız çarpanından saparsa yeniden yazar (audit `thr_mul_clamp`).
+- **Sihirbaz** (`fly/wizard.js` adım `power`, drone → track → launch → **power** → mission → pilot; `power.js createPowerStep`): üstte durum karoları (azami
+  km/h, menzil, Wh + S/V, dayanım), iki sütun **Motor** (Yakıtlı/Elektrikli seçimi — yalnız uçakta; azami hız, depo L, km/L) · **Elektronik batarya** (S, mAh,
+  W) kaydırıcı + sayı girişi; değerler hangardan ön dolu ("hangar" rozeti), son uçuşun ölçümü **★ Önerilen** rozetiyle ön dolu (↺ hangar değerine döner;
+  HEPGO davranışı); **Simülasyon hızı** 1×…8× (yalnız `meta.power.speedups`). Kopterde tek batarya kartı (üç alan yan yana). Alt özet "⚡ 5 L · 4S · 4×".
+- **Uçuşta** (`fly/session.js`): HEPGO `createPowerGauges` dört analog kadran (YAKIT · HIZ · MOTOR · BATARYA) **tüm kamera kiplerinde alt ortada** —
+  takip/serbest/yer tam boy; FPV (OSD) ve gimbal (askeri HUD) kiplerinde küçük + yarı saydam (HEPGO'da orada gizliydi; OSD alt satırlarının üstünde).
+  Oyun teması (`.fs-gauges.sm-game`: koyu cam yüz, neon çerçeve — yakıt amber, batarya yeşil, turuncu ibre). HIZ kadranı varken eski SVG hız göstergesi gizli.
+  Metinler `trPower` ile i18n (`power.*`), "dk/sa" birimleri yerelleştirilir. Hız kapsülü üst çubukta (createSpeedPill; tele.speedup ile eşitlenir).
+  `warn kind fuel_empty|elec_empty` → büyük kırmızı bant ("YAKIT BİTTİ — simülasyon sürüyor"), toast, `sfx.alarm()`; %20 yakıt / %25 batarya altında bir kez
+  sarı bant + `sfx.caution()`. Uçuş ve SITL etkilenmez (yalnız uyarı).
+- **Uçuş sonu:** `flights.summary.power` = GucDurumu özeti (görev özeti boş olsa da) + `drone_written`; geçerli ölçümler (km/L ≥ 0,3 km & 0,02 L, W ≥ 60 sn)
+  `power.olcum_yaz` ile dron kaydına (`measured`) → sonraki sihirbazda ★ Önerilen. Rapor penceresinde oyun kartı (mesafe, harcanan yakıt, ölçülen km/L,
+  Wh, ortalama W, kalan yakıt/batarya çubukları, bitme anları, "drona yazıldı"); HEPGO `.fs-rp-power` bölümü CSS'te gizli (çift olmasın).
+- **Operasyon replay** (`ops/replay.js`): kayıt ayarı (`summary.power.settings` → `snapshot.power`) varsa HEPGO `createPowerSim` karelerden oynatıcı zamanıyla
+  (atlama/başa dönüş `rebuild`) + aynı kadranlar oynatma çubuğunun üstünde; sol panelde yakıt/batarya satırı; sağ üstte katlanır güç özeti kartı.
+- **Hangar:** seçili dronun güç özeti (motor rozeti, km/h, depo/km/L, S mAh W, dayanım, ★ ölçüm) + "Güç ve yakıt" düzenleyici (aynı createPowerStep;
+  hız seçici yok, öneri tıkla-uygula, "Varsayılana dön"); şerit ve katalog kartlarında güç etiketi.
+- **Çekirdek şema düzeltmesi:** shim `core.db` `drone_sim_runs` tablosunda HEPGO §23/§13.1 sütunları (power, fuel_used_l, fuel_km_per_l, elec_wh,
+  elec_w_avg, speedup_max, layout) yoktu → çekirdeğin `flightsim_runs.kaydet` INSERT'i düşüyordu ("Simülasyon kaydı yazılamadı": run satırı ve .param dökümü
+  yok). Şemaya eklendi + eski core.db'ye ALTER; `drone_sitl_options` tablosu (çekirdek yazımı için; SIMUMAV okumaz).
+- **i18n:** `power.*` (75 anahtar) 7 dilde. Ses: `ui/sfx.js` `alarm`, `caution`.
+- **Testler:** `tests/test_simumav_power.py` (göç, katalog/meta, hangar doğrulama sınırları ve kötü girişler, reset/kısmi PUT, fly/start → çekirdek power,
+  speedup sınırı, bekçi, WS/REST speed + SIM_* param_set reddi, sahte uçuşta yakıt/batarya bitişi + warn, stop → summary.power + dron ölçümü, core
+  drone_sim_runs satırı, FPV kopter kuralları) · `node tests/test_simumav_power.mjs` (saf katman) · `tests/test_simumav_fly.mjs` (adım/payload) ·
+  görsel `tests/simumav_power_shots.py` (/tmp/smpower-shots: hangar, düzenleyici, sihirbaz uçak/FPV-en, takip/FPV/gimbal kadranları, yakıt bitti bandı, rapor;
+  `SMP_REAL=1 HEPGO_SITL_DIR=/opt/hepgo/sitl/bin` ile gerçek SITL + Operasyon replay).
+

@@ -16,6 +16,9 @@
 //   • Interceptor: hız göstergesi 600 km/h (SVG kadran), ses modeli AUDIO_MODELS.interceptor (yüksek devir); HUD'da mach yok (HEPGO HUD'da zaten yok).
 //   • FPV dron: başlangıç kamerası 'pilot' (gerçek FPV + OSD); ayarlar.analog_fpv → sim.setFpvAnalog + osd.setAnalog.
 //   • Halkalar: tracks.gates → neon halka/kapı; geçiş algılama; OSD ok + mesafe + tur/süre; stop gövdesine gates:{passed, missed, best_lap_s, laps}.
+//   • GÜÇ VE YAKIT (§10): HEPGO analog kadranları (/sim/flightsim_power.js createPowerGauges — aynı modül) TÜM kamera kiplerinde alt ortada (power.css
+//     .fs-gauges.sm-game: oyun teması, FPV/gimbal'da yarı saydam ve küçük); tele.fuel/elec/speedup; WS warn kind fuel_empty|elec_empty → büyük
+//     uyarı bandı + toast + alarm sesi (yalnız uyarı, uçuş sürer); düşük (%20 yakıt / %25 batarya) bir kez sarı uyarı; simülasyon hızı kapsülü (≤ meta.power).
 // HEPGO renderSession paritesi (./rc.js; docs/ucus-simulatoru.md §5): titreme → telemetri 3B'nin uyarlanır tamponlu zaman çizgisine (flightsim3d.js
 //   içindeki flightsim_interp.js) HEPGO ile aynı sırada verilir (sim.setTelemetry önce, sonra HUD/OSD/ses/panel); `net:` etiketi (Hz · jitter · tampon · DR)
 //   ve `#/fly/<id>?netsim=jitter30,loss5,delay40` teşhis kipi (window.__fsSim = 3B). Sanal kumanda 🎮: iki sanal çubuk + klavye → 20 Hz {t:'rc', ch[8]}
@@ -30,6 +33,8 @@ import { createOverlay3D } from './overlay3d.js';
 import { createGateLayer } from './gates.js';
 import { netsimDeliver, netsimFromLocation, parseNetsim, virtualRC } from './rc.js';
 import { releaseShared } from '../core/three.js';
+import * as sfx from '../ui/sfx.js';
+import { localizeUnits, powerReportCard, trPower, warnInfo } from './power.js';
 
 const SIM = '/sim/';
 const THREE_URL = '/static/vendor/three/three.module.min.js';   // HEPGO modülleriyle aynı yol → aynı modül örneği
@@ -52,8 +57,8 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
 export const hepgoLaunchFor = (droneType, launch) => (needsLaunch(droneType) ? launchBody(launch) : null);
@@ -144,6 +149,8 @@ export function showFlightReport(MReport, sum, gates, { pilot, drone, track, fli
   return new Promise(resolve => {
     const body = h('div', { class: 'sm-report' });
     body.append(h('div', { class: 'sm-report-head' }, h('b', null, drone?.name || ''), track?.name ? h('span', { class: 'muted' }, ` · ${track.name}`) : null, pilot?.name ? h('span', { class: 'muted' }, ` · ${tr('Pilot')}: ${pilot.name}`) : null));
+    const pwCard = sum?.power ? powerReportCard({ h, t: tr, pw: sum.power }) : null;   // §10 oyun tarzı güç kartı (HEPGO .fs-rp-power bölümü CSS'te gizli; çift olmasın)
+    if (pwCard) body.append(pwCard);
     try { body.append(MReport.reportBody(sum || {}, tr, { canWrite: false, be: null })); } catch { body.append(h('p', { class: 'muted' }, tr('Özet alınamadı.'))); }
     if (gates) {
       const clock = s => (s == null ? '—' : `${String(Math.floor(s / 60)).padStart(2, '0')}:${(s % 60).toFixed(1).padStart(4, '0')}`);
@@ -166,7 +173,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower } = await loadSim();
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
   const drone = picked.drone || start.drone || { name: 'Dron', type: 'multirotor' }, track = picked.track || start.track || {}, pilot = picked.pilot || start.pilot || null, mission = picked.mission || start.mission || null;
   const dType = drone.type || 'multirotor', type = simType(dType), modes = modesFor(type);
@@ -182,7 +189,8 @@ export async function openSession(view, start, picked, ctx = {}) {
   const session = { id: sid, mode: 'sitl', state: start.session?.state || 'BASLIYOR', type, model: modelFor(drone), created_at: start.session?.created_at || new Date().toISOString(),
     center: { name: track.name || 'Parkur', lat: num(track.lat, 0), lon: num(track.lon, 0), alt: num(track.alt, null) },
     drone: { code: '', name: drone.name || 'Dron' }, hub: { bridge_id: start.session?.hub?.bridge_id ?? -(9000 + (Number(sid) || 0)), name: drone.name || 'Dron' },
-    gcs: { connected: false, addr: '' }, sitl: { port: mp.port }, route: [], launch: launch ? { ...launch, phase: null } : null, world };
+    gcs: { connected: false, addr: '' }, sitl: { port: mp.port }, route: [], launch: launch ? { ...launch, phase: null } : null, world,
+    power: (() => { const p = picked.power || start.power || start.session?.power; if (!p) return null; const { engine, ...rest } = p; void engine; return rest; })() };   // §10: kadranların azami hız ölçeği (hello'da çekirdek değeri gelir)
   const maxKmh = speedScale(dType);
   const gates = Array.isArray(track.gates) ? track.gates : [];
   const gatePlan = mission?.kind === 'fpv_gates' ? (mission.plan || {}) : {};
@@ -200,8 +208,15 @@ export async function openSession(view, start, picked, ctx = {}) {
   const wsBadge = h('span', { class: 'badge gray', title: 'Telemetri bağlantısı (WebSocket)' }, 'Bağlanıyor…');
   const fullBtn = h('button', { class: 'fs-nav-btn fs-full-btn', type: 'button', title: 'Tam ekran', onclick: () => { (document.fullscreenElement ? document.exitFullscreen?.() : document.documentElement.requestFullscreen?.())?.then(() => onFullChange()).catch(() => {}); } }, '⛶');
   const backBtn = h('a', { class: 'fs-back', href: '#/fly', title: tr('Geri (Esc)'), 'aria-label': tr('Geri'), onclick: e => { e.preventDefault(); leaveToMenu(); } }, h('span', { class: 'fs-back-ico', 'aria-hidden': 'true' }, '←'), h('span', { class: 'fs-back-txt' }, 'Geri'));
+  // §10 simülasyon hızı kapsülü (HEPGO createSpeedPill): yalnız sunucunun izin verdiği çarpanlar; seçili düğme tele.speedup ile eşitlenir
+  const trP = trPower(tr);
+  const speedAllowed = meta?.power?.speedups || [1, 2, 4];
+  const speedPill = MPower.createSpeedPill({ h, tr: trP, cls: 'sm-speed-pill', onPick: f => { if (f !== speedPill.value) cmd('speed', { factor: f }); } });
+  for (const b of speedPill.el.querySelectorAll('[data-speed]')) b.hidden = !speedAllowed.includes(Number(b.dataset.speed));
+  speedPill.el.hidden = speedAllowed.length < 2;
+  speedPill.set(picked.speedup || start.speedup || 1);
   const nav = h('div', { class: 'fs-nav' }, backBtn, h('b', null, 'SIMUMAV'), h('span', { class: 'fs-nav-sub' }, `${TYPE_LABEL[dType] || dType} · ${drone.name || ''} · ${track.name || '—'}${pilot ? ` · ${pilot.name}` : ''} · ${WORLD_MODE_LABEL[world.mode] || world.mode}`), stateBadge, wsBadge,
-    launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, launchLabelSm(launch)) : null, gates.length ? h('span', { class: 'badge purple', title: tr('FPV halkaları') }, `${gates.length} halka`) : null, fullBtn);
+    launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, launchLabelSm(launch)) : null, gates.length ? h('span', { class: 'badge purple', title: tr('FPV halkaları') }, `${gates.length} halka`) : null, speedPill.el, fullBtn);   // §10 hız kapsülü üst çubukta (HEPGO nav kalıbı)
   const onFullChange = () => { const full = !!document.fullscreenElement; stage.classList.toggle('fs-full', full); document.body.classList.toggle('fs-full', full); fullBtn.title = tr(full ? 'Tam ekrandan çık' : 'Tam ekran'); };
   document.addEventListener('fullscreenchange', onFullChange); onFullChange();
 
@@ -251,7 +266,11 @@ export async function openSession(view, start, picked, ctx = {}) {
   const handLbl = isHand ? h('div', { class: 'fs-hand-lbl mono' }, handHud(hcfg)) : null;
   const attribTxt = h('span', null, g3dMode ? 'Google' : M3D.ATTRIBUTION);
   const attrib = h('div', { class: `fs-attrib ${g3dMode ? 'fs-attrib-g3d' : ''}`, hidden: !(g3dMode || realMode) }, g3dMode ? h('img', { class: 'fs-g3d-logo', src: '/static/img/google-logo.png', alt: 'Google' }) : null, attribTxt);
-  stage.append(mount, msg, crash, events, sticks, bar, nav, ended, countdown, gauge.el, attrib, netLbl);
+  // §10 güç paneli: dört analog kadran (YAKIT · HIZ · MOTOR · BATARYA); uyarı bandı (bitti / düşük)
+  const gauges = MPower.createPowerGauges(stage, { h, tr: trP, getSettings: () => session.power || null, getSummary: () => null, plane: type === 'sabit_kanat' || type === 'vtol', getCollision: () => !crash.hidden });
+  gauges.el.classList.add('sm-game');   // oyun teması (power.css)
+  const pwAlert = h('div', { class: 'sm-pw-alert', hidden: true, role: 'alert' }, h('b'), h('small'));
+  stage.append(mount, msg, crash, events, sticks, bar, nav, ended, countdown, gauge.el, gauges.el, pwAlert, attrib, netLbl);
   if (handLbl) stage.append(handLbl);
   view.classList.add('sm-fly-session');
   clear(view, stage);
@@ -409,6 +428,30 @@ export async function openSession(view, start, picked, ctx = {}) {
   };
   const setWs = st => { const map = { connecting: ['yellow', 'Bağlanıyor…'], reconnect: ['yellow', 'Yeniden bağlanıyor…'], open: ['green', 'Canlı'], closed: ['red', 'Bağlantı koptu'] }; const [tone, text] = map[st] || ['gray', st]; wsBadge.className = `badge ${tone}`; wsBadge.textContent = tr(text); };
   let handAnchored = false;
+  // ---------- §10 güç ve yakıt: kadranlar + düşük seviye uyarısı (bir kez) + bitti bandı ----------
+  const units = { min: tr('power.u_min'), h: tr('power.u_h') };
+  const localUnits = units.min && units.min !== 'power.u_min' && units.min !== 'dk';
+  const lowSaid = { fuel: false, elec: false }, emptySaid = { fuel: false, elec: false };
+  let alertTimer = 0;
+  const showPwAlert = (title, sub, kind) => {
+    pwAlert.firstChild.textContent = title; pwAlert.lastChild.textContent = sub || '';
+    pwAlert.className = `sm-pw-alert ${kind}`; pwAlert.hidden = false;
+    clearTimeout(alertTimer); alertTimer = setTimeout(() => { pwAlert.hidden = true; }, kind === 'empty' ? 5200 : 3200);
+  };
+  const powerEmpty = (k, text) => {
+    if (emptySaid[k]) return; emptySaid[k] = true;
+    const title = tr(k === 'fuel' ? 'power.toast_fuel_empty' : 'power.toast_elec_empty');
+    showPwAlert(title, tr('power.empty_sub'), 'empty'); sfx.alarm();   // büyük bant yeterli (toast üst çubuğu örtüyordu)
+    if (!text) addEvent(title, 'error', 'GÜÇ');   // sunucu warn'ı geldiyse aynı metin zaten `event` olarak şeritte
+  };
+  const onPower = raw => {
+    gauges.update(raw);
+    if (localUnits) for (const sub of gauges.el.querySelectorAll('.fs-gauge-sub')) { const v = localizeUnits(sub.textContent, units); if (v !== sub.textContent) sub.textContent = v; }
+    if (raw.speedup != null && Number(raw.speedup) !== speedPill.value) speedPill.set(Number(raw.speedup));
+    const f = raw.fuel, e = raw.elec;
+    if (f?.empty) powerEmpty('fuel'); else if (f && f.pct < 20 && !lowSaid.fuel) { lowSaid.fuel = true; showPwAlert(tr('power.low_fuel'), tr('power.low_fuel_sub', { r: MPower.rangeText(f.range_km) }), 'low'); sfx.caution(); addEvent(tr('power.low_fuel'), 'warning', 'GÜÇ'); }
+    if (e?.empty) powerEmpty('elec'); else if (e && e.pct < 25 && !lowSaid.elec) { lowSaid.elec = true; showPwAlert(tr('power.low_elec'), tr('power.low_elec_sub', { m: Math.round(e.min_left ?? 0) }), 'low'); sfx.caution(); addEvent(tr('power.low_elec'), 'warning', 'GÜÇ'); }
+  };
   const onTele = raw => {
     last = raw;
     let t = raw;
@@ -420,6 +463,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     sim?.setTelemetry(t); milHud?.update(t); osd?.update(t); audio.update(raw); ops?.update(t);
     gateLayer?.update(raw, num(raw.tbm, null) != null ? num(raw.tbm) / 1000 : (Date.now() - hudCtx.t0) / 1000);
     gauge.update((type === 'sabit_kanat' || type === 'vtol' ? num(raw.airspeed, num(raw.groundspeed, 0)) : num(raw.groundspeed, 0)) * 3.6);
+    onPower(raw);
     if (rc) rcWarn.hidden = !raw.gcs_connected;
     armBtn.textContent = raw.armed ? 'DISARM' : 'ARM'; armBtn.classList.toggle('danger', !!raw.armed);
     if (raw.mode && modeSel.value !== raw.mode && document.activeElement !== modeSel) modeSel.value = modes.includes(raw.mode) ? raw.mode : '';
@@ -433,7 +477,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     addEvent(m.phase === 'released' && m.speed_kmh != null ? `${tr(txt)} · ${f0(m.speed_kmh)} km/h` : tr(txt), m.phase === 'released' || m.phase === 'launch' ? 'warning' : 'info');
   };
   const showCrash = (reason, speed) => { if (!crash.hidden) return; const k = tr(CRASH_KIND[reason] || 'Çarpışma'); crash.hidden = false; crash.querySelector('.fs-crash-sub').textContent = tr('{k} · {v} m/s · "Sıfırla" ile yeniden başlayın', { k, v: f1(speed) }); addEvent(tr('ÇARPIŞMA: {k} ({v} m/s)', { k, v: f1(speed) }), 'error'); };
-  const reset = async () => { crash.hidden = true; sim?.clearCollision(); sim?.setLaunchPhase(null); clearHandTimers(); hand?.setPhase('idle'); countdown.hidden = true; gateLayer?.tracker.reset(); sim?.resetCamera(); await cmd('reset'); };
+  const reset = async () => { pwAlert.hidden = true; crash.hidden = true; sim?.clearCollision(); sim?.setLaunchPhase(null); clearHandTimers(); hand?.setPhase('idle'); countdown.hidden = true; gateLayer?.tracker.reset(); sim?.resetCamera(); await cmd('reset'); };
   const showEnded = reason => { clear(ended, h('div', { class: 'fs-ended-box' }, h('b', null, 'Uçuş sona erdi'), h('div', { class: 'small muted' }, tr(END_REASON[reason] || reason || '')), h('button', { class: 'btn primary', type: 'button', onclick: () => go('#/ops') }, 'Operasyon\'a git'))); ended.hidden = false; };
   socket = wsClient(wsAddr, {
     status: setWs,
@@ -446,7 +490,7 @@ export async function openSession(view, start, picked, ctx = {}) {
         case 'route': sim?.setMission(m); ops?.setRoute(m.points || []); if (m.source === 'mp') toast(tr("Mission Planner'dan görev yüklendi: {n} nokta", { n: m.points?.length || 0 })); return;
         case 'mission_cur': return sim?.setMissionCurrent(m.seq);
         case 'crash': return showCrash(m.reason, m.speed);
-        case 'warn': return addEvent(tr('Otopilot çarpışma tespiti — kayıt değil: {t}', { t: m.text || '' }), 'warning');
+        case 'warn': { const wi = warnInfo(m); if (wi) return powerEmpty(m.kind === 'fuel_empty' ? 'fuel' : 'elec', m.text); return addEvent(tr('Otopilot çarpışma tespiti — kayıt değil: {t}', { t: m.text || '' }), 'warning'); }
         case 'event': return addEvent(m.text, m.severity, 'STATUS');
         case 'launch': return onLaunch(m);
         case 'state': if (m.center) session.center = { ...session.center, ...m.center }; return setState(m.state);
@@ -515,7 +559,8 @@ export async function openSession(view, start, picked, ctx = {}) {
   // Çıkış zinciri (her adım ayrı korunur; biri fırlatsa da sim.dispose → forceContextLoss kesin çağrılır): WS, panel, HUD, OSD, kayıt, ses, kaplama, sahne
   const dispose = () => {
     if (destroyed) return; destroyed = true;
-    clearInterval(netTick);
+    clearInterval(netTick); clearTimeout(alertTimer);
+    safe(() => gauges.dispose());
     safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();
@@ -528,7 +573,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     stage.remove();
   };
   onLeave(dispose);
-  const api = { dispose, stage, get sim() { return sim; }, get hand() { return hand; }, get gates() { return gateLayer; }, get rc() { return rc; }, rcToggle, takeoffDialog, netsim, gauge, cmd: cmdSim, endFlight, session, world, addEvent };
+  const api = { dispose, stage, gauges, speedPill, get sim() { return sim; }, get hand() { return hand; }, get gates() { return gateLayer; }, get rc() { return rc; }, rcToggle, takeoffDialog, netsim, gauge, cmd: cmdSim, endFlight, session, world, addEvent };
   window.__smSession = api;   // teşhis (Playwright): komut gönder, halka/elden atış durumunu oku
   return api;
 }
