@@ -2,6 +2,7 @@
 // (Node testi: tests/test_flightsim_wizard.mjs). DOM ve bölümler flightsim.js wizardModal'da.
 // Sıra (canlı): 1 Araç (tip + dron kaydı + model + kontrol düzeni) → 2 Dünya ve konum (merkez + dünya + 3B önizleme) → 3 Kalkış (yalnız kalkış
 // seçeneği olan tiplerde) → 4 Güç ve yakıt → 5 Kamera → 6 Hedefler (isteğe bağlı) → 7 Yer kontrol (isteğe bağlı) → 8 Kayıt ve özet.
+// §33 Yeni Karşılaşma: Araç → Dünya → Kalkış → Güç → Kamera → Halkalar → Davet et → Özet ve başlat (Hedefler / Yer kontrol yok).
 // Kayıttan oynatma: 1 Uçuş logu (+ model) → Dünya → Kalkış (log aracı sabit kanatsa) → Kamera → Kayıt ve özet.
 // Kalkış seçenekleri VERİDEN: LAUNCH_OPTIONS (anahtar, uygun tipler, ayar alanları, simge anahtarı) + LAUNCH_PARAM_DEFS (kaydırıcı tanımı). Yeni bir
 // fırlatıcı eklemek = LAUNCH_OPTIONS'a bir satır (+ gerekiyorsa param tanımı ve flightsim.js LAUNCH_ICON'a simge); adım, tip için en az bir seçenek
@@ -15,11 +16,17 @@ export const STEP_DEFS = [
   { key: 'launch', title: 'Kalkış', modes: ['sitl', 'replay'], preview: true, desc: 'Aracın nasıl havalanacağı.' },
   { key: 'power', title: 'Güç ve yakıt', modes: ['sitl'], preview: false, desc: 'Azami hız, yakıt ve batarya bütçesi.' },
   { key: 'camera', title: 'Kamera', modes: ['sitl', 'replay'], preview: false, desc: 'Gündüz, termal ya da gece görüşü.' },
-  { key: 'targets', title: 'Hedefler', modes: ['sitl'], preview: false, optional: true, desc: 'Havada dairesel yörüngede uçan hedefler.' },
-  { key: 'site', title: 'Yer kontrol', modes: ['sitl'], preview: false, optional: true, desc: 'Radar, istasyon, EO kulesi ve görev.' },
-  { key: 'summary', title: 'Kayıt ve özet', modes: ['sitl', 'replay'], preview: false, desc: 'Kayıt seçenekleri ve tüm seçimlerin özeti.' },
+  { key: 'targets', title: 'Hedefler', modes: ['sitl'], preview: false, optional: true, noMatch: true, desc: 'Havada dairesel yörüngede uçan hedefler.' },
+  { key: 'site', title: 'Yer kontrol', modes: ['sitl'], preview: false, optional: true, noMatch: true, desc: 'Radar, istasyon, EO kulesi ve görev.' },
+  // §33 çok oyunculu karşılaşma ("Yeni Karşılaşma"): radar / EO / yer kontrol (ve hedefler) yok; Halkalar + Davet et; son adımda yalnız Başlat
+  { key: 'rings', title: 'Halkalar', modes: ['sitl'], preview: false, matchOnly: true, desc: 'Havadaki halkaların sayısı, yükseklik aralığı ve parkur.' },
+  { key: 'invite', title: 'Davet et', modes: ['sitl'], preview: false, matchOnly: true, desc: 'Karşılaşmaya davet edilecek kullanıcılar.' },
+  { key: 'summary', title: 'Kayıt ve özet', matchTitle: 'Özet ve başlat', modes: ['sitl', 'replay'], preview: false, desc: 'Kayıt seçenekleri ve tüm seçimlerin özeti.',
+    matchDesc: 'Seçimlerin özeti; Başlat ile bekleme salonu açılır ve davetlilere bildirim gider.' },
 ];
 export const stepDef = key => STEP_DEFS.find(s => s.key === key) || null;
+// §33: karşılaşma sihirbazında başlık/açıklama (özet adımı "Özet ve başlat")
+export const stepDefFor = (key, match = false) => { const d = stepDef(key); return d && match ? { ...d, title: d.matchTitle || d.title, desc: d.matchDesc || d.desc } : d; };
 
 // Kaydırıcı tanımları (ölçek, birim); değerler world.launch'a `field` (yoksa anahtar) adıyla yazılır (sunucu sınırları: angle 10–30°, release 40–110 km/h;
 // §27 loaded 1…hücre, aim_az_deg 0…360, aim_el_deg 10…85). Aynı alanın yönteme göre farklı sınırı ayrı anahtarla (loaded4 / loaded8 → loaded).
@@ -58,9 +65,10 @@ export const launchOptionsFor = (type, options = LAUNCH_OPTIONS) => options.filt
 // Seçili yöntem tipte yoksa ilk seçenek (tip değişince geçersiz kalmasın); seçenek yoksa olduğu gibi
 export const normLaunchMethod = (method, type, options = LAUNCH_OPTIONS) => { const list = launchOptionsFor(type, options); return !list.length || list.some(o => o.key === method) ? method : list[0].key; };
 
-// Görünür adımlar: kip + etkin tip (kayıtta logun tipi). ctx: { mode, type, options? }
-export function wizardSteps({ mode = 'sitl', type = 'multirotor', options = LAUNCH_OPTIONS } = {}) {
-  return STEP_DEFS.filter(s => s.modes.includes(mode) && (s.key !== 'launch' || launchOptionsFor(type, options).length > 0)).map(s => s.key);
+// Görünür adımlar: kip + etkin tip (kayıtta logun tipi). ctx: { mode, type, options?, match? } — match (§33): Hedefler / Yer kontrol yok, Halkalar + Davet et var
+export function wizardSteps({ mode = 'sitl', type = 'multirotor', options = LAUNCH_OPTIONS, match = false } = {}) {
+  return STEP_DEFS.filter(s => s.modes.includes(mode) && (s.key !== 'launch' || launchOptionsFor(type, options).length > 0)
+    && (match ? !s.noMatch : !s.matchOnly)).map(s => s.key);
 }
 
 // Adım geçişleri. valid: key → null (geçerli) | hata metni. Geri her zaman serbest; ileriye ancak aradaki (hedef hariç) tüm adımlar geçerliyse.

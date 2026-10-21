@@ -28,6 +28,8 @@ SITL_ENABLED = os.environ.get('HEPGO_SITL', '1') != '0'
 UDP_BASE = int(os.environ.get('SIM_UDP_BASE', '14550'))
 UDP_ARALIK = 100                      # SIM_UDP_BASE … SIM_UDP_BASE+99
 MAX_SESSIONS = max(1, int(os.environ.get('SIM_MAX_SESSIONS', '2')))
+# §33 çok oyunculu karşılaşma: oyuncu oturumları AYRI tavanla sayılır (normal oturum sınırını tüketmez; karşılaşmalar arasında paylaşılır)
+MATCH_MAX_SESSIONS = max(2, int(os.environ.get('SIM_MATCH_MAX_SESSIONS', '8')))
 MAX_MINUTES = max(1, int(os.environ.get('SIM_MAX_MINUTES', '120')))
 PUBLIC_HOST = os.environ.get('SIM_PUBLIC_HOST', '').strip()
 KIMLIK_TABANI = 9000                  # SITL yöneticisinde oturum kimliği (saha görevlerinin sanal dronlarıyla çakışmaz)
@@ -945,8 +947,15 @@ class _UdpProto(asyncio.DatagramProtocol):
 # ======================================================================
 class SimSession:
     def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None,
-                 targets=None, gcs=None, defend=None, drive=None):
+                 targets=None, gcs=None, defend=None, drive=None, start=None, match_id=None):
         self.id = int(sid)
+        # §33 karşılaşma: oyuncunun başlangıç noktası (dünya/merkez ortak; SITL ev konumu + burun yönü buradan) ve karşılaşma bağı.
+        # tele_kanca(tele): her telemetri güncellemesinde (izleyici olmasa da) çağrılır — halka geçişi sunucuda doğrulanır.
+        # komut_kapisi(ad) → None | hata metni: yarış başlamadan ARM / kalkış engellenir (web, CAYSIM ve harekât paneli komutları).
+        self.start = dict(start) if start else None
+        self.match_id = match_id
+        self.tele_kanca = None
+        self.komut_kapisi = None
         # §26 yer kontrol merkezi + EO/radar kulesi (doğrulanmış flightsim_gcs.gcs_dogrula) ve "Yer kontrolünü koru" görevi (SavunmaGorevi; yalnız INTERCEPTOR).
         # Görev istasyonu gerektirir: gcs yoksa istasyon + radar + EO varsayılanlarla açılır, istasyon kapalı seçildiyse açılır.
         if defend and (not gcs or not gcs.get('station')):
@@ -1046,7 +1055,8 @@ class SimSession:
         self._motor_cut_istek = None     # (on, zaman): son 218 isteği (red ACK'inde bayrak geri alınır)
         self.sahte = None
         if not SITL_ENABLED:
-            self.sahte = SahteKinematik(tip, center['lat'], center['lon'], center.get('alt'), world.get('wind_ms'), self.launch, kalkis_yonu(tip, self.launch, world) if tip == 'sabit_kanat' else world.get('runway_heading'),
+            ev = self.ev_konumu()
+            self.sahte = SahteKinematik(tip, ev['lat'], ev['lon'], center.get('alt'), world.get('wind_ms'), self.launch, ev['yaw'] if ev['yaw'] is not None else (kalkis_yonu(tip, self.launch, world) if tip == 'sabit_kanat' else world.get('runway_heading')),
                                         world.get('wind_dir'), world.get('wind_gust'), world.get('wind_turb'), drive=self.drive)
         d = _dialect()
         self.mav = d.MAVLink(None, srcSystem=GCS_SYSID, srcComponent=GCS_COMP)   # kodlayıcı
@@ -1057,7 +1067,8 @@ class SimSession:
         self._heartbeat_alindi = False
         self.param_types = {}
         alt0 = float(center.get('alt') or 0)
-        self.tele = {'lat': float(center['lat']), 'lon': float(center['lon']), 'alt_msl': alt0, 'alt_rel': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0,
+        ev0 = self.ev_konumu()
+        self.tele = {'lat': ev0['lat'], 'lon': ev0['lon'], 'alt_msl': alt0, 'alt_rel': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0,
                      'rs': 0.0, 'ps': 0.0, 'ys': 0.0, 'tbm': 0, 'tbm_pos': 0,
                      'vn': 0.0, 've': 0.0, 'vd': 0.0, 'airspeed': 0.0, 'groundspeed': 0.0, 'heading': 0.0, 'climb': 0.0, 'mode': None, 'armed': False,
                      'gps_fix': 0, 'sats': 0, 'batt_v': None, 'batt_pct': None, 'throttle': 0.0, 'rc': [0] * 8, 'home': None,
@@ -1071,6 +1082,12 @@ class SimSession:
         self._akis_son = 0.0             # son akış isteği
         self._smi_red = False            # SET_MESSAGE_INTERVAL reddedildi → akış bazlı REQUEST_DATA_STREAM
         self.att_sayac = 0               # SITL'den gelen ATTITUDE sayısı (akış hızı ölçümü)
+
+    def ev_konumu(self):
+        """SITL ev konumu: §33 karşılaşmada oyuncunun başlangıç noktası (yaw: burun yönü), aksi hâlde merkez (yaw None → tipin kalkış yönü)."""
+        if self.start:
+            return {'lat': float(self.start['lat']), 'lon': float(self.start['lon']), 'yaw': self.start.get('yaw_deg')}
+        return {'lat': float(self.center['lat']), 'lon': float(self.center['lon']), 'yaw': None}
 
     # ---- dışa görünüm ----
     def to_dict(self, host=None):
@@ -1105,7 +1122,8 @@ class SimSession:
                 'servo_trigger': self.servo_tetik.durum(),   # §34 servo tetik durumu (kanal işlevleri, dron kaydı önerisi)
                 # §26 yer kontrol merkezi (yerleşimiyle) + "Yer kontrolünü koru" görevi (yapılandırma, deterministik plan, anlık durum)
                 'site': {**self.gcs, 'layout': self.gcs_yer} if self.gcs else None,   # ('gcs' anahtarı Mission Planner bağlantısıdır)
-                'defend': self.savunma_dict()}
+                'defend': self.savunma_dict(),
+                'match_id': self.match_id, 'start': dict(self.start) if self.start else None}   # §33 karşılaşma bağı + başlangıç noktası
 
     def savunma_dict(self):
         if self.savunma is None:
@@ -1215,9 +1233,10 @@ class SimSession:
             self._olay(f'SITL başlatılıyor ({TIP_ADLARI.get(self.type, self.type)}) · {c.get("name") or ""}', 6)
             await self._kayitli_oku()
             sitl_model = self._sitl_modeli()   # sabit kanat: plane[-elevon|-vtail][-catapult] (düzen §13.1 + rampa §13); diğer tipler None (TIP_ESLEME)
-            port, err = await ex(None, lambda: drone_sitl.YONETICI.baslat(self.kimlik, self.type, c['lat'], c['lon'], sysid=1,
+            ev = self.ev_konumu()   # §33: karşılaşmada oyuncunun başlangıç noktası (aynı dünya, farklı ev)
+            port, err = await ex(None, lambda: drone_sitl.YONETICI.baslat(self.kimlik, self.type, ev['lat'], ev['lon'], sysid=1,
                                                                           irtifa=c.get('alt') or EV_IRTIFA, konsol=self._konsol, model=sitl_model,
-                                                                          yon=kalkis_yonu(self.type, self.launch, self.world),   # §31: uçak burnu kalkış yönünde (rampa azimutu / pist)
+                                                                          yon=ev['yaw'] if ev['yaw'] is not None else kalkis_yonu(self.type, self.launch, self.world),   # §31: uçak burnu kalkış yönünde (rampa azimutu / pist)
                                                                           log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type, **self.montaj_arg)
                                                                           + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]], temiz=True))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir)
             if port and self.rec['bin']:
@@ -1950,6 +1969,11 @@ class SimSession:
         `ts` sunucu alım zamanı (Unix sn), `tbm` SITL time_boot_ms (sahte: oturum ms)."""
         self._guc_adim(tbm)   # §23: izleyici olmasa da yakıt/batarya simülasyon zamanıyla entegre edilir
         self.servo_tetik.adim(tbm)   # §34 servo tetik gecikmesi (simülasyon zamanı)
+        if self.tele_kanca is not None:   # §33 karşılaşma: halka geçişi / konum yayını (izleyiciden bağımsız)
+            try:
+                self.tele_kanca(self.tele)
+            except Exception:   # noqa: BLE001 — kanca hatası telemetriyi bozmasın
+                pass
         if not self.viewers or self.servo_tetik.donuk:   # §34 çarpmadan sonra 3B görüntü çarpma anında donar
             return
         now = time.time()
@@ -2135,6 +2159,7 @@ class SimSession:
         p = params if isinstance(params, dict) else {}
         if name not in KOMUTLAR:
             raise SimHata('invalid', f'Bilinmeyen komut: {name}')
+        self._kapi_denetle(name)   # §33 karşılaşma: yarış başlamadan ARM / kalkış yok
         if name in ('servo_trigger', 'servo_set'):   # §34 doğrulama + mantık flightsim_servotrig'de
             try:
                 return await self.servo_tetik.komut(name, p)
@@ -2262,6 +2287,15 @@ class SimSession:
             self._gonder(enc.rc_channels_override_encode(s, c, *p['ch']))
         return {'ok': True}
 
+    KAPI_KOMUTLARI = ('arm', 'takeoff')   # §33: yarış dışında kapalı (hub'da ayrıca mission_start)
+
+    def _kapi_denetle(self, name):
+        if self.komut_kapisi is None or name not in self.KAPI_KOMUTLARI + ('mission_start',):
+            return
+        hata = self.komut_kapisi(name)
+        if hata:
+            raise SimHata('invalid', hata)
+
     # ---- §14: harekât paneli (hub) komutları — drone_hub._dispatch → SimBridge.acommand → buraya ----
     async def hub_komut(self, name, params):
         """Hub komut sözleşmesi (drone_hub.CMD_NAMES): {'ok', 'result'} | {'ok': False, 'error'}. Gerçek SITL'de MavKomut (pymavlink + ACK),
@@ -2271,6 +2305,10 @@ class SimSession:
             return {'ok': True, 'result': {'sim': True}}
         if self.state != 'HAZIR':
             return {'ok': False, 'error': 'Oturum hazır değil (SITL açılıyor ya da hata)'}
+        try:
+            self._kapi_denetle(name)   # §33 karşılaşma
+        except SimHata as e:
+            return {'ok': False, 'error': str(e)}
         try:
             if name in ('arm', 'takeoff') and self.motor_cut and (self.sahte is not None or self._heartbeat_alindi):
                 self._motor_kes(False)   # panel / SIMUMAV ARM'ı da motoru geri verir (MOTOR_ESTOP açıkken ArduPlane ARM'ı reddeder)
@@ -2424,6 +2462,8 @@ class SimSession:
         if not serbest and now - self._rc_son < RC_HZ_MIN_ARALIK:
             return
         self._rc_son = now
+        if not serbest and self.komut_kapisi is not None and self.komut_kapisi('rc'):
+            return   # §33 karşılaşma: yarış başlamadan sanal kumanda (çubukla ARM: gaz alt + sapma sağ) iletilmez
         await self.komut('rc', {'ch': ch})
 
     async def reset(self):
@@ -2683,11 +2723,12 @@ class SimManager:
     def listele(self, host=None):
         return [s.to_dict(host) for s in self.sessions.values() if s.state != 'KAPANDI']
 
-    def acik_sayisi(self):
-        return len([s for s in self.sessions.values() if s.state != 'KAPANDI'])
+    def acik_sayisi(self, match=False):
+        """Açık oturum sayısı: match=False normal oturumlar (MAX_SESSIONS), True §33 karşılaşma oyuncu oturumları (MATCH_MAX_SESSIONS)."""
+        return len([s for s in self.sessions.values() if s.state != 'KAPANDI' and bool(getattr(s, 'match_id', None)) == bool(match)])
 
     async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None, targets=None,
-                 targets_katalog=None, site=None, defend=None, drive=None):
+                 targets_katalog=None, site=None, defend=None, drive=None, start=None, match_id=None):
         """Yeni oturum: doğrulama (400) → limit (409) → SITL ikilisi (503) → UDP port (503, oturum içinde HATA) → görev.
         `model`: flightsim_models.coz ile çözülmüş kütüphane nesnesi (router); yoksa `airframe` ile dahili model.
         `drone` (§14, isteğe bağlı): Dron Envanteri kaydı {id, code, name, model} — harekât panelinde telemetri bu adla akar.
@@ -2722,7 +2763,15 @@ class SimManager:
         if not center or center.get('lat') is None or center.get('lon') is None:
             raise SimHata('invalid', 'Merkez bulunamadı')
         world = world_dogrula(world)
-        if self.acik_sayisi() >= MAX_SESSIONS:
+        if start is not None:   # §33 karşılaşma başlangıç noktası {lat, lon, yaw_deg?}
+            try:
+                start = {'lat': float(start['lat']), 'lon': float(start['lon']), 'yaw_deg': None if start.get('yaw_deg') is None else float(start['yaw_deg']) % 360}
+            except (TypeError, ValueError, KeyError):
+                raise SimHata('invalid', 'start {lat, lon, yaw_deg?} olmalı')
+        if match_id is not None:
+            if self.acik_sayisi(match=True) >= MATCH_MAX_SESSIONS:
+                raise SimHata('limit', f'Karşılaşmalar için en fazla {MATCH_MAX_SESSIONS} eşzamanlı simülatör')
+        elif self.acik_sayisi() >= MAX_SESSIONS:
             raise SimHata('limit', f'En fazla {MAX_SESSIONS} açık oturum')
         if SITL_ENABLED and not drone_sitl.ikili_yolu(tip).is_file():
             loop = asyncio.get_running_loop()
@@ -2753,7 +2802,7 @@ class SimManager:
         self._next += 1
         s = SimSession(sid, tip, {'id': center.get('id'), 'name': center.get('name'), 'lat': float(center['lat']), 'lon': float(center['lon']),
                                   'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout, camera, targets,
-                       site, defend, drive)
+                       site, defend, drive, start=start, match_id=match_id)
         s.alt_not = alt_not
         self.sessions[sid] = s
         s.task = asyncio.get_running_loop().create_task(s.run())

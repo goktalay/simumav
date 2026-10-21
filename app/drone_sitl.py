@@ -299,6 +299,7 @@ class SitlYoneticisi:
         self._kilit = threading.Lock()
         self._surecler = {}
         self._bilgi = {}
+        self._ayrilan = set()   # açılışta olan (henüz _bilgi'ye yazılmamış) port blokları — eşzamanlı baslat aynı bloğu seçmesin (§33 karşılaşma)
 
     def calisiyor_mu(self, kimlik):
         with self._kilit:
@@ -326,10 +327,19 @@ class SitlYoneticisi:
             return None, hata
         model = model or TIP_ESLEME.get(tip, TIP_ESLEME['multirotor'])[1]
         with self._kilit:
-            mesgul = {(v or {}).get('port') for v in self._bilgi.values()}
-        port = bos_taban_port(SANAL_PORT_BASI, kullanilan=mesgul)   # Tuzak B
+            mesgul = {(v or {}).get('port') for v in self._bilgi.values()} | self._ayrilan
+            port = bos_taban_port(SANAL_PORT_BASI, kullanilan=mesgul)   # Tuzak B
+            if port is not None:
+                self._ayrilan.add(port)
         if port is None:
             return None, 'Boş SITL port bloğu bulunamadı. Çalışan sanal dronları durdurup yeniden deneyin.'
+        try:
+            return self._baslat_port(kimlik, tip, lat, lon, sysid, irtifa, konsol, model, log_bin, ekstra_parm, temiz, yon, yol, port)
+        finally:
+            with self._kilit:
+                self._ayrilan.discard(port)
+
+    def _baslat_port(self, kimlik, tip, lat, lon, sysid, irtifa, konsol, model, log_bin, ekstra_parm, temiz, yon, yol, port):
         dizin = CALISMA_KOKU / str(kimlik)   # Tuzak E
         try:
             dizin.mkdir(parents=True, exist_ok=True)

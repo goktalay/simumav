@@ -2875,6 +2875,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     eoWheel, eoPinch, eoDrag, eoFollow,   // EO elle kumanda: tekerlek/sıkıştırma zoom, sürükle pan/tilt, takibe dön
     siteStats: () => ({ underlay: rvUnder.state, aux: g3d ? g3d.auxCameras : null, radar: rv.renders, eo: ev.renders, icons: rv.icons.size, threats: tg.items.filter(x => x.it.dyn).length, built: tg.items.filter(x => x.it.dyn && x.root).length }),
     canvas,
+    three: T, scene, get homeAlt() { return opts.origin?.alt ?? null; },   // §33 karşılaşma katmanı (halkalar + diğer oyuncular; flightsim_match3d.js) aynı sahneye çizer
     addFrameHook: fn => { frameHooks.add(fn); return () => frameHooks.delete(fn); },   // §17: render sonrası kanca (kayıt birleşimi)
   };
 }

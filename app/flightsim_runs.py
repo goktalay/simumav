@@ -158,6 +158,7 @@ def _oturum_alanlari(s):
         'bin_log_id': bin_sonuc.get('log_id'), 'source_log_id': (getattr(s, 'replay', None) or {}).get('log_id') if mode == 'replay' else None,
         'video_rec_id': video.get('rec_id'), 'video_post_id': video.get('post_id'), 'video_path': video.get('path'),
         'preset_id': getattr(s, 'preset_id', None),   # §27 kayıtlı simülasyondan başlatıldıysa (serbest sihirbaz / kayıttan oynatma: NULL)
+        'match_id': getattr(s, 'match_id', None),     # §33 çok oyunculu karşılaşmanın oyuncu oturumu
     }
 
 
@@ -173,8 +174,9 @@ def kaydet(s):
             a['video_rec_id'] = m.get('id')
             a['video_post_id'] = m.get('post_id')
     satirlar = param_satirlari(s) if a['mode'] == 'sitl' else []
-    if a.get('preset_id') is None:   # §27: yalnız kayıtlı simülasyonda yazılır (SIMUMAV çekirdek DB'sinde sütun olmayabilir — INSERT düşmesin)
-        a.pop('preset_id', None)
+    for k in ('preset_id', 'match_id'):   # §27 / §33: yalnız doluysa yazılır (SIMUMAV çekirdek DB'sinde sütun olmayabilir — INSERT düşmesin)
+        if a.get(k) is None:
+            a.pop(k, None)
     kols = list(a.keys())
     with db.connect() as conn:
         cur = conn.execute(f"INSERT INTO drone_sim_runs ({', '.join(kols)}, created_at) VALUES ({', '.join('?' * len(kols))}, ?)",
