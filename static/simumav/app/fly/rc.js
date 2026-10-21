@@ -26,7 +26,9 @@ export const ROVER_RC_KEYS = { thrUp: ['w', 'arrowup'], thrDown: ['s', 'arrowdow
 // Kara aracı (`rover`: true ya da {channels}): sol çubuk DİKEY = gaz (yaylı; bırakınca 1500 = dur, aşağı geri/fren), sağ çubuk YATAY = direksiyon (yaylı);
 // klavye W/S ya da ↑/↓ gaz, A/D ya da ←/→ direksiyon, Boşluk dur (gaz + direksiyon orta); kanallar rover.channels({steer, thr, ch5}) (roverRcChannels).
 // ======================================================================
-export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, env = null, shape = null, rover = null }) {
+// HEPGO §37 pad(): fiziksel kumanda durumu {active, axes} (/sim/flightsim_gamepad.js) — aktifken çubuk eksenlerini yazar; lazyThr: varsayılan açık gelişte
+// kopterde ch3 ilk gaz girdisine dek 0 (dokunma).
+export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, env = null, shape = null, rover = null, pad = null, lazyThr = false }) {
   const win = env?.window || globalThis.window, doc = env?.document || globalThis.document;
   const nowMs = env?.now || (() => performance.now());
   const setIv = env?.setInterval || ((fn, ms) => setInterval(fn, ms)), clearIv = env?.clearInterval || (id => clearInterval(id));
@@ -41,7 +43,8 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
   const KEY_RATE = 3.5, SPRING = 9, THR_RATE = 0.7;
   const editable = el => el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
   const S = (k, v) => (shape ? shape(k, v) : v);
-  const channels = () => (isRv ? rvCh({ steer: S('roll', ax.steer), thr: S('thr', ax.thr), ch5 }) : channelsOf(ax, ch5, shape));
+  let thrUsed = !(lazyThr && !plane && !isRv);
+  const channels = () => { if (isRv) return rvCh({ steer: S('roll', ax.steer), thr: S('thr', ax.thr), ch5 }); const c = channelsOf(ax, ch5, shape); if (!thrUsed) c[2] = 0; return c; };
 
   // --- klavye ---
   const onKeyDown = e => {
@@ -50,7 +53,8 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
     if (!RC_KEYS.has(k)) return;
     e.preventDefault?.();
     if (e.repeat) return;
-    if (k === ' ') { ax.thr = 0; if (isRv) ax.steer = 0; return; }
+    if (k === ' ') { ax.thr = 0; thrUsed = true; if (isRv) ax.steer = 0; return; }
+    if (k === 'w' || k === 's') thrUsed = true;
     if (k === 'q' || k === 'e') { ch5 = clamp(ch5 + (k === 'e' ? 500 : -500), 1000, 2000); return; }
     keys.add(k);
   };
@@ -72,7 +76,7 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
       if (!d || e.pointerId !== d.id) return;
       const x = clamp((e.clientX - d.cx) / d.r, -1, 1), y = clamp(-(e.clientY - d.cy) / d.r, -1, 1);
       if (isRv) { if (side === 'l') ax.thr = y; else ax.steer = x; return; }   // kara aracı: sol dikey gaz, sağ yatay direksiyon
-      if (side === 'l') { ax.yaw = x; ax.thr = y; } else { ax.roll = x; ax.pitch = y; }
+      if (side === 'l') { ax.yaw = x; ax.thr = y; thrUsed = true; } else { ax.roll = x; ax.pitch = y; }
     };
     const up = e => { if (drag[side] && e.pointerId === drag[side].id) { drag[side] = null; el.classList.remove('on'); } };
     el.addEventListener('pointerdown', down); el.addEventListener('pointermove', move);
@@ -103,6 +107,16 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
       if (plane) { if (t) ax.thr = clamp(ax.thr + t * THR_RATE * dt, -1, 1); }   // tutmalı gaz
       else spring('thr', t);                                                     // askıya yaylı
     }
+    const ps = pad?.();   // HEPGO §37 fiziksel kumanda (dokunulan sanal çubuk o tarafta öncelikli)
+    if (ps?.active) {
+      const a = ps.axes, set = (k, v) => { if (v != null) ax[k] = clamp(v, -1, 1); };
+      if (!drag.l) {
+        if (plane && !isRv && ps.profile === 'standard') { if (a.thr) ax.thr = clamp(ax.thr + a.thr * THR_RATE * dt, -1, 1); }   // yaylı gamepad kolu: uçakta tutmalı gaz hızla
+        else set('thr', a.thr);
+        if (!isRv) set('yaw', a.yaw); if (a.thr) thrUsed = true;
+      }
+      if (!drag.r) { if (isRv) set('steer', a.roll); else { set('roll', a.roll); set('pitch', a.pitch); } }
+    }
     draw();
     const ch = channels();
     send(ch);
@@ -113,6 +127,7 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
   draw();
   return {
     channels, tick, axes: ax,
+    bumpCh5(d) { ch5 = clamp(ch5 + (d > 0 ? 500 : -500), 1000, 2000); },   // HEPGO §37 kumanda düğmesi
     dispose() {
       if (disposed) return;
       disposed = true;

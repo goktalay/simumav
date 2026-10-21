@@ -25,6 +25,9 @@ export const CAM_TEXT_KEYS = {
   'Boyut: küçük / orta / büyük': 'camera.pip_size', 'Ana görünümle yer değiştir (çift tık)': 'camera.pip_swap', 'PiP\'i gizle (V)': 'camera.pip_hide', 'Boyutlandır': 'camera.pip_resize',
   'Kamera PiP: sürükleyin, çift tıklayınca gimbal kamerası ana görünüme geçer': 'camera.pip_aria',
   'Sürükle: taşı · çift tık: gimbal kamerası ana görünüme · tekerlek: yakınlaştırma': 'camera.pip_title',
+  // alt bant görünüm açılır listesi (görünüm + kamera türü TEK kapsül)
+  Takip: 'camera.view_follow', FPV: 'camera.view_pilot', 'Gimbal kamerası': 'camera.view_gimbal', Serbest: 'camera.view_free', Yer: 'camera.view_ground',
+  'Görünüm': 'camera.view', 'Görünüm (1–5 · C)': 'camera.view_title', '1–5: görünüm · C: sıradaki görünüm': 'camera.view_keys', '{label} (tuş {n})': 'camera.view_key',
 };
 // tr sarmalayıcısı: eşlenen metin anahtardan çevrilir; sözlükte yoksa (anahtarın kendisi döner) Türkçe metin
 export const camTr = tr => (s, p) => { const k = CAM_TEXT_KEYS[s]; if (!k) return tr(s, p); const r = tr(k, p); return r && r !== k ? r : tr(s, p); };

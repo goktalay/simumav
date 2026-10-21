@@ -168,6 +168,33 @@ html:not([data-theme="dark"]) .fs-stage .fs-gauges[data-gtheme="glass"]:not(.sm-
 .fs-stage .fs-gauges[data-gtheme="glass"] .fs-gauge-badge{top:-9px}
 .fs-stage .fs-gauges[data-gtheme="glass"].no-fuel::before{margin:0 6px 30px 0}
 @keyframes fs-gl-warn{50%{box-shadow:0 0 0 2px rgba(239,68,68,.55),0 8px 20px rgba(0,0,0,.35)}}
+/* ---------- §38 sanal / fiziksel kumanda açıkken (.fs-stage.rc-on): kadranlar yerine alt ortada ince yatay ilerleme çubukları (etiket · doluluk · değer),
+   çubukların arasına sığar; seçili temanın renkleri (cam kokpit --gl-*, diğerleri --fsg-*); "Göstergesiz" temada hiç görünmez. Kumanda kapanınca kadranlar döner. */
+.fs-stage.rc-on .fs-gauges:not([hidden]){display:grid!important;grid-template-columns:1fr;gap:5px;left:50%!important;right:auto!important;bottom:104px!important;transform:translateX(-50%)!important;
+  width:min(300px,calc(100% - 24px));padding:7px 11px 8px;border-radius:12px;align-items:stretch;justify-items:stretch;
+  background:var(--gl-bg,color-mix(in srgb,var(--fsg-face,#111827) 84%,transparent));border:1px solid var(--gl-bd,var(--fsg-edge,rgba(255,255,255,.18)));
+  box-shadow:0 8px 22px rgba(0,0,0,.35);backdrop-filter:blur(5px);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+.fs-stage.rc-on .fs-gauges[data-gtheme="none"]{display:none!important}
+.fs-stage.rc-on .fs-gauges.no-fuel::before,.fs-stage.rc-on .fs-gauges>.fs-gt-restore{display:none!important}
+.fs-stage.rc-on .fs-gauges>.fs-gauge{display:grid;grid-template-columns:62px 1fr 74px;align-items:center;gap:8px;width:auto!important;height:auto;padding:0!important;margin:0!important;order:0}
+.fs-stage.rc-on .fs-gauges>.fs-gauge[hidden]{display:none}
+.fs-stage.rc-on .fs-gauges>.fs-gauge[data-g="speed"]{order:-3}.fs-stage.rc-on .fs-gauges>.fs-gauge[data-g="engine"]{order:-2}
+.fs-stage.rc-on .fs-gauge-dial{display:contents!important}
+.fs-stage.rc-on .fs-gauge-dial>svg,.fs-stage.rc-on .fs-gauge-ico,.fs-stage.rc-on .fs-gauge-sub,.fs-stage.rc-on .fs-gauge-badge{display:none!important}
+.fs-stage.rc-on .fs-gauge-lbl{order:1;position:static!important;margin:0!important;font-size:9.5px;letter-spacing:.12em;text-align:left;color:var(--gl-lbl,var(--fsg-unit,#9ba4b5));text-shadow:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fs-stage.rc-on .fs-gauge-bar{order:2;display:block!important;position:relative!important;inset:auto!important;height:6px;border-radius:3px;background:var(--gl-track,color-mix(in srgb,var(--fsg-tick,#9aa2b1) 30%,transparent));overflow:hidden}
+.fs-stage.rc-on .fs-gauge-bar i{display:block;height:100%;width:calc(var(--f,0) * 100%);border-radius:3px;background:var(--gl-ok,var(--fsg-needle,#38bdf8));transition:width .25s ease-out,background .3s}
+.fs-stage.rc-on .fs-gauge[data-g="speed"] .fs-gauge-bar i,.fs-stage.rc-on .fs-gauge[data-g="engine"] .fs-gauge-bar i{background:var(--gl-ok,var(--fsg-blue,#2f8fe0))}
+.fs-stage.rc-on .fs-gauges[data-gtheme="glass"] .fs-gauge[data-g="speed"] .fs-gauge-bar i,.fs-stage.rc-on .fs-gauges[data-gtheme="glass"] .fs-gauge[data-g="engine"] .fs-gauge-bar i{background:linear-gradient(90deg,#0ea5e9,#22d3ee)}
+.fs-stage.rc-on .fs-gauges[data-gtheme="military"] .fs-gauge-bar i{background:var(--fsg-needle,#a9f06a);box-shadow:0 0 6px rgba(169,240,106,.6)}
+.fs-stage.rc-on .fs-gauge[data-level="low"] .fs-gauge-bar i{background:#f59e0b}
+.fs-stage.rc-on .fs-gauge[data-level="crit"] .fs-gauge-bar i,.fs-stage.rc-on .fs-gauge[data-level="empty"] .fs-gauge-bar i,.fs-stage.rc-on .fs-gauge.warn .fs-gauge-bar i{background:var(--fsg-red,#ef4444)}
+.fs-stage.rc-on .fs-gauge-digits{order:3;position:static!important;inset:auto!important;transform:none!important;display:flex!important;flex-direction:row!important;align-items:baseline!important;justify-content:flex-end!important;gap:3px;line-height:1}
+.fs-stage.rc-on .fs-gauge-main,.fs-stage.rc-on .fs-gauge.big .fs-gauge-main{font-size:13px!important;font-weight:800;color:var(--gl-val,var(--fsg-digit,#fff));text-shadow:none}
+.fs-stage.rc-on .fs-gauge-unit{order:0!important;margin:0!important;font-size:9.5px!important;color:var(--gl-unit,var(--fsg-unit,#9ba4b5))}
+.fs-stage.rc-on .fs-gauges .fs-power-pop{bottom:calc(100% + 8px)}
+@media (max-width:1180px){.fs-stage.rc-on .fs-stick[data-side="l"]{left:12px}.fs-stage.rc-on .fs-stick[data-side="r"]{right:12px}}
+@media (max-width:600px){.fs-stage.rc-on .fs-gauges:not([hidden]){bottom:232px!important;width:min(300px,calc(100% - 24px))}}
 /* ---------- uçuş içi seçici (kadran ayrıntı kutusu) + sihirbaz kartları ---------- */
 .fs-gt-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border,rgba(127,140,160,.25))}
 .fs-gt-row > span{font-size:10px;font-weight:700;letter-spacing:.12em;color:var(--muted,#94a3b8);margin-right:4px;text-transform:uppercase}

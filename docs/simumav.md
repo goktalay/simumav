@@ -653,8 +653,11 @@ doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
   Görsel: `tests/rover_shots_simumav.py` → `/tmp/rover-shots/simumav-*.png`.
 
 ## 16. Servo tetik — HEPGO docs/ucus-simulatoru.md §34'ün SIMUMAV karşılığı (`fly/session.js`, ortak `flightsim_servotrig.js`, çekirdek `app/flightsim_servotrig.py`)
-- `loadSim` listesinde `flightsim_servotrig.js` (`MSrv`): alt bantta mod seçicinin solunda `SERVO` grubu (kanal S1–S16 · koşul · PWM µs · gecikme ms ·
-  **Dinle**; canlı PWM + yanıp sönen nokta). Metinler `srv.*` anahtarları (7 dil; `makeSrvT(tr, true)`), rapor kartı metinleri Türkçe anahtarla 7 dilde.
+- `loadSim` listesinde `flightsim_servotrig.js` (`MSrv`): alt bantta mod seçicinin solunda TEK servo simgeli **Dinle** düğmesi; basınca yukarı açılan
+  panel (kanal S1–S16 · koşul · PWM µs · gecikme ms · canlı PWM · Dinlemeye başla / Dinlemeyi durdur); dinlerken düğme kırmızı yanıp söner
+  ("Dinleniyor"), Esc / dışarı tıklama kapatır (HEPGO §34, §36). Metinler `srv.*` anahtarları (7 dil; `makeSrvT(tr, true)`), rapor kartı metinleri Türkçe anahtarla 7 dilde.
+- Alt bant kapsülleri (HEPGO §36, `fly/session.js`): görünüm + kamera türü TEK kapsül (`createCameraCtl({views: M3D.CAMERA_MODES})`; görünüm adları
+  `camera.view_*` 7 dil, `camTr`), Panel + ses TEK kapsül (`.fs-ops-snd`). Görsel: `tests.fltbar_shots_simumav`.
 - Komut çekirdeğe WS `cmd servo_trigger` ile gider (`SIM_KOMUT = KOMUTLAR`; `guvenlik_komut` engel koymaz). Tetik/gecikme/çarpma çekirdekte; WS
   `servo_trigger fired` → 2,5 sn sonra `endFlight({auto: true})` (onaysız) → `/api/fly/{id}/stop` → uçuş özeti (`MReport.reportBody` "⚡ Servo tetik"
   kartı). Oyuncu sekmeyi kapatırsa çekirdek 5 sn sonra kendisi kapatır (`end_reason servo_trigger`; `bridge._sonuc` → `crash`).
@@ -778,3 +781,11 @@ anlık görüntüde adları durur); `snapshot.match = {id, start}`.
 - `node tests/test_simumav_match.mjs` (match_core.js + `createWizard({match:true})` + 7 dil anahtar/yer tutucu denetimi).
 - Görsel: `.venv/bin/python -m tests.simumav_match_e2e` → `/tmp/smmatch-shots/` (seçim ekranı, kurucu halkalar / davet-şifre, salon bağlantı+şifre,
   oturumsuz davet → giriş, davetli şifre ekranı + yanlış şifre, salon hazır, hazırlık bekleme, yarış HUD'u (iki taraf), sonuç (iki taraf), salonda sonuç).
+
+## 19. Alt bant kapsülleri, sanal kumanda varsayılan açık, fiziksel kumanda, kumandada çubuk göstergeler, mobil menü — HEPGO docs/ucus-simulatoru.md §36–§39'un SIMUMAV karşılığı
+- `fly/session.js` `loadSim` listesinde `flightsim_gamepad.js` (`MPad`): bağlanan gamepad / USB RC verici sanal kumandanın RC yoluna (`rc.js virtualRC`
+  `pad`, `lazyThr`, `bumpCh5`) beslenir; alt bantta Kumanda simgesi + eşleme paneli; metinler `pad.*` (7 dil). Sanal kumanda varsayılan açık
+  (`sm.rcOn`; kullanıcı kapatırsa hatırlanır). Ayrıntılar HEPGO §37.
+- Kumanda açıkken kadranlar alt ortada ince ilerleme çubukları (HEPGO §38; `power.css` kadranları üzerine `flightsim_gtheme.js` CSS'i). Mobilde
+  (`flightsim_mobile.js`, `MMob`; HEPGO §39) üst şerit + alt bant ☰ menüsünde; `mob.*` 7 dil.
+

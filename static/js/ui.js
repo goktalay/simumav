@@ -203,6 +203,11 @@ export function avatar(user, size = '') {
 }
 
 // Yükleme çubuğu + iptal düğmesi. start() → AbortController sinyali (yükleme fonksiyonuna verilir).
+// Uçuş logu dosya seçici `accept` değeri. iPhone/iPad Safari uzantıları sistem türlerine (UTI) çevirir; .bin/.log/.tlog gibi tanımadığı
+// uzantılarda dosyalar seçilemez (soluk görünür) → iOS'ta kısıt konmaz (sunucu uzantıyı ve .tlog içeriğini zaten doğrular).
+export const FLIGHT_LOG_ACCEPT = (/iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+  ? undefined : '.bin,.BIN,.log,.LOG,.tlog,.TLOG';
+
 export function uploadPanel() {
   let ctl = null;
   const bar = h('div', { class: 'grow' });

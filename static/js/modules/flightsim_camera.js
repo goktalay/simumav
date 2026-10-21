@@ -370,15 +370,55 @@ export function createCameraPip(mount, opts = {}) {
   };
 }
 
-// Alt çubuk denetimi "📷 Tür ▾": menüde tür (3), termal paleti (3), PiP aç/kapa + boyut, ipucu. Kısayollar (pencere): T tür döngüsü · Shift+T palet ·
-// V PiP. opts: { getSim, tr, prefs, pip (createCameraPip) | getPip(), onType?(type), onPalette?(p) }. Dönüş: { el, sync, setType, dispose }
+// Alt bant kapsülleri (HEPGO + SIMUMAV ortak; JS ile enjekte): görünüm + kamera türü TEK kapsül (.fs-cam-ctl: "Takip ▾" | "📷 Kamera yok ▾"),
+// Panel + ses TEK kapsül (.fs-ops-snd: "Panel" | 🔊 ▾). İç içe kapsül (ses / kamera .pill-group) dış kapsülün içinde çerçevesiz görünür.
+const BAR_CSS = `
+.fs-bar .fs-cam-ctl,.fs-bar .fs-ops-snd{display:inline-flex;align-items:center;gap:2px;position:relative}
+.fs-bar .fs-ops-snd>.pill-group,.fs-bar .fs-cam-ctl>.pill-group{background:transparent;border:0;padding:0;box-shadow:none}
+.fs-bar .fs-ops-snd>.fs-ops-btn+*,.fs-bar .fs-cam-ctl>.fs-view-btn+.fs-cam-btn{margin-left:2px;position:relative}
+.fs-bar .fs-ops-snd>.fs-ops-btn+*::before,.fs-bar .fs-cam-ctl>.fs-view-btn+.fs-cam-btn::before{content:'';position:absolute;left:-3px;top:7px;bottom:7px;width:1px;background:rgba(255,255,255,.18)}
+.fs-view-btn{display:inline-flex;align-items:center;gap:5px;font-weight:700;white-space:nowrap}
+.fs-view-btn .fs-view-ico{display:inline-flex;opacity:.85}
+.fs-view-btn kbd,.fs-view-item kbd{font:700 10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;padding:2px 5px;border-radius:5px;background:rgba(255,255,255,.14);color:inherit;border:0}
+.fs-view-btn kbd{background:rgba(255,255,255,.2)}
+.fs-view-menu{min-width:250px;gap:3px}
+.fs-view-item>span{white-space:nowrap}
+.fs-view-item{display:flex;align-items:center;gap:9px;width:100%;height:32px;padding:0 10px;border:0;border-radius:8px;background:transparent;color:inherit;font:600 13px/1 system-ui,sans-serif;text-align:left;cursor:pointer}
+.fs-view-item:hover:not(:disabled),.fs-view-item:focus-visible{background:rgba(255,255,255,.1);outline:none}
+.fs-view-item.on{background:var(--primary,#1f6feb);color:#fff}
+.fs-view-item.on kbd{background:rgba(255,255,255,.25)}
+.fs-view-item:disabled{opacity:.42;cursor:not-allowed}
+.fs-view-item small{margin-left:auto;font-size:10.5px;opacity:.8;font-weight:600}
+.fs-view-item[hidden]{display:none}
+.fs-bar:has(.fs-view-menu:not([hidden])),.fs-bar:has(.fs-ops-snd .fs-audio-menu:not([hidden])){z-index:9}
+@media (max-width:1100px){.fs-bar .fs-cam-btn .fs-cam-lbl{max-width:7.5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+@media (max-width:760px){.fs-view-btn kbd{display:none}}
+`;
+export function ensureBarCss() {
+  if (typeof document === 'undefined' || document.getElementById('fs-bar-css')) return;
+  const s = document.createElement('style'); s.id = 'fs-bar-css'; s.textContent = BAR_CSS; document.head.appendChild(s);
+}
+const VIEW_ICON_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></svg>';
+/** Görünüm listesinde seçeneğin durumu: §35 kamera yokken gimbal kamerası ('fpv') devre dışı. */
+export const viewDisabled = (mode, camType) => mode === 'fpv' && isNoCam(camType);
+/** Görünüm düğmesi metni: aktif görünümün adı (tanınmazsa ilk görünüm). */
+export const viewLabel = (views, mode) => ((views || []).find(([k]) => k === mode) || (views || [])[0] || [null, ''])[1];
+
+// Alt çubuk denetimi — TEK kapsül: [görünüm "Takip ▾"] + [kamera türü "📷 Tür ▾"]. Görünüm menüsü: Takip / FPV / Gimbal kamerası / Serbest / Yer
+// (opts.views = CAMERA_MODES; kısayollar 1–5 ve C 3B modülünde, metin setView ile güncellenir; kamera yokken gimbal devre dışı). Kamera menüsünde tür (3 + yok),
+// termal paleti (3), PiP aç/kapa + boyut, ipucu. Kısayollar (pencere): T tür döngüsü · Shift+T palet · V PiP.
+// opts: { getSim, tr, prefs, pip (createCameraPip) | getPip(), onType?(type), onPalette?(p), views?, view?, onView?(mode) }.
+// Dönüş: { el, sync, setType, setPalette, setView, dispose }
 export function createCameraCtl(opts = {}) {
+  ensureBarCss();
   const tr = opts.tr || (s => s), prefs = opts.prefs || createCamPrefs();
   const getSim = () => opts.getSim?.() || null;
   const P = () => opts.getPip?.() || opts.pip || null;   // PiP sonradan kurulabilir (getPip)
+  const views = Array.isArray(opts.views) && opts.views.length ? opts.views : null;
+  let view = views ? (opts.view || views[0][0]) : null;
   const lbl = el('span', { class: 'fs-cam-lbl' });
   const ico = el('span', { class: 'fs-cam-ico', 'aria-hidden': 'true' }); ico.innerHTML = CAM_ICON_SVG;
-  const mainBtn = el('button', { class: 'btn sm fs-cam-btn', type: 'button', title: tr('Kamera türü (T) · termal paleti (Shift+T) · PiP (V)'), onclick: () => { menu.hidden = !menu.hidden; sync(); } }, ico, lbl, ' ▾');
+  const mainBtn = el('button', { class: 'btn sm fs-cam-btn', type: 'button', title: tr('Kamera türü (T) · termal paleti (Shift+T) · PiP (V)'), 'aria-haspopup': 'menu', onclick: () => { menu.hidden = !menu.hidden; if (viewMenu) viewMenu.hidden = true; sync(); } }, ico, lbl, ' ▾');
   const typeBtns = CAMERA_CHOICES.map(([k, name]) => el('button', { class: 'btn sm', type: 'button', 'data-camtype': k, onclick: () => setType(k) }, tr(name)));
   const palBtns = THERMAL_PALETTES.map(([k, name]) => el('button', { class: 'btn sm', type: 'button', 'data-pal': k, onclick: () => setPalette(k) }, tr(name)));
   const palRow = el('div', { class: 'fs-cam-row' }, el('span', { class: 'small' }, tr('Palet')), el('div', { class: 'pill-group' }, palBtns));
@@ -390,8 +430,19 @@ export function createCameraCtl(opts = {}) {
     el('div', { class: 'fs-cam-row' }, el('label', { class: 'fs-audio-row fs-fpv-row' }, pipInp, el('span', null, tr('Kamera PiP'))), el('div', { class: 'pill-group' }, sizeBtns)),
     el('div', { class: 'small muted fs-cam-note' }, tr('Tür gimbal ve FPV kameralarına ve PiP\'e uygulanır; takip, serbest ve yer kameraları gündüz kalır.')),
     el('div', { class: 'small muted' }, tr('T: tür · Shift+T: palet · V: PiP · PiP\'e çift tık: gimbal')));
-  const wrap = el('span', { class: 'fs-audio pill-group fs-cam-ctl' }, mainBtn, menu);
-  const onDoc = e => { if (!menu.hidden && !wrap.contains(e.target)) menu.hidden = true; };
+  // görünüm seçici (açılır liste): düğmede aktif görünümün adı
+  const viewKey = views ? el('kbd', null, '1') : null;
+  const viewLbl = views ? el('span', { class: 'fs-view-lbl' }) : null;
+  const viewIco = views ? el('span', { class: 'fs-view-ico', 'aria-hidden': 'true' }) : null;
+  if (viewIco) viewIco.innerHTML = VIEW_ICON_SVG;
+  const viewItems = views ? views.map(([k, name], i) => el('button', { class: 'fs-view-item', type: 'button', role: 'menuitemradio', 'data-cam': k, 'aria-checked': 'false', title: tr('{label} (tuş {n})', { label: tr(name), n: i + 1 }),
+    onclick: e => { e.stopPropagation(); if (e.currentTarget.disabled) return; viewMenu.hidden = true; opts.onView?.(k); } }, el('kbd', null, String(i + 1)), el('span', null, tr(name)), k === 'fpv' ? el('small', { class: 'fs-view-nocam' }) : null)) : [];
+  const viewMenu = views ? el('div', { class: 'fs-audio-menu fs-view-menu', role: 'menu', hidden: true }, el('div', { class: 'fs-cam-h' }, tr('Görünüm')), viewItems,
+    el('div', { class: 'small muted' }, tr('1–5: görünüm · C: sıradaki görünüm'))) : null;
+  const viewBtn = views ? el('button', { class: 'btn sm fs-view-btn', type: 'button', title: tr('Görünüm (1–5 · C)'), 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    onclick: () => { viewMenu.hidden = !viewMenu.hidden; menu.hidden = true; sync(); if (!viewMenu.hidden) (viewItems.find(b => b.dataset.cam === view && !b.disabled) || viewItems.find(b => !b.disabled))?.focus(); } }, viewIco, viewKey, viewLbl, ' ▾') : null;
+  const wrap = el('span', { class: `fs-audio pill-group fs-cam-ctl${views ? ' fs-viewcam' : ''}` }, viewBtn, viewMenu, mainBtn, menu);
+  const onDoc = e => { if (wrap.contains(e.target)) return; if (!menu.hidden) menu.hidden = true; if (viewMenu && !viewMenu.hidden) { viewMenu.hidden = true; viewBtn.setAttribute('aria-expanded', 'false'); } };
   document.addEventListener('click', onDoc, true);
   function sync() {
     const sim = getSim(), t = sim?.getCamType?.() || prefs.type, p = sim?.getThermalPalette?.() || prefs.palette;
@@ -404,20 +455,40 @@ export function createCameraCtl(opts = {}) {
     const pr = pipRow(); if (pr) pr.hidden = isNoCam(t);   // §35 kamera yok: PiP satırı gizli
     sizeBtns.forEach(b => b.classList.toggle('primary', b.dataset.size === prefs.pip.size));
     mainBtn.classList.toggle('primary', t !== 'day' && !isNoCam(t));
+    if (views) {
+      const i = Math.max(0, views.findIndex(([k]) => k === view));
+      viewLbl.textContent = tr(viewLabel(views, view)); viewKey.textContent = String(i + 1);
+      wrap.dataset.view = view || '';
+      viewBtn.setAttribute('aria-expanded', viewMenu.hidden ? 'false' : 'true');
+      viewItems.forEach(b => {
+        const on = b.dataset.cam === view, off = viewDisabled(b.dataset.cam, t);
+        b.classList.toggle('on', on); b.setAttribute('aria-checked', on ? 'true' : 'false'); b.disabled = off;
+        const note = b.querySelector('.fs-view-nocam'); if (note) note.textContent = off ? tr('Kamera yok') : '';
+      });
+    }
   }
   function setType(t) { t = normCamChoice(t); getSim()?.setCamType?.(t); prefs.setType(t); opts.onType?.(t); P()?.layout?.(); P()?.redraw(); sync(); }
   function setPalette(p) { p = normPalette(p); getSim()?.setThermalPalette?.(p); prefs.setPalette(p); opts.onPalette?.(p); P()?.redraw(); sync(); }
+  function setView(m) { if (!views || !views.some(([k]) => k === m)) return; view = m; sync(); }
   const onKey = e => {
     if (e.ctrlKey || e.metaKey || e.altKey || editable(document.activeElement) || editable(e.target)) return;
     const k = e.key.toLowerCase();
     if (k === 't') { if (e.shiftKey) { if ((getSim()?.getCamType?.() || prefs.type) !== 'thermal') setType('thermal'); else setPalette(nextPalette(getSim()?.getThermalPalette?.() || prefs.palette)); } else setType(nextCamType(getSim()?.getCamType?.() || prefs.type)); e.preventDefault(); }
     else if (k === 'v' && !e.shiftKey) { if (isNoCam(getSim()?.getCamType?.() || prefs.type)) return; P()?.toggle(); sync(); e.preventDefault(); }
   };
-  const onEsc = e => { if (e.key === 'Escape' && !menu.hidden) { menu.hidden = true; e.preventDefault(); } };   // açık menü: Esc yalnız menüyü kapatır (oturumdan çıkmaz; yakalama evresi)
+  const onEsc = e => {   // açık menü: Esc yalnız menüyü kapatır (oturumdan çıkmaz; yakalama evresi); görünüm menüsünde ↑↓ gezinme
+    if (viewMenu && !viewMenu.hidden && /^Arrow(Up|Down)$/.test(e.key)) {
+      const arr = viewItems.filter(b => !b.disabled && !b.hidden), i = arr.indexOf(document.activeElement), step = e.key === 'ArrowDown' ? 1 : -1;
+      arr[(i + step + arr.length) % arr.length]?.focus(); e.preventDefault(); e.stopImmediatePropagation(); return;
+    }
+    if (e.key !== 'Escape') return;
+    if (!menu.hidden) { menu.hidden = true; e.preventDefault(); }
+    if (viewMenu && !viewMenu.hidden) { viewMenu.hidden = true; viewBtn.setAttribute('aria-expanded', 'false'); viewBtn.focus?.(); e.preventDefault(); }
+  };
   window.addEventListener('keydown', onKey);
   window.addEventListener('keydown', onEsc, true);
   sync();
-  return { el: wrap, sync, setType, setPalette, dispose() { window.removeEventListener('keydown', onKey); window.removeEventListener('keydown', onEsc, true); document.removeEventListener('click', onDoc, true); wrap.remove(); } };
+  return { el: wrap, sync, setType, setPalette, setView, get view() { return view; }, dispose() { window.removeEventListener('keydown', onKey); window.removeEventListener('keydown', onEsc, true); document.removeEventListener('click', onDoc, true); wrap.remove(); } };
 }
 
 // ---------------------------------------------------------------- önizleme (2B tuval, CPU) ----------------------------------------------------------------

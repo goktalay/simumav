@@ -128,7 +128,7 @@ export function createRecorder(stage, opts = {}) {
     badge.title = `${tr('Ekran kaydı')} · ${source === 'display' ? tr('ekran paylaşımı') : tr('3B + HUD tuvali')} · ${mime || '—'} · ${fmtBytes(total)}${pend > 0 ? ` (${tr('yükleniyor')} ${fmtBytes(pend)})` : ''}`;
   };
   (stage.querySelector('.fs-nav') || stage).append(badge);
-  const anchor = stage.querySelector('.fs-audio-btn')?.parentElement || stage.querySelector('.fs-ops-btn') || stage.querySelector('.fs-mhud-btn');
+  const anchor = stage.querySelector('.fs-ops-snd') || stage.querySelector('.fs-audio-btn')?.parentElement || stage.querySelector('.fs-ops-btn') || stage.querySelector('.fs-mhud-btn');   // Panel + ses kapsülünün ardına (kapsülün içine değil)
   if (anchor) anchor.after(toggleBtn); else (stage.querySelector('.fs-bar') || stage).append(toggleBtn);
   drawBtn();
 
