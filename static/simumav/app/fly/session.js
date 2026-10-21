@@ -31,7 +31,7 @@
 //   kipleri (/sim/flightsim_rover.js ROVER_MODES; fltbar modeKind 'rover'); sanal kumanda rover eşlemesi (sol dikey gaz yaylı 1500 = dur, sağ yatay direksiyon;
 //   kanallar roverRcChannels; metinler rover.rc_* anahtarları); hız kadranı yer hızı (80 / 20 km/h); sürüş biçimi rozeti.
 //   P/O/H/C tuşları HEPGO modüllerinin kendi dinleyicilerindedir (panel/OSD/HUD/3B) — burada yeniden bağlanmaz (çift tetikleme olurdu).
-import { clear, confirmDialog, fmtDateTime, fmtDuration, h, modal, toast, toastError, t as tr, onLeave } from './simui.js';
+import { clear, confirmDialog, fmtDateTime, fmtDuration, h, modal, pref, setPref, toast, toastError, t as tr, onLeave } from './simui.js';
 import { net, wsUrl } from './net.js';
 import { createScoreBadge, targetsReportCard } from './targets.js';   // HEPGO §24 hedefler: skor rozeti + rapor kartı
 import { DRIVE_SM, isRover, JET_AUDIO, TYPE_LABEL, WORLD_MODE_LABEL, audioTypeFor, iceptLaunchBody, iceptLaunchLabel, isIceptLaunch, launchBody, launchLabelSm, modelFor, needsLaunch, simType, speedAngle, speedScale, speedTicks, startCameraFor, worldFromTrack } from './wizard.js';
@@ -69,8 +69,8 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js', 'flightsim_rover.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js', 'flightsim_rover.js', 'flightsim_windui.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
 // HEPGO §27: INTERCEPTOR + fırlatıcı (pod4 | pod8 | tube | handheld) → {method, loaded? | aim_*?}; fırlatıcısız INTERCEPTOR → null (pad, eski davranış)
@@ -190,7 +190,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind } = await loadSim();
   MSiteRef = MSite;
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
   const drone = picked.drone || start.drone || { name: 'Dron', type: 'multirotor' }, track = picked.track || start.track || {}, pilot = picked.pilot || start.pilot || null, mission = picked.mission || start.mission || null;
@@ -325,6 +325,23 @@ export async function openSession(view, start, picked, ctx = {}) {
   gauges.el.classList.add('sm-game');   // oyun teması (power.css)
   const pwAlert = h('div', { class: 'sm-pw-alert', hidden: true, role: 'alert' }, h('b'), h('small'));
   stage.append(mount, msg, crash, events, sticks, bar, nav, ended, countdown, gauge.el, gauges.el, pwAlert, attrib, netLbl);
+  // HEPGO §31 rüzgâr göstergesi (baş/yan/kuyruk; akış çizgileri aç/kapa) — SIMUMAV'ta rüzgâr parkur ayarıdır (uçuşta değiştirilmez) +
+  // rampa yön/açı paneli (rampaya tıklayınca; ARM öncesi; çekirdek `launch_aim` — yön değişirse SITL yeniden konuşlandırılır)
+  const streakPref = { get: () => pref('windStreaks', true) !== false, set: v => { setPref('windStreaks', !!v); sim?.setWindStreaks(!!v); } };
+  const windG = MWind.createWindGauge({ tr, keyed: true, canEdit: false, streaks: streakPref });
+  stage.append(windG.el);
+  windG.update({ ms: world.wind_ms, dir: world.wind_dir, gust: world.wind_gust, hdg: world.runway_heading });
+  const rampUi = launch?.method === 'ramp' ? MWind.createRampPanel({ tr, keyed: true,
+    onPreview: a => sim?.setRampAim(a),
+    getWind: () => (sim?.windInfo ? sim.windInfo() : { ms: world.wind_ms, dir: world.wind_dir }),
+    getState: () => ({ armed: !!last?.armed, altRel: last?.alt_rel ?? 0, phase: sim?.launchPhase ?? null }),
+    onApply: async a => {
+      const r = await cmd('launch_aim', a);
+      if (!r?.ok) { toast(r?.error || tr('Komut başarısız'), 'err'); sim?.setRampAim({ azimuth_deg: launch.azimuth_deg ?? world.runway_heading, angle_deg: launch.angle_deg }); throw new Error(r?.error || 'launch_aim'); }
+      Object.assign(launch, a);
+    } }) : null;
+  if (rampUi) stage.append(rampUi.el);
+  window.__fsRampUi = rampUi ? { open: () => rampUi.open(sim?.rampAim || { azimuth_deg: launch.azimuth_deg ?? world.runway_heading, angle_deg: launch.angle_deg }), get isOpen() { return rampUi.isOpen; } } : null;
   camPip = MCam.createCameraPip(mount, { getSim: () => sim, tr: trc, prefs: camPrefs, insets: side => { const o = MCam.pipObstacleInsets(stage, mount, side); return { top: Math.max(56, Math.round(nav.getBoundingClientRect().bottom - mount.getBoundingClientRect().top) + 10), bottom: Math.max((bar.offsetHeight || 54) + 28, o.bottom || 0), right: o.right ?? 12 }; }, onSwap: () => drawFpv() });
   if (handLbl) stage.append(handLbl);
   // HEPGO §27 fırlatıcı: hücre envanteri (3B) + el fırlatıcısında NİŞANGÂH penceresi (alt çubukta Nişangâh — G); "Fırlat" → kalkış penceresi
@@ -441,6 +458,7 @@ export async function openSession(view, start, picked, ctx = {}) {
       camType: camType0, thermalPalette: camPrefs.palette, onGimbalZoom: () => camPip?.redraw(),
       site: picked.site || start.site || start.session?.site || null,   // HEPGO §26 (dünya kurulurken saha çevresi açık alan)
       onCameraChange: onCamChange, onCollision: info => cmd('crash', { kind: info.kind, speed: info.speed, dz: info.dz }).catch(() => {}),
+      windStreaks: streakPref.get(), onRigClick: rampUi ? ev => { if (ev.aim) rampUi.open(ev.aim); } : null,   // HEPGO §31
       onProgress: progMsg, g3dKey: async () => meta?.maps_key || '',
       onFallback: e => { const t = g3dMode ? tr('Google 3B verisi alınamadı: {e} → prosedürele düşüldü', { e }) : tr('Gerçek veri alınamadı, prosedürele düşüldü: {e}', { e }); addEvent(t, 'warning'); toast(t, 'err'); attrib.hidden = true; },
     });
@@ -523,6 +541,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   };
   const onTele = raw => {
     last = raw;
+    windG.update({ ms: raw.wind_spd ?? world.wind_ms, dir: raw.wind_dir ?? world.wind_dir, hdg: raw.heading }); rampUi?.refresh();   // HEPGO §31
     let t = raw;
     if (hand && sim) {
       if (!handAnchored && raw.lat != null && raw.lon != null) { const p = sim.toLocal(raw.lat, raw.lon); hand.anchorAt(p.x, p.y); handAnchored = true; }
@@ -599,6 +618,8 @@ export async function openSession(view, start, picked, ctx = {}) {
         case 'warn': { const wi = warnInfo(m); if (wi) return powerEmpty(m.kind === 'fuel_empty' ? 'fuel' : 'elec', m.text); return addEvent(tr('Otopilot çarpışma tespiti — kayıt değil: {t}', { t: m.text || '' }), 'warning'); }
         case 'event': return addEvent(m.text, m.severity, 'STATUS');
         case 'launch': return onLaunch(m);
+        case 'wind': for (const k of ['wind_ms', 'wind_dir', 'wind_gust', 'wind_turb']) if (m[k] != null) world[k] = Number(m[k]); sim?.setWind(m); return;   // HEPGO §31
+        case 'launch_cfg': if (launch && m.launch) { Object.assign(launch, m.launch); sim?.setRampAim(m.launch); } if (m.redeploy) addEvent(tr('wfx.redeploy'), 'info'); return;
         case 'target': return onTarget(m);   // HEPGO §24 önleme
         case 'defend': if (m.state && session.defend) session.defend.state = m.state; launcherUi?.sync(); return defHud?.event(m);   // HEPGO §26 görev olayları (§27: sıradaki hücre)
         case 'state': if (m.center) session.center = { ...session.center, ...m.center }; return setState(m.state);

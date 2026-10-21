@@ -637,6 +637,15 @@ def main():
         c.cookies.clear(); c.cookies.set('smsid', s_tok)   # oran sınaması jar'a 'can' çerezi yazdı; ali'ye dön
         r1 = c.delete('/api/session', headers=H); r2 = c.get('/api/session')
         assert r1.json()['ok'] and r2.status_code == 401, (r1.text, r2.status_code, r2.text[:200])
+    # ---- HEPGO §31: parkur hava durumu + esinti çekirdek dünyasına; uçuşta rüzgâr değiştirme SIMUMAV'ta kapalı (parkur ayarı); rampa launch_aim açık
+    for hava in bridge.WEATHER:
+        w = bridge._world({'weather': hava, 'wind': {'speed_ms': 4, 'dir_deg': 250, 'gust': 3}, 'world_mode': 'procedural', 'radius_m': 1500}, 'plane', {'method': 'ramp'})
+        assert w['weather'] == hava and w['wind_gust'] == 3.0 and w['wind_ms'] == 4.0 and w['fog'] == bridge.FOG_HAVA[hava], w
+        assert flightsim.world_dogrula(w)['weather'] == hava   # çekirdek doğrulamasından geçer
+    assert bridge._world({'weather': 'hail', 'wind': json.dumps({'speed_ms': 2})}, 'plane', {})['weather'] == 'clear'
+    from app.simumav.routers import fly as sfly
+    assert sfly.guvenlik_komut('wind', {'ms': 5}) and sfly.guvenlik_komut('launch_aim', {'azimuth_deg': 90}) is None
+    assert {'wind', 'launch_aim'} <= sfly.SIM_KOMUT
     print('test_simumav: TAMAM')
 
 

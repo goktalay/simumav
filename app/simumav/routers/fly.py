@@ -349,6 +349,8 @@ def guvenlik_komut(name, params):
         f = (params or {}).get('factor')
         if isinstance(f, (int, float)) and not isinstance(f, bool) and float(f) > config.MAX_SPEEDUP:
             return f'Bu sunucuda simülasyon hızı en çok {config.MAX_SPEEDUP}×'
+    if name == 'wind':   # HEPGO §31 uçuşta rüzgâr: SIMUMAV'ta rüzgâr parkurun (adil skor) — uçuşta değiştirilmez
+        return 'Rüzgâr parkur ayarıdır; uçuş sırasında değiştirilemez'
     if name == 'param_set':
         ad = str((params or {}).get('name') or '').strip().upper()
         if ad.startswith('SIM_') and not ad.startswith('SIM_BATT_'):

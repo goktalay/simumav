@@ -309,7 +309,7 @@ class SitlYoneticisi:
         with self._kilit:
             return dict(self._bilgi.get(int(kimlik)) or {})
 
-    def baslat(self, kimlik, tip, lat, lon, sysid, irtifa=None, konsol=None, model=None, log_bin=False, ekstra_parm=None, temiz=False):
+    def baslat(self, kimlik, tip, lat, lon, sysid, irtifa=None, konsol=None, model=None, log_bin=False, ekstra_parm=None, temiz=False, yon=0.0):
         """SITL sürecini başlatır. Dönüş: (port, hata) — başarısızsa port None. Bloklar (~2 sn): iş parçacığında çağrılır.
         `model`: `--model` değerini geçersiz kılar (ör. uçuş simülatörü rampa kalkışı için 'plane-catapult'; TIP_ESLEME değişmez).
         `log_bin`: DataFlash .BIN kaydı açık (uçuş simülatörü "Uçuş logunu kaydet"; docs/ucus-simulatoru.md §19) — yalnız armed süre.
@@ -348,7 +348,7 @@ class SitlYoneticisi:
         bin_temizle(kimlik)   # önceki oturumun .BIN artıkları (kaydedilmişse zaten taşındı)
         terrain_temizle(kimlik)   # arazi .DAT önbelleği kalır; yalnız disk sınırı aşılırsa en eskiler silinir (§18)
         yuk = float(irtifa if irtifa is not None else EV_IRTIFA)
-        komut = [str(yol), '--model', model, '--home', f'{float(lat):.7f},{float(lon):.7f},{yuk:.1f},0',
+        komut = [str(yol), '--model', model, '--home', f'{float(lat):.7f},{float(lon):.7f},{yuk:.1f},{float(yon or 0) % 360:g}',   # yön: ev/burun yönü (uçak kalkış yönü, flightsim §31)
                  '--base-port', str(port), '--defaults', str(parm), '--sysid', str(int(sysid))]
         try:
             log = open(dizin / 'sitl.log', 'w', encoding='utf-8')   # noqa: SIM115 — süreç ömrü boyunca açık

@@ -115,8 +115,9 @@ export async function createGoogleTiles(opts) {
 
   // ---- malzeme: Lambert (ışık/gece/gölge), gece/akşam renk çarpanı ----
   let time = opts.time || 'day', shadows = !!opts.shadows;
-  const tint = () => (time === 'night' ? 0x4c5670 : time === 'dusk' ? 0xe8b898 : 0xffffff);
-  const retint = () => tiles.group.traverse(o => { if (o.isMesh && o.userData.g3d) { o.material.color.setHex(tint()); o.receiveShadow = shadows; } });
+  let wLight = 1;   // §31 hava ışık çarpanı (bulutlu/yağmur/fırtına karolar koyulaşır; sis/yağış flightsim3d sahne sisi + parçacıklarla)
+  const tint = () => new T.Color(time === 'night' ? 0x4c5670 : time === 'dusk' ? 0xe8b898 : 0xffffff).multiplyScalar(wLight);
+  const retint = () => tiles.group.traverse(o => { if (o.isMesh && o.userData.g3d) { o.material.color.copy(tint()); o.receiveShadow = shadows; } });
   const sceneTile = new WeakMap();   // karo sahnesi → karo (geometricError / yaprak: ışın örneğinin "inceliği", §13 surfaceAt)
   const onLoadModel = ({ scene, tile }) => {
     if (tile) sceneTile.set(scene, tile);
@@ -286,6 +287,7 @@ export async function createGoogleTiles(opts) {
     get auxCameras() { return aux.size; },
     get rootRequests() { return entry.rootRequests; },
     setTime(t) { time = t || 'day'; retint(); },
+    setWeatherLight(k) { const v = Math.max(0.3, Math.min(1, Number(k) || 1)); if (v !== wLight) { wLight = v; retint(); } },   // §31
     setShadows(v) { shadows = !!v; retint(); },
     get homeElev() { return homeElev; }, get groundOffset() { return groundOffset; }, get loading() { return Math.round(tiles.loadProgress * 100); },
     get stats() { return { visible: tiles.visibleTiles.size, bytes: tiles.lruCache.cachedBytes }; },

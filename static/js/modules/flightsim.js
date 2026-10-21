@@ -47,8 +47,10 @@ import { LAUNCH_OPTIONS, LAUNCH_PARAM_DEFS, createStepper, firstInvalid, launchO
 import { numSlider } from './fs_inputs.js';   // §6.1 görsel giriş: kaydırıcı + düzenlenebilir değer kutusu + birim
 import { askPresetName, budgetBox, countdown, ensureSavedCss, pilotPicker, savedScreen } from './flightsim_saved.js';   // §27 Kayıtlı Simülasyonlar: üç sütunlu ekran, Uç/Kaydet, pilot, ad sorma, geri sayım
 import { presetBodyFromSession } from './flightsim_presets.js';
-import { flightBudget } from './flightsim_power.js';
+import { flightBudget } from './flightsim_power.js';   // §27 sihirbaz özeti: azami süre / menzil
 import { ROVER_LIMITS, ROVER_MODES, ROVER_RC_TEXT, normDrive, roverRcChannels } from './flightsim_rover.js';   // §31 KARA ARACI (ArduRover): kipler, sanal kumanda eşlemesi (RC1 direksiyon / RC3 gaz)   // §27 sihirbaz özeti: azami süre / menzil (sunucu flightsim_power.menzil_sure ile aynı)
+import { WEATHER, WEATHER_ICONS, WEATHER_LABELS, normWeather, takeoffAdvice } from './flightsim_weather.js';   // §31 hava durumu + rüzgâra karşı kalkış önerisi (saf)
+import { createRampPanel, createWindGauge } from './flightsim_windui.js';   // §31 rüzgâr göstergesi (baş/yan/kuyruk) + rampa yön/açı paneli
 
 const API = '/api/drone/sim';
 // §8 ön hazırlık: sihirbazın hazırlık kartında indirilen kayıt kareleri oturum ekranına devredilir (aynı belge; be.replay yeniden çekilmez)
@@ -410,6 +412,23 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
       : L.method === 'tube' ? tr('Yerden tekli tüp: kapak açılır, interceptor tüpten dikey çıkar (SITL: GUIDED + ARM + NAV_TAKEOFF).')
       : L.method === 'handheld' ? (() => { const w = aimWaypoint(L.aim_az_deg ?? 0, L.aim_el_deg ?? 55); return tr('El fırlatıcısı: nişan yönü {az}° · açısı {el}°. Fırlatınca interceptor 8 m dikey çıkar ve nişan doğrultusundaki noktaya ({h} m ileride, {a} m irtifa) yönelir. Uçuşta "Nişangâh" ile yeniden nişan alınabilir.', { az: Math.round(L.aim_az_deg ?? 0), el: Math.round(L.aim_el_deg ?? 55), h: Math.round(w.horiz_m), a: Math.round(w.alt_m) }); })()
       : tr('Tekerlekli: iniş takımı eklenir; uçak pist boyunca hızlanır, 12 m/s döndürme hızında burun kalkar (ArduPlane TAKEOFF).');
+    drawWindAdvice();
+  };
+  // §31 rüzgâra karşı kalkış önerisi (Kalkış adımı): kalkış yönü = rampa azimutu / pist yönü; baş/yan/kuyruk bileşeni + "Rüzgâra karşı çevir"
+  const windAdv = h('div', { class: 'small fs-wind-advice' });
+  const drawWindAdvice = () => {
+    const at = activeType(), fixed = at === 'sabit_kanat' && ['wheels', 'ramp', 'vehicle'].includes(L.method);
+    windAdv.hidden = !fixed || !(Number(S.world.wind_ms) > 0.3);
+    if (windAdv.hidden) return;
+    const hdg = L.method === 'ramp' ? Number(L.azimuth_deg ?? S.world.runway_heading) || 0 : Number(S.world.runway_heading) || 0;
+    const a = takeoffAdvice(S.world.wind_ms, S.world.wind_dir, hdg);
+    const comp = a.head >= 0 ? tr('baş rüzgârı {h} m/s', { h: a.head.toFixed(1) }) : tr('KUYRUK rüzgârı {h} m/s', { h: Math.abs(a.head).toFixed(1) });
+    clear(windAdv, h('span', { class: a.ok ? 'muted' : 'fs-warn-txt' }, `🧭 ${tr('Rüzgâr {ms} m/s · {dir}° → kalkış yönü {hdg}°: {c}, yan {x} m/s', { ms: Number(S.world.wind_ms).toFixed(1), dir: Math.round(S.world.wind_dir), hdg: Math.round(hdg), c: comp, x: Math.abs(a.cross).toFixed(1) })}`),
+      a.worth ? h('button', { class: 'btn sm', type: 'button', style: { marginLeft: '8px' }, onclick: () => {
+        if (L.method === 'ramp') { L.azimuth_deg = a.suggest; launchParams.azimuth_deg.set(a.suggest); applyLaunch(); }
+        else { S.world.runway_heading = a.suggest; sliders.runway_heading?.set(a.suggest); schedule(); applyLaunch(); }
+        drawLaunchInfo();
+      } }, tr('Rüzgâra karşı çevir ({s}°)', { s: a.suggest })) : null);
   };
   const launchDesc = h('p', { class: 'small muted' }, tr(launchStepDesc('sabit_kanat', 'sitl')));
   const lastMethod = {};   // tip → son seçilen kalkış yöntemi (tip değişip geri gelince seçim korunur)
@@ -424,12 +443,13 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     clear(launchCards, opts.map(o => h('button', { type: 'button', class: `fs-type fs-launch ${L.method === o.key ? 'on' : ''}`, 'data-launch': o.key, onclick: () => { if (o.key !== L.method && (o.key === 'pod4' || o.key === 'pod8')) L.loaded = o.key === 'pod4' ? 4 : 8; L.method = o.key; drawLaunch(); applyLaunch(); } },   // kutu değişince hücreler dolu başlar
       h('span', { class: 'fs-type-ico', html: LAUNCH_ICON[o.icon] || LAUNCH_ICON.wheels }), h('b', null, tr(o.name), o.badge ? h('span', { class: 'badge blue fs-launch-badge2' }, tr(o.badge)) : null), h('span', { class: 'small muted' }, tr(o.desc)))));
     const cur = opts.find(o => o.key === L.method);
-    for (const [key, sl] of Object.entries(launchParams)) { const f = paramField(key), d = LAUNCH_PARAM_DEFS[key]; if (cur?.params.includes(key) && (L[f] == null || L[f] > d.max || L[f] < d.min)) L[f] = d.max === 359 ? 0 : key === 'aim_el_deg' ? 55 : d.max; sl.set(L[f]); sl.el.hidden = !cur?.params.includes(key); }
+    for (const [key, sl] of Object.entries(launchParams)) { const f = paramField(key), d = LAUNCH_PARAM_DEFS[key]; if (cur?.params.includes(key) && (L[f] == null || L[f] > d.max || L[f] < d.min)) L[f] = key === 'azimuth_deg' ? Math.round(Number(S.world.runway_heading) || 0) % 360 : d.max === 359 ? 0 : key === 'aim_el_deg' ? 55 : d.max; sl.set(L[f]); sl.el.hidden = !cur?.params.includes(key); }
+    if (cur?.key !== 'ramp') delete L.azimuth_deg;   // §31: azimut yalnız rampada (diğer yöntemler pist yönünde)
     launchNote.hidden = !cur?.note; launchNote.textContent = cur?.note ? tr(cur.note) : '';
     drawLaunchInfo();
   };
   const launchBox = h('div', { class: 'fs-launch-step' }, launchDesc,
-    launchCards, h('div', { class: 'fs-launch-params' }, Object.values(launchParams).map(sl => sl.el), launchNote), launchInfo);
+    launchCards, h('div', { class: 'fs-launch-params' }, Object.values(launchParams).map(sl => sl.el), launchNote), launchInfo, windAdv);
   drawLaunch();
 
   // ---------- 1K. kontrol düzeni (§13.1; yalnız Sabit Kanat, canlı kip): Aileron + Elevatör (T-kuyruk) · Elevon (delta kanat) · V-kuyruk (ruddervator) ----------
@@ -593,7 +613,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   const slider = (key, label, min, max, step, unit = '', { pct = false, scale = 'lin' } = {}) => {
     const k = pct ? 100 : 1;
     const sl = numSlider({ h, label, value: S.world[key] * k, min: min * k, max: max * k, step: Math.round(step * k * 1000) / 1000, unit: pct ? '%' : unit, scale, cls: 'fs-slider',
-      onInput: v => { S.world[key] = pct ? Math.round(v) / 100 : v; schedule(); } });
+      onInput: v => { S.world[key] = pct ? Math.round(v) / 100 : v; schedule(); if (/^wind_(ms|dir)$|^runway_heading$/.test(key)) drawWindAdvice(); } });
     sliders[key] = { el: sl.el, sl, label, set: v => sl.set(v * k) };
     return sl.el;
   };
@@ -627,8 +647,13 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     applyMode(); schedule();
   });
   runwayCb.addEventListener('change', () => { rwTouched = true; });
+  // §31 hava durumu: görsel (bulut, yağış parçacıkları, ıslak zemin / kar örtüsü, görüş) — rüzgâr fiziği ayrı (hız/yön/esinti/türbülans)
+  if (!WEATHER.includes(S.world.weather)) S.world.weather = 'clear';
+  const weatherSeg = segmented(WEATHER.map(k => [k, `${WEATHER_ICONS[k]} ${tr(WEATHER_LABELS[k])}`]), S.world.weather, v => { S.world.weather = v; schedule(); });
+  weatherSeg.classList.add('fs-weather-seg');
   const worldForm = h('div', { class: 'fs-world' },
     h('div', { class: 'fs-mode-row' }, h('span', { class: 'small muted' }, 'Dünya kipi'), worldModeSeg),
+    h('div', { class: 'fs-mode-row fs-weather-row' }, h('span', { class: 'small muted' }, 'Hava durumu'), weatherSeg),
     modeHint,
     h('div', { class: 'fs-world-grid' },
       slider('size_m', 'Dünya boyutu', 1000, 10000, 500, 'm'),
@@ -640,6 +665,8 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
       slider('fog', 'Sis', 0, 1, 0.05, '', { pct: true }),
       slider('wind_ms', 'Rüzgâr hızı', 0, 20, 0.5, 'm/s'),
       slider('wind_dir', 'Rüzgâr yönü', 0, 359, 1, '°'),
+      slider('wind_gust', 'Esinti (gust)', 0, 15, 0.5, 'm/s'),   // §31: SIM_WIND_SPD üzerine sunucu esintisi
+      slider('wind_turb', 'Türbülans', 0, 6, 0.5, 'm/s'),        // §31: SITL SIM_WIND_TURB
       slider('runway_heading', 'Pist yönü', 0, 359, 1, '°'),
       slider('landing_circle_m', 'İniş dairesi çapı', 10, 200, 5, 'm')),   // §18: görev bitiş noktasındaki H dairesi
     h('div', { class: 'fs-world-row' },
@@ -907,7 +934,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
         S.type === 'sabit_kanat' ? ['Kontrol düzeni', layoutLabel(S.layout, tr)] : null, S.type === 'rover' ? ['Sürüş biçimi', tr(DRIVE_NAME[driveOf()])] : null, ['Dron kaydı', S.drone != null ? droneSel.selectedOptions[0]?.textContent || `#${S.drone}` : tr('Yok — "Simülatör #N" sanal dronu')]],
       log: [['Uçuş logu', lg?.file_name || '—'], lg ? ['Araç', [TYPE_NAME[lg.type] || lg.type, lg.aircraft].filter(Boolean).join(' · ')] : null, lg && (lg.flight_s ?? lg.duration_s) != null ? ['Süre', fmtDuration(lg.flight_s ?? lg.duration_s)] : null, ['Görsel model', sel?.name || '—']],
       world: [S.mode === 'sitl' ? ['Merkez', centerOf() ? `${centerOf().name} · ${Number(centerOf().lat).toFixed(4)}, ${Number(centerOf().lon).toFixed(4)}` : '—'] : null,
-        ['Dünya kipi', `${worldName} · ${fmtKm(W0.size_m)}`], ['Saat', timeName], ['Rüzgâr', `${W0.wind_ms} m/s · ${W0.wind_dir}°`], ['Sis', `%${Math.round(W0.fog * 100)}`],
+        ['Dünya kipi', `${worldName} · ${fmtKm(W0.size_m)}`], ['Saat', timeName], ['Hava durumu', tr(WEATHER_LABELS[normWeather(W0.weather)])], ['Rüzgâr', `${W0.wind_ms} m/s · ${W0.wind_dir}°${Number(W0.wind_gust) > 0 ? ` · ${tr('esinti')} +${W0.wind_gust}` : ''}${Number(W0.wind_turb) > 0 ? ` · ${tr('türbülans')} ${W0.wind_turb}` : ''}`], ['Sis', `%${Math.round(W0.fog * 100)}`],
         S.type === 'rover' && W0.runway === false ? null : ['Pist', W0.runway === false ? tr('Kapalı') : `${tr('Açık')} · ${W0.runway_heading}°`]],
       launch: [['Kalkış yöntemi', launchLabel(L, tr)]],
       power: [isPlane(t) && pv.max_speed_ms ? ['Azami hız', `${pv.max_speed_ms} m/s (${Math.round(pv.max_speed_ms * 3.6)} km/h)`] : null,
@@ -1237,6 +1264,30 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     onTheme: t => addEvent(tr('Gösterge tasarımı: {t}', { t: tr(gaugeThemeLabel(t)) })) });   // §27.3 tasarım (sihirbaz seçimi; uçuşta G / kadran kutusu)
   stage.append(mount, msg, crash, hud, ...(mp ? [mp] : []), events, sticks, gauges.el, bar, nav, ended);
   if (attrib) stage.append(attrib);
+  // §31 rüzgâr göstergesi (sol üst; baş/yan/kuyruk bileşenleri uçağın burnuna göre, akış çizgileri aç/kapa, yazma izniyle uçuşta rüzgâr) +
+  // rampa yön/açı paneli (rampaya tıklayınca; ARM öncesi; sunucu `launch_aim` — yön değişirse SITL yeniden konuşlandırılır)
+  const streakPref = { get: () => pref('fs.windStreaks', '1') !== '0', set: v => { setPref('fs.windStreaks', v ? '1' : '0'); sim?.setWindStreaks(!!v); } };
+  const windG = createWindGauge({ tr, canEdit: canWrite && !replay, streaks: streakPref,
+    onChange: async w => { try { const r = await be.cmd(sid, 'wind', w); applyWind(r?.wind || {}); } catch (err) { toastError(err); throw err; } } });
+  stage.append(windG.el);
+  const applyWind = w => {
+    for (const [k, wk] of [['wind_ms', 'wind_ms'], ['wind_dir', 'wind_dir'], ['wind_gust', 'wind_gust'], ['wind_turb', 'wind_turb']]) if (w[k] != null) world[wk] = Number(w[k]);
+    sim?.setWind(w); windG.update({ ms: world.wind_ms, dir: world.wind_dir, gust: world.wind_gust, turb: world.wind_turb });
+  };
+  windG.update({ ms: world.wind_ms, dir: world.wind_dir, gust: world.wind_gust, turb: world.wind_turb, hdg: world.runway_heading });
+  const rampUi = launch?.method === 'ramp' && canWrite && !replay ? createRampPanel({ tr,
+    onPreview: a => sim?.setRampAim(a),
+    getWind: () => (sim?.windInfo ? sim.windInfo() : { ms: world.wind_ms, dir: world.wind_dir }),
+    getState: () => ({ armed: !!last?.armed, altRel: last?.alt_rel ?? 0, phase: sim?.launchPhase ?? null }),
+    onApply: async a => {
+      try {
+        const r = await be.cmd(sid, 'launch_aim', a);
+        Object.assign(launch, r?.launch || a);
+        addEvent(tr('Rampa: yön {az}° · açı {an}°', { az: Math.round(a.azimuth_deg), an: a.angle_deg }) + (r?.redeploy ? ` — ${tr('SITL yeniden konuşlandırılıyor')}` : ''), 'info');
+      } catch (err) { toastError(err); sim?.setRampAim({ azimuth_deg: launch.azimuth_deg ?? world.runway_heading, angle_deg: launch.angle_deg }); throw err; }
+    } }) : null;
+  if (rampUi) stage.append(rampUi.el);
+  if (typeof window !== 'undefined') window.__fsRampUi = rampUi ? { open: () => rampUi.open(sim?.rampAim || { azimuth_deg: launch.azimuth_deg ?? world.runway_heading, angle_deg: launch.angle_deg }), get isOpen() { return rampUi.isOpen; } } : null;
   // §13 düzenek yüzey teşhisi: ?rigdiag=1 → sol üstte canlı kutu (h, eğim, kilit, karo inceliği/geometricError, örnekler); window.__fsRig() her oturumda
   const rigDiagEl = rigdiag ? h('pre', { class: 'fs-rigdiag' }) : null;
   if (rigDiagEl) stage.append(rigDiagEl);
@@ -1376,6 +1427,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
           // (kullanıcı: "kamera görünümünde kontrol panelim gizlensin"), sanal kumanda çubukları görünür kalır (§14/§22)
           onCameraChange: mode => { camBtns.forEach(b => b.classList.toggle('primary', b.dataset.cam === mode)); gimbalLbl.hidden = mode !== 'fpv'; mhudBtn.hidden = mode !== 'fpv'; fpvCtl.hidden = mode !== 'pilot'; milHud?.setCamMode(mode); osd?.setCamMode(mode); ops?.setFpv(mode === 'fpv' || mode === 'pilot'); gimbalLbl.textContent = tr('Gimbal {d}° (↑↓ / tekerlek)', { d: sim?.getGimbal() ?? 0 }); fpvPrefs.setCam(mode); drawFpvBtns(); },
           onCollision: replay ? null : info => onCrash(info),   // kayıt: gerçek uçuş → çarpışma denetimi yok
+          windStreaks: streakPref.get(),   // §31 rüzgâr akış çizgileri (kalıcı tercih fs.windStreaks)
+          onRigClick: rampUi ? ev => { if (ev.aim) rampUi.open(ev.aim); } : null,   // §31 rampaya tıklama → yön/açı paneli
           onProgress: progMsg,
           g3dKey: be.g3dKey,
           onFallback: e => { const t = g3dMode ? tr('Google 3B verisi alınamadı: {e} → prosedürele düşüldü', { e }) : tr('Gerçek veri alınamadı, prosedürele düşüldü: {e}', { e }); addEvent(t, 'warning'); toast(t, 'err'); if (attrib) attrib.hidden = true; },
@@ -1494,6 +1547,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     last = t;
     sim?.setTelemetry(t);
     milHud?.update(t); osd?.update(t); audio.update(t); ops?.update(t); gauges.update(t);   // §23.6 kadranlar (≤ 10 Hz kendi içinde)
+    windG.update({ ms: t.wind_spd ?? world.wind_ms, dir: t.wind_dir ?? world.wind_dir, hdg: t.heading ?? (t.yaw != null ? ((t.yaw * 180 / Math.PI) + 360) % 360 : null) });   // §31
+    rampUi?.refresh();
     if (t.speedup != null) speedPill.set(t.speedup);
     const now = performance.now();
     if (now - hudAt < 80) return;
@@ -1711,6 +1766,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       }
       if (m.t === 'event') return addEvent(m.text, m.severity, replay ? (player?.time() ?? null) : null, 'STATUS');
       if (m.t === 'launch') return onLaunch(m);
+      if (m.t === 'wind') { applyWind(m); return addEvent(tr('Rüzgâr: {ms} m/s · {dir}°', { ms: f1(m.wind_ms), dir: f0(m.wind_dir) })); }   // §31 uçuşta rüzgâr
+      if (m.t === 'launch_cfg') { if (launch && m.launch) { Object.assign(launch, m.launch); sim?.setRampAim(m.launch); } return; }   // §31 rampa yön/açı (başka izleyici de görür)
       if (m.t === 'target') return onTarget(m);   // §24 önleme
       if (m.t === 'defend') { if (m.state && session.defend) session.defend.state = m.state; launcherUi?.sync(); return defHud?.event(m); }   // §27: sıradaki interceptor → sonraki hücre   // §26 görev olayları (dalga/önleme/sızma/kayıp/bitiş)
       if (m.t === 'state') {

@@ -45,6 +45,8 @@ import { createCrashFx } from './flightsim_crashfx.js';
 import { contactWorld, createSuspension, roverContacts, roverGroundFit, roverKinematics } from './flightsim_rover.js';   // §31 kara aracı (saf): teker kinematiği, zemine oturma
 import { buildRoverProc, createDust, roverRig } from './flightsim_rover3d.js';   // §31 teker/direksiyon düğümleri, prosedürel yedek, toz izi   // §18.6 çarpışma efekti: patlama/toz/kıvılcım, sarsıntı, flaş (termalde sıcak enkaz)
 import { introEase, introPose } from './flightsim_intro.js';   // §27.2 giriş sekansı: 100 m'den sinematik iniş (saf poz eğrisi)
+import { fogRange, gustSpeed, normRampAim, normWeather, precipParams, rampHeading, sockState, sunPosition, weatherPreset, windVector } from './flightsim_weather.js';   // §31 hava/rüzgâr/rampa (saf)
+import { createWorldFx } from './flightsim_worldfx.js';   // §31 gerçekçi dünya: gökyüzü, bulut, zemin/su malzemesi, ağaç/bina, yağış, tulum, akış çizgileri
 import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
 
 const LIB = '/static/vendor/three/';
@@ -201,6 +203,7 @@ export const nextCameraMode = cur => { const i = CAMERA_MODES.findIndex(([k]) =>
 export const WORLD_DEFAULTS = {
   mode: 'procedural', seed: 12345, size_m: 4000, tree_density: 0.3, mountain_height: 300, mountain_count: 4, building_count: 40,
   runway: true, runway_heading: 0, water: 0.1, time: 'day', wind_ms: 3, wind_dir: 270, fog: 0.2, landing_circle_m: 30,   // landing_circle_m: görev bitiş noktasındaki iniş dairesi çapı (§18)
+  weather: 'clear', wind_gust: 0, wind_turb: 0,   // §31 hava durumu (görsel) + esinti/türbülans (SITL fiziği)
 };
 const FLAT_R = 300, FLAT_R2 = 600;        // merkez çevresi düzleştirme (pist / kalkış alanı)
 const RUNWAY_L = 1200, RUNWAY_W = 40;     // pist boyutları (m)
@@ -259,8 +262,14 @@ export function makeTerrain(world) {
   const cnt = clamp(num(W.mountain_count, 4), 1, 12);
   const noise = simplex2D(num(W.seed, 12345));
   const f = cnt / size;   // yaklaşık `mountain_count` tepe genişlik boyunca
-  const fbm = (x, y) => (noise(x * f, y * f) + 0.5 * noise(x * f * 2 + 31.7, y * f * 2 - 17.3) + 0.25 * noise(x * f * 4 - 5.1, y * f * 4 + 9.9)) / 1.75;
-  const raw = (x, y) => { const n = clamp((fbm(x, y) + 1) / 2, 0, 1); return H * Math.pow(n, 1.7) - H * 0.12; };
+  // §31: 6 oktav fbm (alan bükmeli: kıvrımlı vadiler) + çok-fraktal sırt gürültüsü (keskin tepe hatları, erozyon benzeri dereler) dağlık bölgede
+  const fbm = (x, y) => { let s = 0, a = 1, fr = f, t = 0; for (let o = 0; o < 6; o++) { s += a * noise(x * fr + o * 31.7, y * fr - o * 17.3); t += a; a *= 0.5; fr *= 2.03; } return s / t; };
+  const ridge = (x, y) => { let s = 0, a = 0.5, fr = f * 1.6, w = 1; for (let o = 0; o < 5; o++) { let n = 1 - Math.abs(noise(x * fr - 13.1 * o, y * fr + 7.7 * o)); n *= n * w; w = clamp(n * 1.8, 0, 1); s += n * a; a *= 0.5; fr *= 2.1; } return s; };
+  const raw = (x, y) => {
+    const wx = x + 0.22 / f * noise(x * f * 0.7 + 3.3, y * f * 0.7 - 1.1), wy = y + 0.22 / f * noise(x * f * 0.7 - 7.9, y * f * 0.7 + 5.2);   // alan bükme
+    const n = clamp((fbm(wx, wy) + 1) / 2, 0, 1), m = smooth(0.45, 0.72, n);
+    return H * (0.78 * Math.pow(n, 1.75) + 0.42 * m * ridge(wx, wy) * n) - H * 0.12;
+  };
   const h0 = raw(0, 0);
   const height = (x, y) => { const r = Math.hypot(x, y); return (raw(x, y) - h0) * smooth(FLAT_R, FLAT_R2, r); };
   // Su seviyesi: ızgara yüksekliklerinin `water` oranı altta kalacak şekilde (pist seviyesinin en az 1.5 m altında)
@@ -365,6 +374,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     add(rig?.group, 0.58, 0.58);
     for (const r of heatRoots) r.traverse(o => { if (o.isMesh) out.push({ o, m: heatMat((o.userData.heat ?? (/prop|motor|engine|blade/i.test(o.name + ' ' + (o.parent?.name || '')) ? 0.92 : 0.72)) / tg) }); });
     for (const o of heatWorld) out.push({ o, m: heatMat((o.userData.heat ?? 0.06) / tg) });
+    for (const o of wfx.hideInThermal()) out.push({ o, sprite: true });   // §31 gök kubbesi/bulut/yağış/akış çizgileri termalde gizli (gök soğuk)
     out.tg = tg;
     heatList = out;
     return out;
@@ -404,12 +414,26 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // Gölge kamerası dronu izler (küçük, keskin): her karede sun.position = dron + güneş yönü × 120 m, target = dron
   const sunDir = new T.Vector3(0.6, -0.5, 0.9).normalize();
   if (!preview) {
+    // §31: gölge kutusu dronun çevresinde ±90 m (binalar, yakın ağaçlar, tulum, düzenek de düşürür); 2048 doku
     lights.sun.castShadow = true;
     const sc = lights.sun.shadow.camera;
-    sc.left = sc.bottom = -25; sc.right = sc.top = 25; sc.near = 20; sc.far = 400;
-    lights.sun.shadow.mapSize.set(1024, 1024);
-    lights.sun.shadow.bias = -0.0008;
+    sc.left = sc.bottom = -90; sc.right = sc.top = 90; sc.near = 20; sc.far = 700;
+    lights.sun.shadow.mapSize.set(2048, 2048);
+    lights.sun.shadow.bias = -0.0006; lights.sun.shadow.normalBias = 0.6;
   }
+  // §31 gerçekçi dünya katmanı (gökyüzü kubbesi, bulut, yağış, akış çizgileri kalıcı; zemin/ağaç/bina dünya grubunda) — aynı renderer
+  const wfx = createWorldFx(T, { renderer, scene, preview });
+  wfx.setStreaks(opts.windStreaks !== false);
+  let treeChunks = [], treeLodAt = 0, sock = null, sockAt = 0;
+  // Rüzgâr durumu: taban (dünya) + esinti; telemetrideki anlık değer (tele.wind_spd / wind_dir; sunucu SITL'e yazdığı değer) önceliklidir
+  const windSt = { liveMs: null, liveDir: null, liveAt: -Infinity };
+  const windNow = now => {
+    const live = now - windSt.liveAt < 4000;
+    const ms = live && windSt.liveMs != null ? windSt.liveMs : gustSpeed(num(W.wind_ms, 0), num(W.wind_gust, 0), now / 1000);
+    const dir = live && windSt.liveDir != null ? windSt.liveDir : num(W.wind_dir, 0);
+    const v = windVector(ms, dir);
+    return { ms, dir, gust: num(W.wind_gust, 0), turb: num(W.wind_turb, 0), vx: v.x, vy: v.y };
+  };
 
   const disposeGroup = g => {
     g.traverse(o => {
@@ -423,26 +447,19 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // ---------- ortak dünya parçaları (prosedürel + gerçek) ----------
   // `horizon` (m): gerçek arazi / Google 3B kipinde görüş uzaklığı tabanı (uzak arazi yarıçapı); sis ufku dünya boyutuna değil buna bağlanır —
   // eski formül 4 km dünyada sisi 5,4 km'de kapatıyor, 20 km'deki dağlar hiç görünmüyordu (§9). Prosedürelde (horizon yok) eski davranış.
-  function skyAndLights(size, horizon = 0) {
+  // §31: gökyüzü kubbesi + güneş konumu (saat ön ayarı, flightsim_weather.sunPosition) + hava (bulut/yağış/ışık/görüş). Sis rengi ufuk rengi.
+  // Görüş: fogRange(fog, weather) — hava "açık" iken eski formülle aynı; prosedürelde ufuk halkası (`ring` yarıçapı) varsa sis onu aşmaz.
+  function skyAndLights(size, horizon = 0, ring = 0) {
     const night = W.time === 'night', dusk = W.time === 'dusk';
-    const sky = night ? 0x0a1328 : dusk ? 0xe0956a : 0x8fbdea;
-    renderer.setClearColor(sky, 1);
-    scene.background = new T.Color(sky);
-    lights.sun.color.set(night ? 0x6f7fb0 : dusk ? 0xffb070 : 0xfff2dc);
-    lights.sun.intensity = night ? 0.45 : dusk ? 1.3 : 2.4;
-    sunDir.set(night ? -0.3 : dusk ? -0.9 : 0.6, dusk ? -0.2 : -0.5, night ? 0.5 : dusk ? 0.25 : 0.9).normalize();
-    lights.sun.position.copy(sunDir).multiplyScalar(preview ? size : 120);
-    lights.sun.shadow.intensity = night ? 0.35 : dusk ? 0.7 : 1;
-    lights.hemi.color.set(night ? 0x1b2a55 : dusk ? 0xf0b088 : 0xbfd8ff);
-    lights.hemi.groundColor.set(night ? 0x060a12 : 0x3a4a2a);
-    lights.hemi.intensity = night ? 0.5 : dusk ? 0.8 : 0.9;
-    lights.amb.intensity = night ? 0.3 : 0.15;
-    const fog = clamp(num(W.fog, 0), 0, 1);
-    if (horizon > 0) {   // görüş uzaklığı: fog 0 → sis yok; 0,2 (varsayılan) → ≈ 1,05·ufuk (25 km); 1 → 0,25·ufuk (6 km)
-      const farF = horizon * (1.25 - fog);
-      scene.fog = fog > 0 ? new T.Fog(sky, farF * 0.12, farF) : null;
-    } else scene.fog = fog > 0 ? new T.Fog(sky, size * 0.12, size * (1.6 - 1.25 * fog)) : null;
-    return { night, dusk };
+    const P = weatherPreset(W.weather);
+    const sp = sunPosition(W.time);
+    sunDir.set(sp.x, sp.y, Math.max(0.12, sp.z)).normalize();   // gölge yönü (akşam güneşi çok yatık → gölge kutusu dışı; en az ~7°)
+    lights.sun.position.copy(sunDir).multiplyScalar(preview ? size : 400);
+    const fr = fogRange(W.fog, W.weather, { size, horizon });
+    if (ring > 0) { fr.on = true; fr.far = Math.min(fr.far, ring * 0.92); fr.near = Math.min(fr.near, fr.far * 0.3); }
+    wfx.setAtmosphere({ time: W.time, weather: normWeather(W.weather), P, sunDir: sp, lights, fogRange: fr });
+    wfx.buildPrecip(precipParams(W.weather, { quality: 1, windMs: num(W.wind_ms, 0) }));
+    return { night, dusk, P };
   }
 
   // Pist (asfalt, orta çizgiler, eşik çizgileri; heading; gece kenar ışıkları). Konum/yükseklik çağıran verir.
@@ -469,41 +486,93 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     return rw;
   }
 
-  // Rastgele kutu binalar (prosedürel; gerçek kipte "ek bina"): pistten uzak, su dışında, mevcut AABB'lerle çakışmaz
-  function boxBuildings(nb, size, height, waterZ, relH, hdg, rand, night) {
-    const bgeo = new T.BoxGeometry(1, 1, 1); bgeo.translate(0, 0, 0.5);
-    const bmat = new T.MeshLambertMaterial({ color: 0xffffff, emissive: night ? 0x3a3418 : 0x000000 });
-    const inst = new T.InstancedMesh(bgeo, bmat, nb);
-    const m4 = new T.Matrix4(), q = new T.Quaternion(), sc = new T.Vector3(), p = new T.Vector3(), bc = new T.Color();
-    let placed = 0;
-    for (let tries = 0; placed < nb && tries < nb * 40; tries++) {
-      const ang = rand() * Math.PI * 2, r = 380 + rand() * (size * 0.42 - 380);
-      const x = Math.cos(ang) * r, y = Math.sin(ang) * r, z = height(x, y);
-      if (z < waterZ + 2 || (!terrain.real && z > relH * 0.6) || inRunway(x, y, hdg, 120) || inWater(x, y, z)) continue;
-      const w = 8 + rand() * 18, d = 8 + rand() * 18, hgt = 6 + rand() * 34;
-      if (buildingsAABB.some(b => x + w / 2 > b.x1 - 6 && x - w / 2 < b.x2 + 6 && y + d / 2 > b.y1 - 6 && y - d / 2 < b.y2 + 6)) continue;
-      p.set(x, y, z - 1); sc.set(w, d, hgt + 1);
-      inst.setMatrixAt(placed, m4.compose(p, q, sc));
-      bc.setHSL(0.08 + rand() * 0.05, 0.08 + rand() * 0.15, night ? 0.25 : 0.55 + rand() * 0.3);
-      inst.setColorAt(placed, bc);
-      buildingsAABB.push({ x1: x - w / 2, x2: x + w / 2, y1: y - d / 2, y2: y + d / 2, z2: z + hgt });
-      placed++;
+  // §31 Binalar: kasabalar (sokak ızgarası + kaldırım şeritleri araziye serili) — türler: 0 müstakil ev (beşik çatı), 1 apartman (çatı üniteli),
+  // 2 kule (cam cephe), 3 sanayi; merkezde yüksek, kenarda alçak. Kalan kota kırsalda ev/ahır. Pistten, sudan, sahadan uzak; AABB'ler çakışmaz.
+  // Cephe gölgelendiricisi (flightsim_worldfx patchFacade) pencere ızgarası + gece ışıklı pencereler.
+  const PAL = { house: [0xe9dfc8, 0xd9c7a6, 0xf2ece0, 0xcdb48e, 0xe3d2b8, 0xbfb6a8, 0xd6c3b0], apt: [0xc9b79a, 0xd8a98a, 0xb9b3aa, 0xa9b4bd, 0xe0cfae, 0xc4c0b8, 0xb79d84],
+    tower: [0x8f9aa6, 0x6f8193, 0xa5adb5, 0x7d8b99], ind: [0x9aa0a6, 0x7e8a96, 0xb2aea4, 0x8c8f84], roof: [0xa4462f, 0x8b3a2a, 0x5b5f66, 0x7a3b2a, 0x4c4f55, 0x9c5a3c] };
+  function townBuildings(nb, size, height, waterZ, relH, hdg, rand, night) {
+    const blds = [], roads = [];
+    const pick = arr => new T.Color(arr[Math.floor(rand() * arr.length)]);
+    const free = (x1, x2, y1, y2, m) => !buildingsAABB.some(b => x2 > b.x1 - m && x1 < b.x2 + m && y2 > b.y1 - m && y1 < b.y2 + m);
+    const okSpot = (x, y, z) => !(z < waterZ + 2 || (!terrain.real && z > relH * 0.6) || inRunway(x, y, hdg, 120) || inWater(x, y, z) || nearSite(x, y, 40) || Math.hypot(x, y) < 330);
+    const place = (x, y, w, d, h, rot, kind) => {
+      const c = Math.cos(rot), s = Math.sin(rot);
+      let zmin = Infinity, zmax = -Infinity, x1 = Infinity, x2 = -Infinity, y1 = Infinity, y2 = -Infinity;
+      for (const [u, v] of [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2]]) {
+        const px = x + c * u - s * v, py = y + s * u + c * v, z = height(px, py);
+        if (inRunway(px, py, hdg, 100)) return false;
+        zmin = Math.min(zmin, z); zmax = Math.max(zmax, z); x1 = Math.min(x1, px); x2 = Math.max(x2, px); y1 = Math.min(y1, py); y2 = Math.max(y2, py);
+      }
+      if (zmax - zmin > Math.max(3, w * 0.25) || !okSpot(x, y, height(x, y)) || !free(x1, x2, y1, y2, 3)) return false;
+      const b = { x, y, z: zmin - 0.4, w, d, h: h + (zmax - zmin) + 0.4, rot, kind, col: pick(kind === 0 ? PAL.house : kind === 1 ? PAL.apt : kind === 2 ? PAL.tower : PAL.ind),
+        roof: kind === 0 ? pick(PAL.roof) : null, unit: kind === 1 && rand() < 0.7 };
+      blds.push(b);
+      buildingsAABB.push({ x1, x2, y1, y2, z2: zmax + h + (kind === 0 ? Math.min(w, d) * 0.42 : b.unit ? 2.4 : 0) });
+      return true;
+    };
+    const nTowns = clamp(Math.ceil(nb / 45), 1, 6), towns = [];
+    const rMin = 520, rMax = Math.max(rMin + 60, size * 0.42);
+    for (let t = 0; towns.length < nTowns && t < 400; t++) {
+      const ang = rand() * Math.PI * 2, r = rMin + rand() * (rMax - rMin), x = Math.cos(ang) * r, y = Math.sin(ang) * r;
+      if (!okSpot(x, y, height(x, y)) || towns.some(o => Math.hypot(o.x - x, o.y - y) < 520)) continue;
+      let lo = Infinity, hi = -Infinity;
+      for (const [dx, dy] of [[-90, -90], [90, -90], [-90, 90], [90, 90], [0, 0]]) { const zz = height(x + dx, y + dy); lo = Math.min(lo, zz); hi = Math.max(hi, zz); }
+      if (hi - lo > 25) continue;
+      towns.push({ x, y, rot: rand() * Math.PI / 2 });
     }
-    inst.count = placed;
-    inst.instanceMatrix.needsUpdate = true;
-    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-    gWorld.add(inst);
+    const quota = Math.ceil(nb / Math.max(1, towns.length));
+    const BLOCK = 66, RW = 8;
+    for (const tw of towns) {
+      if (blds.length >= nb) break;
+      const k = clamp(Math.ceil(Math.sqrt(quota / 5)) + 1, 2, 8), E = k * BLOCK / 2;
+      const c = Math.cos(tw.rot), s = Math.sin(tw.rot), W2 = (u, v) => [tw.x + c * u - s * v, tw.y + s * u + c * v];
+      const before = blds.length, full = () => blds.length >= nb || blds.length - before >= quota;
+      for (let bi = 0; bi < k && !full(); bi++) for (let bj = 0; bj < k && !full(); bj++) {
+        const inner = BLOCK - RW - 6, u0 = -E + bi * BLOCK + RW / 2 + 3, v0 = -E + bj * BLOCK + RW / 2 + 3;
+        const dc = Math.hypot(-E + (bi + 0.5) * BLOCK, -E + (bj + 0.5) * BLOCK) / E;   // merkezden uzaklık (0…1,4)
+        const lots = dc < 0.45 ? 2 : 3, lw = inner / lots;
+        for (let li = 0; li < lots && !full(); li++) for (let lj = 0; lj < lots && !full(); lj++) {
+          if (rand() < 0.12) continue;   // boş arsa / park
+          let kind = dc < 0.4 ? (rand() < 0.3 ? 2 : 1) : dc < 0.8 ? (rand() < 0.55 ? 1 : 0) : (rand() < 0.12 ? 3 : 0);
+          let w, d, h;
+          if (kind === 0) { w = 8 + rand() * 5; d = 7 + rand() * 4; h = (rand() < 0.6 ? 1 : 2) * 3 + 0.4; }
+          else if (kind === 1) { w = 13 + rand() * 8; d = 11 + rand() * 6; h = (3 + Math.floor(rand() * 7)) * 3.1; }
+          else if (kind === 2) { w = 17 + rand() * 7; d = 17 + rand() * 7; h = 36 + rand() * 46; }
+          else { w = 24 + rand() * 14; d = 18 + rand() * 10; h = 7 + rand() * 5; }
+          w = Math.min(w, lw - 3); d = Math.min(d, lw - 3);
+          if (w < 6 || d < 6) { kind = 0; w = d = Math.max(6, lw - 3); h = 3.4; }
+          const [x, y] = W2(u0 + (li + 0.5) * lw + (rand() - 0.5) * 2, v0 + (lj + 0.5) * lw + (rand() - 0.5) * 2);
+          place(x, y, w, d, h, tw.rot + (rand() < 0.5 ? 0 : Math.PI / 2), kind);
+        }
+      }
+      if (blds.length > before) {   // sokaklar: blok ızgarası (suya/piste düşen çizgi atlanır) + kaldırımlar
+        for (let i = 0; i <= k; i++) {
+          const u = -E + i * BLOCK;
+          for (const pts of [[W2(u, -E), W2(u, E)], [W2(-E, u), W2(E, u)]]) {
+            const mx = (pts[0][0] + pts[1][0]) / 2, my = (pts[0][1] + pts[1][1]) / 2;
+            if (height(mx, my) < waterZ + 1 || inRunway(mx, my, hdg, 40) || inWater(mx, my, height(mx, my))) continue;
+            roads.push({ pts, w: RW, walk: true });
+          }
+        }
+      }
+    }
+    for (let tries = 0; blds.length < nb && tries < nb * 30; tries++) {   // kırsal: müstakil ev / ahır
+      const ang = rand() * Math.PI * 2, r = 380 + rand() * Math.max(10, size * 0.45 - 380), kind = rand() < 0.2 ? 3 : 0;
+      place(Math.cos(ang) * r, Math.sin(ang) * r, kind ? 18 + rand() * 10 : 8 + rand() * 5, kind ? 12 + rand() * 8 : 7 + rand() * 4, kind ? 6 + rand() * 3 : 3.4 + (rand() < 0.4 ? 3 : 0), rand() * Math.PI, kind);
+    }
+    wfx.buildBuildings(blds, gWorld, { night });
+    if (roads.length) wfx.roadMeshes(roads, gWorld, (x, y) => height(x, y), { night });
+    terrain.towns = towns.length; terrain.townsAt = towns.map(t => [Math.round(t.x), Math.round(t.y)]);
+    return blds.length;
   }
 
-  // Ağaçlar: `pick()` bir aday (x, y) üretir (ya da null); su/pist/bina/kar üzerinde değil
+  // §31 Ağaçlar: `pick()` bir aday (x, y) üretir (ya da null); su/pist/bina/kar üzerinde değil. Tür (iğne/geniş yapraklı) biyom gürültüsü + yükseklikle;
+  // parçalı InstancedMesh + LOD (flightsim_worldfx buildTrees); kar havasında taçlar açılır.
   function trees(nt, pick, height, waterZ, relH, hdg, rand, night) {
-    const crownG = new T.ConeGeometry(1, 1, 6); crownG.rotateX(Math.PI / 2); crownG.translate(0, 0, 0.5);
-    const trunkG = new T.CylinderGeometry(0.12, 0.18, 1, 5); trunkG.rotateX(Math.PI / 2); trunkG.translate(0, 0, 0.5);
-    const crown = new T.InstancedMesh(crownG, new T.MeshLambertMaterial({ color: 0xffffff }), nt);
-    const trunk = new T.InstancedMesh(trunkG, new T.MeshLambertMaterial({ color: night ? 0x2a2017 : 0x5a3f27 }), nt);
-    const m4 = new T.Matrix4(), q = new T.Quaternion(), sc = new T.Vector3(), p = new T.Vector3(), cc = new T.Color();
-    let placed = 0;
-    for (let tries = 0; placed < nt && tries < nt * 4; tries++) {
+    const items = [], P = weatherPreset(W.weather), biome = simplex2D(num(W.seed, 12345) ^ 0x51ED);
+    const snowTint = new T.Color(2.1, 2.2, 2.35);
+    for (let tries = 0; items.length < nt && tries < nt * 4; tries++) {
       const c = pick(); if (!c) continue;
       const [x, y] = c, r = Math.hypot(x, y);
       if (r < (W.runway !== false ? 330 : 60)) continue;
@@ -511,67 +580,72 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       if (z < waterZ + 2 || (!terrain.real && z > relH * 0.72) || (W.runway !== false && inRunway(x, y, hdg, 60)) || inWater(x, y, z)) continue;
       if (buildingsAABB.some(b => x > b.x1 - 3 && x < b.x2 + 3 && y > b.y1 - 3 && y < b.y2 + 3)) continue;
       if (nearSite(x, y, 30)) continue;   // §26 yer kontrol sahası açık alan
-      const hh = 6 + rand() * 9, rr = 1.8 + rand() * 2.2;
-      p.set(x, y, z - 0.3); sc.set(1, 1, hh * 0.35 + 0.3);
-      trunk.setMatrixAt(placed, m4.compose(p, q, sc));
-      p.set(x, y, z + hh * 0.3); sc.set(rr, rr, hh * 0.7);
-      crown.setMatrixAt(placed, m4.compose(p, q, sc));
-      cc.setHSL(0.27 + rand() * 0.08, 0.45 + rand() * 0.2, (night ? 0.12 : 0.22) + rand() * 0.12);
-      crown.setColorAt(placed, cc);
-      placed++;
+      const zr = terrain.real ? 0 : clamp(z / relH, 0, 1);
+      const conifer = rand() < clamp(0.35 + biome(x / 900, y / 900) * 0.45 + zr * 0.6, 0.05, 0.95);
+      const hh = conifer ? 8 + rand() * 12 : 6 + rand() * 9, rr = conifer ? hh * (0.2 + rand() * 0.06) : hh * (0.32 + rand() * 0.1);
+      const cc = conifer ? new T.Color(0.82 + rand() * 0.3, 0.86 + rand() * 0.3, 0.82 + rand() * 0.25) : new T.Color(0.85 + rand() * 0.45, 0.85 + rand() * 0.35, 0.7 + rand() * 0.3);
+      if (P.snowCover > 0) cc.lerp(snowTint, 0.42 * P.snowCover);
+      items.push({ x, y, z, h: hh, r: rr, sp: conifer ? 0 : 1, c: cc });
     }
-    crown.count = trunk.count = placed;
-    crown.instanceMatrix.needsUpdate = trunk.instanceMatrix.needsUpdate = true;
-    if (crown.instanceColor) crown.instanceColor.needsUpdate = true;
-    gWorld.add(trunk, crown);
-    return placed;
+    treeChunks = treeChunks.concat(wfx.buildTrees(items, gWorld, { size: terrain.size + 600, night }));
+    return items.length;
   }
 
   // Gerçek kip: su çokgenleri (yerel koordinat, bbox + z); nokta içinde mi
   let waterPolys = [];
   const inWater = (x, y, z) => waterPolys.some(w => x >= w.x1 && x <= w.x2 && y >= w.y1 && y <= w.y2 && z < w.z + 1.5 && pointInPoly(x, y, w.pts));
 
+  // §31 rüzgâr tulumu: pistin yanında (merkezden 60 m ileride, pist kenarından 24 m dışarıda), pist yoksa kalkış noktasının 40 m KD'sunda
+  function addWindsock() {
+    sock = wfx.createWindsock();
+    const hdg = num(W.runway_heading, 0) * DEG, onRw = W.runway !== false && !terrain.google || W.runway === true;
+    const lx = onRw ? RUNWAY_W / 2 + 24 : 28, ly = onRw ? 60 : 28;
+    sock.pos = { x: Math.cos(-hdg) * lx - Math.sin(-hdg) * ly, y: Math.sin(-hdg) * lx + Math.cos(-hdg) * ly };
+    sock.group.position.set(sock.pos.x, sock.pos.y, terrainHeight(sock.pos.x, sock.pos.y) - 0.1);
+    gWorld.add(sock.group);
+  }
+
   // ---------- prosedürel dünya ----------
   function buildProcedural(world) {
     terrain = makeTerrain(world);
     W = terrain.W;
     const { size, H, height, waterZ, rand } = terrain;
-    const { night, dusk } = skyAndLights(size);
-    const geo = new T.PlaneGeometry(size, size, GRID - 1, GRID - 1);
-    const pos = geo.attributes.position, col = new Float32Array(pos.count * 3);
-    const c = new T.Color(), sand = new T.Color(0xc2b280), grass1 = new T.Color(0x4f8a3a), grass2 = new T.Color(0x7a9a46),
-      rock = new T.Color(0x7d7569), snow = new T.Color(0xeef2f5);
+    const ring = preview ? 0 : size * 4;   // §31 ufuk halkası (yarı genişlik): makeTerrain her (x, y)'de tanımlı → dağlar dünya kenarında bitmez
+    const { night, dusk } = skyAndLights(size, preview ? 0 : size * 3, ring);
     const relH = Math.max(H, 1);
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), y = pos.getY(i), z = height(x, y);
-      pos.setZ(i, z);
-      if (z < waterZ + 1.5) c.copy(sand);
-      else if (z < relH * 0.35) c.lerpColors(grass1, grass2, clamp(z / (relH * 0.35), 0, 1));
-      else if (z < relH * 0.7) c.lerpColors(grass2, rock, (z - relH * 0.35) / (relH * 0.35));
-      else c.lerpColors(rock, snow, clamp((z - relH * 0.7) / (relH * 0.25), 0, 1));
-      if (night) c.multiplyScalar(0.55);
-      col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
-    }
-    geo.setAttribute('color', new T.BufferAttribute(col, 3));
+    wfx.U.relH.value = relH; wfx.U.waterZ.value = waterZ > -Infinity ? waterZ : -1e6; wfx.U.snowLine.value = H > 150 ? relH * 0.74 : 1e6;
+    wfx.setCloudBase(Math.max(1500, H * 1.1 + 700));
+    const G = preview ? 160 : 320;
+    const geo = new T.PlaneGeometry(size, size, G - 1, G - 1);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) pos.setZ(i, height(pos.getX(i), pos.getY(i)));
     geo.computeVertexNormals();
-    const ground = new T.Mesh(geo, new T.MeshLambertMaterial({ vertexColors: true }));
+    const ground = new T.Mesh(geo, wfx.groundMaterial());
     ground.name = 'arazi';
     ground.receiveShadow = true;
     gWorld.add(ground);
+    if (ring) {   // ana karenin içinde 2 m altta saklı (dikişsiz), dışında aynı yükseklik fonksiyonu
+      const rg = new T.PlaneGeometry(ring * 2, ring * 2, 127, 127), rp = rg.attributes.position, half = size / 2;
+      for (let i = 0; i < rp.count; i++) { const x = rp.getX(i), y = rp.getY(i); rp.setZ(i, height(x, y) - (Math.abs(x) < half && Math.abs(y) < half ? 2 : 0)); }
+      rg.computeVertexNormals();
+      const rm = new T.Mesh(rg, wfx.groundMaterial()); rm.name = 'ufuk-arazi';
+      gWorld.add(rm);
+    }
     if (waterZ > -Infinity) {
-      const water = new T.Mesh(new T.PlaneGeometry(size * 1.02, size * 1.02), new T.MeshPhongMaterial({
-        color: night ? 0x0b1d3a : dusk ? 0x3b5f8a : 0x2f6fa8, transparent: true, opacity: 0.86, shininess: 90, specular: 0x88aadd }));
+      const water = new T.Mesh(new T.PlaneGeometry(ring ? ring * 2 : size * 1.02, ring ? ring * 2 : size * 1.02), wfx.waterMaterial());
       water.position.z = waterZ;
+      water.renderOrder = 2;
       water.userData.heat = 0.05; heatWorld.push(water);   // termal: su soğuk (§22.3)
       gWorld.add(water);
     }
     const hdg = num(W.runway_heading, 0);
     if (W.runway !== false) { const rw = runwayMesh(hdg, RUNWAY_L, RUNWAY_W, night, dusk); rw.position.z = 0.05; gWorld.add(rw); }
     const nb = clamp(Math.round(num(W.building_count, 0)), 0, 400);
-    if (nb > 0) boxBuildings(nb, size, height, waterZ, relH, hdg, rand, night);
+    if (nb > 0) townBuildings(nb, size, height, waterZ, relH, hdg, rand, night);
     const density = clamp(num(W.tree_density, 0), 0, 1);
     const nt = Math.min(preview ? 3000 : MAX_TREES, Math.round(density * MAX_TREES));
     if (nt > 0) trees(nt, () => [(rand() - 0.5) * size * 0.98, (rand() - 0.5) * size * 0.98], height, waterZ, relH, hdg, rand, night);
+    addWindsock();
     addHomeMark();
   }
 
@@ -589,6 +663,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     terrain = { W: Wn, size, H, height, waterZ: -Infinity, rand, real: true, homeElev: real.homeElev, hmin: real.hmin, hmax: real.hmax, osm: real.osm, farSize: far ? far.size : 0 };   // .mesh aşağıda: ana arazi örgüsü (düzenek ışını, §13)
     W = Wn;
     const { night, dusk } = skyAndLights(size, far ? far.size / 2 : 0);
+    wfx.setCloudBase(Math.max(1500, real.hmax - real.hmin + 900));
     const osm = real.osm || { buildings: [], forests: [], water: [], runways: [] };
     const toXY = ll => { const p = toLocal(ll[0], ll[1]); return [p.x, p.y]; };
     const inside = pts => pts.some(([x, y]) => Math.abs(x) <= half && Math.abs(y) <= half);
@@ -607,8 +682,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     tex.colorSpace = T.SRGBColorSpace;
     tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 1);
     tex.generateMipmaps = true; tex.minFilter = T.LinearMipmapLinearFilter;
-    // Gece/akşam: doku çarpımsal koyulaştırma (atlas ham kalır, yeniden kullanılır)
-    const ground = new T.Mesh(geo, new T.MeshLambertMaterial({ map: tex, color: night ? 0x4c5670 : dusk ? 0xe8b898 : 0xffffff }));
+    // Gece/akşam: doku çarpımsal koyulaştırma (atlas ham kalır, yeniden kullanılır). §31: uydu dokusu üstüne ayrıntı + normal, kar örtüsü, ıslaklık
+    const ground = new T.Mesh(geo, wfx.groundMaterial({ satellite: true, map: tex, color: night ? 0x4c5670 : dusk ? 0xe8b898 : 0xffffff }));
     ground.receiveShadow = true;
     ground.name = 'arazi';
     gWorld.add(ground);
@@ -633,14 +708,14 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       const ftex = new T.CanvasTexture(far.atlas);
       ftex.colorSpace = T.SRGBColorSpace;
       ftex.anisotropy = tex.anisotropy; ftex.generateMipmaps = true; ftex.minFilter = T.LinearMipmapLinearFilter;
-      const fground = new T.Mesh(fgeo, new T.MeshLambertMaterial({ map: ftex, color: night ? 0x4c5670 : dusk ? 0xe8b898 : 0xffffff }));
+      const fground = new T.Mesh(fgeo, wfx.groundMaterial({ satellite: true, map: ftex, color: night ? 0x4c5670 : dusk ? 0xe8b898 : 0xffffff }));
       fground.name = 'uzak-arazi';
       gWorld.add(fground);
     }
 
     // --- su çokgenleri (OSM natural=water): düz yüzey, en alçak köşe −0.2 m ---
     waterPolys = [];
-    const waterMat = new T.MeshPhongMaterial({ color: night ? 0x0b1d3a : dusk ? 0x3b5f8a : 0x2f6fa8, transparent: true, opacity: 0.86, shininess: 90, specular: 0x88aadd, side: T.DoubleSide });
+    const waterMat = wfx.waterMaterial();   // §31 Fresnel gök yansıması + dalga + güneş parlaması
     for (const poly of osm.water) {
       const pts = poly.map(toXY);
       if (pts.length < 3 || !inside(pts)) continue;
@@ -649,14 +724,14 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       const z = zmin - 0.2;
       const shape = new T.Shape(pts.map(([x, y]) => new T.Vector2(x, y)));
       const m = new T.Mesh(new T.ShapeGeometry(shape), waterMat);
-      m.position.z = z; m.userData.heat = 0.05; heatWorld.push(m);   // termal: su soğuk
+      m.position.z = z; m.renderOrder = 2; m.userData.heat = 0.05; heatWorld.push(m);   // termal: su soğuk
       gWorld.add(m);
       waterPolys.push({ pts, z, x1, x2, y1, y2 });
     }
 
     // --- binalar (OSM): taban çokgen üçgenleme + duvarlar, tek BufferGeometry; AABB çarpışma için ---
     const hdg0 = num(Wn.runway_heading, 0);
-    const bpos = [], bnorm = [], bcol = [];
+    const bpos = [], bnorm = [], bcol = [], bfac = [], bbld = [];   // §31 cephe: aFac (u m, v m, çatı), aBld (tür, tohum)
     const roofC = new T.Color(), wallC = new T.Color();
     let nReal = 0;
     for (const b of osm.buildings) {
@@ -669,9 +744,10 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       // Kalkış alanı: merkez pisti (açıksa) ve 60 m çevresini kesen binalar atlanır (kent merkezinde pist binaların arasından geçer)
       const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
       if (Math.hypot(cx, cy) < 60 || (Wn.runway !== false && (inRunway(cx, cy, hdg0, 50) || pts.some(([x, y]) => inRunway(x, y, hdg0, 50))))) continue;
-      const zb = zmin - 0.6, zt = zmax + clamp(num(b.h, 8), 2, 400);
-      const hue = 0.07 + rand() * 0.06, light = night ? 0.22 : 0.55 + rand() * 0.25;
-      roofC.setHSL(hue, 0.1 + rand() * 0.12, light); wallC.setHSL(hue, 0.08 + rand() * 0.1, light * 0.8);
+      const zb = zmin - 0.6, bh = clamp(num(b.h, 8), 2, 400), zt = zmax + bh;
+      const hue = 0.06 + rand() * 0.07, light = 0.55 + rand() * 0.25;
+      roofC.setHSL(hue, 0.06 + rand() * 0.08, light * 0.62); wallC.setHSL(hue, 0.1 + rand() * 0.14, light);
+      const kind = bh < 10 ? 0 : bh < 32 ? 1 : 2, seed = rand() * 50;
       // Saat yönü denetimi (shoelace) — duvar normalleri dışa baksın
       let area = 0;
       for (let i = 0; i < pts.length; i++) { const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length]; area += ax * by - bx * ay; }
@@ -680,15 +756,17 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       try { tris = T.ShapeUtils.triangulateShape(pts.map(([x, y]) => new T.Vector2(x, y)), []); } catch { tris = []; }
       for (const [a, b2, c] of tris) {
         const o = ccw ? [a, b2, c] : [a, c, b2];
-        for (const k of o) { bpos.push(pts[k][0], pts[k][1], zt); bnorm.push(0, 0, 1); bcol.push(roofC.r, roofC.g, roofC.b); }
+        for (const k of o) { bpos.push(pts[k][0], pts[k][1], zt); bnorm.push(0, 0, 1); bcol.push(roofC.r, roofC.g, roofC.b); bfac.push(pts[k][0], pts[k][1], 1); bbld.push(kind, seed, bh); }
       }
+      let uAcc = 0;
       for (let i = 0; i < pts.length; i++) {
         const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
         const nx = (by - ay), ny = -(bx - ax), ln = Math.hypot(nx, ny) || 1;
         const s = ccw ? 1 : -1, n = [nx / ln * s, ny / ln * s, 0];
-        const quad = ccw ? [[ax, ay, zb], [bx, by, zb], [bx, by, zt], [ax, ay, zb], [bx, by, zt], [ax, ay, zt]]
-          : [[ax, ay, zb], [bx, by, zt], [bx, by, zb], [ax, ay, zb], [ax, ay, zt], [bx, by, zt]];
-        for (const v of quad) { bpos.push(...v); bnorm.push(...n); bcol.push(wallC.r, wallC.g, wallC.b); }
+        const ua = uAcc, ub = uAcc + ln; uAcc = ub;
+        const quad = ccw ? [[ax, ay, zb, ua], [bx, by, zb, ub], [bx, by, zt, ub], [ax, ay, zb, ua], [bx, by, zt, ub], [ax, ay, zt, ua]]
+          : [[ax, ay, zb, ua], [bx, by, zt, ub], [bx, by, zb, ub], [ax, ay, zb, ua], [ax, ay, zt, ua], [bx, by, zt, ub]];
+        for (const v of quad) { bpos.push(v[0], v[1], v[2]); bnorm.push(...n); bcol.push(wallC.r, wallC.g, wallC.b); bfac.push(v[3], v[2] - zmax, 0); bbld.push(kind, seed, bh); }
       }
       buildingsAABB.push({ x1, x2, y1, y2, z2: zt });
       nReal++;
@@ -698,17 +776,10 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       bg.setAttribute('position', new T.Float32BufferAttribute(bpos, 3));
       bg.setAttribute('normal', new T.Float32BufferAttribute(bnorm, 3));
       bg.setAttribute('color', new T.Float32BufferAttribute(bcol, 3));
-      gWorld.add(new T.Mesh(bg, new T.MeshLambertMaterial({ vertexColors: true, emissive: night ? 0x2a2410 : 0x000000 })));
-      if (night || dusk) {   // gece/akşam: bina ışıkları (çatı köşelerinde sıcak noktalar)
-        const lp = [], lc = [];
-        for (const b of buildingsAABB) {
-          for (const [x, y] of [[b.x1 + 1, b.y1 + 1], [b.x2 - 1, b.y2 - 1]]) { lp.push(x, y, b.z2 - 1.2); const warm = 0.75 + rand() * 0.25; lc.push(1, 0.85 * warm, 0.5 * warm); }
-        }
-        const pg = new T.BufferGeometry();
-        pg.setAttribute('position', new T.Float32BufferAttribute(lp, 3));
-        pg.setAttribute('color', new T.Float32BufferAttribute(lc, 3));
-        gWorld.add(new T.Points(pg, new T.PointsMaterial({ size: night ? 1.6 : 1.1, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: night ? 0.95 : 0.6 })));
-      }
+      bg.setAttribute('aFac', new T.Float32BufferAttribute(bfac, 3)); bg.setAttribute('aBld', new T.Float32BufferAttribute(bbld, 3));
+      const bm = new T.Mesh(bg, wfx.facadeMaterial(false));   // §31 pencere ızgarası + gece ışıklı pencereler (eski çatı noktası ışıkları yerine)
+      bm.castShadow = !preview; bm.receiveShadow = true; bm.name = 'osm-binalar';
+      gWorld.add(bm);
     }
     terrain.counts = { buildings: nReal, forests: 0, water: waterPolys.length, runways: 0 };
 
@@ -731,7 +802,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
 
     // --- ek kutu binalar (building_count; 0 = yalnız gerçek binalar) ---
     const nb = clamp(Math.round(num(Wn.building_count, 0)), 0, 400);
-    if (nb > 0) boxBuildings(nb, size, height, -Infinity, H, hdg, rand, night);
+    if (nb > 0) townBuildings(nb, size, height, -Infinity, H, hdg, rand, night);
 
     // --- ağaçlar: orman çokgenlerinde (alanla orantılı; tree_density ölçek: 0.3 ≈ 4000 ağaç/km²) ---
     const density = clamp(num(Wn.tree_density, 0), 0, 1);
@@ -765,6 +836,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
         terrain.counts.trees = trees(want, pick, height, -Infinity, H, hdg, rand, night);
       }
     }
+    addWindsock();
     addHomeMark();
   }
 
@@ -784,9 +856,11 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     terrain = { W: Wn, size, H: 200, height: g3d.height, waterZ: -Infinity, rand: rng(num(Wn.seed, 12345)), real: false, google: true, homeElev: g3d.homeElev, counts: null };
     W = Wn;
     const { night, dusk } = skyAndLights(size, G3D_HORIZON);   // karolar küresel LOD'lu: ufuk dünya boyutuna değil görüş uzaklığına bağlı (uzak dağlar kaba karolarla gelir)
-    g3d.setTime(Wn.time); g3d.setShadows(!preview && !!opts.g3dShadows);   // gölge isteğe bağlı (normal hesaplama + Lambert; varsayılan Basic: doku rengi doğrudan)
+    g3d.setTime(Wn.time); g3d.setWeatherLight?.(0.55 + 0.45 * weatherPreset(Wn.weather).light); g3d.setShadows(!preview && !!opts.g3dShadows);   // gölge isteğe bağlı (normal hesaplama + Lambert; varsayılan Basic: doku rengi doğrudan)
     scene.add(g3d.group);
     if (Wn.runway === true) { const rw = runwayMesh(num(Wn.runway_heading, 0), RUNWAY_L, 18, night, dusk); rw.position.z = 0.08; gWorld.add(rw); }
+    wfx.setCloudBase(1800);
+    addWindsock();
     addHomeMark();
   }
 
@@ -833,7 +907,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       }
     }
     disposeGroup(gWorld);
-    buildingsAABB = []; waterPolys = []; heatWorld.length = 0;
+    buildingsAABB = []; waterPolys = []; heatWorld.length = 0; treeChunks = []; sock = null;
     if (g3d) buildGoogle(Wn); else if (real) buildReal(Wn, real); else buildProcedural(Wn);
     onProgress?.({ stage: 'done', real: !!real, google: !!g3d, counts: terrain.counts || null, homeElev: terrain.homeElev ?? null, hmin: terrain.hmin ?? null, hmax: terrain.hmax ?? null });
   }
@@ -1180,8 +1254,17 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       return;
     }
     if (!launchCfg || (m !== 'ramp' && m !== 'vehicle') || drone.type !== 'sabit_kanat') return;
-    rig = createLaunchRig(T, { ...launchCfg, heading: num(W.runway_heading, 0), scale: MODEL_SCALE, night: W.time === 'night', dusk: W.time === 'dusk' });
+    rig = createLaunchRig(T, { ...launchCfg, heading: rampHeading(m === 'ramp' ? launchCfg : null, num(W.runway_heading, 0)), scale: MODEL_SCALE, night: W.time === 'night', dusk: W.time === 'dusk' });   // §31 rampa azimutu (yoksa pist yönü)
     scene.add(rig.group);
+  }
+  // §31 rampa yön/açı önizlemesi (ARM öncesi; sunucuya `launch_aim` ayrıca gider): düzenek yeniden kurulur (eğim silindiri geometrisi açıya bağlı)
+  function setRampAim(aim) {
+    if (!launchCfg || launchCfg.method !== 'ramp') return null;
+    const a = normRampAim({ ...launchCfg, ...aim }, rampHeading(launchCfg, num(W.runway_heading, 0)));
+    if (a.azimuth_deg === Math.round(rampHeading(launchCfg, num(W.runway_heading, 0))) % 360 && a.angle_deg === num(launchCfg.angle_deg, 15) && rig) return a;
+    launchCfg = { ...launchCfg, ...a };
+    buildRig();
+    return a;
   }
   async function setLaunch(cfg) {
     const prevMethod = launchCfg?.method || 'wheels';
@@ -1242,7 +1325,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     tele.servoFn = Array.isArray(t.servo_fn) ? t.servo_fn : null;   // isteğe bağlı SERVOn_FUNCTION listesi (4 aileron, 19 elevator, 21 rudder, 2/3 flap, 77/78 elevon L/R)
     tele.servoRev = Array.isArray(t.servo_rev) ? t.servo_rev : null;   // SERVOn_REVERSED listesi: yüzeyler mantıksal yönde (§13.1)
     tele.mode = t.mode || null;
-    tele.terrainAgl = typeof t.terrain_agl === 'number' ? t.terrain_agl : null;   // ArduPilot TERRAIN_REPORT AGL (SRTM): 3B arazi örneğiyle tutarlılık süzgeci (§18)
+    tele.terrainAgl = typeof t.terrain_agl === 'number' ? t.terrain_agl : null;
+    if (typeof t.wind_spd === 'number') { windSt.liveMs = t.wind_spd; windSt.liveDir = typeof t.wind_dir === 'number' ? t.wind_dir : null; windSt.liveAt = now; }   // §31 anlık rüzgâr (esintili)   // ArduPilot TERRAIN_REPORT AGL (SRTM): 3B arazi örneğiyle tutarlılık süzgeci (§18)
     tele.speed = r.speed;   // son karenin hızı (çarpışma denetimi için; render döngüsü enterpolasyonlu hızla günceller)
     tele.last = t;
     if (r.first) { tele.has = true; camSpring.pos.copy(cur.pos); camSpring.vel.set(0, 0, 0); }
@@ -1451,6 +1535,21 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     free.drag = { x: e.clientX, y: e.clientY };
   };
   const onPointerUp = () => { free.drag = null; };
+  // §31 rampaya tıklama → yön/açı arayüzü (opts.onRigClick): kısa tık (≤ 6 px, ≤ 450 ms), ışın düzenek grubuna
+  const rigTap = { x: 0, y: 0, t: 0 };
+  const rayc = new T.Raycaster(), ndc = new T.Vector2();
+  const pickRig = (clientX, clientY) => {
+    if (!rig || rig.method !== 'ramp') return false;
+    const r = canvas.getBoundingClientRect();
+    ndc.set((clientX - r.left) / r.width * 2 - 1, -(clientY - r.top) / r.height * 2 + 1);
+    rayc.setFromCamera(ndc, camera);
+    return rayc.intersectObject(rig.group, true).length > 0 || rayc.intersectObject(drone.group, true).length > 0 && !!rig.carrying;
+  };
+  const onTapDown = e => { rigTap.x = e.clientX; rigTap.y = e.clientY; rigTap.t = performance.now(); };
+  const onTapUp = e => {
+    if (!opts.onRigClick || Math.hypot(e.clientX - rigTap.x, e.clientY - rigTap.y) > 6 || performance.now() - rigTap.t > 450) return;
+    if (pickRig(e.clientX, e.clientY)) opts.onRigClick({ clientX: e.clientX, clientY: e.clientY, aim: launchCfg ? normRampAim(launchCfg, rampHeading(launchCfg, num(W.runway_heading, 0))) : null });
+  };
   const onWheel = e => {
     if (camMode === 'fpv' && e.shiftKey) { setGimbalZoom(camFx.zoom * ((e.deltaY || e.deltaX) > 0 ? 1 / GIMBAL_ZOOM.step : GIMBAL_ZOOM.step)); e.preventDefault(); }   // Shift+tekerlek: yakınlaştırma
     else if (camMode === 'fpv') { setGimbal(e.deltaY > 0 ? -3 : 3); e.preventDefault(); }
@@ -1461,6 +1560,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     canvas.addEventListener('pointerdown', onPointerDown); canvas.addEventListener('pointermove', onPointerMove);
     canvas.addEventListener('pointerup', onPointerUp); canvas.addEventListener('pointercancel', onPointerUp);
     canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('pointerdown', onTapDown); canvas.addEventListener('pointerup', onTapUp);
   }
 
   // ---------- çarpışma (§5/§18) ----------
@@ -2024,7 +2124,18 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       l.userData.bulb.visible = l.userData.kind !== 'strobe' || on || !night;
     }
     // Gölge: güneş dronu izler
-    if (!preview) { const fp = roverFocus(); lights.sun.target.position.copy(fp); lights.sun.position.copy(fp).addScaledVector(sunDir, 120); }
+    if (!preview) { const fp = roverFocus(); lights.sun.target.position.copy(fp); lights.sun.position.copy(fp).addScaledVector(sunDir, 400); }
+    // §31 dünya katmanı: gök/bulut/yağış/akış çizgileri/mercek damlaları, ağaç LOD'u (5 Hz), rüzgâr tulumu (+ Google'da yüzeye 1 Hz oturma), şimşek
+    {
+      const wnd = windNow(now);
+      wfx.update(now, rawDt, { camera, focus: tele.has || drone.group ? drone.group.position : null, camMode, wind: wnd, mount: mountEl, vehicleCam: !preview && (camMode === 'pilot' || camMode === 'fpv') });
+      if (treeChunks.length && now - treeLodAt > 200) { treeLodAt = now; wfx.updateTreeLod(treeChunks, camera.position); }
+      if (sock) {
+        sock.update(now / 1000, wnd.ms, wnd.dir, sockState(wnd.ms));
+        if (terrain?.google && now - sockAt > 1000) { sockAt = now; sock.group.position.z = terrainHeight(sock.pos.x, sock.pos.y) - 0.1; }
+      }
+      lights.hemi.intensity = (wfx.fx.hemiI ?? lights.hemi.intensity) + wfx.flash * 2.2;
+    }
     // Google 3B karoları: kamera çözünürlüğü + LOD + yer ofseti (kalkışa dek); kamera kipi değişse de aynı camera nesnesi
     // İkincil kameralar (radar / EO / PiP / nişangâh) de karo yükleyicisine kayıtlı: kendi bakış bölgeleri için karo + LOD (yoksa "yarım" görüntü)
     if (g3d) { try { g3d.setAuxCameras?.(preview ? [] : auxCameras()); g3d.update(camera, tele.has && tele.armed && tele.speed > 1, now); } catch { /* karo hatası kareyi durdurmasın */ } }
@@ -2682,8 +2793,10 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     canvas.removeEventListener('pointerdown', onPointerDown); canvas.removeEventListener('pointermove', onPointerMove);
     canvas.removeEventListener('pointerup', onPointerUp); canvas.removeEventListener('pointercancel', onPointerUp);
     canvas.removeEventListener('wheel', onWheel);
+    canvas.removeEventListener('pointerdown', onTapDown); canvas.removeEventListener('pointerup', onTapUp);
     controls.dispose();
     rov.dust?.dispose();
+    wfx.dispose();
     disposeGroup(gWorld); disposeGroup(drone.group); mission.dispose(); disposeGroup(tg.group); tg.radar?.remove();
     disposeGroup(site.group); disposeGroup(rv.scene); rv.rt?.dispose(); rv.mat.dispose(); rv.quad.geometry.dispose(); ev.rt?.dispose(); ev.mat.dispose(); smokeTex?.dispose(); sc.rt?.dispose(); sc.mat.dispose(); sc.ovlTex?.dispose();   // §26 + §27 nişangâh
     if (rvUnder.mesh) { scene.remove(rvUnder.mesh); rvUnder.mesh.geometry.dispose(); rvUnder.mesh.material.map?.dispose(); rvUnder.mesh.material.dispose(); rvUnder.mesh = null; }   // radar altlığı
@@ -2710,6 +2823,12 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     setWorld, setOrigin, setType, snapshotModel, clearCollision, resize, dispose, netStats, motionStats, setKeyboardLock,
     crashFx: playCrashFx, crashFxInfo: () => (crashFx ? { active: crashFx.active, params: crashFx.params } : null),
     setLaunch, setLaunchPhase, get launchPhase() { return rig ? rig.phase : null; }, get groundLocked() { return gLock.on; },   // kalkış yöntemi + yerde kilit (§13)
+    // §31 hava / rüzgâr / rampa: canlı rüzgâr (sunucu `wind` olayı; tele.wind_spd zaten akar), akış çizgileri aç/kapa, rüzgâr bilgisi (HUD), rampa yön/açı önizlemesi
+    setWind: w => { if (!w) return; for (const [k, wk] of [['ms', 'wind_ms'], ['dir', 'wind_dir'], ['gust', 'wind_gust'], ['turb', 'wind_turb']]) if (w[k] != null || w[wk] != null) W[wk] = num(w[k] ?? w[wk], W[wk]); windSt.liveAt = -Infinity; },
+    windInfo: () => windNow(performance.now()),
+    setWindStreaks: v => { wfx.setStreaks(v); }, getWindStreaks: () => wfx.streaksOn,
+    setRampAim, pickRig, get rampAim() { return launchCfg?.method === 'ramp' ? normRampAim(launchCfg, rampHeading(launchCfg, num(W.runway_heading, 0))) : null; },
+    fxInfo: () => { const i = renderer.info; return { weather: normWeather(W.weather), precip: wfx.precipKind, precipCount: wfx.precipCount, streaks: wfx.streaksOn, treeChunks: treeChunks.length, treeHi: treeChunks.filter(c => c.hi.visible).length, sock: !!sock, calls: i.render.calls, tris: i.render.triangles, geos: i.memory.geometries, texs: i.memory.textures, fog: scene.fog ? [Math.round(scene.fog.near), Math.round(scene.fog.far)] : null, towns: terrain?.towns ?? null, townsAt: terrain?.townsAt || null }; },
     setRoute, setMission, setMissionCurrent, get route() { return routePts.slice(); }, get mission() { return mission.data; }, get missionObjects() { return mission.objectCount; },   // §14/§18: SITL'deki görev (çizim flightsim_mission.js)
     get modelInfo() { return { type: drone.type, model: drone.model, bbox: drone.bbox || null, props: drone.props.length }; },
     // §31 kara aracı teşhisi: zemine oturma (gösterilen z ↔ 4 köşe yüzeyi, eğim/yatış), teker/direksiyon, örnek niteliği (Google kaba karo sayısı)

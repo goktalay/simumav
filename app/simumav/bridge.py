@@ -105,6 +105,10 @@ WEATHER = ('clear', 'cloudy', 'rain', 'fog', 'snow')
 TIME_OF_DAY = ('day', 'dusk', 'night')
 TIME_CEKIRDEK = {'day': 'day', 'dusk': 'dusk', 'night': 'night'}
 FOG = {'clear': 0.05, 'cloudy': 0.2, 'rain': 0.45, 'fog': 0.8, 'snow': 0.5}
+# HEPGO §31: parkur hava durumu çekirdeğe world.weather olarak gider (bulut, yağış parçacıkları, ıslak zemin/kar örtüsü, görüş). Görüşü artık hava
+# ön ayarı kısar (flightsim_weather.fogRange: sis × vis) → sis kaydırıcısı yalnız hafif pus (çift kısma olmasın): FOG_HAVA.
+FOG_HAVA = {'clear': 0.05, 'cloudy': 0.1, 'rain': 0.15, 'fog': 0.3, 'snow': 0.15}
+WEATHER_CEKIRDEK = {'clear': 'clear', 'cloudy': 'cloudy', 'rain': 'rain', 'fog': 'fog', 'snow': 'snow'}
 
 # ---- parametre beyaz listesi (§7 "Girdi") ----
 PARAM_AD = re.compile(r'^[A-Z][A-Z0-9_]{1,15}$')
@@ -607,7 +611,8 @@ def _world(track, drone_type, launch):
         mode = 'real'
     out = {'mode': mode, 'size_m': int(max(500, min(20000, (track.get('radius_m') or 2000) * 2))), 'time': TIME_CEKIRDEK.get(track.get('time_of_day'), 'day'),
            'wind_ms': float(max(0, min(30, w.get('speed_ms') or 0))), 'wind_dir': float(max(0, min(359.99, w.get('dir_deg') or 0))),
-           'fog': FOG.get(track.get('weather'), 0.1), 'runway': drone_type == 'plane' and launch.get('method') != 'hand',
+           'fog': FOG_HAVA.get(track.get('weather'), 0.1), 'runway': drone_type == 'plane' and launch.get('method') != 'hand',
+           'weather': WEATHER_CEKIRDEK.get(track.get('weather'), 'clear'), 'wind_gust': float(max(0, min(20, w.get('gust') or 0))),   # §31
            'launch': {'method': LAUNCH_CEKIRDEK.get(launch.get('method'), 'wheels'), 'angle_deg': launch.get('angle_deg', 15.0), 'release_kmh': launch.get('release_kmh', 70.0),
                       **{k: launch[k] for k in ('loaded', 'aim_az_deg', 'aim_el_deg') if launch.get(k) is not None}}}   # §27 fırlatıcı alanları
     out.update({k: tw[k] for k in WORLD_KEYS if k in tw and tw[k] is not None})   # parkurun dünya ayarları (seed, pist yönü, ağaç yoğunluğu …)

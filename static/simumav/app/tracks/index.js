@@ -17,7 +17,7 @@ export const PRESETS = [
   { name: 'İzmir Selçuk', lat: 37.9510, lon: 27.3290 },
   { name: 'Kapadokya', lat: 38.6430, lon: 34.8280 },
 ];
-const WEATHER = ['clear', 'cloudy', 'fog', 'rain'];
+const WEATHER = ['clear', 'cloudy', 'fog', 'rain', 'snow'];   // bridge.WEATHER ile aynı (HEPGO §31: kar → yağış parçacıkları + zemin beyazlaması)
 const MAX_VIEWERS = 6;
 // Gerçek API (docs/simumav.md §3–§4): time_of_day 'day'|'dusk'|'night'; world yalnız WORLD_DEFAULTS alt kümesi (seed, size_m, tree_density, mountain_*, building_count,
 // runway, runway_heading, water, fog, landing_circle_m); gates i 0..n-1 (görünümde i+1), radius 1–20, agl 1–120.

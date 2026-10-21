@@ -30,6 +30,7 @@ export const LAUNCH_PARAM_DEFS = {
   loaded8: { field: 'loaded', label: 'Dolu hücre', min: 1, max: 8, step: 1, unit: '/ 8', integer: true },
   aim_az_deg: { label: 'Nişan yönü', min: 0, max: 359, step: 1, unit: '°' },
   aim_el_deg: { label: 'Nişan açısı', min: 10, max: 85, step: 1, unit: '°' },
+  azimuth_deg: { label: 'Rampa yönü (azimut)', min: 0, max: 359, step: 1, unit: '°' },   // §31: rampa yönü (yoksa pist yönü); SITL ev yönü
 };
 export const paramField = key => LAUNCH_PARAM_DEFS[key]?.field || key;
 // [anahtar, ad, açıklama] LAUNCH_METHODS'tan; types: seçeneğin sunulduğu dron tipleri; params: LAUNCH_PARAM_DEFS anahtarları; note: ek açıklama satırı;
@@ -37,7 +38,7 @@ export const paramField = key => LAUNCH_PARAM_DEFS[key]?.field || key;
 const LM = Object.fromEntries(LAUNCH_METHODS.map(([k, name, desc]) => [k, { name, desc }]));
 export const LAUNCH_OPTIONS = [
   { key: 'wheels', types: ['sabit_kanat'], ...LM.wheels, params: [], icon: 'wheels' },
-  { key: 'ramp', types: ['sabit_kanat'], ...LM.ramp, params: ['angle_deg'], icon: 'ramp' },
+  { key: 'ramp', types: ['sabit_kanat'], ...LM.ramp, params: ['angle_deg', 'azimuth_deg'], icon: 'ramp' },
   { key: 'vehicle', types: ['sabit_kanat'], ...LM.vehicle, params: ['release_kmh'], icon: 'vehicle', note: 'Araç tipi: pickup (kasa kızağı). Araç pist boyunca hızlanır; bırakma hızına ulaşınca uçak serbest kalır ve tırmanır.' },
   // §27 INTERCEPTOR fırlatıcıları (flightsim_launcher.js): kutu/tüp dikey; el fırlatıcısında nişan yönü/açısı (uçuşta da fare/klavye/sanal kumanda ile)
   { key: 'pod4', types: ['interceptor'], ...LM.pod4, params: ['loaded4'], icon: 'pod4', note: '"Yer kontrolünü koru" görevinde dolu hücre görevin interceptor sayısıdır: ⌈sayı / 4⌉ kutu yan yana kurulur (10\'lu raf yerine).' },

@@ -14,6 +14,7 @@ export const GAUGE_THEMES = [
   ['glass', 'Dijital cam kokpit', 'MFD karoları: büyük sayısal değer ve seviye şeridi.'],
   ['minimal', 'Minimal / şeffaf', 'Zeminsiz ince halkalar; HUD ile uyumlu.'],
   ['military', 'Retro askerî', 'Zeytin yeşili gövde, fosfor yeşili rakamlar.'],
+  ['none', 'Göstergesiz', 'Kadranlar gizli, ekran temiz; küçük düğme ya da G tuşuyla geri açılır.'],
 ];
 export const GAUGE_THEME_KEYS = GAUGE_THEMES.map(([k]) => k);
 export const GAUGE_THEME_DEFAULT = 'classic';
@@ -32,7 +33,7 @@ export function saveGaugeTheme(v, storage = null) { const t = normGaugeTheme(v);
 // ---------------------------------------------------------------- metinler ----------------------------------------------------------------
 export const GTHEME_TEXTS = [
   ['gtheme.title', 'Gösterge tasarımı'], ['gtheme.sub', 'Alt ortadaki yakıt · hız · motor · batarya kadranlarının görünümü. Uçuşta kadranlara tıklayıp ya da G tuşuyla değiştirilebilir.'],
-  ['gtheme.short', 'Tasarım'], ['gtheme.cycle', 'Gösterge tasarımı (G)'], ['gtheme.changed', 'Gösterge tasarımı: {t}'],
+  ['gtheme.short', 'Tasarım'], ['gtheme.none_show', 'Göstergeler'], ['gtheme.cycle', 'Gösterge tasarımı (G)'], ['gtheme.changed', 'Gösterge tasarımı: {t}'],
   ...GAUGE_THEMES.flatMap(([k, n, d]) => [[`gtheme.${k}`, n], [`gtheme.${k}_desc`, d]]),
 ];
 const TXT = Object.fromEntries(GTHEME_TEXTS);
@@ -77,7 +78,9 @@ export function gaugeThemePreviewSvg(theme, { dark = false, game = false } = {})
   const t = normGaugeTheme(theme);
   const bg = `<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${dark ? '#0b1730' : '#7fb2e5'}"/><stop offset=".62" stop-color="${dark ? '#1d2a44' : '#cfe3f5'}"/><stop offset=".63" stop-color="${dark ? '#1b2a1c' : '#7a9b5a'}"/><stop offset="1" stop-color="${dark ? '#101a10' : '#5d7e43'}"/></linearGradient><filter id="gl" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation=".9" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><rect width="160" height="90" fill="url(#sky)"/>`;
   let body = '';
-  if (t === 'glass') {
+  if (t === 'none') {   // göstergesiz: temiz ekran, yalnız küçük "göster" hapı
+    body = `<g transform="translate(58 66)"><rect width="44" height="14" rx="7" fill="${dark ? 'rgba(4,8,16,.7)' : 'rgba(6,12,22,.55)'}" stroke="rgba(255,255,255,.45)" stroke-width=".6"/><circle cx="9" cy="7" r="3.2" fill="none" stroke="#fff" stroke-width="1"/><path d="M9 7V4.4" stroke="#fff" stroke-width="1"/><rect x="15" y="5.6" width="23" height="2.8" rx="1.4" fill="rgba(255,255,255,.75)"/></g>`;
+  } else if (t === 'glass') {
     const tile = (x, w, label, val, unit, frac, col) => `<g transform="translate(${x} 22)"><rect width="${w}" height="46" rx="4" fill="${dark ? 'rgba(4,8,16,.82)' : 'rgba(6,12,22,.78)'}" stroke="rgba(56,232,255,.45)" stroke-width=".8"/><text x="5" y="10" fill="#7dd3fc" font-size="6.5" font-weight="700" font-family="ui-monospace,monospace" letter-spacing=".8">${label}</text><text x="${w - 5}" y="31" fill="#ffffff" font-size="17" font-weight="800" text-anchor="end" font-family="ui-monospace,monospace">${val}</text><text x="5" y="31" fill="#22d3ee" font-size="6" font-family="ui-monospace,monospace">${unit}</text><rect x="5" y="37" width="${w - 10}" height="4" rx="2" fill="rgba(255,255,255,.14)"/><rect x="5" y="37" width="${((w - 10) * frac).toFixed(1)}" height="4" rx="2" fill="${col}"/></g>`;
     body = tile(8, 46, 'FUEL', '3.9', 'L', 0.78, '#22c55e') + tile(57, 50, 'SPD', '72', 'KM/H', 0.6, '#38bdf8') + tile(110, 42, 'BATT', '24', '%', 0.24, '#fbbf24');
   } else {
@@ -92,6 +95,11 @@ export function gaugeThemePreviewSvg(theme, { dark = false, game = false } = {})
 const D = 'html[data-theme="dark"] .fs-stage';
 const CSS = `
 .fs-gauge-bar{display:none}
+/* ---------- Göstergesiz: kadranlar gizli; yalnız küçük "Göstergeler" hapı (tıkla → panel/tema seçimi) ---------- */
+.fs-gt-restore{display:none}
+.fs-stage .fs-gauges[data-gtheme="none"]>.fs-gauge{display:none}
+.fs-stage .fs-gauges[data-gtheme="none"]>.fs-gt-restore{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.35);background:rgba(8,14,22,.55);color:#fff;font:600 11px system-ui,sans-serif;cursor:pointer;backdrop-filter:blur(4px)}
+.fs-stage .fs-gauges[data-gtheme="none"]>.fs-gt-restore:hover{background:rgba(8,14,22,.75)}
 /* ---------- Uçak kokpiti ---------- */
 .fs-stage .fs-gauges[data-gtheme="cockpit"]{--fsg-face:#0b0d10;--fsg-ring:#2c3036;--fsg-edge:#6b7280;--fsg-tick:#f4f4f4;--fsg-tick2:#b9bec6;--fsg-num:#f4f4f4;--fsg-needle:#ffffff;--fsg-pin:#1a1d22;--fsg-pin2:#9ca3af;--fsg-digit:#ffffff;--fsg-unit:#c9cdd4;--fsg-ico:#c9cdd4;--fsg-red:#ef4444;--fsg-blue:#38bdf8;font-family:"B612","Bahnschrift","DIN Alternate","Roboto Condensed","Arial Narrow",system-ui,sans-serif}
 ${D} .fs-gauges[data-gtheme="cockpit"],.fs-stage .fs-gauges.sm-game[data-gtheme="cockpit"]{--fsg-num:#ffe7b8;--fsg-tick:#ffe7b8;--fsg-digit:#ffefcc;--fsg-unit:#e8c88f;--fsg-ring:#25282d}

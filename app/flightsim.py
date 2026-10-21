@@ -62,7 +62,7 @@ DIKEY_TIPLER = ('interceptor',)   # §25: dikey kalkış/iniş yapan uçak tipi 
 ROVER_TIPLERI = ('rover',)
 DRIVES = ('ackermann', 'skid')
 MAV_TYPE_GROUND_ROVER = 10
-KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend', 'motor_cut')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}; defend: §26 {action: 'next'}; motor_cut: {on: bool}
+KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend', 'motor_cut', 'wind', 'launch_aim')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}; defend: §26 {action: 'next'}; motor_cut: {on: bool}; wind: §31 {ms, dir, gust, turb} (uçuşta rüzgâr); launch_aim: §31 {azimuth_deg, angle_deg} (rampa, ARM öncesi)
 # Motor kesme (`motor_cut {on}`; yalnız uçak tipleri): ARM'lı kalır, motor durur, kumanda yüzeyleri ve uçuş kipi çalışmaya devam eder → süzülme.
 # Gerçek ArduPlane 4.7.2 SITL'de ölçüldü (100–145 m AGL; FBWA/FBWB/CRUISE/AUTO/RTL/MANUAL):
 #   · zorla DISARM (400, 21196): yüzeyler stabilize etmeye devam eder ve fizik süzülür, AMA ArduPlane disarm'lıyken HOME'u anlık konuma taşır →
@@ -122,7 +122,7 @@ TERRAIN_HATA_OLAY_S = 60.0            # sn: yükseklik kaynağı hatası uyarıs
 BLOK_HATA = 56                        # tüm istek başarısız (iş parçacığı hatası): 56 parça atlandı sayılır
 WORLD_DEFAULTS = {'mode': 'procedural', 'seed': 12345, 'size_m': 4000, 'tree_density': 0.3, 'mountain_height': 300, 'mountain_count': 4,
                   'building_count': 40, 'runway': True, 'runway_heading': 0, 'water': 0.1, 'time': 'day', 'wind_ms': 3, 'wind_dir': 270, 'fog': 0.2,
-                  'landing_circle_m': 30, 'launch': dict(LAUNCH_DEFAULTS)}   # landing_circle_m: görev bitiş noktasındaki iniş dairesi çapı (§18)
+                  'landing_circle_m': 30, 'launch': dict(LAUNCH_DEFAULTS), 'weather': 'clear', 'wind_gust': 0.0, 'wind_turb': 0.0}   # landing_circle_m: görev bitiş noktasındaki iniş dairesi çapı (§18)
 _WORLD_KIP = ('procedural', 'real', 'google3d')   # real: gerçek yükseklik + uydu doku + OSM (sim_terrain vekili); google3d: Google Photorealistic 3D Tiles (§10)
 # Google 3B kipi: Map Tiles API anahtarı (HTTP referrer kısıtlı; tarayıcıya /g3d-key ile verilir, sunucu Google'a istek atmaz ve önbelleklemez)
 GOOGLE_KEY = os.environ.get('GOOGLE_MAPS_API_KEY', '').strip()
@@ -134,8 +134,78 @@ def google3d_etkin():
 # alan → (tür, alt, üst) — sayısal alanlar; 'time' ve 'runway' ayrı denetlenir
 _WORLD_SINIR = {'seed': (int, 0, 2 ** 31 - 1), 'size_m': (int, 500, 20000), 'tree_density': (float, 0, 1), 'mountain_height': (float, 0, 3000),
                 'mountain_count': (int, 0, 50), 'building_count': (int, 0, 500), 'runway_heading': (float, 0, 359.99), 'water': (float, 0, 1),
-                'wind_ms': (float, 0, 30), 'wind_dir': (float, 0, 359.99), 'fog': (float, 0, 1), 'landing_circle_m': (float, 10, 200)}
+                'wind_ms': (float, 0, 30), 'wind_dir': (float, 0, 359.99), 'fog': (float, 0, 1), 'landing_circle_m': (float, 10, 200),
+                'wind_gust': (float, 0, 20), 'wind_turb': (float, 0, 10)}
 _WORLD_ZAMAN = ('day', 'dusk', 'night')
+# §31 hava durumu (görsel: bulut/yağış/ıslak zemin/kar örtüsü/görüş — flightsim_weather.js WEATHER_PRESETS) ve rüzgâr (fizik: SITL SIM_WIND_*).
+# wind_gust (m/s): esinti — sunucu 1 Hz'de SIM_WIND_SPD = wind_ms + wind_gust·g(t) yazar (g: esinti_carpani, JS gustFactor ile aynı formül);
+# wind_turb (m/s): SITL SIM_WIND_TURB (rastgele türbülans; ArduPilot SITL fiziği) — ikisi de sahte kinematikte de etkili.
+WEATHER = ('clear', 'cloudy', 'rain', 'snow', 'fog', 'storm')
+ESINTI_ARALIK_S = 1.0     # sn: esinti PARAM_SET sıklığı (SITL fiziği arada sabit hız; MP de PARAM_VALUE görür — SIM_WIND_* kalıcı kayda girmez)
+
+
+def esinti_carpani(t, seed=0):
+    """Esinti çarpanı g(t) ∈ [0, 1] (flightsim_weather.js gustFactor ile birebir aynı): üç uyumsuz sinüs, kare (seyrek sert esinti)."""
+    s = float(seed or 0) * 0.7311
+    a = (0.55 * math.sin(2 * math.pi * t / 11.3 + s) + 0.3 * math.sin(2 * math.pi * t / 4.7 + 2.1 * s)
+         + 0.15 * math.sin(2 * math.pi * t / 1.9 + 3.3 * s))
+    g = min(1.0, max(0.0, 0.5 + 0.5 * a))
+    return round(g * g, 4)
+
+
+def ruzgar_vektoru(ms, gelis_deg):
+    """Hava hareketi (kuzey, doğu) m/s: rüzgâr `gelis_deg`den GELİR (SIM_WIND_DIR uzlaşımı) → akış from + 180°."""
+    a = math.radians(float(gelis_deg or 0))
+    v = max(0.0, float(ms or 0))
+    return -v * math.cos(a), -v * math.sin(a)
+
+
+def ruzgar_dogrula(p, world=None):
+    """`wind` komutu (§31; uçuşta rüzgâr): {ms?, dir?, gust?, turb?} — verilmeyen alan mevcut dünyadan. Hatalı → SimHata('invalid')."""
+    if not isinstance(p, dict):
+        raise SimHata('invalid', 'wind parametreleri nesne olmalı')
+    w = world or {}
+    out = {}
+    for k, wk in (('ms', 'wind_ms'), ('dir', 'wind_dir'), ('gust', 'wind_gust'), ('turb', 'wind_turb')):
+        v = p.get(k)
+        tur, alt, ust = _WORLD_SINIR[wk]
+        if v is None:
+            out[wk] = float(w.get(wk, WORLD_DEFAULTS[wk]) or 0)
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not (alt <= v <= ust):
+            raise SimHata('invalid', f'wind.{k} {alt}…{ust} arasında olmalı')
+        out[wk] = float(v)
+    if not any(p.get(k) is not None for k in ('ms', 'dir', 'gust', 'turb')):
+        raise SimHata('invalid', 'wind: ms / dir / gust / turb alanlarından en az biri gerekir')
+    return out
+
+
+def rampa_aim_dogrula(p):
+    """`launch_aim` komutu (§31; rampa yön/açı, ARM öncesi): {azimuth_deg 0…359.99, angle_deg 10…30} — en az biri. Hatalı → SimHata('invalid')."""
+    if not isinstance(p, dict):
+        raise SimHata('invalid', 'launch_aim parametreleri nesne olmalı')
+    out = {}
+    for k, alt, ust in (('azimuth_deg', 0, 359.99), ('angle_deg', 10, 30)):
+        v = p.get(k)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not (alt <= v <= ust):
+            raise SimHata('invalid', f'launch_aim.{k} {alt}…{ust} arasında olmalı')
+        out[k] = round(float(v), 2)
+    if not out:
+        raise SimHata('invalid', 'launch_aim: azimuth_deg ya da angle_deg gerekir')
+    return out
+
+
+def kalkis_yonu(tip, launch, world):
+    """SITL ev yönü (°; `--home lat,lon,alt,yön`): sabit kanatta kalkış yönü — rampa azimutu (launch.azimuth_deg) varsa o, yoksa pist yönü
+    (tekerlekli/araç pist boyunca koşar). Diğer tiplerde 0 (eski davranış)."""
+    if tip != 'sabit_kanat':
+        return 0.0
+    l = launch or {}
+    if l.get('method') == 'ramp' and l.get('azimuth_deg') is not None:
+        return float(l['azimuth_deg']) % 360.0
+    return float((world or {}).get('runway_heading') or 0) % 360.0
 
 
 class SimHata(Exception):
@@ -286,7 +356,7 @@ def launch_dogrula(l):
         if l['method'] not in LAUNCH_METHODS:
             raise SimHata('invalid', f"world.launch.method {' | '.join(LAUNCH_METHODS)} olmalı")
         out['method'] = l['method']
-    for k, alt, ust in (('angle_deg', 10, 30), ('release_kmh', 40, 110)):
+    for k, alt, ust in (('angle_deg', 10, 30), ('release_kmh', 40, 110), ('azimuth_deg', 0, 359.99)):   # azimuth_deg (§31): rampa yönü; yoksa pist yönü
         v = l.get(k)
         if v is None:
             continue
@@ -364,6 +434,10 @@ def world_dogrula(w):
         if w['time'] not in _WORLD_ZAMAN:
             raise SimHata('invalid', 'world.time day | dusk | night olmalı')
         out['time'] = w['time']
+    if 'weather' in w and w['weather'] is not None:   # §31
+        if w['weather'] not in WEATHER:
+            raise SimHata('invalid', f"world.weather {' | '.join(WEATHER)} olmalı")
+        out['weather'] = w['weather']
     if 'mode' in w and w['mode'] is not None:
         if w['mode'] not in _WORLD_KIP:
             raise SimHata('invalid', 'world.mode procedural | real | google3d olmalı')
@@ -456,14 +530,14 @@ class SahteKinematik:
     ROVER_DONUS_CAPI = 1.8
     ROVER_SKID_DONUS = math.radians(140.0)
 
-    def __init__(self, tip, lat, lon, alt, ruzgar_ms, launch=None, heading=0, drive=None):
+    def __init__(self, tip, lat, lon, alt, ruzgar_ms, launch=None, heading=0, ruzgar_yon=0, esinti=0, turb=0, drive=None):
         self.tip = tip
         self.rover = tip in ROVER_TIPLERI
         self.drive = drive if drive in DRIVES else 'ackermann'
         self.plane = tip in PLANE_TIPLERI
         self.dikey = tip in DIKEY_TIPLER   # §25 INTERCEPTOR: dikey kalkış (pist koşusu yok), havada yatay uçuş; gövde yönelimi `att_body`
         self.lat0, self.lon0, self.alt0 = float(lat), float(lon), float(alt or 0)
-        self.ruzgar = float(ruzgar_ms or 0)
+        self.ruzgar_ayarla(ruzgar_ms, ruzgar_yon, esinti, turb)
         self.launch = dict(launch or LAUNCH_DEFAULTS)   # sabit kanat kalkış yöntemi (§13): yer koşusu / rampa / araç taklidi
         self.heading = math.radians(float(heading or 0))   # pist yönü (kalkış koşusu bu yönde)
         self.speedup = 1.0   # §23 simülasyon hızı: adım dt × speedup (SITL SIM_SPEEDUP karşılığı; sure_ms de hızlı akar)
@@ -493,6 +567,32 @@ class SahteKinematik:
 
     RC_VARSAYILAN = (1500, 1500, 1000, 1500, 1500, 1500, 1500, 1500)
     RC_VARSAYILAN_ROVER = (1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500)   # ArduRover: gaz ortası = dur (ileri/geri çift yönlü)
+
+    def ruzgar_ayarla(self, ms, yon=None, esinti=None, turb=None):
+        """§31 rüzgâr (SITL SIM_WIND_SPD/DIR/TURB + sunucu esintisi karşılığı): taban hız, geldiği yön (°), esinti genliği, türbülans (m/s)."""
+        self.ruzgar = float(ms or 0)
+        if yon is not None:
+            self.ruzgar_yon = float(yon or 0)
+        if esinti is not None:
+            self.ruzgar_esinti = float(esinti or 0)
+        if turb is not None:
+            self.ruzgar_turb = float(turb or 0)
+        for k in ('ruzgar_yon', 'ruzgar_esinti', 'ruzgar_turb'):
+            if not hasattr(self, k):
+                setattr(self, k, 0.0)
+
+    def ruzgar_simdi(self):
+        """Anlık rüzgâr hızı (m/s): taban + esinti·g(t) (t = oturum saati; SITL esintisiyle aynı formül)."""
+        return self.ruzgar + self.ruzgar_esinti * esinti_carpani(getattr(self, 'sure_ms', 0.0) / 1000.0)
+
+    def ruzgar_kd(self):
+        """Anlık hava hareketi (kuzey, doğu) m/s — türbülans: küçük yumuşak salınım (rastgele değil; testler deterministik)."""
+        wn, we = ruzgar_vektoru(self.ruzgar_simdi(), self.ruzgar_yon)
+        if self.ruzgar_turb > 0:
+            t = getattr(self, 'sure_ms', 0.0) / 1000.0
+            wn += self.ruzgar_turb * 0.5 * math.sin(t * 2.3 + 0.4)
+            we += self.ruzgar_turb * 0.5 * math.sin(t * 1.7 + 1.9)
+        return wn, we
 
     def komut(self, name, p):
         p = p or {}
@@ -573,7 +673,8 @@ class SahteKinematik:
         self.yaw = (self.yaw + 9.81 * math.tan(self.roll) / max(v, 1.0) * dt + math.pi) % (2 * math.pi) - math.pi
         batis = v / SAHTE_SUZULME_ORANI
         self.pitch = -math.atan2(batis, v)
-        self.vn, self.ve, self.vd = v * math.cos(self.yaw), v * math.sin(self.yaw), batis
+        wn, we = self.ruzgar_kd()   # §31: hava kütlesiyle sürüklenir (yer hızı = hava hızı + rüzgâr)
+        self.vn, self.ve, self.vd = v * math.cos(self.yaw) + wn, v * math.sin(self.yaw) + we, batis
         cos_lat = math.cos(math.radians(self.lat0))
         self.lat += self.vn * dt / 110574.0
         self.lon += self.ve * dt / (111320.0 * cos_lat)
@@ -684,6 +785,8 @@ class SahteKinematik:
             return
         if self.kalkis is not None:   # sabit kanat kalkış koşusu (pist yönünde düz): yöntem taklidi
             k, m = self.kalkis, self.launch.get('method', 'wheels')
+            wn, we = self.ruzgar_kd()
+            bas = -(wn * math.cos(self.heading) + we * math.sin(self.heading))   # §31 baş rüzgârı bileşeni (m/s; < 0 kuyruk)
             if k['faz'] == 'run':
                 if m == 'ramp':
                     if k['tetik']:
@@ -698,9 +801,10 @@ class SahteKinematik:
                     if k['hiz'] >= hedef - 0.01:
                         k['faz'] = 'air'
                 else:
-                    k['hiz'] = min(12.0, k['hiz'] + 4.0 * dt)       # tekerlekli: 12 m/s döndürme hızı
+                    donus = 12.0 - min(4.0, max(0.0, bas))           # tekerlekli: 12 m/s HAVA hızında döner — baş rüzgârı yer koşusunu kısaltır (§31)
+                    k['hiz'] = min(donus, k['hiz'] + 4.0 * dt)
                     self.throttle = 100.0
-                    if k['hiz'] >= 11.99:
+                    if k['hiz'] >= donus - 0.01:
                         k['faz'] = 'air'
             else:
                 self.throttle = 85.0
@@ -708,8 +812,10 @@ class SahteKinematik:
                 self.vd = -self.TIRMANMA
                 self.pitch = 0.2
             self.yaw = self.heading
-            self.vn, self.ve = k['hiz'] * math.cos(self.heading), k['hiz'] * math.sin(self.heading)
-            k['yol'] += k['hiz'] * dt
+            # §31: koşu (run) yer hızıyla; havada (air) yer hızı = hava hızı − baş rüzgârı (tırmanırken rüzgârla sürüklenir)
+            yer = k['hiz'] if k['faz'] == 'run' else max(2.0, k['hiz'] - bas)
+            self.vn, self.ve = yer * math.cos(self.heading), yer * math.sin(self.heading)
+            k['yol'] += yer * dt
             cos_lat = math.cos(math.radians(self.lat0))
             self.lat = self.lat0 + k['yol'] * math.cos(self.heading) / 110574.0
             self.lon = self.lon0 + k['yol'] * math.sin(self.heading) / (111320.0 * cos_lat)
@@ -757,16 +863,31 @@ class SahteKinematik:
                 self.yaw = math.atan2(self.ve, self.vn)
                 self.roll, self.pitch = 0.0, 0.05
                 return
-        if self.alt_rel > 1.0:   # merkez etrafında daire (saat yönü)
-            w = self.HIZ / self.YARICAP
-            self.aci += w * dt
+        if self.alt_rel > 1.0:   # merkez etrafında daire (saat yönü). §31 rüzgâr: yer izi daire kalır (ArduPilot loiter rüzgârı telafi eder),
+            # yer hızı = hava hızı + rüzgârın iz boyunca bileşeni (rüzgâr altında hızlı, rüzgâr üstünde yavaş); burun hava hızı yönünde (yengeç açısı);
+            # kopter rüzgâra doğru yatar.
+            tn, te = -math.sin(self.aci), math.cos(self.aci)
+            wn, we = self.ruzgar_kd()
+            boy = wn * tn + we * te                                   # rüzgârın iz boyunca bileşeni; yanal bileşen yengeç açısıyla karşılanır
+            vg = max(2.0, boy + math.sqrt(max(1.0, self.HIZ ** 2 - (wn * wn + we * we - boy * boy))))   # hava hızı = HIZ sabit
+            self.aci += vg / self.YARICAP * dt
             cos_lat = math.cos(math.radians(self.lat0))
             self.lat = self.lat0 + self.YARICAP * math.cos(self.aci) / 110574.0
             self.lon = self.lon0 + self.YARICAP * math.sin(self.aci) / (111320.0 * cos_lat)
-            self.vn, self.ve = -self.HIZ * math.sin(self.aci), self.HIZ * math.cos(self.aci)
-            self.yaw = math.atan2(self.ve, self.vn)
-            self.roll = math.atan((self.HIZ ** 2) / (self.YARICAP * 9.81)) if self.plane else 0.12
+            self.vn, self.ve = vg * -math.sin(self.aci), vg * math.cos(self.aci)
+            an, ae = self.vn - wn, self.ve - we   # hava hızı vektörü
+            self.yaw = math.atan2(ae, an)
+            self.roll = math.atan((vg ** 2) / (self.YARICAP * 9.81)) if self.plane else 0.12
             self.pitch = 0.05 if self.plane else -0.05
+            if not self.plane and (wn or we):   # kopter: rüzgâra karşı eğim (gövde çerçevesinde; ~1° / m/s, ≤ 25°)
+                cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+                ileri, sag = wn * cy + we * sy, -wn * sy + we * cy   # hava hareketinin gövde bileşenleri
+                self.pitch += max(-0.44, min(0.44, ileri * 0.0175))
+                self.roll += max(-0.44, min(0.44, -sag * 0.0175))
+            if self.ruzgar_turb > 0:   # türbülans: yönelimde küçük salınım
+                t = self.sure_ms / 1000.0
+                self.roll += self.ruzgar_turb * 0.012 * math.sin(t * 6.1)
+                self.pitch += self.ruzgar_turb * 0.008 * math.sin(t * 4.3 + 1.0)
         else:
             self.vn = self.ve = 0.0
 
@@ -779,6 +900,13 @@ class SahteKinematik:
             return [0.0, round(math.radians(self.nisan[1]), 4), round(math.radians(self.nisan[0]), 4)]
         return [0.0, round(math.pi / 2, 4), round(self.yaw, 4)]
 
+    def hava_hizi(self):
+        """Hava hızı (m/s): havada yer hızı vektörü − rüzgâr; yerde yer hızı (rüzgâr hava hızı göstergesine yerde yansımaz — basit)."""
+        if self.alt_rel <= 0.5:
+            return math.hypot(self.vn, self.ve)
+        wn, we = self.ruzgar_kd()
+        return math.hypot(self.vn - wn, self.ve - we)
+
     def tele(self):
         hs = math.hypot(self.vn, self.ve)
         ek = {'att_body': self.govde()} if self.dikey else {'servo': self.servo()} if self.rover else {}
@@ -786,7 +914,7 @@ class SahteKinematik:
                 'roll': round(self.roll, 4), 'pitch': round(self.pitch, 4), 'yaw': round(self.yaw, 4),
                 'rs': round(self.rs, 3), 'ps': round(self.ps, 3), 'ys': round(self.ys, 3), 'tbm': int(self.sure_ms), 'tbm_pos': int(self.sure_ms),
                 'vn': round(self.vn, 2), 've': round(self.ve, 2), 'vd': round(self.vd, 2),
-                'airspeed': round(hs + self.ruzgar * 0.3, 2), 'groundspeed': round(hs, 2), 'heading': round(math.degrees(self.yaw) % 360, 1),
+                'airspeed': round(self.hava_hizi(), 2), 'groundspeed': round(hs, 2), 'heading': round(math.degrees(self.yaw) % 360, 1),
                 'climb': round(-self.vd, 2), 'mode': self.mode, 'armed': self.armed, 'gps_fix': 6, 'sats': 18,   # RTK Fixed (gerçek SITL ile tutarlı)
                 'batt_v': round(self.batt_v, 2), 'batt_pct': int(max(0, min(100, (self.batt_v - 10.5) / 2.1 * 100))),
                 'throttle': round(self.throttle, 1), 'rc': list(self.rc), 'home': dict(self.home)}
@@ -914,7 +1042,8 @@ class SimSession:
         self._motor_cut_istek = None     # (on, zaman): son 218 isteği (red ACK'inde bayrak geri alınır)
         self.sahte = None
         if not SITL_ENABLED:
-            self.sahte = SahteKinematik(tip, center['lat'], center['lon'], center.get('alt'), world.get('wind_ms'), self.launch, world.get('runway_heading'), self.drive)
+            self.sahte = SahteKinematik(tip, center['lat'], center['lon'], center.get('alt'), world.get('wind_ms'), self.launch, kalkis_yonu(tip, self.launch, world) if tip == 'sabit_kanat' else world.get('runway_heading'),
+                                        world.get('wind_dir'), world.get('wind_gust'), world.get('wind_turb'), drive=self.drive)
         d = _dialect()
         self.mav = d.MAVLink(None, srcSystem=GCS_SYSID, srcComponent=GCS_COMP)   # kodlayıcı
         self.mav_arac = d.MAVLink(None, srcSystem=1, srcComponent=1)             # sahte kip: hub'a araç çerçeveleri (sysid 1)
@@ -930,7 +1059,8 @@ class SimSession:
                      'gps_fix': 0, 'sats': 0, 'batt_v': None, 'batt_pct': None, 'throttle': 0.0, 'rc': [0] * 8, 'home': None,
                      'servo': None,   # SERVO_OUTPUT_RAW 1…8 µs (gerçek SITL; kontrol yüzeyi animasyonu, §5) — sahte kipte None → istemci rc'den türetir
                      'servo_fn': [None] * 8,   # SERVO1..8_FUNCTION (PARAM_VALUE'dan; 3B model flap/aileron/elevon/ruddervator eşlemesi için)
-                     'servo_rev': [None] * 8}  # SERVO1..8_REVERSED (PARAM_VALUE'dan; 3B yüzeyi MANTIKSAL yönde oynatır — §13.1)
+                     'servo_rev': [None] * 8,  # SERVO1..8_REVERSED (PARAM_VALUE'dan; 3B yüzeyi MANTIKSAL yönde oynatır — §13.1)
+                     'wind_spd': float(world.get('wind_ms') or 0), 'wind_dir': float(world.get('wind_dir') or 0)}   # §31 anlık rüzgâr (esintili; HUD/tulum/akış çizgileri)
         self._tele_son = 0.0             # son `tele` yayını (duvar saati; bekçi)
         self._tele_tbm = -10 ** 9        # son yayının SITL time_boot_ms'i (kapı: TELE_TBM_KAPI)
         self._att_son = 0.0              # son ATTITUDE alımı (ATTITUDE akıyorsa GLOBAL_POSITION_INT yayın tetiklemez)
@@ -1082,6 +1212,7 @@ class SimSession:
             sitl_model = self._sitl_modeli()   # sabit kanat: plane[-elevon|-vtail][-catapult] (düzen §13.1 + rampa §13); diğer tipler None (TIP_ESLEME)
             port, err = await ex(None, lambda: drone_sitl.YONETICI.baslat(self.kimlik, self.type, c['lat'], c['lon'], sysid=1,
                                                                           irtifa=c.get('alt') or EV_IRTIFA, konsol=self._konsol, model=sitl_model,
+                                                                          yon=kalkis_yonu(self.type, self.launch, self.world),   # §31: uçak burnu kalkış yönünde (rampa azimutu / pist)
                                                                           log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type, **self.montaj_arg)
                                                                           + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]], temiz=True))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir)
             if port and self.rec['bin']:
@@ -1729,10 +1860,81 @@ class SimSession:
             for msgid, us in MESAJ_ARALIKLARI:
                 self._gonder(self.mav.command_long_encode(self.sysid, self.comp, 511, 0, msgid, us, 0, 0, 0, 0, 0))
 
-    def _ruzgar_yaz(self, d=None):
+    def ruzgar_simdi(self, t=None):
+        """§31 anlık rüzgâr (m/s, geldiği yön °): taban + esinti·g(t); t = SITL saati (sn; tele.tbm) — sahte kipte kinematiğin saati."""
+        w = self.world
+        if t is None:
+            t = float(self.tele.get('tbm') or 0) / 1000.0
+        hiz = float(w.get('wind_ms') or 0) + float(w.get('wind_gust') or 0) * esinti_carpani(t)
+        return round(hiz, 2), float(w.get('wind_dir') or 0)
+
+    def _ruzgar_yaz(self, d=None, yalniz_hiz=False):
+        """SITL rüzgârı (§31): SIM_WIND_SPD (esintili anlık), SIM_WIND_DIR (geldiği yön), SIM_WIND_TURB (türbülans). `yalniz_hiz`: esinti döngüsü."""
         d = d or _dialect()
-        for ad, deger in (('SIM_WIND_SPD', self.world.get('wind_ms', 0)), ('SIM_WIND_DIR', self.world.get('wind_dir', 0))):
+        hiz, yon = self.ruzgar_simdi()
+        self.tele['wind_spd'], self.tele['wind_dir'] = hiz, yon
+        satirlar = (('SIM_WIND_SPD', hiz),) if yalniz_hiz else (('SIM_WIND_SPD', hiz), ('SIM_WIND_DIR', yon), ('SIM_WIND_TURB', float(self.world.get('wind_turb') or 0)))
+        for ad, deger in satirlar:
             self._gonder(self.mav.param_set_encode(self.sysid, self.comp, ad.encode(), float(deger), d.MAV_PARAM_TYPE_REAL32))
+
+    def _esinti_adim(self):
+        """_dongu (1 Hz): esinti açıksa SIM_WIND_SPD güncellenir (gerçek SITL); sahte kipte kinematik kendisi hesaplar, yalnız tele alanı."""
+        if not float(self.world.get('wind_gust') or 0):
+            return
+        if self.sahte is not None:
+            self.tele['wind_spd'] = round(self.sahte.ruzgar_simdi(), 2)
+            return
+        if self._heartbeat_alindi and self.state == 'HAZIR':
+            self._ruzgar_yaz(yalniz_hiz=True)
+
+    async def ruzgar_degistir(self, p):
+        """`wind` komutu (§31): uçuşta rüzgâr — dünya güncellenir, SITL'e yazılır (sahte: kinematik), olay + WS `wind` yayını."""
+        yeni = ruzgar_dogrula(p, self.world)
+        self.world.update(yeni)
+        if self.sahte is not None:
+            self.sahte.ruzgar_ayarla(yeni['wind_ms'], yeni['wind_dir'], yeni['wind_gust'], yeni['wind_turb'])
+            self.tele['wind_spd'], self.tele['wind_dir'] = round(self.sahte.ruzgar_simdi(), 2), yeni['wind_dir']
+        elif self._heartbeat_alindi:
+            self._ruzgar_yaz()
+        else:
+            self.tele['wind_spd'], self.tele['wind_dir'] = self.ruzgar_simdi()
+        ek = (f" · esinti {yeni['wind_gust']:g}" if yeni['wind_gust'] else '') + (f" · türbülans {yeni['wind_turb']:g}" if yeni['wind_turb'] else '')
+        self._olay(f"Rüzgâr: {yeni['wind_ms']:g} m/s · {yeni['wind_dir']:.0f}°{ek}", 6)
+        w = {'wind_ms': yeni['wind_ms'], 'wind_dir': yeni['wind_dir'], 'wind_gust': yeni['wind_gust'], 'wind_turb': yeni['wind_turb']}
+        self._yay({'t': 'wind', 'ts': round(time.time(), 3), **w})
+        return w
+
+    async def rampa_ayarla(self, p):
+        """`launch_aim` komutu (§31): rampa yönü/açısı — yalnız sabit kanat + rampa, ARM ÖNCESİ (disarm, yerde, kalkış dizisi yok).
+        Açı → TKOFF_LVL_PITCH (yeniden başlatma yok). Yön → SITL ev/burun yönü yalnız açılışta verilebilir (`--home …,yön`; ArduPlane'de yerdeki
+        uçağın yönünü değiştiren parametre/komut yok — SIM_OPOS_HDG de yalnız --home verilmezse okunur) → oturum AYNI ayarlarla yeniden
+        konuşlandırılır (reset: SITL yeniden başlar, ~5 sn). Sahte kipte kinematiğin kalkış yönü anında değişir."""
+        if self.type != 'sabit_kanat' or self.launch.get('method') != 'ramp':
+            raise SimHata('invalid', 'Rampa ayarı yalnız fırlatma rampalı sabit kanatta')
+        yeni = rampa_aim_dogrula(p)
+        if self.tele.get('armed') or float(self.tele.get('alt_rel') or 0) > 1.0 or self.launch_phase not in (None, 'idle') or \
+                (self._launch_task is not None and not self._launch_task.done()):
+            raise SimHata('invalid', 'Rampa yalnız kalkıştan önce (DISARM, yerde) ayarlanır')
+        eski_yon = kalkis_yonu(self.type, self.launch, self.world)
+        eski_aci = float(self.launch.get('angle_deg') or 15)
+        self.launch.update(yeni)
+        if isinstance(self.world.get('launch'), dict):
+            self.world['launch'].update(yeni)
+        yon = kalkis_yonu(self.type, self.launch, self.world)
+        yon_degisti = abs((yon - eski_yon + 180) % 360 - 180) >= 0.5
+        aci_degisti = abs(float(self.launch.get('angle_deg') or 15) - eski_aci) >= 0.25
+        yeniden = False
+        if self.sahte is not None:
+            self.sahte.heading = math.radians(yon)
+            self.sahte.launch = dict(self.launch)
+        elif aci_degisti and self._heartbeat_alindi:
+            self._param_set((('TKOFF_LVL_PITCH', float(self.launch['angle_deg'])),))
+        self._olay(f"Rampa: yön {yon:.0f}° · açı {float(self.launch['angle_deg']):g}°" + (' — yeniden konuşlandırılıyor (SITL yönü)' if yon_degisti and self.sahte is None else ''), 6)
+        self._yay({'t': 'launch_cfg', 'ts': round(time.time(), 3), 'launch': dict(self.launch), 'redeploy': bool(yon_degisti and self.sahte is None)})
+        if yon_degisti and self.sahte is None and self.state == 'HAZIR':
+            yeniden = True
+            await self.reset()
+        return {'launch': dict(self.launch), 'heading': round(yon, 2), 'redeploy': yeniden}
 
     def _tele_yay(self, tbm=None, zorla=False):
         """`tele` yayını: gerçek SITL'de her ATTITUDE'da (ATTITUDE akmıyorsa GLOBAL_POSITION_INT'te); kapı SITL zamanıyla (TELE_TBM_KAPI ms) —
@@ -1957,6 +2159,10 @@ class SimSession:
             if self.type not in PLANE_TIPLERI:   # kopter: kanat yok, motor kesmek düşürür → ön yüz DISARM'ı onayla göndermeli
                 raise SimHata('invalid', 'Motor kesme yalnız uçak tiplerinde (sabit kanat / VTOL / INTERCEPTOR); kopterde havada DISARM aracı düşürür')
             p = {'on': p['on']}
+        if name == 'wind':   # §31 uçuşta rüzgâr (hazırlık sırasında da dünyaya yazılır; SITL kalp atışında uygulanır)
+            return {'ok': True, 'wind': await self.ruzgar_degistir(p)}
+        if name == 'launch_aim':   # §31 rampa yön/açı (ARM öncesi; yön değişirse SITL yeniden konuşlandırılır)
+            return {'ok': True, **await self.rampa_ayarla(p)}
         if name == 'camera':   # §22.3: ön yüz türü değiştirdi → oturum (ve kapanışta kayıt satırı) son türü saklar; SITL'e gitmez
             if p.get('type') is None:
                 raise SimHata('invalid', 'camera.type gerekir')
@@ -2177,7 +2383,7 @@ class SimSession:
             out.append(enc.global_position_int_encode(tbm, int(k.lat * 1e7), int(k.lon * 1e7), int((k.alt0 + k.alt_rel) * 1000), int(k.alt_rel * 1000),
                                                       int(k.vn * 100), int(k.ve * 100), int(k.vd * 100), int((math.degrees(k.yaw) % 360) * 100)))
             out.append(enc.attitude_encode(tbm, k.roll, k.pitch, k.yaw, k.rs, k.ps, k.ys))
-            out.append(enc.vfr_hud_encode(hs + k.ruzgar * 0.3, hs, int(math.degrees(k.yaw) % 360), int(k.throttle), k.alt0 + k.alt_rel, -k.vd))
+            out.append(enc.vfr_hud_encode(k.hava_hizi(), hs, int(math.degrees(k.yaw) % 360), int(k.throttle), k.alt0 + k.alt_rel, -k.vd))
         if not out:
             return
         buf = b''
@@ -2303,6 +2509,10 @@ class SimSession:
             now = time.time()
             try:
                 self.gorev.tik()   # §18: 1 Hz iz + istatistikler
+            except Exception:   # noqa: BLE001
+                pass
+            try:
+                self._esinti_adim()   # §31 esinti: SIM_WIND_SPD 1 Hz
             except Exception:   # noqa: BLE001
                 pass
             if self.gcs_addr is not None and now - self.gcs_last > GCS_SESSIZLIK:

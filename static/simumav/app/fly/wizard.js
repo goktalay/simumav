@@ -153,6 +153,9 @@ export function worldFromTrack(track, mapsKey) {
     fog: pct(pick('fog', 'fog_pct')) ?? 0.15, runway: pick('runway') !== false, runway_heading: Number(pick('runway_heading', 'runway_deg', 'heading')) || 0,
     time: timeOfDay(pick('time', 'time_of_day') ?? track?.time_of_day), wind_ms: Number(track?.wind?.speed_ms ?? pick('wind_ms')) || 0, wind_dir: Number(track?.wind?.dir_deg ?? pick('wind_dir')) || 0,
     mountain_height: 300, mountain_count: 4, water: 0.1, landing_circle_m: 30,
+    // HEPGO §31: parkur hava durumu (bridge WEATHER: clear/cloudy/rain/fog/snow) → çekirdek world.weather (bulut, yağış, ıslak zemin/kar, görüş);
+    // esinti (wind.gust) → world.wind_gust (sunucu SITL'e 1 Hz SIM_WIND_SPD; 3B tulum/akış çizgileri aynı formülle)
+    weather: ['clear', 'cloudy', 'rain', 'fog', 'snow'].includes(track?.weather) ? track.weather : 'clear', wind_gust: Math.max(0, Number(track?.wind?.gust) || 0),
   };
 }
 const TIME_MAP = { day: 'day', dusk: 'dusk', night: 'night', gunduz: 'day', aksam: 'dusk', gece: 'night', 'Gündüz': 'day', 'Akşam': 'dusk', 'Gece': 'night' };

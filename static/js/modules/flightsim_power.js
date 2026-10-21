@@ -341,7 +341,9 @@ export function createPowerGauges(stage, { h, tr, getSettings = () => null, getS
     popBody, h('div', { class: 'fs-power-foot small' }, tr('Yakıt: mesafe + gaz kolu · Batarya: saatlik W + servo · Biterse yalnız uyarı, uçuş sürer')));
   const gtBtns = GAUGE_THEME_KEYS.map(k => h('button', { type: 'button', 'data-gtheme': k, title: GT(`gtheme.${k}_desc`), onclick: e => { e.stopPropagation(); setTheme(k, true); } }, GT(`gtheme.${k}`)));
   pop.append(h('div', { class: 'fs-gt-row' }, h('span', null, GT('gtheme.short')), gtBtns));
-  const el = h('div', { class: 'fs-gauges', hidden: true, 'data-nofuel': tr('ELEKTRİK'), 'data-gtheme': gtheme }, G.fuel.el, G.speed.el, G.engine.el, G.elec.el, pop);
+  // Göstergesiz temada kadranlar gizli; bu hap paneli (tema seçimi dahil) açar
+  const restore = h('button', { type: 'button', class: 'fs-gt-restore', title: GT('gtheme.none_desc'), onclick: e => { e.stopPropagation(); togglePop(); } }, '◔ ', GT('gtheme.none_show'));
+  const el = h('div', { class: 'fs-gauges', hidden: true, 'data-nofuel': tr('ELEKTRİK'), 'data-gtheme': gtheme }, G.fuel.el, G.speed.el, G.engine.el, G.elec.el, restore, pop);
   function setTheme(t, user = false) {
     gtheme = normGaugeTheme(t); el.dataset.gtheme = gtheme;
     gtBtns.forEach(b => b.classList.toggle('on', b.dataset.gtheme === gtheme));
