@@ -214,6 +214,23 @@ export async function createGoogleTiles(opts) {
 
   // ---- kare güncellemesi: kamera çözünürlüğü, LOD, yer ofseti, ilerleme ----
   let groundOffset = 0, offsetFrozen = false, offsetReported = false, firstOffsetT = 0, lastOffsetT = 0, lastPct = -1, disposed = false;
+  // İkincil kameralar (radar / EO / PiP / nişangâh — §26/§22.4/§27; aynı renderer'da render hedefine çizilir): karo seçimi (frustum + LOD) varsayılan
+  // olarak yalnız ANA kameraya göredir → ikincil kamera başka bölgeye bakınca karo yoktur (radar/EO "yarım" görüntü). 3DTilesRenderer çoklu kamerayı
+  // destekler (setCamera/deleteCamera/setResolution): her karede etkin ikincil kameralar kendi render hedefi çözünürlüğüyle kaydedilir, kalkanlar
+  // silinir; karo kümesi tüm kameraların birleşimidir (LOD: en ince gereken). Liste: [{ cam, w, h }] (w/h = render hedefi pikseli).
+  const aux = new Map();   // cam → [w, h]
+  function setAuxCameras(list) {
+    const want = new Map();
+    for (const a of list || []) if (a?.cam && a.cam !== camera && a.w > 0 && a.h > 0) want.set(a.cam, [Math.round(a.w), Math.round(a.h)]);
+    for (const c of [...aux.keys()]) if (!want.has(c)) { tiles.deleteCamera?.(c); aux.delete(c); }
+    for (const [c, [w, h]] of want) {
+      if (!aux.has(c)) tiles.setCamera(c);
+      const o = aux.get(c);
+      if (!o || o[0] !== w || o[1] !== h) tiles.setResolution?.(c, w, h);
+      aux.set(c, [w, h]);
+      c.updateMatrixWorld();   // karo seçimi kameranın matrixWorld/matrixWorldInverse'ünü kullanır (poz son render'dan)
+    }
+  }
   function update(cam, airborne = false, now = performance.now()) {
     if (disposed) return;
     if (cam && cam !== camera) { tiles.deleteCamera?.(camera); tiles.setCamera(cam); }
@@ -252,6 +269,7 @@ export async function createGoogleTiles(opts) {
   }
   function dispose() {
     if (disposed) return;
+    setAuxCameras([]);   // havuzdaki örnek bir sonraki oturumda eski ikincil kameralara karo yüklemesin
     disposed = true;
     hCache.clear();
     tiles.group.removeFromParent();
@@ -260,7 +278,8 @@ export async function createGoogleTiles(opts) {
   }
 
   return {
-    group, tiles, height, heightFine, hasSurface, surfaceAt, update, attribution, dispose,
+    group, tiles, height, heightFine, hasSurface, surfaceAt, update, attribution, dispose, setAuxCameras,
+    get auxCameras() { return aux.size; },
     get rootRequests() { return entry.rootRequests; },
     setTime(t) { time = t || 'day'; retint(); },
     setShadows(v) { shadows = !!v; retint(); },

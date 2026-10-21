@@ -34,6 +34,8 @@ export const SITE_TEXTS = [
   ['site.eo_type', 'EO kamera türü (gündüz / termal / gece)'], ['site.day', 'GÜNDÜZ'], ['site.thermal', 'TERMAL'], ['site.night', 'GECE'],
   ['site.eo_idle', 'HEDEF SEÇİLMEDİ'], ['site.eo_idle_hint', 'Radar ekranında hedefe tıklayın ya da Tab'], ['site.eo_out', 'MENZİL DIŞI'], ['site.eo_slew', 'YÖNLENİYOR'],
   ['site.eo_track', 'İZ'], ['site.az', 'AZ'], ['site.el', 'EL'], ['site.rng', 'MZL'],
+  ['site.eo_follow', 'TAKİP'], ['site.eo_follow_t', 'Takibe dön: seçili hedefi izle, oto yakınlaştırma (çift tık)'], ['site.eo_manual', 'ELLE'],
+  ['site.eo_drag_hint', 'Sürükle: döndür · tekerlek: yakınlaştır'], ['site.eo_body_t', 'Basılı sürükle: pan/tilt · tekerlek / iki parmak: yakınlaştır · çift tık: takibe dön'],
   ['site.mission', 'YER KONTROLÜNÜ KORU'], ['site.wave', 'DALGA {w}/{n}'], ['site.prep_left', 'Hazırlık {t}'], ['site.next_wave', 'Sonraki dalga {t}'], ['site.last_wave', 'Son dalga'],
   ['site.health', 'İSTASYON'], ['site.icepts', 'INTERCEPTOR'], ['site.killed', 'Önlenen'], ['site.leaked', 'Sızan'], ['site.active', 'Aktif tehdit'],
   ['site.next_btn', 'Sıradaki interceptor'], ['site.next_title', 'Sıradaki interceptor\'ı pad\'e konuşlandır (N) — uçmuş olan harcanır'],
@@ -140,6 +142,8 @@ const CSS = `
 .fs-site-hd button:hover{background:rgba(255,255,255,.16)}
 .fs-site-hd button.on{background:rgba(90,255,170,.22);border-color:rgba(90,255,170,.5)}
 .fs-site-bd{position:relative;cursor:crosshair}
+.fs-site-scr.eo .fs-site-bd{cursor:grab;touch-action:none}.fs-site-scr.eo .fs-site-bd.grabbing{cursor:grabbing}
+.fs-site-hd button.fs-site-fol{width:auto;padding:0 6px;color:#ffe14a;border-color:rgba(255,225,74,.55)}
 .fs-site-scr.fs-float{position:absolute;z-index:7;margin:0}
 .fs-site-scr.dragging{box-shadow:0 18px 44px rgba(0,0,0,.6),0 0 0 2px rgba(90,255,170,.55);transition:none}
 .fs-site-scr.eo.dragging{box-shadow:0 18px 44px rgba(0,0,0,.6),0 0 0 2px rgba(140,200,255,.6)}
@@ -149,7 +153,7 @@ const CSS = `
 .fs-site-scr.eo .fs-site-grip{background:linear-gradient(135deg,transparent 55%,rgba(140,200,255,.65) 55%,rgba(140,200,255,.65) 62%,transparent 62%,transparent 72%,rgba(140,200,255,.65) 72%,rgba(140,200,255,.65) 79%,transparent 79%)}
 .fs-site-grip:hover,.fs-site-scr.dragging .fs-site-grip{opacity:1}
 @media (pointer:coarse){.fs-site-grip{width:30px;height:30px}}
-.fs-site-hd button.fs-site-rst[hidden]{display:none}
+.fs-site-hd button.fs-site-rst[hidden],.fs-site-hd button.fs-site-fol[hidden]{display:none}
 .fs-site-bd canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .fs-site-btn{display:inline-flex;align-items:center;gap:5px}
 .fs-site-bico{display:inline-grid;place-items:center;width:15px;height:15px}
@@ -381,7 +385,9 @@ export function createSiteScreens(stage, { tr, keyed = false, getSim, site, moun
   // EO tür düğmesi
   const EO_TYPES = ['day', 'thermal', 'night'];
   const eoBtn = el('button', { type: 'button', title: T('site.eo_type'), onclick: e => { e.stopPropagation(); const s = getSim(); if (!s) return; const t = EO_TYPES[(EO_TYPES.indexOf(s.getEoType()) + 1) % 3]; s.setEoType(t); lsSet(SCR_PREF, { ...lsGet(SCR_PREF, {}), eoType: t }); } }, '◐');
-  E.extra.append(eoBtn);
+  // EO takip düğmesi: hedef seçili ve elle pan/tilt ya da elle zoom yapılmışken görünür → takibe + oto zoom'a dön
+  const eoFol = el('button', { type: 'button', class: 'fs-site-fol', hidden: true, title: T('site.eo_follow_t'), onclick: e => { e.stopPropagation(); getSim()?.eoFollow?.(); } }, '◎ ', T('site.eo_follow'));
+  E.extra.append(eoFol, eoBtn);
   const row = el('div', { class: 'fs-site-row' }, has.radar ? R.box : null, has.eo ? E.box : null);
   const stripHolder = el('div', { class: 'fs-site-striph' });
   const dock = el('div', { class: 'fs-site-dock' }, stripHolder, row);
@@ -539,6 +545,32 @@ export function createSiteScreens(stage, { tr, keyed = false, getSim, site, moun
     s.lockTarget(i);
     drawRadar();
   });
+  // EO elle kumanda: tekerlek → zoom (mevcut ×zoom sınırları, pürüzsüz); basılı sürükle → pan/tilt (zoom'a göre hassasiyet; takibi bırakır);
+  // dokunmatikte tek parmak sürükle, iki parmak sıkıştır; çift tık → takibe dön. Pencere yalnız başlıktan taşınır (gövde sürüklemesi kamerayı çevirir).
+  E.body.title = T('site.eo_body_t');
+  E.body.addEventListener('wheel', e => { const s = getSim(); if (!s?.eoWheel) return; e.preventDefault(); e.stopPropagation(); s.eoWheel(e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 300 : 1)); }, { passive: false });
+  const eoPtr = new Map();
+  let eoPinchD = 0;
+  const ptrDist = () => { const [a, b] = [...eoPtr.values()]; return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0; };
+  E.body.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    eoPtr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { E.body.setPointerCapture(e.pointerId); } catch { /* */ }
+    E.body.classList.add('grabbing');
+    eoPinchD = eoPtr.size === 2 ? ptrDist() : 0;
+  });
+  E.body.addEventListener('pointermove', e => {
+    const p = eoPtr.get(e.pointerId); if (!p) return;
+    const s = getSim(); e.preventDefault();
+    const dx = e.clientX - p.x, dy = e.clientY - p.y;
+    p.x = e.clientX; p.y = e.clientY;
+    if (eoPtr.size >= 2) { const d = ptrDist(); if (eoPinchD > 0 && d > 0) s?.eoPinch?.(d / eoPinchD); eoPinchD = d; return; }
+    if (dx || dy) s?.eoDrag?.(dx, dy, E.body.clientHeight);
+  });
+  const eoUp = e => { eoPtr.delete(e.pointerId); eoPinchD = eoPtr.size === 2 ? ptrDist() : 0; if (!eoPtr.size) E.body.classList.remove('grabbing'); };
+  E.body.addEventListener('pointerup', eoUp); E.body.addEventListener('pointercancel', eoUp);
+  E.body.addEventListener('dblclick', e => { e.preventDefault(); e.stopPropagation(); getSim()?.eoFollow?.(); });
   const fitCv = (cv, body) => { const dpr = Math.min(devicePixelRatio || 1, 2), w = Math.round(body.clientWidth * dpr), hh = Math.round(body.clientHeight * dpr); if (cv.width !== w || cv.height !== hh) { cv.width = w; cv.height = hh; } return dpr; };
   const txt = (g, s, x, y, { c = '#c8ffe2', px = 10, al = 'left', bold = true, bg = false } = {}) => {
     g.font = `${bold ? 700 : 500} ${px}px ui-monospace,SFMono-Regular,Menlo,monospace`; g.textAlign = al; g.textBaseline = 'middle';
@@ -575,7 +607,8 @@ export function createSiteScreens(stage, { tr, keyed = false, getSim, site, moun
     g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, E.cv.width, E.cv.height);
     const W = E.body.clientWidth, H = E.body.clientHeight, cx = W / 2, cy = H / 2;
     const typ = info?.type || 'day';
-    E.title.textContent = `${T('site.scr_eo')} · ${T(`site.${typ}`)}${info && info.status === 'track' ? ` · ×${info.zoom.toFixed(info.zoom >= 10 ? 0 : 1)}` : ''}`;
+    E.title.textContent = `${T('site.scr_eo')} · ${T(`site.${typ}`)}${info && info.zoom > 1.05 ? ` · ×${info.zoom.toFixed(info.zoom >= 10 ? 0 : 1)}` : ''}`;
+    eoFol.hidden = !(info && info.sel != null && (!info.follow || info.manualZoom));
     const C = typ === 'night' ? '#b6ffb0' : '#eaf6ff';
     // köşe parantezleri
     g.strokeStyle = C; g.globalAlpha = 0.85; g.lineWidth = 1.5;
@@ -596,9 +629,12 @@ export function createSiteScreens(stage, { tr, keyed = false, getSim, site, moun
       if (now - noiseAt > 0) { noiseAt = now; g.fillStyle = 'rgba(255,255,255,.18)'; for (let k = 0; k < 260; k++) g.fillRect(Math.random() * W, Math.random() * H, 1.4, 1.4); }
       txt(g, T('site.eo_out'), cx, cy - 26, { al: 'center', c: '#ff8a70', px: 13 });
       txt(g, `${fmtKm(info.range_m)} > ${info.eo_km} km`, cx, cy + 28, { al: 'center', c: '#ffc2b5', px: 10 });
-    } else {
+    } else if (info.status === 'manual') {
+      txt(g, `${T('site.eo_manual')} · ${info.sel + 1} ${info.name || ''}`.slice(0, 34), 8, 20, { c: '#8fd3ff', px: 9.5 });
+    } else if (!eoPtr.size) {
       txt(g, T('site.eo_idle'), cx, cy - 28, { al: 'center', c: C, px: 11 });
       txt(g, T('site.eo_idle_hint'), cx, cy + 28, { al: 'center', c: 'rgba(230,240,255,.8)', px: 9, bold: false });
+      txt(g, T('site.eo_drag_hint'), cx, cy + 41, { al: 'center', c: 'rgba(230,240,255,.65)', px: 8.5, bold: false });
     }
     const lines = `${T('site.az')} ${info.az.toFixed(1).padStart(5, '0')}°  ${T('site.el')} ${info.el >= 0 ? '+' : ''}${info.el.toFixed(1)}°  ${T('site.rng')} ${info.range_m != null ? fmtKm(info.range_m) : '—'}`;
     txt(g, lines, 8, H - 10, { c: C, px: 9.5, bg: true });

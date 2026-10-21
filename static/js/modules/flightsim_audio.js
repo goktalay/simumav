@@ -32,6 +32,13 @@ export const MUTE_SPEED = 2;         // kayıt oynatma hızı ≥ bu → sessiz
 // ARM geçişi: motor başlatma süresi (sn; devir 0 → rölanti, doğrusal) ve DISARM sönme süresi (sn). Kopter ESC başlatma 0,6; heli rotor sarmalı 3;
 // uçak marş 0,8 (bu sürede marş sesi duyulur); vtol kopter gibi.
 export const SPIN_UP = { copter: 0.6, heli: 3.0, plane: 0.8, vtol: 0.6 }, SPIN_DOWN = 1.0;
+// Çarpışma darbesi (§18 ek): çarpma hızına göre şiddet 0…1 (3 m/s → 0,25 · 40 m/s ≈ 1). Ayrı "darbe" yolu motor/master kazancından bağımsız,
+// tercih edilen ses düzeyiyle × IMPACT_BOOST çalar (önceki tek lowpass gürültüden belirgin yüksek); kompresör tepe kırpmayı önler. Ses kapalıysa çalmaz.
+export const IMPACT_BOOST = 2.2;
+export function impactParams(speed) {
+  const v = Math.max(0, Number(speed) || 0), i = Math.min(1, 0.25 + 0.75 * Math.min(1, v / 40));
+  return { i, boom: 0.55 + 0.45 * i, boomHz: 58 - 18 * i, debris: 0.45 + 0.55 * i, crackle: 0.15 + 0.5 * i, decay: 0.7 + 1.1 * i, noise: 0.9 + 0.5 * i };
+}
 export const COPTER_IDLE = 0.3;      // armed + gaz 0 kopter bus kazancı (belirgin rölanti vızıltısı)
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const num = (v, d = 0) => (v == null || Number.isNaN(Number(v)) ? d : Number(v));
@@ -130,7 +137,7 @@ export function createAudioPrefs(storage = null) {
 }
 
 // ---------------------------------------------------------------- Katman 2: Web Audio grafiği ----------------------------------------------------------------
-// opts: { type, launch ({method}) | null, replay, tr, getSim: () => sim | null, getCrashed: () => bool, getSpeed: () => oynatma hızı,
+// opts: { type, launch ({method}) | null, replay, tr, getSim: () => sim | null, getCrashed: () => bool, getCrashSpeed: () => m/s (darbe şiddeti), getSpeed: () => oynatma hızı,
 //         AudioContextClass (test: sahte), storage (test), now: () => ms, doc (test: null → DOM yok) }
 export function createEngineAudio(stage, opts = {}) {
   const tr = opts.tr || (s => s);
@@ -143,7 +150,7 @@ export function createEngineAudio(stage, opts = {}) {
   const TC = 0.05;   // setTargetAtTime zaman sabiti (sn)
   let ctx = null, G = null, disposed = false, lastUpd = 0, lastPhase = null, lastCrash = false, prevDist = null;
   const sm = { thr: 0, rpm: 0, bpf: 150, vehRpm: 800, veh: 0, spin: 0 };   // yumuşatılan değerler; spin: motor başlatma/durma 0…1 (ARM rampası)
-  const stats = { updates: 0, paramSets: 0 };
+  const stats = { updates: 0, paramSets: 0, impacts: 0 };
 
   // --- yardımcılar: AudioParam hedefleme (sahte düğümlerde setTargetAtTime yoksa value) ---
   const P = (param, v, tc = TC) => {
@@ -216,6 +223,11 @@ export function createEngineAudio(stage, opts = {}) {
     g.crashN = noise('lowpass', 400, 0.7, master, 0);      // çarpışma + rampa efektleri için ortak gürültü kaynağı (zarf ile)
     g.fx = noise('bandpass', 2500, 1.2, master, 0);        // "pşşt" pnömatik
     g.thump = osc('sine', 80, master, 0);                  // kızak çarpması
+    // çarpışma darbesi: ayrı yol (master'dan bağımsız; kazanç = ses düzeyi × IMPACT_BOOST) → kompresör → çıkış
+    const impact = ctx.createGain(); impact.gain.value = 0;
+    if (typeof ctx.createDynamicsCompressor === 'function') { const comp = ctx.createDynamicsCompressor(); try { comp.threshold.value = -14; comp.ratio.value = 6; comp.attack.value = 0.002; comp.release.value = 0.25; } catch { /* */ } impact.connect(comp); comp.connect(ctx.destination); }
+    else impact.connect(ctx.destination);
+    g.impact = { bus: impact, boom: osc('sine', 58, impact, 0), sub: osc('triangle', 29, impact, 0), debris: noise('lowpass', 1400, 0.6, impact, 0), crackle: noise('highpass', 2600, 0.8, impact, 0) };
     G = g;
     ctx.onstatechange = () => { if (ctx) { prefs.setUnlocked(ctx.state === 'running'); drawBtn(); } };
     prefs.setUnlocked(ctx.state === 'running');
@@ -245,7 +257,21 @@ export function createEngineAudio(stage, opts = {}) {
   const fxRampLaunch = () => { if (G) burst(G.fx.g.gain, 0.7, 0.02, 0.45); };                    // pnömatik "pşşt"
   const fxRampRelease = () => { if (G) { burst(G.thump.g.gain, 0.6, 0.005, 0.25); burst(G.crashN.g.gain, 0.3, 0.01, 0.2); } };   // kızak durdurucuya çarpar
   const fxBrake = () => { if (G?.vehicle) burst(G.vehicle.brake.g.gain, 0.25, 0.05, 0.8); };
-  const fxCrash = () => { if (G) { burst(G.crashN.g.gain, 0.9, 0.01, 0.6); P(G.src.gain, 0, 0.08); } };   // çarpma + motor durması
+  // çarpma + motor durması: alçak "bum" (frekansı düşer), gövde/enkaz gürültüsü (lowpass kapanır), kıvılcım/kırılma çıtırtısı; şiddet çarpma hızıyla
+  const fxCrash = speed => {
+    if (!G) return;
+    const k = impactParams(speed), vol = prefs.effective(), t0 = ctx.currentTime;
+    burst(G.crashN.g.gain, k.noise, 0.01, 0.6 + 0.4 * k.i);
+    P(G.src.gain, 0, 0.08);
+    const I = G.impact; if (!I || vol <= 0) return;
+    if (typeof I.bus.gain.cancelScheduledValues === 'function') { I.bus.gain.cancelScheduledValues(t0); I.bus.gain.setValueAtTime(vol * IMPACT_BOOST, t0); } else I.bus.gain.value = vol * IMPACT_BOOST;
+    burst(I.boom.g.gain, k.boom, 0.004, k.decay); burst(I.sub.g.gain, k.boom * 0.6, 0.006, k.decay * 1.2);
+    burst(I.debris.g.gain, k.debris, 0.003, k.decay * 0.8); burst(I.crackle.g.gain, k.crackle, 0.002, 0.35 + 0.3 * k.i);
+    const f = I.boom.o.frequency, fl = I.debris.fl.frequency;
+    if (typeof f.setValueAtTime === 'function') { f.cancelScheduledValues?.(t0); f.setValueAtTime(k.boomHz * 1.6, t0); f.exponentialRampToValueAtTime?.(k.boomHz * 0.55, t0 + 0.9); }
+    if (typeof fl.setValueAtTime === 'function') { fl.cancelScheduledValues?.(t0); fl.setValueAtTime(3200, t0); fl.exponentialRampToValueAtTime?.(260, t0 + 1.2); }
+    stats.impacts++;
+  };
 
   // --- her telemetri karesi (≤ 25 Hz işlenir) ---
   const update = t => {
@@ -267,7 +293,7 @@ export function createEngineAudio(stage, opts = {}) {
       }
       lastPhase = phase;
     }
-    if (crashed !== lastCrash) { lastCrash = crashed; prefs.setCrashed(crashed); if (crashed) fxCrash(); else if (G) P(G.src.gain, 1, 0.3); }
+    if (crashed !== lastCrash) { lastCrash = crashed; prefs.setCrashed(crashed); if (crashed) { let v = null; try { v = opts.getCrashSpeed?.(); } catch { v = null; } fxCrash(v ?? t.groundspeed ?? 15); } else if (G) P(G.src.gain, 1, 0.3); }
     let sp = 1; try { sp = num(opts.getSpeed?.(), 1); } catch { sp = 1; }
     prefs.setPlaybackSpeed(sp);
     // hedefler + yumuşatma (devir gazı gecikmeli izler; disarm → hızlı düşüş yine tauDown ile)
@@ -432,7 +458,7 @@ export function createEngineAudio(stage, opts = {}) {
       if (typeof window !== 'undefined') window.removeEventListener('keydown', onKey);
       el?.remove();
       if (G) { try { G.master.gain.value = 0; } catch { /* yok */ } }
-      if (ctx) { try { ctx.close?.(); } catch { /* kapalı */ } }
+      if (ctx && ctx.state !== 'closed') { try { ctx.close?.()?.catch?.(() => {}); } catch { /* kapalı */ } }   // close() reddi (zaten kapalı) yakalanır
       G = null; ctx = null;
     },
   };

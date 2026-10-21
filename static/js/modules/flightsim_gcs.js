@@ -94,6 +94,51 @@ export function eoStatus(site, sel, rangeM) {
   if (sel == null || rangeM == null) return 'idle';
   return rangeM > Number(site.eo_km) * 1000 ? 'out' : 'track';
 }
+// ---------- EO elle kumanda (fare tekerleği zoom, basılı sürükle pan/tilt; dokunmatikte iki parmak) ----------
+export const EO_EL = [-60, 85];          // başlığın eğim sınırları (°; kule modelindeki eoTilt ile aynı)
+export const EO_WHEEL_K = 0.0016;        // tekerlek: FOV ← FOV · e^(k·deltaY) (bir çentik ≈ 100 px → ×1,17)
+/** Tekerlek → yeni FOV (°): üstel (her konumda aynı oransal adım), [EO_FOV_MIN, EO_FOV_MAX] içinde. deltaY > 0 (geri çevirme) uzaklaştırır. */
+export function eoWheelFov(fov, deltaY, k = EO_WHEEL_K) {
+  const f = clamp(Number(fov) || EO_FOV_MAX, EO_FOV_MIN, EO_FOV_MAX), d = clamp(Number(deltaY) || 0, -600, 600);
+  return clamp(f * Math.exp(k * d), EO_FOV_MIN, EO_FOV_MAX);
+}
+/** İki parmak sıkıştırma → FOV: parmaklar açılınca (ratio > 1) yakınlaşır. */
+export const eoPinchFov = (fov, ratio) => clamp((Number(fov) || EO_FOV_MAX) / clamp(Number(ratio) || 1, 0.05, 20), EO_FOV_MIN, EO_FOV_MAX);
+/** Basılı sürükleme → yeni bakış: dx, dy (CSS px), görüntü yüksekliği hPx, dikey FOV (°). Hassasiyet zooma göre: 1 px = FOV / hPx derece
+ *  (görüntüdeki nokta imleçle birlikte kayar — "tut ve sürükle"). Sağa sürükleme görüntüyü sağa çeker → başlık SOLA döner (az azalır);
+ *  yukarı sürükleme → başlık aşağı bakar. az 0–360'a sarılır, el EO_EL içinde. */
+export function eoDragLook(az, el, dx, dy, fovDeg, hPx) {
+  const k = clamp(Number(fovDeg) || EO_FOV_MAX, EO_FOV_MIN, EO_FOV_MAX) / Math.max(1, Number(hPx) || 1);
+  return { az: (((Number(az) || 0) - (Number(dx) || 0) * k) % 360 + 360) % 360, el: clamp((Number(el) || 0) + (Number(dy) || 0) * k, EO_EL[0], EO_EL[1]) };
+}
+/** EO kumanda durumu (istemci): hedef seçili + takip açık → 'track' (90°/sn ile hedefe); aksi hâlde başlık SON YÖNDE sabit ('hold') — kendiliğinden
+ *  tarama YOK. Elle pan/tilt takibi bırakır; yeni hedef seçimi ya da "Takip" takibe döner. */
+export const eoAimMode = (hasTarget, follow) => (hasTarget && follow ? 'track' : 'hold');
+
+// ---------- radar altlığı (uydu karosu; §26) ----------
+const ll2tile = (lon, lat, z) => {
+  const n = 2 ** z, lr = clamp(lat, -85.05112878, 85.05112878) * DEG;
+  return [(lon + 180) / 360 * n, (1 - Math.log(Math.tan(lr) + 1 / Math.cos(lr)) / Math.PI) / 2 * n];
+};
+/** Yerel ENU (m; flightsim3d toLocal'ın tersi) → [lat, lon]. */
+export const localToLL = (lat0, lon0, x, y) => [lat0 + y / 110574, lon0 + x / (111320 * Math.cos(lat0 * DEG))];
+/** Radar ekranının düz uydu altlığı için karo planı: merkez (cx, cy) çevresinde ±half m kareyi kaplayan, eksen başına en çok maxN karo olan EN
+ *  İNCE yakınlaştırma (z ≤ 15). Dönüş { z, x0, x1, y0, y1, nx, ny } (Web Mercator XYZ). Dünya kenarının (prosedürel 4 km, gerçek 48 km) ötesi ve
+ *  Google karolarının henüz yüklenmediği yerler bu altlıkla dolu görünür. */
+export function underlayPlan(lat0, lon0, cx, cy, half, maxN = 8) {
+  const [latN, lonW] = localToLL(lat0, lon0, cx - half, cy + half), [latS, lonE] = localToLL(lat0, lon0, cx + half, cy - half);
+  for (let z = 15; z >= 1; z--) {
+    const n = 2 ** z, [ax, ay] = ll2tile(lonW, latN, z), [bx, by] = ll2tile(lonE, latS, z);
+    const x0 = Math.floor(ax), x1 = Math.floor(bx), y0 = clamp(Math.floor(ay), 0, n - 1), y1 = clamp(Math.floor(by), 0, n - 1);
+    if (x1 - x0 + 1 <= maxN && y1 - y0 + 1 <= maxN) return { z, x0, x1, y0, y1, nx: x1 - x0 + 1, ny: y1 - y0 + 1 };
+  }
+  return { z: 0, x0: 0, x1: 0, y0: 0, y1: 0, nx: 1, ny: 1 };
+}
+/** Altlık dokusunda yerel (x, y) noktasının UV'si (atlas: plan karoları x0…x1 × y0…y1, v yukarı). */
+export function underlayUV(plan, lat0, lon0, x, y) {
+  const [lat, lon] = localToLL(lat0, lon0, x, y), [fx, fy] = ll2tile(lon, lat, plan.z);
+  return [(fx - plan.x0) / plan.nx, 1 - (fy - plan.y0) / plan.ny];
+}
 
 // ---------- deterministik rastgele (sunucu mulberry32 ile bit düzeyinde aynı) ----------
 export function mulberry32(seed) {

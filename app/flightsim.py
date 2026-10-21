@@ -57,7 +57,21 @@ TIP_ADLARI = {'multirotor': 'Multikopter', 'hexarotor': 'Hexakopter', 'helikopte
               'interceptor': 'INTERCEPTOR'}
 PLANE_TIPLERI = ('sabit_kanat', 'vtol', 'interceptor')   # ArduPlane ikilisi (interceptor = quadplane tailsitter, §25)
 DIKEY_TIPLER = ('interceptor',)   # §25: dikey kalkış/iniş yapan uçak tipi (pist/rampa yok; GUIDED VTOL kalkışı, RTL → dikey iniş)
-KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}; defend: §26 {action: 'next'}
+KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend', 'motor_cut')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}; defend: §26 {action: 'next'}; motor_cut: {on: bool}
+# Motor kesme (`motor_cut {on}`; yalnız uçak tipleri): ARM'lı kalır, motor durur, kumanda yüzeyleri ve uçuş kipi çalışmaya devam eder → süzülme.
+# Gerçek ArduPlane 4.7.2 SITL'de ölçüldü (100–145 m AGL; FBWA/FBWB/CRUISE/AUTO/RTL/MANUAL):
+#   · zorla DISARM (400, 21196): yüzeyler stabilize etmeye devam eder ve fizik süzülür, AMA ArduPlane disarm'lıyken HOME'u anlık konuma taşır →
+#     `relative_alt` 0,7 sn'de 145 m → −11 m'ye düşer (alt_msl doğru kalır); yeniden ARM'da HOME geri gelmez, RTL disarm noktasına döner.
+#   · THR_MAX 0: otomatik gaz kiplerinde keser ama MANUAL'de gaz doğrudan geçer (motor çalışmaya devam eder) + kalıcı parametre kaydını kirletir.
+#   · MAV_CMD_DO_AUX_FUNCTION (218) · RC seçeneği 31 MOTOR_ESTOP HIGH/LOW: tüm kiplerde SERVO3 = 1000 µs (itki 0), ARM korunur, HOME/irtifa
+#     doğru, kip değişimi ve ARM komutundan etkilenmez, LOW ile motor anında geri gelir (ACK 0). Parametre yazmaz → SEÇİLEN YOL.
+MOTOR_ESTOP_AUX = 31        # RC_Channel::AUX_FUNC::MOTOR_ESTOP
+MAV_CMD_DO_AUX_FUNCTION = 218
+MOTOR_CUT_RED_S = 3.0       # sn: bu süre içinde 218 reddedilirse bayrak geri alınır
+# Sahte kinematik süzülmesi (HEPGO_SITL=0): süzülme oranı ve hızı (gerçek SITL `plane` modelinin ölçülen en iyi L/D'si ≈ 7; sahte kip istenen 1:8–1:12 bandında)
+SAHTE_SUZULME_ORANI = 10.0  # L/D (yatay / düşey)
+SAHTE_SUZULME_HIZ = 12.0    # m/s hava hızı
+SAHTE_ROLL_AZAMI = math.radians(45)
 # §22.3 kamera türü (gimbal/FPV kamerası ve PiP): sunucu yalnız enum doğrular; oturumda/kayıt satırında saklanır, kayıttan oynatma aynı türü açar
 KAMERA_TURLERI = ('day', 'thermal', 'night')
 
@@ -444,6 +458,8 @@ class SahteKinematik:
         self.throttle = 0.0
         self.batt_v = 12.6
         self.eve = False
+        self.motor_cut = False                      # motor kesildi (uçak): itki yok → süzülme; ARM korunur
+        self._daireye_don = False                   # süzülmeden sonra motor geri verildi: daireye ışınlanmadan yaklaş
         self.sure_ms = 0.0                          # time_boot_ms karşılığı
 
     RC_VARSAYILAN = (1500, 1500, 1000, 1500, 1500, 1500, 1500, 1500)
@@ -451,7 +467,14 @@ class SahteKinematik:
     def komut(self, name, p):
         p = p or {}
         if name == 'arm':
+            self._motor_ver()
             self.armed = True
+        elif name == 'motor_cut':
+            if p.get('on'):
+                self.motor_cut = True
+                self.kalkis = None   # pist koşusu / fırlatma itkisi de biter
+            else:
+                self._motor_ver()
         elif name == 'disarm':
             self.armed = False
             self.kalkis = None
@@ -461,6 +484,7 @@ class SahteKinematik:
             self.mode = str(p.get('mode') or '').upper() or self.mode
             self.eve = self.mode in ('RTL', 'QRTL')
         elif name == 'takeoff':
+            self._motor_ver()
             self.armed = True
             self.mode = 'TAKEOFF' if self.plane and not self.dikey else 'GUIDED'
             self.hedef_alt = max(1.0, float(p.get('alt') or (50 if self.plane else 10)))
@@ -487,6 +511,15 @@ class SahteKinematik:
             if ch[2]:
                 self.throttle = max(0.0, min(100.0, (self.rc[2] - 1000) / 10.0))
 
+    def _motor_ver(self):
+        """Motor kesmesi kalkar; havadaysa daireye (ışınlanmadan) yaklaşarak döner."""
+        if self.motor_cut and self.alt_rel > 1.0:
+            self._daireye_don = True
+        self.motor_cut = False
+
+    def havada(self):
+        return self.alt_rel > 0.0   # süzülme yere (0) değene dek sürer
+
     def adim(self, dt):
         dt = dt * float(self.speedup or 1.0)
         self.sure_ms += dt * 1000.0
@@ -496,7 +529,43 @@ class SahteKinematik:
             dy = (self.yaw - y0 + math.pi) % (2 * math.pi) - math.pi
             self.rs, self.ps, self.ys = (self.roll - r0) / dt, (self.pitch - p0) / dt, dy / dt
 
+    def _suzul(self, dt):
+        """Motorsuz süzülme (uçak; motor_cut ya da havada disarm — ArduPlane disarm'lıyken de yüzeyleri stabilize eder): itki 0, hava hızı
+        SAHTE_SUZULME_HIZ'a yaklaşır, batış = hız / SAHTE_SUZULME_ORANI; RC 1 (aileron) yatış açısı → koordineli dönüş (ψ̇ = g·tanφ / V).
+        Yere değince durur (yerde kalır; ARM durumu değişmez)."""
+        self.throttle = 0.0
+        hs = math.hypot(self.vn, self.ve)
+        v = hs + (SAHTE_SUZULME_HIZ - hs) * min(1.0, dt / 3.0) if hs > 0.5 else SAHTE_SUZULME_HIZ
+        ail = self.rc[0] if self.rc and self.rc[0] else 1500
+        hedef_roll = max(-1.0, min(1.0, (ail - 1500) / 500.0)) * SAHTE_ROLL_AZAMI
+        adim_r = math.radians(90) * dt
+        self.roll += max(-adim_r, min(adim_r, hedef_roll - self.roll))
+        self.yaw = (self.yaw + 9.81 * math.tan(self.roll) / max(v, 1.0) * dt + math.pi) % (2 * math.pi) - math.pi
+        batis = v / SAHTE_SUZULME_ORANI
+        self.pitch = -math.atan2(batis, v)
+        self.vn, self.ve, self.vd = v * math.cos(self.yaw), v * math.sin(self.yaw), batis
+        cos_lat = math.cos(math.radians(self.lat0))
+        self.lat += self.vn * dt / 110574.0
+        self.lon += self.ve * dt / (111320.0 * cos_lat)
+        self.alt_rel = max(0.0, self.alt_rel - batis * dt)
+        if self.alt_rel <= 0.0:   # yere indi (süzülerek): durur
+            self.vn = self.ve = self.vd = 0.0
+            self.roll = self.pitch = 0.0
+            self.hedef_alt = 0.0
+
     def _adim(self, dt):
+        if self.plane and (self.motor_cut or not self.armed) and self.havada():
+            self.kalkis = None
+            if not self.armed:
+                self.eve = False
+            self._suzul(dt)
+            return
+        if self.motor_cut:   # yerde, motor kesik: kıpırdamaz (ARM'lı kalabilir)
+            self.vn = self.ve = self.vd = 0.0
+            self.roll = self.pitch = 0.0
+            self.throttle = 0.0
+            self.kalkis = None
+            return
         if not self.armed:
             self.vn = self.ve = self.vd = 0.0
             self.roll = self.pitch = 0.0
@@ -577,6 +646,26 @@ class SahteKinematik:
                 return
             self.vn = self.ve = 0.0
             return
+        if self.alt_rel > 1.0 and self._daireye_don:   # süzülmeden sonra motor geri geldi: dairenin en yakın noktasına uç (ışınlanma yok)
+            cos_lat = math.cos(math.radians(self.lat0))
+            dn, de = (self.lat - self.lat0) * 110574.0, (self.lon - self.lon0) * 111320.0 * cos_lat
+            r = math.hypot(dn, de)
+            ux, uy = (dn / r, de / r) if r > 1e-6 else (1.0, 0.0)
+            hn, he = ux * self.YARICAP - dn, uy * self.YARICAP - de
+            kalan = math.hypot(hn, he)
+            if kalan <= self.HIZ * dt:   # daire noktasına otur (adım ≤ HIZ·dt), sonraki adımdan daire
+                self.aci = math.atan2(uy, ux)
+                self._daireye_don = False
+                self.lat = self.lat0 + ux * self.YARICAP / 110574.0
+                self.lon = self.lon0 + uy * self.YARICAP / (111320.0 * cos_lat)
+                return
+            else:
+                self.vn, self.ve = hn / kalan * self.HIZ, he / kalan * self.HIZ
+                self.lat += self.vn * dt / 110574.0
+                self.lon += self.ve * dt / (111320.0 * cos_lat)
+                self.yaw = math.atan2(self.ve, self.vn)
+                self.roll, self.pitch = 0.0, 0.05
+                return
         if self.alt_rel > 1.0:   # merkez etrafında daire (saat yönü)
             w = self.HIZ / self.YARICAP
             self.aci += w * dt
@@ -728,6 +817,9 @@ class SimSession:
         self.launch = launch_normalize(tip, world.get('launch'))
         self.launch_phase = None
         self._launch_task = None
+        # Motor kesme (`motor_cut`; yalnız uçak tipleri): SITL'de MOTOR_ESTOP (DO_AUX_FUNCTION 31) — ARM korunur, süzülme. tele/to_dict `motor_cut`.
+        self.motor_cut = False
+        self._motor_cut_istek = None     # (on, zaman): son 218 isteği (red ACK'inde bayrak geri alınır)
         self.sahte = None
         if not SITL_ENABLED:
             self.sahte = SahteKinematik(tip, center['lat'], center['lon'], center.get('alt'), world.get('wind_ms'), self.launch, world.get('runway_heading'))
@@ -782,6 +874,7 @@ class SimSession:
                 # §24 hedefler (model görsel bilgisiyle) + önleme durumu; §25 dikey kalkış tipi
                 'targets': flightsim_targets.zenginlestir(self.hedefler), 'targets_state': self.hedef_iz.ozet() if self.hedef_iz else None,
                 'vertical': self.type in DIKEY_TIPLER,
+                'motor_cut': bool(self.motor_cut),   # motor kesik (süzülüyor); uçak dışı tiplerde hep False
                 # §26 yer kontrol merkezi (yerleşimiyle) + "Yer kontrolünü koru" görevi (yapılandırma, deterministik plan, anlık durum)
                 'site': {**self.gcs, 'layout': self.gcs_yer} if self.gcs else None,   # ('gcs' anahtarı Mission Planner bağlantısıdır)
                 'defend': self.savunma_dict()}
@@ -971,9 +1064,9 @@ class SimSession:
             self._gonder(self.mav.param_set_encode(self.sysid, self.comp, str(r['name']).encode(), float(r['value']), int(r.get('ptype') or 9)))
         kayit = [r for r in sitl if r['name'] != drone_params.SIM_SRV_REV]
         self._olay(f'{len(kayit)} kayıtlı parametre yüklendi ({self.drone.get("code") or self.drone.get("name") or ""})'.replace(' ()', ''), 6)
-        olay = drone_params.montaj_olayi(self.montaj)
-        if olay:
-            self._olay(*olay)
+        for olay in (drone_params.montaj_olayi(self.montaj), drone_params.sensor_olayi(self.montaj)):   # sensör kalibrasyonu (COMPASS_* …): SITL'de nötr
+            if olay:
+                self._olay(*olay)
 
     def _srv_rev_yaz(self, mask):
         """İzleyici geri çağrısı: oturum sırasında SERVOn_REVERSED değişti → SIM_SRV_REV maskesi SITL'e anında (PARAM_SET INT32)."""
@@ -1148,7 +1241,8 @@ class SimSession:
             self._simstate_son = time.time()
             self._tele_yay(te.get('tbm'))
         elif t == 'VFR_HUD':
-            te['airspeed'], te['groundspeed'], te['throttle'], te['climb'] = round(m.airspeed, 2), round(m.groundspeed, 2), m.throttle, round(m.climb, 2)
+            # motor kesikken VFR_HUD.throttle gaz TALEBİNİ bildirir (ör. 68) ama çıkış 1000 µs → gösterge ve yakıt modeli (flightsim_power) için 0
+            te['airspeed'], te['groundspeed'], te['throttle'], te['climb'] = round(m.airspeed, 2), round(m.groundspeed, 2), 0 if self.motor_cut else m.throttle, round(m.climb, 2)
             te['heading'] = float(m.heading)
         elif t == 'SYS_STATUS':
             te['batt_v'] = m.voltage_battery / 1000.0 if m.voltage_battery != 65535 else None
@@ -1178,6 +1272,11 @@ class SimSession:
                     self._smi_red = True
                     self._akis_iste(tam=False)
                     self._olay('Mesaj aralığı isteği reddedildi; 50 Hz akış REQUEST_DATA_STREAM ile istendi', 6)
+            elif m.command == MAV_CMD_DO_AUX_FUNCTION and m.result not in (0, 5):
+                istek = self._motor_cut_istek
+                if istek is not None and time.time() - istek[1] <= MOTOR_CUT_RED_S and self.motor_cut == istek[0]:
+                    self.motor_cut = not istek[0]   # araç reddetti: bayrak gerçeği yansıtsın
+                self._olay(f'Motor {"kesme" if istek and istek[0] else "geri verme"} komutu reddedildi (MAV_RESULT {m.result})', 3)
             elif m.result not in (0, 5):
                 self._olay(f'Komut {m.command} reddedildi (MAV_RESULT {m.result})', 4)
         elif t == 'PARAM_VALUE':
@@ -1557,7 +1656,7 @@ class SimSession:
                 return
         self._tele_tbm = tbm if tbm is not None else self.tele.get('tbm', 0)
         self._tele_son = now
-        self._yay({'t': 'tele', 'ts': round(now, 3), **self.tele, **self.guc.tele_alanlari(), 'gcs_connected': self.gcs_addr is not None,
+        self._yay({'t': 'tele', 'ts': round(now, 3), **self.tele, **self.guc.tele_alanlari(), 'motor_cut': bool(self.motor_cut), 'gcs_connected': self.gcs_addr is not None,
                    'gcs_addr': f'{self.gcs_addr[0]}:{self.gcs_addr[1]}' if self.gcs_addr else None})
 
     def _guc_adim(self, tbm):
@@ -1684,8 +1783,36 @@ class SimSession:
     def _gcs_heartbeat(self):
         self._gonder(self.mav.heartbeat_encode(6, 8, 0, 0, 0))   # MAV_TYPE_GCS, MAV_AUTOPILOT_INVALID
 
+    def _motor_kes(self, on, olay=True):
+        """Motor kesme / geri verme (yalnız uçak tipleri; çağıran doğrular). Gerçek SITL: MAV_CMD_DO_AUX_FUNCTION 31 MOTOR_ESTOP HIGH (2) / LOW (0) —
+        ARM, kip ve HOME korunur, yüzeyler çalışır (modül başı ölçümler). Sahte kip: SahteKinematik süzülmesi. Durum değiştiyse olay şeridi +
+        harekât paneli konsolu: "MOTOR KESİLDİ — süzülüyor" / "Motor geri verildi"."""
+        on = bool(on)
+        degisti = on != self.motor_cut
+        if self.sahte is not None:
+            self.sahte.komut('motor_cut', {'on': on})
+        elif self._heartbeat_alindi:
+            self._gonder(self.mav.command_long_encode(self.sysid, self.comp, MAV_CMD_DO_AUX_FUNCTION, 0, MOTOR_ESTOP_AUX, 2 if on else 0, 0, 0, 0, 0, 0))
+            self._motor_cut_istek = (on, time.time())
+        self.motor_cut = on
+        if on:
+            self.tele['throttle'] = 0
+        if degisti and olay:
+            metin = 'MOTOR KESİLDİ — süzülüyor' if on else 'Motor geri verildi'
+            self._olay(metin, 4 if on else 6)
+            hub = getattr(self, 'hub', None)
+            if hub is not None:
+                try:
+                    flightsim_hub.drone_hub.console_line(hub, hub.sysid, 'SİM', metin, 'uyari' if on else 'bilgi')
+                except Exception:   # noqa: BLE001 — konsol satırı komutu bozmasın
+                    pass
+        return on
+
     def zorla_disarm(self):
-        """Çarpışma kaydı sonrası (§18): sahte kinematik sıfırlanır; gerçek SITL'e zorla disarm (400, magic 21196). Kırmızı olay satırı."""
+        """Çarpışma kaydı sonrası (§18): sahte kinematik sıfırlanır; gerçek SITL'e zorla disarm (400, magic 21196). Kırmızı olay satırı.
+        Motor kesmesi de kalkar (araç yerde/disarm; sonraki ARM'ı MOTOR_ESTOP engellemesin)."""
+        if self.motor_cut:
+            self._motor_kes(False, olay=False)
         if self.sahte is not None:
             self.sahte.komut('crash', {})
         elif self._heartbeat_alindi:
@@ -1724,6 +1851,12 @@ class SimSession:
             if isinstance(f, bool) or not isinstance(f, (int, float)) or float(f) not in [float(x) for x in flightsim_power.SPEEDUPS]:
                 raise SimHata('invalid', f"speed.factor {' | '.join(str(x) for x in flightsim_power.SPEEDUPS)} olmalı")
             p = {'factor': float(f)}
+        elif name == 'motor_cut':
+            if not isinstance(p.get('on'), bool):
+                raise SimHata('invalid', 'motor_cut.on doğru/yanlış (true/false) olmalı')
+            if self.type not in PLANE_TIPLERI:   # kopter: kanat yok, motor kesmek düşürür → ön yüz DISARM'ı onayla göndermeli
+                raise SimHata('invalid', 'Motor kesme yalnız uçak tiplerinde (sabit kanat / VTOL / INTERCEPTOR); kopterde havada DISARM aracı düşürür')
+            p = {'on': p['on']}
         if name == 'camera':   # §22.3: ön yüz türü değiştirdi → oturum (ve kapanışta kayıt satırı) son türü saklar; SITL'e gitmez
             if p.get('type') is None:
                 raise SimHata('invalid', 'camera.type gerekir')
@@ -1755,6 +1888,12 @@ class SimSession:
                 self._param_set(((flightsim_power.SIM_SPEEDUP, p['factor']),))
             self._olay(f'Simülasyon hızı {p["factor"]:g}× (SITL zamanı; yakıt/batarya ve .bin kaydı simülasyon zamanıyla, video gerçek zamanda; Mission Planner da hızlı görür)', 6)
             return {'ok': True, 'factor': p['factor']}
+        if name == 'motor_cut':
+            if self.sahte is None and not self._heartbeat_alindi:
+                raise SimHata('invalid', 'SITL henüz kalp atışı göndermedi')
+            return {'ok': True, 'motor_cut': self._motor_kes(p['on'])}
+        if name in ('arm', 'takeoff') and self.motor_cut:   # ARM / kalkış motoru geri verir (MOTOR_ESTOP açıkken ArduPlane ARM'ı reddeder)
+            self._motor_kes(False)
         if name == 'takeoff' and self.type == 'sabit_kanat' and (self.sahte is not None or self._heartbeat_alindi):
             self._kalkis_baslat(p['alt'])   # yönteme göre dizi (§13): armed → launch → released olayları
             return {'ok': True}
@@ -1813,6 +1952,8 @@ class SimSession:
         if self.state != 'HAZIR':
             return {'ok': False, 'error': 'Oturum hazır değil (SITL açılıyor ya da hata)'}
         try:
+            if name in ('arm', 'takeoff') and self.motor_cut and (self.sahte is not None or self._heartbeat_alindi):
+                self._motor_kes(False)   # panel / SIMUMAV ARM'ı da motoru geri verir (MOTOR_ESTOP açıkken ArduPlane ARM'ı reddeder)
             if name.startswith('mission_'):
                 self.gorev.transfer()   # §18: kendi görev transferimiz — MP indirme tetiği bastırılır
             if self.sahte is not None:
@@ -1970,6 +2111,7 @@ class SimSession:
         if self._launch_task is not None and not self._launch_task.done():
             self._launch_task.cancel()
         self.launch_phase = None
+        self.motor_cut, self._motor_cut_istek = False, None   # yeni SITL / sıfır kinematik: MOTOR_ESTOP süreç belleğindeydi (yeni süreçte kapalı)
         self.guc.sifirla_zaman()   # §23: yeni SITL saati sıfırdan; yakıt/batarya seviyeleri korunur (tank/batarya değişmez)
         if self.sahte is not None:
             self.sahte.sifirla()

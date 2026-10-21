@@ -62,6 +62,19 @@ MONTAJ_ROZET = 'montaj (sanal uçakta aynen uygulanır)'
 MONTAJ_ROZET_NOTR = 'montaj (simülasyonda nötr)'   # SITL ikilisi SIM_SRV_REV tanımıyorsa
 MONTAJ_UYARI = 'Simülasyonda servo ters çevirme montaj parametresidir; sanal uçakta nötr uygulanır'
 MONTAJ_DESTEK_YOK = 'SITL ikilisi sanal montaj desteklemiyor; servo ters çevirme nötr uygulandı'
+# SENSÖR KALİBRASYONU / YÖNELİMİ (gerçek uçağın fiziksel sensörlerine özgü): SITL'in sanal manyetometre/IMU'su idealdir (kendi SIM_MAG*/SIM_ACC*
+# ofsetleriyle) ve ArduPilot'un SITL varsayılan COMPASS_*/INS_* değerleriyle eşleşir. Gerçek uçağın pusula ofseti/çapraz ekseni/yönelimi, ikinci-
+# üçüncü pusulayı kapatma (COMPASS_USE2/3 0), sapma (COMPASS_DEC + AUTODEC 0), kart yönelimi ve ivmeölçer kalibrasyonu SITL'e yazılınca sanal sensör
+# "bozuk" ölçer → ArduPilot ön kontrolü (gerçek ArduPlane 4.7.2 SITL, Ankara 39,92 K 32,85 D, ölçüldü):
+#   COMPASS_USE2/3 0 + COMPASS_OFS_X 250 / _Y −200   → "PreArm: Check mag field (xy diff:327>100)" (harekât panelindeki uyarının birebiri)
+#   COMPASS_AUTODEC 0 + COMPASS_DEC 1,5              → "PreArm: Check mag field (xy diff:235>100)"
+#   COMPASS_ORIENT / tek pusulada OFS                → "PreArm: Compasses inconsistent"
+#   kayıt yok (temiz SITL; Ankara / 41 K 29 D / 37 K 35 D) → uyarı yok
+# Bu adlar kayıtta ve .param dışa aktarımında KORUNUR ama SITL'e yazılmaz (varsayilan.parm + PARAM_SET), olay şeridine bilgi satırı düşer; SITL'in
+# kendi ürettiği değerleri (ör. simülatörde pusula kalibrasyonu, AUTODEC) gerçek uçağın kaydının üstüne YAZILMAZ (Izleyici 'sitl' kaynağı).
+SENSOR_ONEKLER = ('COMPASS_', 'INS_ACCOFFS_', 'INS_ACCSCAL_', 'INS_ACC2OFFS_', 'INS_ACC2SCAL_', 'INS_ACC3OFFS_', 'INS_ACC3SCAL_')
+SENSOR_ADLAR = frozenset({'AHRS_ORIENTATION', 'INS_ACC_ID', 'INS_ACC2_ID', 'INS_ACC3_ID', 'INS_GYR_ID', 'INS_GYR2_ID', 'INS_GYR3_ID'})
+SENSOR_ROZET = 'sensör kalibrasyonu (simülasyonda nötr)'
 SIM_SRV_REV = 'SIM_SRV_REV'       # HEPGO SITL yaması: sanal montaj bit maskesi (bit n-1 = SERVOn ters monteli)
 SIM_SRV_REV_PTYPE = 6             # MAV_PARAM_TYPE_INT32
 # Motor (ESC) kanallarına sanal montaj biti KONMAZ: ArduPilot motor çıkışını ham yazar (AP_Motors::rc_write → SRV_Channels::set_output_pwm;
@@ -109,7 +122,14 @@ def haric_mi(name):
 
 def haric_listesi():
     return {'prefixes': list(HARIC_ONEKLER), 'names': sorted(set(HARIC_ADLAR) | set(oturum_adlari())), 'mount': MONTAJ_ACIKLAMA,
-            'mount_badge': MONTAJ_ROZET, 'mount_badge_neutral': MONTAJ_ROZET_NOTR}
+            'mount_badge': MONTAJ_ROZET, 'mount_badge_neutral': MONTAJ_ROZET_NOTR,
+            'sensor': {'prefixes': list(SENSOR_ONEKLER), 'names': sorted(SENSOR_ADLAR), 'badge': SENSOR_ROZET}}
+
+
+def sensor_mu(name):
+    """Gerçek uçağın sensör kalibrasyonu / yönelimi parametresi mi (SENSOR_ONEKLER / SENSOR_ADLAR): kayıtta kalır, SITL'e yazılmaz."""
+    n = str(name or '').upper()
+    return n.startswith(SENSOR_ONEKLER) or n in SENSOR_ADLAR
 
 
 def montaj_mi(name):
@@ -169,11 +189,15 @@ def sitl_kayitlari(rows, sanal_montaj=True, tip=None, notr=0, varsayilan=None):
     """Kayıtlı satırların SITL'e gidecek biçimi (varsayilan.parm + ilk kalp atışı PARAM_SET).
     `sanal_montaj` True (ikili SIM_SRV_REV tanır; `drone_sitl.sanal_montaj_destegi`): satırlar aynen + sonuna SIM_SRV_REV = `srv_rev_mask`
     (0 dahil: eski oturumdan eeprom'da kalan maske silinsin). False (eski ikili): montaj parametreleri 0'a çekilir (sanal montaj düz).
-    `tip`: araç tipi (motor kanalı dışlaması; `srv_rev_mask`). Dönüş: ([{name, value, ptype}],
-    {'virtual_mount': bool, 'mask': int, 'neutral': [adlar], 'reversed': [adlar], 'motor_skipped': [adlar]})."""
+    `tip`: araç tipi (motor kanalı dışlaması; `srv_rev_mask`). Sensör kalibrasyonu/yönelimi adları (`sensor_mu`) SITL'e gitmez → 'sensor_skipped'.
+    Dönüş: ([{name, value, ptype}], {'virtual_mount': bool, 'mask': int, 'neutral': [adlar], 'reversed': [adlar], 'motor_skipped': [adlar],
+    'sensor_skipped': [adlar]})."""
     notr_mask = notr
-    out, notr, ters, motor = [], [], [], []
+    out, notr, ters, motor, sensor = [], [], [], [], []
     for r in rows:
+        if sensor_mu(r['name']):
+            sensor.append(str(r['name']))
+            continue
         v = float(r['value'])
         if montaj_mi(r['name']) and v != 0.0:
             if sanal_montaj:
@@ -185,7 +209,18 @@ def sitl_kayitlari(rows, sanal_montaj=True, tip=None, notr=0, varsayilan=None):
     mask = srv_rev_mask(rows, tip, motor, notr_mask, varsayilan) if sanal_montaj else 0
     if sanal_montaj:
         out.append({'name': SIM_SRV_REV, 'value': float(mask), 'ptype': SIM_SRV_REV_PTYPE})
-    return out, {'virtual_mount': bool(sanal_montaj), 'mask': mask, 'neutral': notr, 'reversed': [a for a in ters if a not in motor], 'motor_skipped': motor}
+    return out, {'virtual_mount': bool(sanal_montaj), 'mask': mask, 'neutral': notr, 'reversed': [a for a in ters if a not in motor], 'motor_skipped': motor,
+                 'sensor_skipped': sensor}
+
+
+def sensor_olayi(bilgi):
+    """Sensör kalibrasyonu parametreleri SITL'e yazılmadıysa olay şeridi metni + önem (6); yoksa None."""
+    adlar = list((bilgi or {}).get('sensor_skipped') or [])
+    if not adlar:
+        return None
+    ozet = ', '.join(adlar[:6]) + (f' … (+{len(adlar) - 6})' if len(adlar) > 6 else '')
+    return (f'{len(adlar)} sensör kalibrasyonu/yönelimi parametresi ({ozet}) simülasyonda uygulanmadı — SITL ideal sanal pusula/IMU kullanır '
+            '(gerçek uçağın değerleri "PreArm: Check mag field" / "Compasses inconsistent" üretirdi); kayıt ve .param dışa aktarımı korunur', 6)
 
 
 def montaj_olayi(bilgi):
@@ -220,6 +255,7 @@ def yukle(drone_id, conn=None):
     for r in rows:
         r['source_text'] = KAYNAKLAR.get(r['source'], r['source'])
         r['mount'] = montaj_mi(r['name'])   # montaj parametresi: UI rozeti (MONTAJ_ROZET / ikili desteklemiyorsa MONTAJ_ROZET_NOTR)
+        r['sensor'] = sensor_mu(r['name'])  # sensör kalibrasyonu/yönelimi: kayıtta kalır, SITL'e yazılmaz (UI rozeti SENSOR_ROZET)
     return rows
 
 
@@ -507,6 +543,8 @@ class Izleyici:
         if bek is None:
             if eski is None or self._esit(v, eski) or not self.taban_tam:
                 return None   # ilk öğrenme (taban), değişmedi ya da tam liste henüz alınmadı
+            if sensor_mu(n):
+                return None   # SITL'in sanal sensörüne ait değer (simülatörde kalibrasyon, AUTODEC): gerçek uçağın kaydına yazılmaz
             source, user_id = 'sitl', None
         else:
             source, user_id = bek[0], bek[1]

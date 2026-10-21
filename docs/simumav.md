@@ -569,3 +569,10 @@ doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
   önizlemesi); uçuşta kadran kutusu / G. `classic` = oyun teması (`.sm-game`). `gtheme.*` anahtarları. Tercih yalnız tarayıcıda (`fs.gauge.theme`).
 - **Radar/EO pencereleri** (§27.4): HEPGO `createSiteScreens` aynen (sürükle, oranlı boyut, yapışma, engelden kaçınma, `fs.site.win`, ⟲); `site.win_*` anahtarları.
 - Dışa aktarma: yeni modüller (`flightsim_rcfeel.js`, `flightsim_gtheme.js`, `flightsim_intro.js`, `flightsim_dock.js`) `flightsim*.js` kalıbıyla gelir.
+
+## 14. Radar/EO tam görüntü, EO elle kumanda, alt bant uçuş denetimi, çarpışma efekti — HEPGO docs/ucus-simulatoru.md §30'un SIMUMAV karşılığı
+- Çekirdek modüller aynen (`/sim/flightsim3d.js`, `flightsim_g3d.js` ikincil kamera kaydı + radar altlığı, `flightsim_gcs_ui.js` EO tekerlek/sürükle/TAKİP,
+  `flightsim_crashfx.js`, `flightsim_audio.js` darbe sesi). Yeni modül `flightsim_fltbar.js` `fly/session.js` `loadSim` listesinde (`MFlt`): alt bantta mod seçici
+  (F) + ARM/DISARM/motor kes (X) her zaman görünür; `.fs-cmds`'te yalnız Kalkış/RTL kaldı. Komutlar hub `cmd` yolundan (`mode`, `arm`, `disarm`, `motor_cut`);
+  havada kopter DISARM'ı `confirmDialog` onayı ister. Çarpışma bandı açılınca `sim.crashFx({speed})`, ses `getCrashSpeed`.
+- Metinler `flt.*` ve `site.eo_follow*`, `site.eo_manual`, `site.eo_drag_hint`, `site.eo_body_t` (7 dil). Hassasiyet düğmesi etiketli (`rcfeel.btn`).

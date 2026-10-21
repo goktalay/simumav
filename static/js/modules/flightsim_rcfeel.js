@@ -108,6 +108,8 @@ const CSS = `
 .fs-rcf-btn{display:inline-flex;align-items:center;justify-content:center;gap:5px}
 .fs-rcf-btn span{display:inline-grid;place-items:center}
 .fs-rcf-btn svg{width:15px;height:15px}
+.fs-rcf-btn .fs-rcf-lbl{font-weight:600}
+@media (max-width:900px){.fs-rcf-btn .fs-rcf-lbl{display:none}}
 .fs-rcf-pop{position:absolute;left:12px;bottom:calc(var(--fs-bar-h,54px) + 10px);width:min(340px,calc(100vw - 24px));pointer-events:auto;z-index:40;padding:12px 14px 10px;border-radius:14px;background:rgba(11,18,32,.92);border:1px solid rgba(255,255,255,.16);color:#e2e8f0;font:13px/1.35 system-ui,-apple-system,"Segoe UI",sans-serif;box-shadow:0 14px 40px rgba(0,0,0,.5);backdrop-filter:blur(10px)}
 .fs-rcf-pop[hidden]{display:none}
 .fs-rcf-h{display:flex;align-items:center;gap:8px;margin-bottom:8px}
@@ -153,7 +155,7 @@ export function createRcFeelPanel(stage, { tr = null, keyed = false, plane = fal
   ensureRcFeelCss();
   const T = makeRcFeelT(tr, keyed);
   let feel = loadFeel(storage), axis = 'roll', link = true, disposed = false;
-  const btn = el('button', { class: `${btnClass} fs-rcf-btn`, type: 'button', title: T('rcfeel.btn_title'), 'aria-label': T('rcfeel.title'), 'aria-expanded': 'false', onclick: e => { e.stopPropagation(); open(); } }, el('span', { html: ICO }));
+  const btn = el('button', { class: `${btnClass} fs-rcf-btn`, type: 'button', title: T('rcfeel.btn_title'), 'aria-label': T('rcfeel.title'), 'aria-expanded': 'false', onclick: e => { e.stopPropagation(); open(); } }, el('span', { html: ICO }), el('b', { class: 'fs-rcf-lbl' }, T('rcfeel.btn')));   // açık etiket (yalnız ⚙ fark edilmiyordu); dar ekranda yalnız simge + title
   const presetBtns = ['soft', 'normal', 'sport'].map(k => el('button', { type: 'button', 'data-p': k, onclick: () => { feel = normFeel(RCFEEL_PRESETS[k]); commit(); } }, T(`rcfeel.p_${k}`)));
   const customTag = el('button', { type: 'button', 'data-p': 'custom', disabled: true, tabindex: '-1' }, T('rcfeel.p_custom'));
   const axisBtns = RC_AXES.map(a => el('button', { type: 'button', 'data-a': a, onclick: () => { axis = a; draw(); } }, T(`rcfeel.${a}`)));

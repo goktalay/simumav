@@ -114,7 +114,7 @@ function playBeeps(plan, vol) {
   }
   const end = (plan.at(-1)?.t || 0) + (plan.at(-1)?.dur || 0) + 0.3;
   const timer = setTimeout(() => ctx.close?.().catch(() => {}), end * 1000 + 200);
-  return { stop() { clearTimeout(timer); try { ctx.close?.(); } catch { /* */ } } };
+  return { stop() { clearTimeout(timer); try { if (ctx.state !== 'closed') ctx.close?.()?.catch?.(() => {}); } catch { /* */ } } };
 }
 
 /**
