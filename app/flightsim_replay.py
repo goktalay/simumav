@@ -733,7 +733,16 @@ def _tlog_ayristir(path, hz):
     # düşer → akış okuyucu mavlogfile (robust_parsing: BAD_DATA atlanır).
     log = mavutil.mavlogfile(str(path), robust_parsing=True)
     T = _Toplayici(hz)
-    sysid = None
+    sysid = compid = None
+    try:   # araç: en çok HEARTBEAT'li otopilot bileşeni (GCS / gimbal / kamera / ikinci araç karışmasın; app/tlog.py — Uçuş Logları analiziyle aynı)
+        from .tlog import arac_sec, tara
+        sec = arac_sec(tara(str(path))['hb'])
+        if sec:
+            sysid, compid = sec[0], sec[1]
+            T.vehicle = {1: 'ArduPlane', 2: 'ArduCopter', 10: 'ArduRover', 12: 'ArduSub', 4: 'ArduHeli', 20: 'ArduPlane', 21: 'ArduPlane',
+                         22: 'ArduPlane'}.get(sec[2], 'MAVLink')
+    except (OSError, ValueError):
+        pass
     while True:
         m = log.recv_match(type=TLOG_TIPLERI)
         if m is None:
@@ -754,7 +763,7 @@ def _tlog_ayristir(path, hz):
                 sysid = src
                 T.vehicle = {1: 'ArduPlane', 2: 'ArduCopter', 10: 'ArduRover', 12: 'ArduSub', 4: 'ArduHeli', 20: 'ArduPlane', 21: 'ArduPlane',
                              22: 'ArduPlane'}.get(m.type, 'MAVLink')
-            if src != sysid:
+            if src != sysid or (compid is not None and m.get_srcComponent() != compid):
                 continue
             try:   # araç tipine göre custom_mode → mod adı (mode_string_v10 base_mode CUSTOM bayrağı ister; kayıtlarda her zaman yok)
                 ad = (mavutil.mode_mapping_bynumber(m.type) or {}).get(m.custom_mode) or str(m.custom_mode)
@@ -764,6 +773,8 @@ def _tlog_ayristir(path, hz):
             T.arm(t, bool(m.base_mode & 128))
             continue
         if sysid is not None and src != sysid:
+            continue
+        if compid is not None and tp != 'STATUSTEXT' and m.get_srcComponent() != compid:
             continue
         if tp == 'GLOBAL_POSITION_INT':
             if m.lat or m.lon:
