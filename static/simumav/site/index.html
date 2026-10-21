@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title data-i18n="meta.title">SIMUMAV — Gerçek dünya, gerçek fizik dron simülasyonu</title>
   <meta name="description" data-i18n-attr="content:meta.desc" content="SIMUMAV: ArduPilot SITL fiziği, Google 3B dünyası ve Mission Planner bağlantısıyla tarayıcıda çalışan dron simülasyon oyunu.">
-  <meta name="theme-color" content="#05070f">
-  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#05070f" id="theme-color">
+  <meta name="color-scheme" content="dark light">
   <link rel="canonical" href="https://simumav.com/">
   <link rel="alternate" hreflang="tr" href="https://simumav.com/?lang=tr">
   <link rel="alternate" hreflang="en" href="https://simumav.com/?lang=en">
@@ -30,6 +30,7 @@
   <link rel="icon" href="/brand/simumav.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/icon-180.png">
   <link rel="preload" href="/brand/wordmark.svg" as="image">
+  <script src="js/theme-boot.js"></script>
   <link rel="stylesheet" href="css/site.css">
   <link rel="stylesheet" href="css/consent.css">
   <script type="module" src="js/site.js"></script>
@@ -41,10 +42,15 @@
     <a class="brand" href="#top" aria-label="SIMUMAV"><img src="/brand/wordmark.svg" alt="SIMUMAV" width="200" height="40"></a>
     <nav class="nav-links" aria-label="Site">
       <a href="#modules" data-i18n="nav.modules">Modüller</a>
+      <a href="#hangar" data-i18n="nav.hangar">Hangar</a>
+      <a href="#systems" data-i18n="nav.systems">EO · Radar</a>
       <a href="#physics" data-i18n="nav.physics">Fizik</a>
-      <a href="#fpv" data-i18n="nav.fpv">FPV</a>
     </nav>
     <div class="nav-actions">
+      <button class="theme-btn" type="button" id="theme-btn" aria-pressed="false" data-i18n-attr="aria-label:nav.theme;title:nav.theme" aria-label="Gece / gündüz" title="Gece / gündüz">
+        <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M5.3 18.7 7 17M17 7l1.7-1.7"/></svg>
+        <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.6A8.6 8.6 0 0 1 9.4 3.5a8.6 8.6 0 1 0 11.1 11.1Z"/></svg>
+      </button>
       <label class="lang"><span class="sr-only" data-i18n="nav.lang">Dil</span>
         <select id="lang" aria-label="Dil">
           <option value="tr">Türkçe</option><option value="en">English</option><option value="de">Deutsch</option>
@@ -57,10 +63,11 @@
   </header>
 
   <main id="top">
-    <!-- AÇILIŞ SAHNESİ -->
+    <!-- AÇILIŞ SAHNESİ: sinematik filo gösterimi (CAYMAZ → INTERCEPTOR → diğer modeller) -->
     <section class="hero bars" id="hero" aria-labelledby="hero-title">
       <div class="sky" aria-hidden="true"><span class="sun"></span></div>
       <canvas id="hero3d" aria-hidden="true"></canvas>
+      <div class="hero-dip" aria-hidden="true"></div>
       <div class="hero-fallback" id="hero-fallback" aria-hidden="true"><img src="/brand/simumav.svg" alt="" width="220" height="220"></div>
       <div class="hero-vignette" aria-hidden="true"></div>
       <div class="grain" aria-hidden="true"></div>
@@ -73,23 +80,146 @@
           <a class="btn ghost lg" href="#modules" data-i18n="hero.cta2">Modülleri keşfet</a>
         </div>
       </div>
-      <a class="scroll-hint" href="#modules" aria-hidden="true"><span data-i18n="hero.scroll">Kaydır</span><i></i></a>
+      <div class="reel" id="reel" hidden>
+        <p class="reel-meta"><span class="reel-idx" id="reel-idx">01 / 11</span><b class="reel-name" id="reel-name">CAYMAZ V3</b><span class="reel-type" id="reel-type"></span><span class="reel-spec" id="reel-spec"></span></p>
+        <div class="reel-bar" aria-hidden="true"><i id="reel-bar"></i></div>
+        <div class="reel-ctl" role="group" data-i18n-attr="aria-label:reel.label" aria-label="Filo gösterimi">
+          <button type="button" id="reel-prev" data-i18n-attr="aria-label:reel.prev;title:reel.prev" aria-label="Önceki model">‹</button>
+          <button type="button" id="reel-pause" aria-pressed="false" data-i18n-attr="aria-label:reel.pause;title:reel.pause" aria-label="Duraklat"><span class="i-pause" aria-hidden="true"></span></button>
+          <button type="button" id="reel-next" data-i18n-attr="aria-label:reel.next;title:reel.next" aria-label="Sonraki model">›</button>
+        </div>
+      </div>
+      <a class="scroll-hint" href="#modules" aria-hidden="true" tabindex="-1"><span data-i18n="hero.scroll">Kaydır</span><i></i></a>
     </section>
 
-    <!-- MODÜLLER -->
+    <!-- MODÜLLER: kart → ilgili tanıtım bölümü (yumuşak kaydırma + URL hash) -->
     <section class="scene modules" id="modules" aria-labelledby="mod-title">
       <div class="wrap">
         <p class="kicker" data-reveal data-i18n="mod.kicker">Altı modül, tek kokpit</p>
         <h2 id="mod-title" data-reveal data-i18n="mod.title">Hangardan operasyona</h2>
         <p class="lead" data-reveal data-i18n="mod.sub">Her uçuş bir hikâye.</p>
         <ol class="mod-grid">
-          <li class="mod-card" data-reveal data-mod="hangar"><span class="mod-ico"><img src="/brand/icons/hangar.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.hangar.t">Hangar</h3><p data-i18n="mod.hangar.d">Dönen 3B modeller.</p></li>
-          <li class="mod-card" data-reveal data-mod="crew"><span class="mod-ico"><img src="/brand/icons/crew.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.crew.t">Mürettebat</h3><p data-i18n="mod.crew.d">On karakter.</p></li>
-          <li class="mod-card" data-reveal data-mod="tracks"><span class="mod-ico"><img src="/brand/icons/tracks.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.tracks.t">Parkur</h3><p data-i18n="mod.tracks.d">Gerçek arazi.</p></li>
-          <li class="mod-card" data-reveal data-mod="missions"><span class="mod-ico"><img src="/brand/icons/missions.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.missions.t">Görevler</h3><p data-i18n="mod.missions.d">Planı 3B dünyada çiz.</p></li>
-          <li class="mod-card" data-reveal data-mod="fly"><span class="mod-ico"><img src="/brand/icons/fly.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.fly.t">Uç</h3><p data-i18n="mod.fly.d">Tam HUD ve FPV.</p></li>
-          <li class="mod-card" data-reveal data-mod="ops"><span class="mod-ico"><img src="/brand/icons/ops.svg" alt="" width="64" height="64" loading="lazy"></span><h3 data-i18n="mod.ops.t">Operasyon</h3><p data-i18n="mod.ops.d">Tekrar oynat, analiz et.</p></li>
+          <li class="mod-card" data-reveal data-mod="hangar"><span class="mod-ico"><img src="/brand/icons/hangar.svg" alt="" width="64" height="64" loading="lazy"></span><h3><a class="mod-link" href="#hangar" data-i18n="mod.hangar.t">Hangar</a></h3><p data-i18n="mod.hangar.d">Dönen 3B modeller.</p><span class="mod-more" aria-hidden="true" data-i18n="mod.more3d">3B galeriyi aç</span></li>
+          <li class="mod-card" data-reveal data-mod="crew"><span class="mod-ico"><img src="/brand/icons/crew.svg" alt="" width="64" height="64" loading="lazy"></span><h3><a class="mod-link" href="#crew" data-i18n="mod.crew.t">Mürettebat</a></h3><p data-i18n="mod.crew.d">On karakter.</p><span class="mod-more" aria-hidden="true" data-i18n="mod.more">Ayrıntılar</span></li>
+          <li class="mod-card" data-reveal data-mod="tracks"><span class="mod-ico"><img src="/brand/icons/tracks.svg" alt="" width="64" height="64" loading="lazy"></span><h3><a class="mod-link" href="#tracks" data-i18n="mod.tracks.t">Parkur</a></h3><p data-i18n="mod.tracks.d">Gerçek arazi.</p><span class="mod-more" aria-hidden="true" data-i18n="mod.more">Ayrıntılar</span></li>
+          <li class="mod-card" data-reveal data-mod="missions"><span class="mod-ico"><img src="/brand/icons/missions.svg" alt="" width="64" height="64" loading="lazy"></span><h3><a class="mod-link" href="#missions" data-i18n="mod.missions.t">Görevler</a></h3><p data-i18n="mod.missions.d">Planı 3B dünyada çiz.</p><span class="mod-more" aria-hidden="true" data-i18n="mod.more">Ayrıntılar</span></li>
+          <li class="mod-card" data-reveal data-mod="fly"><span class="mod-ico"><img src="/brand/icons/fly.svg" alt="" width="64" height="64" loading="lazy"></span><h3><a class="mod-link" href="#fly" data-i18n="mod.fly.t">Uç</a></h3><p data-i18n="mod.fly.d">Tam HUD ve FPV.</p><span class="mod-more" aria-hidden="true" data-i18n="mod.more">Ayrıntılar</span></li>
+          <li class="mod-card" data-reveal data-mod="ops"><span class="mod-ico"><img src="/brand/icons/ops.svg" alt="" width="64" height="64" loading="lazy"></span><h3><a class="mod-link" href="#ops" data-i18n="mod.ops.t">Operasyon</a></h3><p data-i18n="mod.ops.d">Tekrar oynat, analiz et.</p><span class="mod-more" aria-hidden="true" data-i18n="mod.more">Ayrıntılar</span></li>
         </ol>
+      </div>
+    </section>
+
+    <!-- HANGAR: tanımlı dronların dönen 3B modelleri (tek WebGL bağlamı; hangar3d.js) -->
+    <section class="scene hangar" id="hangar" aria-labelledby="hangar-title">
+      <div class="wrap">
+        <p class="kicker" data-reveal><span class="num">01</span> <span data-i18n="hangar.kicker">Hangar</span></p>
+        <h2 id="hangar-title" data-reveal data-i18n="hangar.title">Filonu tanı</h2>
+        <p class="lead" data-reveal data-i18n="hangar.sub">Sistemdeki her dron gerçek ölçülü 3B modeliyle.</p>
+        <div class="fleet-chips" role="group" data-i18n-attr="aria-label:hangar.filter" aria-label="Tür süzgeci"></div>
+        <ul class="fleet-grid" id="fleet-grid"></ul>
+        <p class="small fleet-hint" data-i18n="hangar.hint">Bir modele tıkla: büyüt, sürükleyerek döndür.</p>
+      </div>
+    </section>
+
+    <!-- MÜRETTEBAT -->
+    <section class="scene feature" id="crew" aria-labelledby="crew-title">
+      <div class="wrap feat">
+        <div class="feat-copy">
+          <p class="kicker" data-reveal><span class="num">02</span> <span data-i18n="mod.crew.t">Mürettebat</span></p>
+          <h2 id="crew-title" data-reveal data-i18n="crew.title">Pilot koltuğu senin</h2>
+          <p class="lead" data-reveal data-i18n="crew.sub">On karakter.</p>
+          <ul class="checks" data-reveal><li data-i18n="crew.p1">.</li><li data-i18n="crew.p2">.</li><li data-i18n="crew.p3">.</li></ul>
+        </div>
+        <figure class="shot" data-reveal><img src="img/mod-crew.webp" width="1200" height="750" loading="lazy" decoding="async" alt="SIMUMAV Mürettebat ekranı" data-i18n-attr="alt:crew.alt"></figure>
+      </div>
+    </section>
+
+    <!-- PARKUR -->
+    <section class="scene feature alt" id="tracks" aria-labelledby="tracks-title">
+      <div class="wrap feat">
+        <div class="feat-copy">
+          <p class="kicker" data-reveal><span class="num">03</span> <span data-i18n="mod.tracks.t">Parkur</span></p>
+          <h2 id="tracks-title" data-reveal data-i18n="tracks.title">Dünyanın her yeri bir pist</h2>
+          <p class="lead" data-reveal data-i18n="tracks.sub">.</p>
+          <ul class="checks" data-reveal><li data-i18n="tracks.p1">.</li><li data-i18n="tracks.p2">.</li><li data-i18n="tracks.p3">.</li></ul>
+        </div>
+        <figure class="shot" data-reveal><img src="img/mod-tracks.webp" width="1200" height="750" loading="lazy" decoding="async" alt="SIMUMAV Parkur ekranı" data-i18n-attr="alt:tracks.alt"></figure>
+      </div>
+    </section>
+
+    <!-- GÖREVLER -->
+    <section class="scene feature" id="missions" aria-labelledby="missions-title">
+      <div class="wrap feat">
+        <div class="feat-copy">
+          <p class="kicker" data-reveal><span class="num">04</span> <span data-i18n="mod.missions.t">Görevler</span></p>
+          <h2 id="missions-title" data-reveal data-i18n="missions.title">Görevini çiz, sonra uç</h2>
+          <p class="lead" data-reveal data-i18n="missions.sub">.</p>
+          <ul class="checks" data-reveal><li data-i18n="missions.p1">.</li><li data-i18n="missions.p2">.</li><li data-i18n="missions.p3">.</li></ul>
+        </div>
+        <figure class="shot" data-reveal><img src="img/mod-missions.webp" width="1200" height="750" loading="lazy" decoding="async" alt="SIMUMAV Görevler ekranı" data-i18n-attr="alt:missions.alt"></figure>
+      </div>
+    </section>
+
+    <!-- UÇ -->
+    <section class="scene feature alt" id="fly" aria-labelledby="fly-title">
+      <div class="wrap feat">
+        <div class="feat-copy">
+          <p class="kicker" data-reveal><span class="num">05</span> <span data-i18n="mod.fly.t">Uç</span></p>
+          <h2 id="fly-title" data-reveal data-i18n="fly.title">Kontak. Arm. Kalkış.</h2>
+          <p class="lead" data-reveal data-i18n="fly.sub">.</p>
+          <ul class="checks" data-reveal><li data-i18n="fly.p1">.</li><li data-i18n="fly.p2">.</li><li data-i18n="fly.p3">.</li></ul>
+        </div>
+        <figure class="shot" data-reveal><img src="img/mod-fly.webp" width="1200" height="750" loading="lazy" decoding="async" alt="SIMUMAV Uç sihirbazı" data-i18n-attr="alt:fly.alt"></figure>
+      </div>
+    </section>
+
+    <!-- OPERASYON -->
+    <section class="scene feature" id="ops" aria-labelledby="ops-title">
+      <div class="wrap feat">
+        <div class="feat-copy">
+          <p class="kicker" data-reveal><span class="num">06</span> <span data-i18n="mod.ops.t">Operasyon</span></p>
+          <h2 id="ops-title" data-reveal data-i18n="ops.title">Her uçuş bir kayıt</h2>
+          <p class="lead" data-reveal data-i18n="ops.sub">.</p>
+          <ul class="checks" data-reveal><li data-i18n="ops.p1">.</li><li data-i18n="ops.p2">.</li><li data-i18n="ops.p3">.</li></ul>
+        </div>
+        <figure class="shot" data-reveal><img src="img/mod-ops.webp" width="1200" height="750" loading="lazy" decoding="async" alt="SIMUMAV Operasyon ekranı" data-i18n-attr="alt:ops.alt"></figure>
+      </div>
+    </section>
+
+    <!-- ELEKTRO-OPTİK, RADAR, HEDEF SİSTEMİ (gerçek uygulamadan ekran görüntüleri; tests/simumav_site_media.py) -->
+    <section class="scene systems" id="systems" aria-labelledby="sys-title">
+      <div class="wrap">
+        <p class="kicker" data-reveal data-i18n="sys.kicker">Elektro-optik · Radar · Hedef</p>
+        <h2 id="sys-title" data-reveal data-i18n="sys.title">Yer kontrolünü koru</h2>
+        <p class="lead" data-reveal data-i18n="sys.sub">.</p>
+        <figure class="shot wide" data-reveal><img src="img/sys-defend.webp" width="1400" height="875" loading="lazy" decoding="async" alt="Yer kontrolünü koru görevi" data-i18n-attr="alt:sys.alt.defend"><figcaption data-i18n="sys.defend.c">.</figcaption></figure>
+        <div class="sys-grid">
+          <article class="sys-card" data-reveal>
+            <div class="sys-media radar"><img src="img/sys-radar.webp" width="587" height="420" loading="lazy" decoding="async" alt="Radar ekranı" data-i18n-attr="alt:sys.alt.radar"></div>
+            <h3 data-i18n="sys.radar.t">Radar</h3><p data-i18n="sys.radar.d">.</p>
+          </article>
+          <article class="sys-card eo" data-reveal>
+            <div class="sys-media">
+              <img class="eo-img on" data-eo="day" src="img/sys-eo-day.webp" width="587" height="420" loading="lazy" decoding="async" alt="EO gündüz" data-i18n-attr="alt:sys.alt.eoday">
+              <img class="eo-img" data-eo="thermal" src="img/sys-eo-thermal.webp" width="587" height="420" loading="lazy" decoding="async" alt="EO termal" data-i18n-attr="alt:sys.alt.eothermal">
+              <img class="eo-img" data-eo="night" src="img/sys-eo-night.webp" width="587" height="420" loading="lazy" decoding="async" alt="EO gece" data-i18n-attr="alt:sys.alt.eonight">
+            </div>
+            <div class="seg" role="group" data-i18n-attr="aria-label:sys.eo.t" aria-label="EO">
+              <button type="button" data-eo-btn="day" aria-pressed="true" data-i18n="sys.eo.day">Gündüz</button>
+              <button type="button" data-eo-btn="thermal" aria-pressed="false" data-i18n="sys.eo.thermal">Termal</button>
+              <button type="button" data-eo-btn="night" aria-pressed="false" data-i18n="sys.eo.night">Gece</button>
+            </div>
+            <h3 data-i18n="sys.eo.t">Elektro-optik</h3><p data-i18n="sys.eo.d">.</p>
+          </article>
+        </div>
+        <div class="sys-row">
+          <figure class="shot" data-reveal><img src="img/sys-tgt-gimbal.webp" width="1400" height="875" loading="lazy" decoding="async" alt="Hedef sembolojisi" data-i18n-attr="alt:sys.alt.tgt"><figcaption><b data-i18n="sys.tgt.t">Hedef sembolojisi</b> <span data-i18n="sys.tgt.d">.</span></figcaption></figure>
+          <figure class="shot" data-reveal><img src="img/sys-tgt-thermal.webp" width="1400" height="875" loading="lazy" decoding="async" alt="Termal hedef" data-i18n-attr="alt:sys.alt.tgtthermal"><figcaption><b data-i18n="sys.thermal.t">Termal kamera</b> <span data-i18n="sys.thermal.d">.</span></figcaption></figure>
+        </div>
+        <div class="sys-row">
+          <figure class="shot" data-reveal><img src="img/sys-launcher.webp" width="1400" height="875" loading="lazy" decoding="async" alt="Uç sihirbazında INTERCEPTOR fırlatıcı seçimi" data-i18n-attr="alt:sys.alt.launch"><figcaption><b data-i18n="sys.launch.t">INTERCEPTOR fırlatıcıları</b> <span data-i18n="sys.launch.d">.</span></figcaption></figure>
+          <figure class="shot" data-reveal><img src="img/sys-report.webp" width="662" height="488" loading="lazy" decoding="async" alt="Görev raporu" data-i18n-attr="alt:sys.alt.report"><figcaption><b data-i18n="sys.report.t">Görev raporu</b> <span data-i18n="sys.report.d">.</span></figcaption></figure>
+        </div>
       </div>
     </section>
 
@@ -153,6 +283,27 @@
       </div>
     </section>
   </main>
+
+  <!-- HANGAR: büyütülmüş 3B model (diyalog; aynı paylaşılan WebGL bağlamı) -->
+  <div class="fleet-view" id="fleet-view" hidden role="dialog" aria-modal="true" aria-label="Model">
+    <div class="fv-back" data-fv-close></div>
+    <div class="fv-panel">
+      <div class="fv-stage"><canvas aria-hidden="true"></canvas><i class="fc-load" aria-hidden="true"></i></div>
+      <div class="fv-info">
+        <p class="fv-idx">01 / 15</p>
+        <h3 class="fv-name">CAYMAZ V3</h3>
+        <p class="fv-type"></p>
+        <p class="fv-spec"></p>
+        <p class="fv-desc"></p>
+        <p class="small fv-hint" data-i18n="hangar.drag">Sürükle: döndür · Tekerlek: yakınlaş · ← → döndür</p>
+        <div class="fv-nav">
+          <button class="btn ghost fv-prev" type="button" data-i18n="hangar.prev">‹ Önceki</button>
+          <button class="btn ghost fv-next" type="button" data-i18n="hangar.next">Sonraki ›</button>
+        </div>
+      </div>
+      <button class="x fv-close" type="button" data-fv-close aria-label="Kapat" data-i18n-attr="aria-label:auth.close">×</button>
+    </div>
+  </div>
 
   <footer class="foot">
     <div class="wrap foot-grid">

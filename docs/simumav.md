@@ -293,6 +293,45 @@ Durum değiştiren (POST/PUT/DELETE) her istekte `Origin` izinli kökenden olmal
 - Testler: `node tests/test_simumav_site.mjs` (pickLang kuralı, hreflang, analytics harici/consent sırası, 7 dil anahtarları), `tests.test_simumav` (meta ga_id, CSP, settings.lang None),
   `tests/simumav_lang_shots.py` (Playwright; uvicorn subprocess 8611; de-DE→de, ja-JP→en, ?lang=ar RTL, bant, Kabul→gtag isteği, Reddet→istek yok, kabuk page_view; /tmp/simumav-lang/).
 
+
+### 5.3 Tanıtım sitesi (simumav.com kökü) — sinematik filo, Hangar 3B galerisi, modül bölümleri, EO/radar/hedef, gece/gündüz
+Dosyalar `static/simumav/site/`: `index.html`, `css/site.css`, `js/{site,fleet,stage,hero3d,hangar3d,theme-boot,lang,auth,analytics}.js`, `img/*.webp`, `i18n/*.json`.
+- **Filo kataloğu** `js/fleet.js` (saf, DOM'suz): `/api/hangar/catalog` oturum istediği için site STATİK katalog kullanır — `bridge.GLB_MODELS` anahtarlarının
+  tamamı + CAYMAZ (`/static/models/caymaz-sim.glb`, burun +Z → +X döndürülür); hızlar `bridge.HEDEF_HIZ` / `flightsim_targets.BUILTIN_HIZ` (km/h). Node testi
+  anahtar ve hız eşitliğini, GLB dosyalarının varlığını ve 7 dilde `fleet.<id>.d` / `type.<tür>` metinlerini doğrular → katalog büyürse test kırılır, site güncellenir.
+- **Tek WebGL bağlamı** `js/stage.js`: tüm 3B görünümler (açılış, galeri karoları, büyütülmüş model) TEK paylaşılan `WebGLRenderer` ile sırayla render edilir
+  ve görünümün 2B tuvaline kopyalanır (oyun kabuğu `/app/core/three.js` ilkesi). `window.__smSiteGl()` ≤ 1 (Playwright). GLB hazırlayıcı `prepareModel`:
+  burun +X / yukarı +Y, merkez, en uzun boyut `fit`; pervaneler (`prop|propeller|rotor|pervane` adlı en üst düğümler) sınır kutusu merkezine pivotlanır,
+  dönüş ekseni = en ince boyut; hafif saydam bulanıklık diski.
+- **Açılış sinematiği** `js/hero3d.js`: `REEL` sırası CAYMAZ → INTERCEPTOR X4 → Sting → P1-SUN → Typhoon H480 → Standard VTOL → Believer → Zephyr → X500 → Heli → Iris FPV;
+  her model `SHOT_SEC`=7 sn, çekim sonu/başı `FADE_SEC`=0,55 sn karartma (`--dip` → `.hero-dip`), dört kamera hareketi sırayla (yörünge · alçak takip ·
+  önden süpürme · vinç), kadraj kilidi (masaüstü sağ yarı; dikey ekran üst orta). Gökyüzü kubbesi (ShaderMaterial), üstel sis, eğim/yüksekliğe göre
+  boyanan periyodik arazi + örneklenmiş ağaçlar, güneş gölgesi dronu izler (mobilde kapalı), seyir ışıkları gerçek kanat ucu köşelerinde. Tembel yükleme:
+  yalnız gösterilen + sıradaki GLB; sıradaki hazır değilse çekim kararmadan uzar. Kare süresi yöneticisi: yavaşsa önce gölge, sonra piksel oranı düşer.
+  Film künyesi (lower third: sıra, ad, tür, boyut · hız; ilerleme çubuğu) + önceki / duraklat / sonraki düğmeleri (WCAG 2.2.2). `prefers-reduced-motion`:
+  döngü yok, tek kare; önceki/sonraki ile model değişir. Görünmezken (IntersectionObserver / sekme gizli) döngü durur.
+- **Hangar galerisi** `js/hangar3d.js`: bölüm 600 px yaklaşınca ya da Hangar kartına/`#hangar` hash'ine gelince tembel yüklenir. Tek stüdyo sahnesi; görünen
+  karolar sırayla (kare başına ≤ 5, mobilde 3) render edilir; GLB'ler karo görününce (≤ 3 eşzamanlı). Tür süzgeci çipleri; karo tıklanınca diyalog
+  (`#fleet-view`, `aria-modal`, odak tuzağı, Esc): büyük dönen model, sürükle/ok tuşları döndür, tekerlek yakınlaştır, önceki/sonraki, açıklama.
+  WebGL yoksa ad · tür · hız düz listesi.
+- **Modül bölümleri** `#crew #tracks #missions #fly #ops` (+ `#hangar`): modül kartının başlığı `<a href="#…">` (kartın tamamı tıklanır; CSS `scroll-behavior:smooth`
+  + `scroll-margin-top` → yumuşak kaydırma ve URL hash). Her bölümde gerçek uygulama ekran görüntüsü (`img/mod-*.webp`).
+- **EO · Radar · Hedef** `#systems`: "Yer kontrolünü koru" uçuş karesi, radar, EO (Gündüz/Termal/Gece seçici — `aria-pressed`), F-16 tarzı hedef sembolojisi
+  (gündüz + termal), INTERCEPTOR fırlatıcı seçimi (Uç sihirbazı, 3B önizleme), görev raporu. Görseller GERÇEK uygulamadan: `tests/simumav_site_media.py`
+  (sahte SITL, dev giriş, prosedürel arazi; `MEDIA_ONLY=mod,defend,tgt,launch,ops` ile bölüm seçimi; `--publish-only` yalnız WEBP) → `img/*.webp`
+  (Pillow, q74, ≤ 260 KB; test sınırı). Savunma karesi + rapor: tek dalga, istasyon üstünde 60 m askı. Radar/EO kırpımları görevsiz "hedefler" uçuşunda
+  (zaman baskısı yok): pencereler taşınıp büyütülür (§29), `sim.lockTarget(i)` ile en yavaş hedef kilitlenir, kırpımın üstüne binen geçici katmanlar
+  (bildirim akışı, MP kartı) yalnız çekimde gizlenir. SwiftShader yavaş olduğundan savunma görevinde EO kırpımı alınmaz (tehditler istasyona ulaşır).
+- **Gece/gündüz teması**: `<html data-theme>`; `js/theme-boot.js` (head, eşzamanlı, src'li) ilk boyamadan önce kayıtlı `localStorage simumav.theme` ya da
+  `prefers-color-scheme` uygular. Düğme tersini kaydeder; sistemle aynıysa kaydı siler (yeniden sistemi izler — `fleet.js nextTheme`). Kayıt yokken sistem
+  teması değişimi canlı izlenir. 3B sahnede gündüz: mavi gök, açık sis, güçlü güneş, yeşil arazi; gece: alacakaranlık ufku, yıldızlar, belirgin seyir ışıkları.
+- **GA olayları** (yalnız rıza `granted` iken gider; kişisel veri yok): `section_view {section}` (bölüm ilk kez %40 görünür), `module_card {module}`,
+  `hangar_model_open {model}`, `reel_control {action}`, `eo_mode {mode}`, `theme_toggle {theme}`.
+- **CSP**: yeni dış kaynak YOK (three.js `/vendor/three`, modeller `/static/models` + `/static/simumav/models`, görseller `img/`); inline script/style yok.
+- Testler: `node tests/test_simumav_site.mjs` (filo↔katalog, reelAt/shotFade, tema kuralı, hash beyaz listesi, kart→bölüm, görseller WEBP/boyut/alt i18n, tek
+  çizici); görsel `./.venv/bin/python -m tests.simumav_site_shots` (gerçek uygulama + CSP başlıkları; CSP ihlali / sayfa hatası / bağlam > 1 → hata;
+  /tmp/smsite-shots: 4 sinematik kare + geçiş, galeri, büyütme, modül bölümleri, EO kipleri, gündüz, sistem açık teması, mobil, RTL, reduced-motion).
+
 ## 7. Güvenlik (BAĞLAYICI — sistem tüm dünyaya açık olacak, kötü niyetli kullanıcı varsayılır)
 
 - **Tam yalıtım:** ayrı süreç, ayrı DATA_DIR, ayrı DB. HEPGO ERP veritabanına/dosyalarına HİÇBİR erişim yok; `app.main`,

@@ -676,5 +676,6 @@
   "flt.ev_cut": "Motor aus — das Flugzeug gleitet, Ruder aktiv",
   "flt.ev_restore": "Motor wieder an",
   "flt.ev_mode": "Modusanforderung: {m}",
-  "flt.err": "Befehl fehlgeschlagen: {e}"
+  "flt.err": "Befehl fehlgeschlagen: {e}",
+  "weather.snow": "Schnee"
 }

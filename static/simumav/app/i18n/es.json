@@ -676,5 +676,6 @@
   "flt.ev_cut": "Motor cortado — el avión planea, superficies activas",
   "flt.ev_restore": "Motor restablecido",
   "flt.ev_mode": "Solicitud de modo: {m}",
-  "flt.err": "Comando fallido: {e}"
+  "flt.err": "Comando fallido: {e}",
+  "weather.snow": "Nieve"
 }

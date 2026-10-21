@@ -676,5 +676,6 @@
   "flt.ev_cut": "Motor cut — the aircraft is gliding, control surfaces working",
   "flt.ev_restore": "Motor restored",
   "flt.ev_mode": "Mode request: {m}",
-  "flt.err": "Command failed: {e}"
+  "flt.err": "Command failed: {e}",
+  "weather.snow": "Snow"
 }

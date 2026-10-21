@@ -676,5 +676,6 @@
   "flt.ev_cut": "Motor kesildi — uçak süzülüyor, kumanda yüzeyleri çalışıyor",
   "flt.ev_restore": "Motor geri verildi",
   "flt.ev_mode": "Mod isteği: {m}",
-  "flt.err": "Komut başarısız: {e}"
+  "flt.err": "Komut başarısız: {e}",
+  "weather.snow": "Kar"
 }

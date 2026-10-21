@@ -64,9 +64,12 @@ test('CSP: inline style yok (<style> ya da style=)', () => {
 });
 
 test('CSP: CDN yok; three.js /vendor/three yolundan; tek dış alan googletagmanager (analytics.js, dinamik)', () => {
-  const all = [...htmls.map(([, h]) => h), ...['js/site.js', 'js/hero3d.js', 'js/auth.js', 'js/lang.js', 'css/site.css', 'css/consent.css'].map(f => readFileSync(join(SITE, f), 'utf8'))];
+  const all = [...htmls.map(([, h]) => h), ...['js/site.js', 'js/hero3d.js', 'js/hangar3d.js', 'js/stage.js', 'js/fleet.js', 'js/theme-boot.js', 'js/auth.js', 'js/lang.js', 'css/site.css', 'css/consent.css'].map(f => readFileSync(join(SITE, f), 'utf8'))];
   for (const s of all) assert.ok(!/https?:\/\/(cdn\.|unpkg\.com|cdnjs\.|jsdelivr\.net|fonts\.googleapis|esm\.sh|googletagmanager)/i.test(s), 'CDN/GA başvurusu');
-  assert.match(readFileSync(join(SITE, 'js/hero3d.js'), 'utf8'), /from '\/vendor\/three\/three\.module\.min\.js'/);
+  const st = readFileSync(join(SITE, 'js/stage.js'), 'utf8');
+  assert.match(st, /from '\/vendor\/three\/three\.module\.min\.js'/); assert.match(st, /from '\/vendor\/three\/GLTFLoader\.js'/);
+  for (const f of ['js/hero3d.js', 'js/hangar3d.js']) assert.ok(!/vendor\/three|new THREE\.WebGLRenderer/.test(readFileSync(join(SITE, f), 'utf8')), `${f}: kendi çizicisini açmamalı (tek bağlam: stage.js)`);
+  assert.equal((st.match(/new THREE\.WebGLRenderer/g) || []).length, 1, 'stage.js tek çizici');
 });
 
 test('kimlik: hesap servisi adresi sabit yazılmamış; akış prelogin → login → /api/session; signup/login olayları', () => {
@@ -153,6 +156,75 @@ test('analitik: oyun kabuğu aynı modülü kullanır; page_view hash rotası; f
   assert.ok(a.includes("from '/js/analytics.js'") && a.includes('spa: true') && a.includes('pageView(`/app/#/') && a.includes('ga_id'));
   assert.ok(f.includes("'flight_start'") && s.includes("'flight_end'") && s.includes('duration_s'));
   for (const src of [a, f, s]) for (const m of src.matchAll(/track\?*\((?:'flight_start'|'flight_end'|'signup'|'login')[^\n]*/g)) assert.ok(!/email|display_name|user_id|\bname\b|pilot/.test(m[0]), m[0]);
+});
+
+// ---------- filo, sinematik, tema, bölümler (fleet.js; saf) ----------
+const FL = await import(pathToFileURL(join(SITE, 'js/fleet.js')).href);
+const bridge = readFileSync(join(ROOT, 'app/simumav/bridge.py'), 'utf8');
+const targetsPy = readFileSync(join(ROOT, 'app/flightsim_targets.py'), 'utf8');
+
+test('filo: anahtarlar bridge.GLB_MODELS ile aynı; hızlar HEDEF_HIZ/BUILTIN_HIZ ile aynı; GLB dosyaları var', () => {
+  const glb = bridge.slice(bridge.indexOf('GLB_MODELS = {'), bridge.indexOf('VARSAYILAN_MODEL'));
+  const keys = [...glb.matchAll(/^\s{4}'(glb:[a-z0-9_]+)':/gm)].map(m => m[1]);
+  const fleetGlb = FL.FLEET.filter(m => m.key.startsWith('glb:')).map(m => m.key);
+  assert.deepEqual([...fleetGlb].sort(), [...keys].sort(), 'site filosu = GLB kataloğu');
+  const hiz = Object.fromEntries([...bridge.slice(bridge.indexOf('HEDEF_HIZ = {')).split('}')[0].matchAll(/'(glb:[a-z0-9_]+)': \((\d+), (\d+)\)/g)].map(m => [m[1], [+m[2], +m[3]]]));
+  for (const m of FL.FLEET.filter(x => x.key.startsWith('glb:'))) assert.deepEqual([m.cruise, m.max], hiz[m.key], m.key);
+  const cz = targetsPy.match(/'caymaz': \(([\d.]+), ([\d.]+)\)/);
+  const caymaz = FL.byId('caymaz'); assert.deepEqual([caymaz.cruise, caymaz.max], [+cz[1], +cz[2]]); assert.equal(caymaz.nose, 'z');
+  for (const m of FL.FLEET) {
+    assert.ok(m.url.startsWith('/static/') && m.url.endsWith('.glb'), m.url);
+    const f = m.url.startsWith('/static/simumav/') ? join(ROOT, 'static/simumav', m.url.slice('/static/simumav/'.length)) : join(ROOT, 'static', m.url.slice('/static/'.length));
+    assert.ok(readFileSync(f).length > 1000, f);
+    for (const l of LANGS) assert.ok(dicts[l][`fleet.${m.id}.d`]?.trim() && dicts[l][`type.${m.type}`]?.trim(), `${l} fleet.${m.id}`);
+  }
+});
+
+test('sinematik: sıra CAYMAZ → INTERCEPTOR → diğerleri; reelAt/shotFade karartma ve döngü', () => {
+  const r = FL.reelModels();
+  assert.equal(r[0].id, 'caymaz'); assert.deepEqual(r.slice(1, 4).map(m => m.type), ['interceptor', 'interceptor', 'interceptor']);
+  assert.ok(r.length >= 8 && new Set(r.map(m => m.id)).size === r.length);
+  const S = FL.SHOT_SEC, F = FL.FADE_SEC, n = r.length;
+  assert.deepEqual(FL.reelAt(0, n), { index: 0, local: 0, fade: 1, progress: 0 });
+  assert.equal(FL.reelAt(S / 2, n).fade, 0); assert.equal(FL.reelAt(S / 2, n).index, 0);
+  assert.equal(FL.reelAt(S + 0.01, n).index, 1); assert.equal(FL.reelAt(S * n + 0.5, n).index, 0, 'döngü başa sarar');
+  assert.ok(Math.abs(FL.shotFade(S - F / 2) - 0.5) < 1e-9); assert.ok(Math.abs(FL.shotFade(F / 2) - 0.5) < 1e-9);
+  assert.equal(FL.shotFade(S), 1); assert.equal(FL.reelAt(-5, n).index, 0); assert.equal(FL.reelAt(3, 0).index, 0);
+  assert.equal(FL.specLine(FL.byId('caymaz'), 'tr'), '3,03 m · 90–162 km/h');
+  assert.equal(FL.specLine(FL.byId('icept_x4'), 'en'), '216–400 km/h');
+  assert.ok(FL.isRotor(FL.byId('typhoon_h480')) && !FL.isRotor(FL.byId('icept_x4')));
+});
+
+test('tema: kayıt > sistem; düğme tersini kaydeder, sistemle aynıysa kaydı siler', () => {
+  assert.equal(FL.resolveTheme(null, true), 'light'); assert.equal(FL.resolveTheme(null, false), 'dark');
+  assert.equal(FL.resolveTheme('dark', true), 'dark'); assert.equal(FL.resolveTheme('light', false), 'light'); assert.equal(FL.resolveTheme('bozuk', false), 'dark');
+  assert.deepEqual(FL.nextTheme('dark', false), { theme: 'light', store: 'light' });
+  assert.deepEqual(FL.nextTheme('light', false), { theme: 'dark', store: null });
+  assert.deepEqual(FL.nextTheme('dark', true), { theme: 'light', store: null });
+  assert.equal(FL.THEME_KEY, 'simumav.theme');
+  const boot = readFileSync(join(SITE, 'js/theme-boot.js'), 'utf8'), h = htmls[0][1];
+  assert.ok(boot.includes("'simumav.theme'") && boot.includes('prefers-color-scheme: light'));
+  assert.ok(h.indexOf('<script src="js/theme-boot.js"></script>') > 0 && h.indexOf('js/theme-boot.js') < h.indexOf('css/site.css'), 'tema ön yükleyici CSS\'ten önce, src\'li');
+  assert.ok(readFileSync(join(SITE, 'css/site.css'), 'utf8').includes(':root[data-theme="light"]'));
+});
+
+test('bölümler: hash yalnız bilinen bölüm; modül kartları ilgili bölüme bağlanır; her bölüm sayfada var', () => {
+  assert.equal(FL.sectionFromHash('#hangar'), 'hangar'); assert.equal(FL.sectionFromHash('#Crew'), 'crew');
+  assert.equal(FL.sectionFromHash('#x"><img'), null); assert.equal(FL.sectionFromHash(''), null); assert.equal(FL.sectionFromHash(null), null);
+  const h = htmls[0][1];
+  for (const id of FL.SECTIONS) assert.match(h, new RegExp(`<section[^>]*id="${id}"`), id);
+  for (const mod of ['hangar', 'crew', 'tracks', 'missions', 'fly', 'ops']) assert.match(h, new RegExp(`data-mod="${mod}"[\\s\\S]*?href="#${mod}"`), mod);
+});
+
+test('görseller: index.html img/ başvuruları WEBP, mevcut, ≤ 260 KB; alt metni i18n', () => {
+  const h = htmls[0][1];
+  const imgs = [...h.matchAll(/<img[^>]*src="(img\/[^"]+)"[^>]*>/g)];
+  assert.ok(imgs.length >= 14, `görsel sayısı ${imgs.length}`);
+  for (const [tag, src] of imgs) {
+    assert.ok(src.endsWith('.webp'), src);
+    const size = readFileSync(join(SITE, src)).length; assert.ok(size > 2000 && size <= 260 * 1024, `${src} ${size}`);
+    assert.match(tag, /loading="lazy"/, src); assert.match(tag, /data-i18n-attr="alt:[a-z.]+"/, src); assert.match(tag, /width="\d+" height="\d+"/, src);
+  }
 });
 
 console.log(`\n${ok} test geçti`);

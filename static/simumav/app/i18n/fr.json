@@ -676,5 +676,6 @@
   "flt.ev_cut": "Moteur coupé — l’avion plane, gouvernes actives",
   "flt.ev_restore": "Moteur rétabli",
   "flt.ev_mode": "Demande de mode : {m}",
-  "flt.err": "Échec de la commande : {e}"
+  "flt.err": "Échec de la commande : {e}",
+  "weather.snow": "Neige"
 }
