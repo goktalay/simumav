@@ -350,7 +350,7 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null, key
     // --- §24.5 hedef sembolojisi (askeri HUD ile aynı; OSD beyazı) — merkez işaretinden TLL; ekran dışı oklar üst/alt satırların içinde elipste ---
     const tgd = typeof ctx.targets === 'function' ? ctx.targets() : null;
     if (tgd) { tgSym = symbology(tgd, W, H, { S, bx: cx, by: cy, inset: { l: 90 * S, r: 90 * S, t: Math.max(topY + 40 * S, lay.nav + 40 * S), b: H - bottom + 60 * S } }); drawSymbology(g, tgSym, { color: WHITE, S, F: F * 0.95, tr, W, H }); } else tgSym = null;
-    text(tr('O: OSD · tekerlek: FOV · C: kamera') + (tgd ? ` · ${tr('Tab: hedef')}` : ''), rightX, by - 26 * S, { align: 'right', px: F * 0.75, base: 'bottom', color: 'rgba(244,246,248,.45)' });
+    text(tr('O: OSD · tekerlek: FOV · C: kamera') + (tgd ? ` · ${tr('Tab: hedef')} · ${tr('Boşluk: kilit')}` : ''), rightX, by - 26 * S, { align: 'right', px: F * 0.75, base: 'bottom', color: 'rgba(244,246,248,.45)' });
     // §22.4 kamera PiP'i: görüntüsü 3B tuvalde (bu katmanın altında) → PiP dikdörtgeni temizlenir, HUD/OSD yazıları PiP'in üstüne binmez
     const pipR = typeof ctx.pipRect === 'function' ? ctx.pipRect() : ctx.pipRect;
     if (pipR && pipR.w > 0) g.clearRect(pipR.x - 2, pipR.y - 2, pipR.w + 4, pipR.h + 4);

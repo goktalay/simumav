@@ -152,7 +152,8 @@ CREATE TABLE IF NOT EXISTS matches (
     reason TEXT,                                -- bitiş / iptal nedeni (core REASON + terk_edildi)
     max_players INTEGER NOT NULL,
     settings TEXT NOT NULL DEFAULT '{}',        -- JSON: dron + parkur anlık görüntüsü, kalkış, kamera
-    rings_cfg TEXT NOT NULL DEFAULT '{}',       -- JSON: core.halka_ayar_dogrula çıktısı (+ seed)
+    rings_cfg TEXT NOT NULL DEFAULT '{}',       -- JSON: core.halka_ayar_dogrula çıktısı (+ seed); it dalaşında {}
+    -- v4 (ALTER, init): kind TEXT 'rings' | 'dogfight', game_cfg TEXT (it dalaşı: core.it_ayar_dogrula çıktısı JSON)
     rings TEXT NOT NULL DEFAULT '[]',           -- JSON: core.halkalar_uret
     result TEXT,                                -- JSON: core.Karsilasma.sonuc() (BITTI)
     winner_id INTEGER,
@@ -192,8 +193,11 @@ _MIGRATIONS = [
     # v3 (§18 çok oyunculu karşılaşma): matches / match_players / match_attempts tabloları SCHEMA'da (CREATE IF NOT EXISTS); flights.match_id sütunu
     # init() içinde PRAGMA denetimiyle eklenir (ALTER yalnız yoksa → idempotent). Veri dönüşümü yok.
     (3, []),
+    # v4 (HEPGO §41 it dalaşı): matches.kind ('rings' | 'dogfight') + matches.game_cfg (it dalaşı ayarı JSON) — init() içinde PRAGMA denetimiyle
+    # ALTER (yalnız yoksa → idempotent); eski satırlar 'rings'. Veri dönüşümü yok.
+    (4, []),
 ]
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # TR TEST Kalecik (Ankara) UAV test sahası — tesisin resmî koordinatı kamuya açık kaynaklarda yok; Kalecik ilçe merkezi (40.0972N 33.4083E,
 # 725 m) yakınındaki sözleşme değeri kullanılır. Kullanıcı parkuru düzenleyip kaydırabilir.
@@ -225,6 +229,10 @@ def init():
         if 'match_id' not in {r[1] for r in conn.execute('PRAGMA table_info(flights)')}:   # §18: karşılaşma uçuşu (NULL = tek oyunculu)
             conn.execute('ALTER TABLE flights ADD COLUMN match_id INTEGER')
         conn.execute('CREATE INDEX IF NOT EXISTS ix_flights_match ON flights(match_id)')
+        mcols = {r[1] for r in conn.execute('PRAGMA table_info(matches)')}
+        for col, ddl in (('kind', "TEXT NOT NULL DEFAULT 'rings'"), ('game_cfg', 'TEXT')):   # HEPGO §41 karşılaşma türü + it dalaşı ayarı
+            if col not in mcols:
+                conn.execute(f'ALTER TABLE matches ADD COLUMN {col} {ddl}')
         cur = conn.execute('SELECT version FROM schema_version').fetchone()
         ver = cur[0] if cur else 0
         for v, sqls in _MIGRATIONS:

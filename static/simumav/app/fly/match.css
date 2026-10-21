@@ -150,3 +150,15 @@
 @media (prefers-reduced-motion: reduce) { .sm-mode-card, .sm-mt-flash { transition: none; } }
 /* karşılaşma uçuşunda Mission Planner köprüsü yok (komut kapısı): panel MP bölümü ve yüzen MP kutusu gizli */
 .sm-fly-stage.sm-match .fs-pn-mp-bolum, .sm-fly-stage.sm-match .fs-pn-yuzen { display: none !important; }
+
+/* HEPGO §41 it dalaşı: tür kartları, rol rozetleri, şema */
+.sm-mt-step .sm-two[hidden],.sm-df-box[hidden]{display:none!important}
+.sm-df-kindhead h2{margin:0 0 8px}
+.sm-df-kinds{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:0 0 16px}
+.sm-df-kind{display:flex;flex-direction:column;gap:6px;text-align:left;padding:12px 14px;border-radius:14px;border:1.5px solid rgba(255,255,255,.14);background:rgba(255,255,255,.04);color:inherit;cursor:pointer;font:inherit}
+.sm-df-kind b{font-size:15px;letter-spacing:.02em}.sm-df-kind small{opacity:.7;line-height:1.4}
+.sm-df-kind.on{border-color:var(--sm-accent,#ff6a00);background:rgba(255,106,0,.12);box-shadow:0 0 0 2px rgba(255,106,0,.25)}
+.sm-df-rules{line-height:1.5}
+.sm-df-badge{display:inline-block;padding:2px 8px;border-radius:7px;font-weight:800;font-size:11px;letter-spacing:.06em;color:#fff;margin-left:6px}
+.sm-df-badge.chaser{background:#b91c1c}.sm-df-badge.evader{background:#1d4ed8}
+.sm-df-preview svg{width:100%;height:auto;display:block}

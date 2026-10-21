@@ -786,6 +786,32 @@ anlık görüntüde adları durur); `snapshot.match = {id, start}`.
 - `fly/session.js` `loadSim` listesinde `flightsim_gamepad.js` (`MPad`): bağlanan gamepad / USB RC verici sanal kumandanın RC yoluna (`rc.js virtualRC`
   `pad`, `lazyThr`, `bumpCh5`) beslenir; alt bantta Kumanda simgesi + eşleme paneli; metinler `pad.*` (7 dil). Sanal kumanda varsayılan açık
   (`sm.rcOn`; kullanıcı kapatırsa hatırlanır). Ayrıntılar HEPGO §37.
+- Kumanda paneli: **kumanda girdisi hassasiyeti** (genel ölçek, eksen başına ölçek + expo, SVG eğri önizlemesi; ⚙ Hassasiyet = ortak çıkış eğrisi,
+  önizlemede kesikli turuncu — `createGamepadCtl({ vehicle, feelShape: rcShape })`), basılı düğme / oynatılan eksen satırı parlaması
+  (requestAnimationFrame, yalnız panel açıkken) ve satır başına **Algıla**; uçak + RC verici gazı `rc.js` içinde `ps.thrAbs` (tek yönlü eğri).
+  Metinler `pad.sens`, `pad.scale*`, `pad.rate`, `pad.expo`, `pad.axis_steer`, `pad.in_out`, `pad.sens_note`, `pad.thr_abs`, `pad.learn*`,
+  `pad.press`, `pad.move`, `pad.live` (7 dil). Ayrıntılar HEPGO §37.
 - Kumanda açıkken kadranlar alt ortada ince ilerleme çubukları (HEPGO §38; `power.css` kadranları üzerine `flightsim_gtheme.js` CSS'i). Mobilde
   (`flightsim_mobile.js`, `MMob`; HEPGO §39) üst şerit + alt bant ☰ menüsünde; `mob.*` 7 dil.
+
+## 20. Hedefli uçuşta Boşluk ile kilit + angajman — HEPGO docs/ucus-simulatoru.md §40'ın SIMUMAV karşılığı
+- `fly/session.js` `loadSim` listesinde `flightsim_engage.js` (`MEng`): hedefli uçuşta (`session.targets`, hello'da gelebilir → `ensureEngage`)
+  Boşluk / kumanda `lock` düğmesi → `cmd engage` (WS `cmd`; şeride "Komut: engage" yazılmaz), WS `engage` → panel + olay + skor rozeti
+  (`m.state`). Kumanda ipucunda `eng.rc_hint`. Çekirdek komutu ve sunucu angajman takibi HEPGO ile aynıdır (`app/flightsim.py`,
+  `app/flightsim_targets.py`); kilitli önleme bonusu (+250) skora eklenir.
+- Uçuş özeti hedef kartında "◆ Angajmanlar" satırları (`fly/targets.js engagementRowsEl`). Metinler `eng.*` + "KİLİT" / "Boşluk: kilit" (HUD) +
+  `pad.act_lock` (7 dil).
+
+## 21. Karşılaşmada "İt dalaşı" türü — HEPGO docs/ucus-simulatoru.md §41'in SIMUMAV karşılığı
+- Kurucu sihirbazının "Tür ve kurallar" adımı (`match.step_rings`; `fly/match.js createRingsStep`): "◎ Halka yarışı" | "✈ İt dalaşı" kartları; it
+  dalaşında mesafe, irtifa, süre, menzil, koni, tutma süresi, alan sınırı + roller ("Rastgele / Ben kovalarım / Ben kaçarım") ve sunucu önizlemesi
+  (`POST /api/match/rings-preview {kind:'dogfight', dogfight}` → iki başlangıç noktası, ortak `dfSvg`). Davet adımında oyuncu sayısı 2'ye sabit.
+  Gövde `POST /api/match {…, kind, dogfight, max_players: 2}`; davet linki / şifre / salon akışı aynı.
+- `app/simumav/match.py` `Mac.tur`: oyuncu tavanı 2, halka yok, roller BAŞLAT'ta (çekirdek HAZIRLIK), başlangıç rol başına, tele kancası yön +
+  yunuslama, çarpışma → kaybeder, `pos.df`, Sıfırla kapısı. Anlık görüntü / davet özeti / liste `kind`; DB satırından (`satir_dict`) rol sonuçtan.
+- **DB göçü v4** (`app/simumav/db.py`, idempotent): `matches.kind TEXT NOT NULL DEFAULT 'rings'` + `matches.game_cfg TEXT` (`init()` içinde
+  `PRAGMA table_info` denetimiyle ALTER; `schema_version` 4; veri dönüşümü yok).
+- Yarış ekranı (`fly/match_hud.js`): it dalaşında sıralama tablosu yerine ortak `createDogfightHud` (rakip işaretçisi, angajman halkası,
+  KİLİTLENİYOR! + ses, rol/süre/mesafe/bağıl irtifa şeridi); sonuç penceresi ve salonda `dfResultTable` (rol, oyuncu, sonuç, azami hız + angajman
+  süresi / en yakın mesafe). Metinler `df.*` (7 dil). Testler: `tests.test_simumav_match` `it_dalasi`, `node tests/test_flightsim_dogfight.mjs`.
 

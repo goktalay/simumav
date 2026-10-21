@@ -1523,7 +1523,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (preview || editable(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key >= '1' && e.key <= String(CAMERA_MODES.length)) { setCamera(Number(e.key)); e.preventDefault(); return; }
     if ((e.key === 'c' || e.key === 'C') && !e.shiftKey) { let m = nextCameraMode(camMode); if (m === 'fpv' && camFx.none) m = nextCameraMode(m); setCamera(m); e.preventDefault(); return; }
-    if (e.key === 'Tab' && tg.items.length) { cycleTarget(e.shiftKey ? -1 : 1); e.preventDefault(); return; }   // §24.5 hedef kilidi
+    if (e.key === 'Tab' && tg.items.length) { if (tg.eng == null) cycleTarget(e.shiftKey ? -1 : 1); e.preventDefault(); return; }   // §24.5 hedef kilidi (§40 angajmanda sabit)
     if (keyLock && RC_KEYS.has(e.key.toLowerCase())) return;
     if (camMode === 'fpv' && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { setGimbal(e.key === 'ArrowUp' ? 5 : -5); e.preventDefault(); return; }
     if (camMode === 'fpv' && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_')) { setGimbalZoom(camFx.zoom * (e.key === '-' || e.key === '_' ? 1 / GIMBAL_ZOOM.step : GIMBAL_ZOOM.step)); e.preventDefault(); return; }
@@ -1666,7 +1666,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // §26 "Yer kontrolünü koru" tehditleri AYNI listede (`it.dyn`): plan (sunucu, tohumdan) + durum (önleme/sızma zamanları, görev saati tabanı) →
   // stateOf: doğmadı / bitti → null (çizilmez, HUD/radar/kilit listesine girmez); seyir + dalış (flightsim_gcs.threatState); önlenince düşüş (fallState).
   // Modeller yalnız etkinken TEMBEL kurulur (≤ ~10 eşzamanlı; plan 60 tehdide kadar). i = yörünge hedefi sayısı + k (etiket sırası kesintisiz).
-  const tg = { cfg: null, items: [], group: new T.Group(), seq: 0, rel: [], lastRel: 0, radar: null, radarOn: !preview, radarHide: false, flash: new Map(), shown: false, sel: { i: null, auto: true }, hudAt: -Infinity, def: null };
+  const tg = { cfg: null, items: [], group: new T.Group(), seq: 0, rel: [], lastRel: 0, radar: null, radarOn: !preview, radarHide: false, flash: new Map(), shown: false, sel: { i: null, auto: true }, hudAt: -Infinity, def: null, eng: null };
   scene.add(tg.group);
   heatRoots.push(tg.group);   // termal: hedefler sıcak görünsün (§22.3)
   const targetTime = () => {
@@ -1819,20 +1819,29 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       return { i: x.it.i, name: x.it.name, center: c, corners, vel: [st.vx || 0, st.vy || 0, st.vz || 0], dist, dz: c[2] - P.z, inside: dist <= x.R, flash: f0 != null && now - f0 < 2000 };
     });
   }
-  function targetsHud() {
+  // o.peek (§40 angajman katmanı): sahne etiketlerini gizlemez (tg.hudAt güncellenmez); dönüşte hudFresh = HUD/OSD son 1,5 sn'de sembolojiyi çizdi.
+  function targetsHud(o = {}) {
     if (preview || !tg.cfg || !tg.items.length || !tg.group.visible) return null;
     const t = targetTime();
     if (t == null) return null;
-    tg.hudAt = performance.now();
-    camera.updateMatrixWorld();
-    const e = camera.matrixWorld.elements, pilot = camMode === 'pilot';
-    const view = { pos: [e[12], e[13], e[14]], right: [e[0], e[1], e[2]], up: [e[4], e[5], e[6]], fwd: [-e[8], -e[9], -e[10]], tanV: Math.tan(camera.fov * DEG / 2), aspect: camera.aspect,
-      k: pilot ? POST_K : 0, scale: pilot ? 1 / (1 + POST_K * 0.5) : 1 };
+    const hudFresh = performance.now() - tg.hudAt < 1500;   // yavaş karede (yazılım WebGL) de kararlı
+    if (!o.peek) tg.hudAt = performance.now();
+    const view = cameraView();
     const P = cur.pos;
     const items = hudItems(t, P);
     if (!items.length) return null;
-    return { view, radius: tg.cfg.radius_m, sel: { ...tg.sel }, player: { pos: [P.x, P.y, P.z], vel: [cur.vel.x, cur.vel.y, cur.vel.z] }, items };
+    return { view, radius: tg.cfg.radius_m, sel: { ...tg.sel }, eng: tg.eng != null ? { i: tg.eng } : null, hudFresh, camMode,
+      player: { pos: [P.x, P.y, P.z], vel: [cur.vel.x, cur.vel.y, cur.vel.z], hdg: num(tele.last?.heading, 0) }, items };
   }
+  // Son render edilen ana kameranın izdüşüm pozu (§24.5 tgthud.projectView girişi; §41 it dalaşı HUD'u da kullanır). FPV'de balıkgözü katsayıları.
+  function cameraView() {
+    camera.updateMatrixWorld();
+    const e = camera.matrixWorld.elements, pilot = camMode === 'pilot';
+    return { pos: [e[12], e[13], e[14]], right: [e[0], e[1], e[2]], up: [e[4], e[5], e[6]], fwd: [-e[8], -e[9], -e[10]], tanV: Math.tan(camera.fov * DEG / 2), aspect: camera.aspect,
+      k: pilot ? POST_K : 0, scale: pilot ? 1 / (1 + POST_K * 0.5) : 1 };
+  }
+  // §40 angajman: kilitli (angaje) hedef → HUD/OSD TD kutusu çift çerçeve + "KİLİT"; null → yok
+  function setEngaged(i) { tg.eng = i == null ? null : Number(i); if (tg.eng != null) tg.sel = { i: tg.eng, auto: false }; return tg.eng; }
   // Tab / Shift+Tab: kilitli hedef döngüsü (oto → en yakının bir sonrakine); 0 → doğrula. Yalnız etkin hedefler.
   const lockList = () => { const t = targetTime(); if (t == null) return []; const P = cur.pos; return activeEntries(t).filter(({ st }) => st.phase !== 'fall').map(({ x }) => ({ i: x.it.i, dist: x.root.position.distanceTo(P) })); };
   function cycleTarget(step = 1) {
@@ -1842,7 +1851,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     return lockedIndex(list, tg.sel);
   }
   // §26 radar ekranına tıklama: belirli hedefe kilit (null → oto)
-  function lockTarget(i) { tg.sel = i == null ? { i: null, auto: true } : { i: Number(i), auto: false }; return tg.sel.i; }
+  function lockTarget(i) { if (tg.eng != null) return tg.eng; tg.sel = i == null ? { i: null, auto: true } : { i: Number(i), auto: false }; return tg.sel.i; }
   const tgQ = new T.Quaternion();
   function updateTargets(now, rawDt) {
     if (!tg.items.length) return;
@@ -2862,7 +2871,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     getBodyPose: () => { tmpE.setFromQuaternion(cur.q, 'ZXY'); return { roll: tmpE.y, pitch: tmpE.x, yaw: -tmpE.z, hover: hoverFactor(cur.q) }; },   // §25 teşhis: gövde (SITL fiziği) yönelimi + askı oranı
     // §24 hedefler
     createModelViewer,   // §24.4 sihirbaz hedef önizlemesi (aynı bağlam)
-    setTargets, flashTarget, targetsHud, cycleTarget, get targetLock() { return tg.cfg ? { ...tg.sel } : null; }, targetsInfo: () => tg.rel.map(r => ({ i: r.i, name: r.name, dist: Math.round(r.dist), horiz: Math.round(r.horiz), dz: Math.round(r.dz), bearing: Math.round(r.bearing), rel: Math.round(r.rel), inside: r.inside })),
+    setTargets, flashTarget, targetsHud, cycleTarget, setEngaged, cameraView: () => (preview ? null : cameraView()), get engaged() { return tg.eng; }, get targetLock() { return tg.cfg ? { ...tg.sel } : null; }, targetsInfo: () => tg.rel.map(r => ({ i: r.i, name: r.name, dist: Math.round(r.dist), horiz: Math.round(r.horiz), dz: Math.round(r.dz), bearing: Math.round(r.bearing), rel: Math.round(r.rel), inside: r.inside })),
     get targetTime() { return targetTime(); }, setRadarVisible: v => { tg.radarOn = !!v; syncSmallRadar(); },
     // §26 yer kontrol sahası + radar/EO ekranları + "Yer kontrolünü koru" tehditleri
     setSite, setRackCount, siteHit, siteInfo, setDefend, setDefendState, flashThreat, lockTarget,

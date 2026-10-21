@@ -9,6 +9,7 @@ import { h, clear, t as tr } from './simui.js';
 import { wsUrl } from './net.js';
 import { createClock, countdownPhase, liveStandings, colorFor, bearingDeg, relAngle, ACTIVE } from '/sim/flightsim_match.js';
 import { createMatchLayer } from '/sim/flightsim_match3d.js';
+import { createDogfightHud, dfResultRows, makeDfT, roleOf } from '/sim/flightsim_dogfight.js';   // HEPGO §41 it dalaşı HUD'u (ortak)
 import { fmtClock, fmtDist, lobbyHref, REASON_KEY, resultRows, STATUS_KEY } from './match_core.js';
 
 function beep(freq = 880, dur = 0.12) {
@@ -19,9 +20,13 @@ function beep(freq = 880, dur = 0.12) {
   } catch { /* ses yok */ }
 }
 
+const DT = makeDfT(tr, true);
+const isDf = m => (m?.kind || 'rings') === 'dogfight';
 export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele = () => null, mid, me, go = hash => { location.hash = hash; } }) {
   const clock = createClock();
-  let M = null, layer = null, worldReady = false, introDone = false, resultShown = false, disposed = false, ringsSig = '';
+  let M = null, layer = null, worldReady = false, introDone = false, resultShown = false, disposed = false, ringsSig = '', dfHud = null;
+  // HEPGO §41: it dalaşı HUD'u (rakip işaretçisi, angajman halkası, KİLİTLENİYOR uyarısı, rol/süre/mesafe şeridi). Yükseklikler sahne ölçeğine çevrilir (localPos).
+  const ensureDf = () => { if (!M || !isDf(M) || dfHud) return; dfHud = createDogfightHud(stage, { getSim: () => getSim(), tr, keyed: true, me }); board.hidden = true; window.__smDogfight = dfHud; };
   const pos = {};
   const bar = h('div', { class: 'sm-mt-bar wait' }, tr('match.hud_connecting'));
   const board = h('div', { class: 'sm-mt-board' }, h('h6', null, tr('match.standings')), h('ol'));
@@ -51,7 +56,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     window.__smMatch = { layer, get match() { return M; }, clock, get sim() { return getSim(); } };   // teşhis (Playwright)
   };
   const drawBoard = () => {
-    if (!M) return;
+    if (!M || isDf(M)) return;
     const rows = liveStandings(M.players, pos), total = (M.rings || []).length;
     clear(board.querySelector('ol'), rows.map((p, i) => h('li', { class: `${p.id === me ? 'me' : ''} ${ACTIVE.has(p.status) ? '' : 'out'}`.trim() },
       h('span', { class: 'v' }, `${i + 1}.`), h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }), h('span', { class: 'nm' }, p.name),
@@ -65,7 +70,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
       wait.hidden = false;
       const act = (M.players || []).filter(p => ACTIVE.has(p.status)), ready = act.filter(p => p.status === 'hazir').length;
       clear(box, h('div', { class: 'ttl' }, tr(st === 'GERI_SAYIM' ? 'match.wait_go' : 'match.wait_title')),
-        h('div', { class: 'sub' }, st === 'GERI_SAYIM' ? tr('match.wait_go_sub') : tr('match.wait_ready', { r: ready, t: act.length })),
+        h('div', { class: 'sub' }, st === 'GERI_SAYIM' ? (isDf(M) ? DT('df.wait_go') : tr('match.wait_go_sub')) : tr('match.wait_ready', { r: ready, t: act.length })),
         ph ? h('div', { class: 'big' }, String(Math.ceil(ph.remain))) : null,
         h('ul', null, (M.players || []).filter(p => ACTIVE.has(p.status) || p.status === 'dustu').map(p => h('li', null, h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }),
           h('span', { class: 'nm' }, p.name, p.id === me ? ` (${tr('match.you')})` : ''), h('span', { class: `sm-mt-badge st-${p.status}` }, tr(STATUS_KEY[p.status] || p.status))))));
@@ -74,6 +79,8 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
   const drawBar = () => {
     if (!M) return;
     const st = M.state;
+    if (st === 'YARIS' && isDf(M)) { bar.hidden = true; return; }   // §41: şerit it dalaşı HUD'unda
+    bar.hidden = false;
     if (st === 'YARIS') {
       const my = pos[me] || {}, total = (M.rings || []).length, nxt = my.next !== undefined ? my.next : myP()?.next;
       const el = Math.max(0, clock.now() - (M.start_at || 0));
@@ -104,11 +111,12 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     resultShown = true;
     resEl.hidden = false;
     const rows = resultRows(M), win = rows.find(r => r.winner);
+    const df = isDf(M);
     clear(resEl, h('div', { class: 'box', role: 'dialog', 'aria-modal': 'true' },
       h('div', { class: 'trophy', 'aria-hidden': 'true' }, '★'),
       h('h2', null, win ? (win.id === me ? tr('match.result_you_won') : tr('match.result_winner', { n: win.name })) : tr('match.result_title')),
-      h('p', { class: 'sub' }, tr(REASON_KEY[M.result?.reason || M.reason] || 'match.reason_first')),
-      resultTable(rows, me),
+      h('p', { class: 'sub' }, df ? DT(`df.r_${M.result?.reason || M.reason}`) : tr(REASON_KEY[M.result?.reason || M.reason] || 'match.reason_first')),
+      df ? dfResultTable(M, me) : resultTable(rows, me),
       h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: () => { resEl.hidden = true; } }, tr('common.ok')),
         h('button', { class: 'btn primary', type: 'button', onclick: () => go(lobbyHref(mid)) }, tr('match.back_lobby')))));
     try { if (document.fullscreenElement) document.exitFullscreen?.(); } catch { /* */ }
@@ -124,9 +132,9 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
       const prev = M?.state;
       M = m.match;
       if (M?.now) clock.sample(M.now);
-      ensureLayer(); syncRings(); syncPlayers();
+      ensureLayer(); syncRings(); syncPlayers(); ensureDf(); dfHud?.update(M, clock.now());
       if (layer && myP()) layer.setNext(myP().finished ? null : myP().next ?? 1);
-      if (prev && prev !== 'YARIS' && M.state === 'YARIS') flashMsg(tr('match.go_flash'), 'go');
+      if (prev && prev !== 'YARIS' && M.state === 'YARIS') flashMsg(isDf(M) ? DT(roleOf(M, me) === 'chaser' ? 'df.go_chaser' : 'df.go_evader') : tr('match.go_flash'), 'go');
       if (M.state === 'BITTI' && M.result) showResult();
       drawBoard(); drawWait(); drawBar(); maybeIntro();
       return;
@@ -135,6 +143,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     if (m.t === 'pos') {
       for (const p of m.p || []) pos[p.id] = p;
       layer?.pushPos(localPos(m));
+      if (dfHud) { dfHud.setPos(localPos(m)); dfHud.update(M, clock.now()); }
       if (layer && pos[me]) layer.setNext(pos[me].next ?? null);
       return;
     }
@@ -146,7 +155,13 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     }
     if (m.t === 'wrong_way' && m.id === me) { flashMsg(tr('match.wrong_way'), 'bad'); beep(330, 0.25); return; }
     if (m.t === 'finish') { const nm = (M?.players || []).find(p => p.id === m.id)?.name || ''; flashMsg(m.id === me ? tr('match.you_finished', { t: fmtClock(m.elapsed_s) }) : tr('match.finished', { n: nm }), 'warn'); if (m.id === me) beep(1568, 0.4); return; }
-    if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; showResult(); drawBar(); }
+    if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; dfHud?.update(M, clock.now()); showResult(); drawBar(); }
+    if (m.t === 'dogfight') {   // §41 olaylar
+      if (m.kind === 'engaged') { flashMsg(DT('df.engaged'), 'bad'); beep(1568, 0.35); }
+      else if (m.kind === 'area') flashMsg(DT('df.r_alan_disi'), 'bad');
+      else if (m.kind === 'crash') flashMsg(DT('df.r_carpti'), 'bad');
+      else if (m.kind === 'guard_off') flashMsg(DT('df.guard_off'), 'ok');
+    }
   };
   // WS (yeniden bağlanır); ping'ler saat eşitlemesi için gönderim zamanıyla
   let ws = null, closed = false, retry = 0, timer = 0, pingIv = 0;
@@ -172,8 +187,22 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     backHref: lobbyHref(mid),
     get state() { return M?.state || null; },
     get match() { return M; },
-    dispose() { disposed = true; closed = true; clearInterval(iv); clearInterval(pingIv); clearTimeout(timer); clearTimeout(flashT); try { ws?.close(); } catch { /* */ } layer?.dispose(); bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__smMatch?.layer === layer) delete window.__smMatch; },
+    dispose() { disposed = true; closed = true; clearInterval(iv); clearInterval(pingIv); clearTimeout(timer); clearTimeout(flashT); try { ws?.close(); } catch { /* */ } layer?.dispose(); dfHud?.dispose(); bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__smMatch?.layer === layer) delete window.__smMatch; if (window.__smDogfight === dfHud) delete window.__smDogfight; },
   };
+}
+
+// HEPGO §41 it dalaşı sonuç tablosu: rol, oyuncu, sonuç, azami hız, çarpışma + angajman süresi / en yakın mesafe
+export function dfResultTable(M, me) {
+  const d = M?.result?.dogfight || {}, rows = dfResultRows(M);
+  return h('div', { class: 'sm-df-res' },
+    h('p', { class: 'small' }, [[DT('df.engage_time'), d.engage_s != null ? `${Number(d.engage_s).toFixed(1)} s` : '—'], [DT('df.max_hold'), d.max_hold_s != null ? `${Number(d.max_hold_s).toFixed(1)} / ${Number(d.need_s || 0).toFixed(1)} s` : '—'],
+      [DT('df.min_dist'), fmtDist(d.min_dist_m)]].map(([k, v]) => h('span', { style: { marginRight: '14px' } }, h('span', { class: 'muted' }, `${k}: `), h('b', null, v)))),
+    h('table', { class: 'sm-mt-table' },
+      h('thead', null, h('tr', null, [DT('df.role'), tr('match.col_player'), DT('df.result'), tr('match.col_speed')].map(x => h('th', null, x)))),
+      h('tbody', null, rows.map(r => h('tr', { class: `${r.id === me ? 'me' : ''} ${r.won ? 'win' : ''}`.trim() },
+        h('td', null, r.role ? h('span', { class: `sm-df-badge ${r.role}` }, DT(`df.${r.role}`)) : '—'), h('td', null, h('b', null, r.name)),
+        h('td', null, h('span', { class: `sm-mt-badge ${r.won ? 'st-hazir' : 'st-dustu'}` }, DT(r.won ? 'df.won' : 'df.lost'))),
+        h('td', { class: 'mono' }, r.max_speed_ms != null ? `${Math.round(r.max_speed_ms * 3.6)} km/h` : '—'))))));
 }
 
 // Sonuç tablosu (yarış ekranı + salon sayfası ortak)

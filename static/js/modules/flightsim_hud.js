@@ -349,7 +349,7 @@ export function createMilHud(stage, ctx = {}, { tr = s => s, keyed } = {}) {
     if (homeDist != null) { text(`HOME ${homeDist >= 1000 ? (homeDist / 1000).toFixed(1) + ' km' : homeDist.toFixed(0) + ' m'} ${pad3(homeBrg)}°`, rxx, ry, { align: 'right', px: F * 0.95 }); ry += lh; }
     text(`GMB ${gimbal > 0 ? '+' : ''}${gimbal.toFixed(0)}°`, rxx, ry, { align: 'right', px: F * 0.95 }); ry += lh * 1.3;
     // HUD ipucu (sağ alt bloğun altında, küçük)
-    text(tr('H: HUD aç/kapa · Shift+H: renk') + (tgd ? ` · ${tr('Tab: hedef')}` : ''), rxx, ry, { align: 'right', px: F * 0.78, color: 'rgba(230,235,230,.6)' });
+    text(tr('H: HUD aç/kapa · Shift+H: renk') + (tgd ? ` · ${tr('Tab: hedef')} · ${tr('Boşluk: kilit')}` : ''), rxx, ry, { align: 'right', px: F * 0.78, color: 'rgba(230,235,230,.6)' });
 
     // --- uyarılar (ortada üstte, kırmızı kutular; dolgu yanıp söner, metin hep okunur) ---
     const warns = [];

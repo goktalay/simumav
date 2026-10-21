@@ -41,6 +41,7 @@ import { defendStateAt } from './flightsim_gcs.js';   // §26 kayıtta görev ş
 import { createFlightBar, flightModesFor, modeKind } from './flightsim_fltbar.js';
 import { createGamepadCtl, makePadT } from './flightsim_gamepad.js';   // §37 fiziksel kumanda (Gamepad API → sanal kumandanın RC yolu)
 import { createMobileMenu } from './flightsim_mobile.js';   // §39 telefonda üst şerit + alt bant ☰ menüsünde
+import { createEngageCtl } from './flightsim_engage.js';   // §40 hedefli uçuşta Boşluk ile kilit + angajman (HUD kilidi, süre, sonuç; araca güdüm YOK)
 import { createServoTrigger } from './flightsim_servotrig.js';   // §34 servo tetik: kanal + PWM eşiği + gecikme + Dinle (mantık sunucuda); çarpınca otomatik Bitir → özet   // §29.6 alt bant: uçuş modu seçici (F) + DISARM/motor kes (X), tüm kamera kiplerinde
 import { createRcFeelPanel } from './flightsim_rcfeel.js';   // §27.1 sanal kumanda hassasiyeti (oran / expo / ölü bölge)
 import { createGaugeThemePicker, gaugeThemeLabel } from './flightsim_gtheme.js';   // §27.3 gösterge tasarımı (sihirbaz kartları; uçuşta createPowerGauges)
@@ -840,7 +841,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   // ---------- 3a''''. §33 karşılaşma: halkalar (sayı, min/max yükseklik, çap, parkur, süre; sunucu önizlemesi) + davet (iki liste) ----------
   // eslint-disable-next-line prefer-const
   let ringsSec = null;
-  ringsSec = isMatch ? createRingsSection({ getType: activeType, getCenter: () => centerOf(), limits: mmeta?.limits }) : null;
+  ringsSec = isMatch ? createRingsSection({ getType: activeType, getCenter: () => centerOf(), limits: mmeta?.limits, onKind: k => inviteSec?.setMax(k === 'dogfight' ? 1 : null) }) : null;   // §41 tür: it dalaşında tam 1 davetli
   const inviteSec = isMatch ? createInviteSection({ users: mmeta?.users || [], limits: mmeta?.limits }) : null;
   // ---------- 3a'. kamera (§22.3): gündüz / termal / gece görüşü — önizlemeli kartlar (aynı formüllerle 2B tuvalde; ek WebGL bağlamı yok). Varsayılan:
   // dron kaydının son türü (sunucu) → bu dron için yerel son seçim → son tercih → gündüz. Seçim oturuma (`camera`), tercihe ve dron kaydına kalıcı.
@@ -867,7 +868,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     if (S.mode === 'replay' && S.log == null) { toast('Önce bir uçuş logu seçin', 'err'); goStep('log'); return false; }
     if (S.mode === 'sitl' && S.center == null) { toast('Önce bir merkez seçin', 'err'); goStep('world'); return false; }
     if (isMatch) {   // §33
-      if (ringsSec.error()) { toast(`${tr('Halkalar')}: ${tr(ringsSec.error())}`, 'err'); goStep('rings'); return false; }
+      if (ringsSec.error()) { toast(`${tr('Tür ve kurallar')}: ${tr(ringsSec.error())}`, 'err'); goStep('rings'); return false; }
       if (inviteSec.error()) { toast(tr(inviteSec.error()), 'err'); goStep('invite'); return false; }
       return true;
     }
@@ -896,7 +897,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     const body = sitlBody();
     for (const k of ['drone_id', 'targets', 'site', 'defend', 'rec']) delete body[k];
     let mt;
-    try { mt = await matchApi.create({ settings: body, rings: ringsSec.values(), invite: inviteSec.values() }); } catch (err) {
+    try { mt = await matchApi.create({ settings: body, rings: ringsSec.values(), invite: inviteSec.values(), kind: ringsSec.kind(), dogfight: ringsSec.kind() === 'dogfight' ? ringsSec.dogfight() : null }); } catch (err) {
       toast(err?.status === 409 ? (err.message || tr('Simülatör kapasitesi dolu')) : err.message, 'err');
       return true;
     }
@@ -1039,7 +1040,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
       camera: [['Kamera türü', camTypeLabel(camCards.value, tr)], ['Gösterge tasarımı', tr(gaugeThemeLabel(gtPick.value))]],
       targets: [['Hedefler', tg?.items?.length ? tr('{n} hedef', { n: tg.items.length }) : tr('Hedef yok')], tg?.items?.length ? ['Modeller', tg.items.map(x => x.model_name || x.model).join(', ')] : null,
         tg?.items?.length ? ['Önleme yarıçapı', `${tg.radius_m} m`] : null],
-      rings: isMatch ? [['Halkalar', ringsSummary(ringsSec.values())], ['Süre sınırı', tr('{n} dk', { n: ringsSec.values().time_limit_min })], ['Parkur tohumu', String(ringsSec.values().seed)]] : [],   // §33
+      rings: isMatch ? ringsSec.summary() : [],   // §33 halkalar / §41 it dalaşı kuralları
       invite: isMatch ? [['Davet edilenler', inviteSec.names().join(', ') || '—'], ['Oyuncu sayısı', tr('{n} (siz dahil)', { n: inviteSec.values().length + 1 })]] : [],
       site: [['Saha', sv.site ? [sv.site.radar ? `${tr('Radar')} ${sv.site.radar_km} km` : null, sv.site.station ? tr('İstasyon') : null, sv.site.eo ? `EO ${sv.site.eo_km} km` : null].filter(Boolean).join(' · ') : tr('Yok')],
         ['Görev', sv.defend ? tr('Yer kontrolünü koru · {w} dalga · {i} önleyici', { w: sv.defend.waves, i: sv.defend.interceptors }) : tr('Serbest uçuş')]],
@@ -1289,7 +1290,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // (flightsim_camera.js; görüntü 3B tuvalinde, aynı WebGL bağlamı); alt çubukta "📷 Tür ▾" (T / Shift+T / V). Tür değişimi canlı oturumda sunucuya
   // (`camera` komutu → kayıt satırı), tercih localStorage'a ve dron kaydına (fs.cam.byDrone) yazılır.
   let siteUi = null, defHud = null, defReplay = null;   // §26 radar/EO ekranları, görev şeridi, kayıtta görev olayları
-  let sim = null, last = null, socket = null, destroyed = false, rc = null, worldReady = false, milHud = null, osd = null, targetsTracker = null;   // targetsTracker: §24 kayıtta önleme izleyicisi   // rc: sanal kumanda (virtualRC) ya da null   // (kamera denetimleri getSim ile erken okur → burada tanımlı)
+  let sim = null, last = null, socket = null, destroyed = false, rc = null, worldReady = false, milHud = null, osd = null, targetsTracker = null, engage = null;   // engage: §40 angajman denetleyicisi   // targetsTracker: §24 kayıtta önleme izleyicisi   // rc: sanal kumanda (virtualRC) ya da null   // (kamera denetimleri getSim ile erken okur → burada tanımlı)
   const camPrefs = createCamPrefs();
   const camType0 = isCamChoice(session.camera) ? session.camera : camPrefs.type;   // §35 'none' = kamera yok (PiP kurulmaz)
   let camPip = null;   // sahne iskeleti kurulunca (stage.append sonrası)
@@ -1334,7 +1335,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     h('div', { class: 'fs-seek-wrap' }, seek, h('i', { class: 'fs-seek-marks' })),
     timeLbl, clockLbl, lodLbl) : null;
   // §27.1 kumanda hassasiyeti: ⚙ düğmesi alt çubukta (🎮 yanında), küçük açılır panel (oran / expo / ölü bölge, eksen başına; localStorage fs.rc.feel)
-  const rcFeel = createRcFeelPanel(stage, { tr, plane: isPlane(type), rover, onChange: () => { rcShape = rcFeel.shaper(); } });   // §31 kara aracı: direksiyon + gaz
+  const rcFeel = createRcFeelPanel(stage, { tr, plane: isPlane(type), rover, onChange: () => { rcShape = rcFeel.shaper(); padCtl?.refreshCurve(); } });   // §31 kara aracı: direksiyon + gaz; §37 kumanda paneli birleşik eğri
   let rcShape = rcFeel.shaper();
   // §29.6 uçuş denetimi (harekât paneli açıkken de görünür): mod seçici + DISARM (sabit kanatta havada motor kesme → süzülme; kopterde onaylı)
   const fltBar = canWrite && !replay ? createFlightBar({ tr, kind: modeKind(type), modes: flightModesFor(modeKind(type)), stage,
@@ -1345,7 +1346,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     cmd: (name, params = {}) => be.cmd(sid, name, params), onEvent: (t, sev) => addEvent(t, sev) }) : null;
   // §37 fiziksel kumanda: bağlanınca alt bantta simge (eksen/düğme ataması paneli); sanal kumanda açık değilse açılır; düğmeler ARM / DISARM / mod / ch5
   const padT = makePadT(tr, false);
-  const padCtl = canWrite && !replay ? createGamepadCtl({ tr,
+  const padCtl = canWrite && !replay ? createGamepadCtl({ tr, vehicle: rover ? 'rover' : isPlane(type) ? 'plane' : 'copter', feelShape: (k, v) => rcShape(k, v),   // §37 girdi hassasiyeti + ⚙ ortak eğri önizlemesi
     onConnect: i => { try { toast(padT('pad.connected', { n: i.id })); addEvent(padT('pad.connected', { n: i.id })); if (!rc) rcToggle({ auto: true }); } catch { /* oturum kurulumu sürüyor: varsayılan açılış zaten açar */ } },
     onDisconnect: i => { toast(padT('pad.disconnected', { n: i.id })); addEvent(padT('pad.disconnected', { n: i.id }), 'warning'); },
     onAction: a => {
@@ -1353,6 +1354,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       else if (a === 'disarm') { if (last?.armed) (fltBar ? fltBar.act() : cmd('disarm')); }   // fltBar.act: sabit kanatta havada motor kesme, kopterde onaylı (§29.6)
       else if (a === 'mode_next' || a === 'mode_prev') { const i = modes.indexOf(last?.mode); const m = modes[((i < 0 ? 0 : i + (a === 'mode_next' ? 1 : -1)) + modes.length) % modes.length]; if (m) cmd('mode', { mode: m }); }
       else if (a === 'ch5_up' || a === 'ch5_down') rc?.bumpCh5(a === 'ch5_up' ? 1 : -1);
+      else if (a === 'lock') engage?.toggle();   // §40 hedef kilidi / angajman
     } }) : null;
   const bar = h('div', { class: 'fs-bar' },
     camCtl.el,   // görünüm ▾ + kamera türü ▾
@@ -1374,7 +1376,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const stickL = h('div', { class: 'fs-stick', 'data-side': 'l', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? ROVER_RC_TEXT.left : 'Gaz / Yaw'));
   const stickR = h('div', { class: 'fs-stick', 'data-side': 'r', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? ROVER_RC_TEXT.right : 'Pitch / Roll'));
   const rcWarn = h('div', { class: 'fs-rc-warn', hidden: true }, 'Mission Planner joystick de açıksa son gelen RC komutu geçerli olur');
-  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', null, rover ? ROVER_RC_TEXT.hint : 'W/S gaz · A/D yaw · ↑↓ pitch · ←→ roll · Q/E mod kanalı · Boşluk gaz orta'), rcWarn);
+  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', null, rover ? ROVER_RC_TEXT.hint : 'W/S gaz · A/D yaw · ↑↓ pitch · ←→ roll · Q/E mod kanalı · Boşluk gaz orta'),
+    session.targets?.items?.length && !replay ? h('span', { class: 'fs-rc-eng' }, ` · ${tr('Boşluk: hedef kutusu ekrandayken kilit / angajman')}`) : null, rcWarn);   // §40
   const sticks = h('div', { class: 'fs-sticks', hidden: true }, stickL, stickR, rcHint);
   // Kaynak atfı: gerçek arazi sağ altta metin; Google 3B'de ToS gereği Google logosu + canlı veri sağlayıcı metni (sol alt, MP kutusu üstü)
   const g3dMode = world.mode === 'google3d';
@@ -1480,6 +1483,13 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     get fov() { return sim?.getPilotFov?.() ?? fpvPrefs.fov; }, get pip() { return !!sim?.getPip?.(); }, get pipRect() { return sim?.getPip?.() ? sim.pipRect : null; }, get rcOn() { return !!rc; },
     targets: () => sim?.targetsHud?.() ?? null };   // §24.5
   osd = createFpvOsd(stage, osdCtx, { tr });
+  // §40 hedefli uçuş: Boşluk ile kilit + angajman (kutu ekrandayken; kamera kipi fark etmez), kayıttan oynatmada kayıtlı angajmanlar
+  if (session.targets?.items?.length) {
+    engage = createEngageCtl(stage, { getSim: () => sim, tr, replay, canWrite: canWrite && !mock, cmd: (name, p) => be.cmd(sid, name, p),
+      onEvent: (t, sev) => addEvent(t, sev, replay ? (player?.time() ?? null) : null, 'HEDEF'), toast: (t, k) => toast(t, k), isRcOn: () => !!rc });
+    if (replay) engage.setReplay(session.engagements || []);
+    else if (session.engagement) engage.onHello(session.engagement);
+  }
   drawFpvBtns();
   const progMsg = p => {   // gerçek arazi yükleme ilerlemesi (3B tuval üstünde)
     if (destroyed) return;
@@ -1757,6 +1767,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
           const ev = defReplay?.events || [];
           while (defReplay && defReplay.i < ev.length && ev[defReplay.i].t <= t.tt) { const e = ev[defReplay.i++]; defHud.event({ ...e, health: e.kind === 'leak' ? defendStateAt(session.defend.result, session.defend.plan, e.t).health : undefined }); }
         }
+        if (t.tt != null) engage?.replayFrame(t.tt);   // §40 kayıtlı angajmanlar (kilit + panel + olaylar)
         if (targetsTracker && t.tt != null && t.lat != null && sim) {   // §24: kayıtta önlemeler (sunucu izleyicisiyle aynı kural)
           const p = sim.toLocal(t.lat, t.lon);
           for (const o of targetsTracker.step(t.tt, p.x, p.y, Number(t.alt_rel) || 0, !!t.armed)) onTarget(o, t.t);
@@ -1764,7 +1775,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       },
       onEvent: (e, t) => addEvent(e.text, e.sev, t),
       onClear: () => clear(events),
-      onSeek: t => { sim?.snapCamera(); applyReplayLaunch(t, true); if (session.targets) targetsTracker = createInterceptTracker(session.targets); if (defReplay) { const tt = (last?.tt ?? 0) - (last?.t ?? 0) + t; defReplay.i = defReplay.events.findIndex(e => e.t > tt); if (defReplay.i < 0) defReplay.i = defReplay.events.length; } gauges.reset(); if (clientPower) { clientPower.rebuild(data, t); powerWarned = { fuel: false, elec: false }; } },   // atlama: takip kamerası dronun yanına ışınlanır (yayla yüzlerce metre kovalamaz); düzenek aşaması anında; §23 yakıt/batarya baştan o ana entegre
+      onSeek: t => { sim?.snapCamera(); applyReplayLaunch(t, true); engage?.seek(); if (session.targets) targetsTracker = createInterceptTracker(session.targets); if (defReplay) { const tt = (last?.tt ?? 0) - (last?.t ?? 0) + t; defReplay.i = defReplay.events.findIndex(e => e.t > tt); if (defReplay.i < 0) defReplay.i = defReplay.events.length; } gauges.reset(); if (clientPower) { clientPower.rebuild(data, t); powerWarned = { fuel: false, elec: false }; } },   // atlama: takip kamerası dronun yanına ışınlanır (yayla yüzlerce metre kovalamaz); düzenek aşaması anında; §23 yakıt/batarya baştan o ana entegre
       onTime: (t, dur, playing) => {
         seek.value = String(Math.round(1000 * (dur ? t / dur : 0)));
         timeLbl.textContent = `${clock(t)} / ${clock(dur)}`;
@@ -1898,7 +1909,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     message: m => {
       if (destroyed) return;
       if (m.t === 'tele') { if (replay) return; if (!netsim) return updateHud(m); if (Math.random() * 100 < netsim.loss) return; return void setTimeout(() => { if (!destroyed) updateHud(m); }, netsim.delay + Math.random() * 2 * netsim.jitter); }
-      if (m.t === 'hello') { if (m.session) { Object.assign(session, m.session); if (session.defend?.state) defHud?.update(session.defend.state); setState(session.state); setGcs(!!session.gcs?.connected, session.gcs?.addr); if (Array.isArray(session.route)) { sim?.setMission({ ...(session.mission || {}), points: session.route }); ops?.setRoute(session.route); } } return; }
+      if (m.t === 'hello') { if (m.session) { Object.assign(session, m.session); if (!replay) engage?.onHello(m.session.engagement ?? null); if (session.defend?.state) defHud?.update(session.defend.state); setState(session.state); setGcs(!!session.gcs?.connected, session.gcs?.addr); if (Array.isArray(session.route)) { sim?.setMission({ ...(session.mission || {}), points: session.route }); ops?.setRoute(session.route); } } return; }
       if (m.t === 'route') {   // §14/§18: SITL'deki görev (HEPGO paneli ya da Mission Planner) → 3B tüp rota + iniş dairesi H + panel rota durumu; MP yüklemesinde anlık toast
         sim?.setMission(m); ops?.setRoute(m.points || []);
         const n = m.points?.length || 0;
@@ -1917,6 +1928,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       if (m.t === 'wind') { applyWind(m); return addEvent(tr('Rüzgâr: {ms} m/s · {dir}°', { ms: f1(m.wind_ms), dir: f0(m.wind_dir) })); }   // §31 uçuşta rüzgâr
       if (m.t === 'launch_cfg') { if (launch && m.launch) { Object.assign(launch, m.launch); sim?.setRampAim(m.launch); } return; }   // §31 rampa yön/açı (başka izleyici de görür)
       if (m.t === 'target') return onTarget(m);   // §24 önleme
+      if (m.t === 'engage') return engage?.onServer(m);   // §40 angajman başladı / başarılı / kesildi
       if (m.t === 'defend') { if (m.state && session.defend) session.defend.state = m.state; launcherUi?.sync(); return defHud?.event(m); }   // §27: sıradaki interceptor → sonraki hücre   // §26 görev olayları (dalga/önleme/sızma/kayıp/bitiş)
       if (m.t === 'state') {
         if (m.replay) session.replay = { ...(session.replay || {}), ...m.replay };
@@ -1971,7 +1983,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     if (replay) window.removeEventListener('keydown', onKeyReplay);
     player?.dispose();
     socket?.close();
-    milHud?.dispose(); osd?.dispose(); camPip?.dispose(); camCtl.dispose(); siteUi?.dispose(); defHud?.dispose(); launcherUi?.dispose();   // §26 + §27
+    milHud?.dispose(); osd?.dispose(); engage?.dispose(); camPip?.dispose(); camCtl.dispose(); siteUi?.dispose(); defHud?.dispose(); launcherUi?.dispose();   // §26 + §27
     if (rec) { rec.abandon(); rec.dispose(); }   // §17: Bitir'siz çıkış → kayıt durur, parçalar akıtılır, sunucuda yarım kayıt (24 sa)
     padCtl?.dispose(); mobMenu.dispose(); audio.dispose(); ops?.dispose(); gauges.dispose(); rcFeel.dispose(); intro.dispose(); fltBar?.dispose(); srvTrig?.dispose(); matchUi?.dispose(); clearTimeout(autoEndTimer);
     sim?.dispose();
@@ -2085,7 +2097,7 @@ function virtualRC({ plane, rover = false, stickL, stickR, send, onChange, throt
       const a = ps.axes, set = (k, v) => { if (v != null) ax[k] = clamp(v, -1, 1); };
       if (!drag.l) {
         if (plane && ps.profile === 'standard') { if (a.thr) ax.thr = clamp(ax.thr + a.thr * THR_RATE * dt, -1, 1); }   // yaylı gamepad kolu: uçakta tutmalı gaz hızla
-        else set('thr', a.thr);
+        else set('thr', plane && ps.thrAbs != null ? ps.thrAbs : a.thr);   // uçakta RC verici: mutlak tek yönlü eğri (rölanti hep −1)
         if (!rover) set('yaw', a.yaw); if (a.thr) thrUsed = true;
       }
       if (!drag.r) { set('roll', a.roll); if (!rover) set('pitch', a.pitch); }

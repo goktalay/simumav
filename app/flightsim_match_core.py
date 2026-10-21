@@ -15,6 +15,11 @@ HEPGO çalışma zamanı `app/flightsim_match.py` (SITL oturumları, WS yayını
     karşılaşma o anda biter; süre sınırı dolarsa da biter (birinci = en çok ilerleyen).
   · sıralama (`siralama`): bitirenler süreyle; bitirmeyenler geçtiği halka sayısı (çok → önde) + sıradaki halkaya mesafe (az → önde);
     yarışa katılmayanlar (çıkarılan / düşen / ayrılan) sonda.
+  · §41 İT DALAŞI türü (`tur='dogfight'`; tam 2 oyuncu, roller KOVALAYAN / KAÇAN): ayar doğrulama (`it_ayar_dogrula`), başlangıç noktaları
+    (`it_baslangiclari`: aynı hat üstünde mesafe kadar ayrık, kaçan önde, ikisi aynı yöne bakar), angajman izleyicisi (`ItDalasi`: kovalayan kaçanı
+    menzil + burun konisi içinde gerekli süre KESİNTİSİZ tutarsa ANGAJE → kovalayan kazanır; süre biterse kaçan; alan dışı / çarpan kaybeder;
+    iki araç da başlangıç irtifasına yaklaşana dek — en geç KORUMA_S — angajman sayılmaz: SITL'de araçlar yerden kalkar). Kapsam: yalnız oyun
+    mekaniği; araca güdüm/takip komutu yoktur.
 """
 import math
 import random
@@ -41,6 +46,24 @@ SICRAMA_M = 250.0                # tek adımda bundan büyük yer değişimi (re
 DIKEY_TIPLER = ('multirotor', 'hexarotor', 'helikopter', 'vtol', 'interceptor')
 UCAK_TIPLER = ('sabit_kanat',)
 TIPLER = DIKEY_TIPLER + UCAK_TIPLER   # kara aracı (rover) havadaki halkalardan geçemez → karşılaşmada yok
+
+# §41 karşılaşma türleri
+TUR_HALKA, TUR_IT = 'rings', 'dogfight'
+TURLER = (TUR_HALKA, TUR_IT)
+IT_MESAFE = (300.0, 1500.0)      # başlangıçta aradaki mesafe (m)
+IT_IRTIFA = (20.0, 400.0)        # başlangıç irtifası (m, merkez zemininden)
+IT_SURE_DK = (2, 10)
+IT_MENZIL = (50.0, 400.0)        # angajman menzili (m)
+IT_KONI = (15.0, 45.0)           # kovalayanın burnundan ±açı (°)
+IT_TUTMA = (2.0, 5.0)            # kesintisiz tutma süresi (sn)
+IT_ALAN = (300.0, 5000.0)        # alan sınırı yarıçapı (m, merkezden yatay)
+IT_ROLLER = ('random', 'host_chaser', 'host_evader')
+IT_VARSAYILAN = {'dikey': {'distance_m': 400.0, 'alt_m': 40.0, 'time_limit_min': 5, 'range_m': 120.0, 'cone_deg': 30.0, 'hold_s': 3.0, 'area_radius_m': 800.0},
+                 'ucak': {'distance_m': 1000.0, 'alt_m': 120.0, 'time_limit_min': 6, 'range_m': 300.0, 'cone_deg': 25.0, 'hold_s': 3.0, 'area_radius_m': 3000.0}}
+KORUMA_S = 60.0                  # kalkış koruması: iki araç da başlangıç irtifasının KORUMA_ORAN'ına çıkana ya da bu süre dolana dek angajman sayılmaz
+KORUMA_ORAN = 0.8
+TELE_BAYAT_S = 2.0               # iki oyuncunun konum örnekleri arasında en çok fark (daha eskisiyle angajman hesaplanmaz)
+KOVALAYAN, KACAN = 'chaser', 'evader'
 
 # durumlar
 LOBI, HAZIRLIK, GERI_SAYIM, YARIS, BITTI, IPTAL = 'LOBI', 'HAZIRLIK', 'GERI_SAYIM', 'YARIS', 'BITTI', 'IPTAL'
@@ -121,6 +144,140 @@ def halka_ayar_dogrula(r, tip):
     if r.get('seed') is not None:
         v['seed'] = _sayi(r['seed'], 'Tohum', 1, 2 ** 31 - 1, tam=True)
     return v
+
+
+# ---------------------------------------------------------------- §41 it dalaşı ayarı
+def it_ayar_varsayilan(tip):
+    return {'type': TUR_IT, **IT_VARSAYILAN[sinif(tip)], 'roles': 'random', 'seed': None}
+
+
+def it_ayar_dogrula(r, tip):
+    """{distance_m, alt_m, time_limit_min, range_m, cone_deg, hold_s, area_radius_m, roles, seed} → normalize (eksikler tip sınıfının varsayılanı)."""
+    if tip not in TIPLER:
+        raise MacHata('invalid', 'Karşılaşmada bu araç tipi yok (kara aracı seçilemez)')
+    v = it_ayar_varsayilan(tip)
+    if r is None:
+        r = {}
+    if not isinstance(r, dict):
+        raise MacHata('invalid', 'İt dalaşı ayarı nesne olmalı')
+    for k, ad, sinir, tam in (('distance_m', 'Başlangıç mesafesi', IT_MESAFE, False), ('alt_m', 'Başlangıç irtifası', IT_IRTIFA, False),
+                              ('time_limit_min', 'Süre', IT_SURE_DK, True), ('range_m', 'Angajman menzili', IT_MENZIL, False),
+                              ('cone_deg', 'Angajman konisi', IT_KONI, False), ('hold_s', 'Angajman süresi', IT_TUTMA, False),
+                              ('area_radius_m', 'Alan sınırı yarıçapı', IT_ALAN, False)):
+        if r.get(k) is not None:
+            v[k] = _sayi(r[k], ad, *sinir, tam=tam)
+    if r.get('area_radius_m') is None:   # varsayılan alan, mesafeye yetmezse büyür
+        v['area_radius_m'] = max(v['area_radius_m'], min(IT_ALAN[1], v['distance_m'] / 2 + 400.0))
+    if v['area_radius_m'] < v['distance_m'] / 2 + 150.0:
+        raise MacHata('invalid', 'Alan sınırı yarıçapı başlangıç mesafesinin yarısından en az 150 m büyük olmalı')
+    if r.get('roles') is not None:
+        if r['roles'] not in IT_ROLLER:
+            raise MacHata('invalid', f"Roller {' | '.join(IT_ROLLER)} olmalı")
+        v['roles'] = r['roles']
+    if r.get('seed') is not None:
+        v['seed'] = _sayi(r['seed'], 'Tohum', 1, 2 ** 31 - 1, tam=True)
+    v['vclass'] = sinif(tip)
+    return v
+
+
+def it_baslangiclari(ayar, tip, pist_yonu=0.0):
+    """{rol: (x, y, yaw_deg)}: iki araç merkezden geçen ortak hatta `distance_m` ayrık, ikisi de hat yönüne bakar → KAÇAN önde, KOVALAYAN
+    arkada. Hat yönü sabit kanatta pist yönü (kalkış koridoru), dikeyde tohumdan."""
+    if tip in UCAK_TIPLER:
+        yon = float(pist_yonu or 0) % 360
+    else:
+        yon = round(random.Random(int(ayar.get('seed') or 1) * 7 + 3).uniform(0, 360), 1)
+    h = math.radians(yon)
+    fx, fy = math.sin(h), math.cos(h)
+    d = float(ayar['distance_m']) / 2.0
+    return {KOVALAYAN: (round(-fx * d, 2), round(-fy * d, 2), yon), KACAN: (round(fx * d, 2), round(fy * d, 2), yon)}
+
+
+def burun(heading_deg, pitch_rad, vclass):
+    """Burun birim vektörü (ENU). Sabit kanatta yunuslama dahil; dikey kalkanlarda gövde eğimi burun yönü değildir → yatay (yön)."""
+    h = math.radians(float(heading_deg or 0))
+    p = float(pitch_rad or 0) if vclass == 'ucak' else 0.0
+    return (math.sin(h) * math.cos(p), math.cos(h) * math.cos(p), math.sin(p))
+
+
+def koni_acisi(nose, d):
+    """Burun vektörü ile görüş hattı d arasındaki açı (°)."""
+    L = math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2)
+    if L < 1e-6:
+        return 0.0
+    c = (nose[0] * d[0] + nose[1] * d[1] + nose[2] * d[2]) / L
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
+class ItDalasi:
+    """§41 angajman izleyicisi. `konum(rol, x, y, z_rel, heading_deg, pitch_rad, t)` → olay listesi: {'kind': 'engage', ...} (kazanan kovalayan),
+    {'kind': 'area', 'role'} (alan dışı → o rol kaybeder), {'kind': 'lock_on' | 'lock_off'} (koniye giriş / çıkış; kaçana uyarı). Zaman t (sn,
+    duvar saati — karşılaşmada simülasyon hızı 1×). `durum()` HUD için anlık ölçüler."""
+
+    def __init__(self, ayar, t0):
+        self.a = dict(ayar)
+        self.t0 = float(t0)
+        self.poz = {}                 # rol → (x, y, z, heading, pitch, t)
+        self.tutma = 0.0              # kesintisiz koni içi süre
+        self.tutma_azami = 0.0
+        self.koni_toplam = 0.0
+        self.min_mesafe = None
+        self.son_t = None
+        self.koni_ici = False
+        self.koruma = True
+        self.bitti = False
+        self.olcum = None             # son hesap {dist, off_deg, rel_alt, bearing_deg}
+
+    def konum(self, rol, x, y, z, heading, pitch, t):
+        if self.bitti:
+            return []
+        t = float(t)
+        self.poz[rol] = (float(x), float(y), float(z), float(heading or 0), float(pitch or 0), t)
+        ev = []
+        if math.hypot(x, y) > float(self.a['area_radius_m']):
+            self.bitti = True
+            return [{'kind': 'area', 'role': rol}]
+        if KOVALAYAN not in self.poz or KACAN not in self.poz:
+            return ev
+        c, e = self.poz[KOVALAYAN], self.poz[KACAN]
+        if abs(c[5] - e[5]) > TELE_BAYAT_S:
+            return ev
+        d = (e[0] - c[0], e[1] - c[1], e[2] - c[2])
+        dist = math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2)
+        off = koni_acisi(burun(c[3], c[4], self.a.get('vclass')), d)
+        self.olcum = {'dist': dist, 'off_deg': off, 'rel_alt': d[2], 'bearing_deg': math.degrees(math.atan2(d[0], d[1])) % 360}
+        if self.koruma:
+            esik = float(self.a['alt_m']) * KORUMA_ORAN
+            if (c[2] >= esik and e[2] >= esik) or t - self.t0 >= KORUMA_S:
+                self.koruma = False
+                ev.append({'kind': 'guard_off'})
+        if self.min_mesafe is None or dist < self.min_mesafe:
+            self.min_mesafe = dist
+        dt = 0.0 if self.son_t is None else max(0.0, min(0.5, t - self.son_t))
+        self.son_t = t if self.son_t is None else max(self.son_t, t)
+        icinde = (not self.koruma) and dist <= float(self.a['range_m']) and off <= float(self.a['cone_deg'])
+        if icinde:
+            self.tutma += dt if self.koni_ici else 0.0
+            self.koni_toplam += dt if self.koni_ici else 0.0
+            if not self.koni_ici:
+                ev.append({'kind': 'lock_on'})
+        else:
+            if self.koni_ici:
+                ev.append({'kind': 'lock_off', 'held_s': round(self.tutma, 2)})
+            self.tutma = 0.0
+        self.koni_ici = icinde
+        self.tutma_azami = max(self.tutma_azami, self.tutma)
+        if icinde and self.tutma >= float(self.a['hold_s']):
+            self.bitti = True
+            ev.append({'kind': 'engage', 'held_s': round(self.tutma, 2), 'dist_m': round(dist, 1), 'off_deg': round(off, 1)})
+        return ev
+
+    def durum(self):
+        o = self.olcum or {}
+        return {'dist': round(o['dist'], 1) if o else None, 'off_deg': round(o['off_deg'], 1) if o else None, 'rel_alt': round(o['rel_alt'], 1) if o else None,
+                'bearing_deg': round(o['bearing_deg'], 1) if o else None, 'in_cone': self.koni_ici, 'hold_s': round(self.tutma, 2),
+                'need_s': float(self.a['hold_s']), 'guard': self.koruma, 'max_hold_s': round(self.tutma_azami, 2),
+                'min_dist_m': round(self.min_mesafe, 1) if self.min_mesafe is not None else None}
 
 
 # ---------------------------------------------------------------- halka üretimi
@@ -270,6 +427,7 @@ class Oyuncu:
         self.carpisma = 0
         self.poz = None               # son yayın konumu {lat, lon, alt_msl, yaw, roll, pitch, gs}
         self.dusme_nedeni = None
+        self.rol = None               # §41 it dalaşı: 'chaser' | 'evader'
 
     def dict(self, halka_sayisi=0):
         iz = self.iz
@@ -278,13 +436,18 @@ class Oyuncu:
                 'rings': len(iz.gecisler) if iz else 0, 'total': halka_sayisi, 'next': (iz.sira + 1) if iz and not iz.bitti else None,
                 'dist_next_m': round(iz.mesafe, 1) if iz and iz.mesafe is not None else None,
                 'finished': bool(iz and iz.bitti), 'finish_t': iz.bitis_t if iz else None,
-                'max_speed_ms': round(self.azami_hiz, 1), 'crashes': self.carpisma, 'drop_reason': self.dusme_nedeni}
+                'max_speed_ms': round(self.azami_hiz, 1), 'crashes': self.carpisma, 'drop_reason': self.dusme_nedeni, 'role': self.rol}
 
 
 class Karsilasma:
     """Durum makinesi. Zaman `now` (Unix sn) dışarıdan; olaylar döndürülür (platform yayınlar/kaydeder). Kurucu kendisi de oyuncudur."""
 
-    def __init__(self, mid, kurucu, davetliler, ayar, halka_ayar, merkez, now, halkalar=None, baslangiclar=None):
+    def __init__(self, mid, kurucu, davetliler, ayar, halka_ayar, merkez, now, halkalar=None, baslangiclar=None, tur=TUR_HALKA):
+        if tur not in TURLER:
+            raise MacHata('invalid', 'Bilinmeyen karşılaşma türü')
+        self.tur = tur                           # §41 'rings' (halka yarışı) | 'dogfight' (it dalaşı; halka_ayar = it_ayar_dogrula çıktısı)
+        self.it = None                           # ItDalasi (yarışta)
+        self.it_sonuc = None
         self.id = mid
         self.ayar = dict(ayar or {})             # oturum ayarları (platforma özgü gövde; çekirdek yalnız taşır)
         self.halka_ayar = dict(halka_ayar)
@@ -306,6 +469,8 @@ class Karsilasma:
             raise MacHata('invalid', 'En az bir kullanıcı davet edin')
         if len(self.oyuncular) > OYUNCU_MAX:
             raise MacHata('limit', f'Karşılaşmada en çok {OYUNCU_MAX} oyuncu olabilir (siz dahil)')
+        if tur == TUR_IT and len(self.oyuncular) != 2:
+            raise MacHata('invalid', 'İt dalaşı tam 2 oyuncuyla oynanır (siz + 1 davetli)')
         self.halkalar = halkalar
         self.baslangiclar = baslangiclar        # [(x, y, yaw)] sıra no → nokta (platform verir ya da HAZIRLIK'ta üretilir)
 
@@ -403,6 +568,9 @@ class Karsilasma:
             return self.iptal(now, 'oyuncu_kalmadi')
         if self.durum == YARIS and n == 0:
             return self.bitir(now, 'oyuncu_kalmadi')
+        if self.durum == YARIS and self.tur == TUR_IT and n == 1:   # §41 rakip ayrıldı / düştü → kalan kazanır
+            self.kazanan = self.aktifler()[0].uid
+            return self.bitir(now, 'rakip_ayrildi')
         return []
 
     def _lobi_denetle(self, now):
@@ -412,11 +580,29 @@ class Karsilasma:
         akt = self.aktifler()
         if len(akt) < 2:
             return self.iptal(now, 'oyuncu_kalmadi')
+        if self.tur == TUR_IT and len(akt) != 2:
+            return self.iptal(now, 'oyuncu_kalmadi')
         self.hazirlik_t = float(now)
         for k, o in enumerate(akt):
             o.sira_no = k
             o.durum = HAZIRLANIYOR
+        if self.tur == TUR_IT:
+            self._roller_ata(akt)
         return self._durum(HAZIRLIK, now)
+
+    def _roller_ata(self, akt):
+        """§41: kurucu seçimi ya da tohumlu rastgele (aynı tohum = aynı roller)."""
+        r = self.halka_ayar.get('roles') or 'random'
+        kur = next(o for o in akt if o.kurucu) if any(o.kurucu for o in akt) else akt[0]
+        diger = next(o for o in akt if o is not kur)
+        if r == 'random':
+            kur_kovalar = random.Random(int(self.halka_ayar.get('seed') or 1)).random() < 0.5
+        else:
+            kur_kovalar = r == 'host_chaser'
+        kur.rol, diger.rol = (KOVALAYAN, KACAN) if kur_kovalar else (KACAN, KOVALAYAN)
+
+    def rol_oyuncusu(self, rol):
+        return next((o for o in self.oyuncular.values() if o.rol == rol), None)
 
     def oturum_bagla(self, uid, oturum_id):
         o = self.oyuncu(uid)
@@ -459,16 +645,24 @@ class Karsilasma:
                     ev += self.dusur(o.uid, now, 'hazirlanamadi')
             return ev
         if self.durum == GERI_SAYIM and now >= self.baslangic_t:
-            for o in self.aktifler():
-                o.iz = HalkaIzleyici(self.halkalar or [])
+            if self.tur == TUR_IT:
+                self.it = ItDalasi(self.halka_ayar, self.baslangic_t)
+            else:
+                for o in self.aktifler():
+                    o.iz = HalkaIzleyici(self.halkalar or [])
             return self._durum(YARIS, now)
         if self.durum == YARIS and now - self.baslangic_t >= float(self.halka_ayar.get('time_limit_min') or SURE_DK_VARSAYILAN) * 60:
+            if self.tur == TUR_IT and self.kazanan is None:   # §41 süre bitti → kaçan kazanır
+                ka = self.rol_oyuncusu(KACAN)
+                self.kazanan = ka.uid if ka is not None and ka.durum not in KATILMAYAN else None
             return self.bitir(now, 'sure')
         return []
 
-    def konum(self, uid, lat, lon, alt_msl, now, hiz=None):
-        """Oyuncu konumu (yalnız YARIS'ta işlenir). Olaylar: ring / finish (+ state BITTI)."""
+    def konum(self, uid, lat, lon, alt_msl, now, hiz=None, heading=None, pitch=None):
+        """Oyuncu konumu (yalnız YARIS'ta işlenir). Olaylar: ring / finish (+ state BITTI); §41 it dalaşında dogfight olayları (+ BITTI)."""
         o = self.oyuncu(uid)
+        if o is not None and self.tur == TUR_IT:
+            return self._it_konum(o, lat, lon, alt_msl, now, hiz, heading, pitch)
         if o is None or self.durum != YARIS or o.iz is None or o.durum in KATILMAYAN:
             return []
         if hiz is not None and math.isfinite(float(hiz)):
@@ -487,10 +681,57 @@ class Karsilasma:
                 ev.append({'t': 'wrong_way', 'id': o.uid, 'i': e['i'], 'ts': now})
         return ev
 
+    # ---- §41 it dalaşı
+    def _it_konum(self, o, lat, lon, alt_msl, now, hiz, heading, pitch):
+        if self.durum != YARIS or self.it is None or o.durum in KATILMAYAN or o.rol is None:
+            return []
+        if hiz is not None and math.isfinite(float(hiz)):
+            o.azami_hiz = max(o.azami_hiz, float(hiz))
+        x, y = enu(self.merkez['lat'], self.merkez['lon'], lat, lon)
+        z = float(alt_msl) - float(self.merkez.get('alt') or 0.0)
+        ev = []
+        for e in self.it.konum(o.rol, x, y, z, heading, pitch, now):
+            k = e['kind']
+            if k == 'engage':
+                ko = self.rol_oyuncusu(KOVALAYAN)
+                self.kazanan = ko.uid if ko else None
+                self.it_sonuc = {'engage_s': e['held_s'], 'dist_m': e['dist_m'], 'off_deg': e['off_deg']}
+                ev.append({'t': 'dogfight', 'kind': 'engaged', 'id': self.kazanan, 'held_s': e['held_s'], 'ts': now})
+                ev += self.bitir(now, 'angaje')
+            elif k == 'area':
+                kaybeden = self.rol_oyuncusu(e['role'])
+                diger = next((p for p in self.aktifler() if p is not kaybeden), None)
+                self.kazanan = diger.uid if diger else None
+                ev.append({'t': 'dogfight', 'kind': 'area', 'id': kaybeden.uid if kaybeden else None, 'ts': now})
+                ev += self.bitir(now, 'alan_disi')
+            elif k in ('lock_on', 'lock_off', 'guard_off'):
+                ev.append({'t': 'dogfight', 'kind': k, 'ts': now, **({'held_s': e['held_s']} if 'held_s' in e else {})})
+        return ev
+
+    def carpti(self, uid, now):
+        """Oyuncu yere / engele çarptı (platformun kesin çarpışma kaydı). §41 it dalaşında YARIS'ta çarpan kaybeder; halka yarışında yalnız sayılır."""
+        o = self.oyuncu(uid)
+        if o is None or self.tur != TUR_IT or self.durum != YARIS or o.durum in KATILMAYAN:
+            return []
+        diger = next((p for p in self.aktifler() if p is not o), None)
+        self.kazanan = diger.uid if diger else None
+        if self.it is not None:
+            self.it.bitti = True
+        return [{'t': 'dogfight', 'kind': 'crash', 'id': o.uid, 'ts': now}] + self.bitir(now, 'carpti')
+
+    def it_durum(self):
+        """HUD (pos çerçevesi) için: {roles {uid: rol}, dist, off_deg, rel_alt, in_cone, hold_s, need_s, guard, …} ya da None."""
+        if self.tur != TUR_IT:
+            return None
+        d = self.it.durum() if self.it is not None else {}
+        return {'roles': {str(o.uid): o.rol for o in self.oyuncular.values() if o.rol}, **d}
+
     def bitir(self, now, neden):
         if self.durum in SON_DURUMLAR:
             return []
         self.bitis_t = float(now)
+        if self.tur == TUR_IT:
+            return self._durum(BITTI, now, neden) + [{'t': 'result', 'result': self.sonuc(), 'ts': now}]
         if self.kazanan is None:
             sira = self.siralama()
             if sira and sira[0]['rings'] > 0 and sira[0]['status'] not in KATILMAYAN:
@@ -499,12 +740,20 @@ class Karsilasma:
 
     # ---- sonuç
     def siralama(self):
+        if self.tur == TUR_IT:   # §41: kazanan önde, sonra rakip; katılmayanlar sonda
+            rows = sorted((o.dict(0) for o in self.oyuncular.values()), key=lambda p: (p['id'] != self.kazanan, p['status'] in (CIKARILDI, DUSTU, DAVETLI), p['id']))
+            return [{**p, 'rank': k + 1, 'time_s': None} for k, p in enumerate(rows)]
         return siralama([o.dict(len(self.halkalar or [])) for o in self.oyuncular.values()], self.baslangic_t)
 
     def sonuc(self):
-        return {'winner': self.kazanan, 'reason': self.neden, 'started_at': self.baslangic_t, 'ended_at': self.bitis_t,
-                'duration_s': round(self.bitis_t - self.baslangic_t, 2) if self.bitis_t and self.baslangic_t else None,
-                'total': len(self.halkalar or []), 'standings': self.siralama()}
+        out = {'winner': self.kazanan, 'reason': self.neden, 'started_at': self.baslangic_t, 'ended_at': self.bitis_t,
+               'duration_s': round(self.bitis_t - self.baslangic_t, 2) if self.bitis_t and self.baslangic_t else None,
+               'total': len(self.halkalar or []), 'standings': self.siralama(), 'kind': self.tur}
+        if self.tur == TUR_IT:
+            d = self.it.durum() if self.it is not None else {}
+            out['dogfight'] = {'engage_s': (self.it_sonuc or {}).get('engage_s'), 'max_hold_s': d.get('max_hold_s'), 'min_dist_m': d.get('min_dist_m'),
+                               'need_s': float(self.halka_ayar.get('hold_s') or 0), 'roles': {str(o.uid): o.rol for o in self.oyuncular.values() if o.rol}}
+        return out
 
     def dict(self, now=None):
         return {'id': self.id, 'state': self.durum, 'reason': self.neden, 'host_id': self.kurucu_id, 'created_at': self.olusturma_t,
@@ -513,7 +762,8 @@ class Karsilasma:
                 'players': [o.dict(len(self.halkalar or [])) for o in self.oyuncular.values()],
                 'result': self.sonuc() if self.durum == BITTI else None,
                 'can_force': self.zorla_baslatilabilir(now) if now is not None else False,
-                'force_after_s': LOBI_ZORLA_S, 'countdown_s': GERI_SAYIM_S, 'now': now}
+                'force_after_s': LOBI_ZORLA_S, 'countdown_s': GERI_SAYIM_S, 'now': now, 'kind': self.tur,
+                'dogfight': self.it_durum()}
 
 
 def siralama(oyuncular, baslangic_t=None):

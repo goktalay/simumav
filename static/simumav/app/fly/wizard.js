@@ -184,6 +184,7 @@ export function createWizard(data = {}, init = {}, { match = false } = {}) {
     drive: DRIVES.includes(init.drive) ? init.drive : null,   // §15 kara aracı sürüş biçimi (null → modelin); dron değişince sıfırlanır
     // §18 karşılaşma (match: true): halka ayarı (match_core.js ringsBody) + davet (oyuncu sayısı, şifre); *_err adım doğrulaması (null = geçerli)
     rings: init.rings ?? null, rings_err: null, max_players: init.max_players ?? 2, password: init.password ?? '', invite_err: null,
+    kind: init.kind ?? 'rings', dogfight: init.dogfight ?? null,   // HEPGO §41 karşılaşma türü + it dalaşı ayarı
   };
   let i = 0;
   const drone = () => (data.drones || []).find(d => d.id === S.drone_id) || null;
@@ -218,7 +219,11 @@ export function createWizard(data = {}, init = {}, { match = false } = {}) {
   const launchOf = () => (needsLaunch(type()) ? launchBody(S.launch) : type() === 'interceptor' ? iceptLaunchBody(S.ilaunch) : { method: 'wheels' });
   const payload = () => {
     if (!ready()) return null;
-    if (match) return { drone_id: S.drone_id, track_id: S.track_id, launch: launchOf(), rings: Object.fromEntries(Object.entries(S.rings).filter(([k, v]) => !k.startsWith('_') && v !== '' && v != null && Number.isFinite(Number(v))).map(([k, v]) => [k, Number(v)])), password: S.password, max_players: S.max_players };   // POST /api/match
+    if (match) {   // POST /api/match (HEPGO §41: kind + it dalaşı ayarı; it dalaşında 2 oyuncu)
+      const df = S.kind === 'dogfight';
+      return { drone_id: S.drone_id, track_id: S.track_id, launch: launchOf(), rings: Object.fromEntries(Object.entries(S.rings).filter(([k, v]) => !k.startsWith('_') && v !== '' && v != null && Number.isFinite(Number(v))).map(([k, v]) => [k, Number(v)])), password: S.password, max_players: df ? 2 : S.max_players,
+        kind: S.kind || 'rings', dogfight: df ? Object.fromEntries(Object.entries(S.dogfight || {}).filter(([k, v]) => !k.startsWith('_') && v !== '' && v != null).map(([k, v]) => [k, k === 'roles' ? v : Number(v)])) : null };
+    }
     const body = { drone_id: S.drone_id, pilot_id: S.pilot_id, track_id: S.track_id, record: { video: !!S.record.video, bin: !!S.record.bin } };
     if (S.mission_id != null) body.mission_id = S.mission_id;
     body.launch = launchOf();   // kopter/heli/kara aracı: alan zorunlu; `wheels` nötr değer; INTERCEPTOR: §27 fırlatıcı

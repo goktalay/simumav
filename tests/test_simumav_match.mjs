@@ -106,7 +106,12 @@ test('adımlar: dron → parkur → halkalar → davet (sabit kanatta kalkış);
   assert.equal(W.ready(), false, 'şifresiz hazır değil');
   W.set('password', 'K7P4QX'); W.set('max_players', 3);
   assert.equal(W.ready(), true);
-  assert.deepEqual(W.payload(), { drone_id: 1, track_id: 10, launch: { method: 'wheels' }, rings: { count: 8, min_alt_m: 15, max_alt_m: 60, radius_m: 220, time_limit_min: 15, seed: 5 }, password: 'K7P4QX', max_players: 3 });
+  assert.deepEqual(W.payload(), { drone_id: 1, track_id: 10, launch: { method: 'wheels' }, rings: { count: 8, min_alt_m: 15, max_alt_m: 60, radius_m: 220, time_limit_min: 15, seed: 5 }, password: 'K7P4QX', max_players: 3, kind: 'rings', dogfight: null });
+  // HEPGO §41 it dalaşı: kind + ayar (iç alanlar yok), oyuncu 2'ye sabit
+  W.set('kind', 'dogfight'); W.set('dogfight', { distance_m: 500, alt_m: 40, time_limit_min: 4, range_m: 150, cone_deg: 25, hold_s: 3, area_radius_m: 900, roles: 'host_chaser', _type: 'multirotor' });
+  const pd = W.payload();
+  assert.equal(pd.kind, 'dogfight'); assert.equal(pd.max_players, 2); assert.deepEqual(pd.dogfight, { distance_m: 500, alt_m: 40, time_limit_min: 4, range_m: 150, cone_deg: 25, hold_s: 3, area_radius_m: 900, roles: 'host_chaser' });
+  W.set('kind', 'rings');
   W.set('invite_err', 'match.err_pw_len'); assert.equal(W.ready(), false);
   assert.ok(STEP_TITLES.rings === 'match.step_rings' && STEP_TITLES.invite === 'match.step_invite');
   // tek oyunculu sihirbaz değişmedi

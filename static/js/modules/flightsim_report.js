@@ -9,6 +9,8 @@ import { clear, fmtDateTime, fmtDuration, h, modal, toast, toastError } from '..
 import { layoutLabel } from './flightsim_airframe.js';   // §13.1 kontrol düzeni satırı
 import { defendReportBody } from './flightsim_gcs_ui.js';   // §26 "Yer kontrolünü koru" görev sonu raporu
 import { ensureServoCss, servoMapPoints, servoReportLines, servoSection } from './flightsim_servotrig.js';   // §34 servo tetik bölümü + harita işaretleri
+import { engagementRows, makeEngT } from './flightsim_engage.js';   // §40 angajman listesi
+import { ENGAGE_BONUS } from './flightsim_targets.js';
 
 const REASON = { terrain: 'arazi', water: 'su', building: 'bina', sitl_hit: 'SITL yer teması (fizik)', sitl: 'SITL (otopilot çarpışma algısı)', manual: 'el ile', servo_trigger: 'servo tetik' };
 const SOURCE = { mp: 'Mission Planner', hepgo: 'HEPGO paneli' };
@@ -106,7 +108,18 @@ export function targetsSection(sum, tr) {
     T.items.map(d => kv(`${d.i + 1} · ${d.name}`, d.intercepts
       ? tr('{n} önleme · ilk {s} sn · yarıçap içinde {in} sn · en yakın {m} m', { n: d.intercepts, s: f1(d.first_s), in: f1(d.in_s), m: f1(d.min_dist_m) })
       : tr('önlenmedi · en yakın {m} m', { m: f1(d.min_dist_m) }), d.intercepts ? 'green' : '')),
-    T.badges?.length ? h('div', { class: 'fs-rp-badges' }, T.badges.map(b => h('span', { class: 'badge purple' }, '★ ', tr(BADGE_TEXT[b] || b)))) : null);
+    T.badges?.length ? h('div', { class: 'fs-rp-badges' }, T.badges.map(b => h('span', { class: 'badge purple' }, '★ ', tr(BADGE_TEXT[b] || b)))) : null,
+    engagementsTable(T, tr));
+}
+// §40 angajman listesi (Boşluk ile kilit): hedef, başlangıç (ilk ARM'dan), süre, sonuç, en yakın mesafe
+function engagementsTable(T, tr) {
+  const list = T.engagements || [];
+  if (!list.length) return null;
+  const E = makeEngT(tr, false), rows = engagementRows(list, E);
+  return h('div', { class: 'fs-rp-eng' }, h('h5', { style: 'margin:10px 0 4px' }, '◆ ', E('eng.report'), ` · ${rows.filter(r => r.cls === 'green').length}/${rows.length}`),
+    h('table', { class: 'table compact fs-rp-eng-t' }, h('thead', null, h('tr', null, ['eng.col_target', 'eng.col_start', 'eng.col_dur', 'eng.col_result', 'eng.col_min'].map(k => h('th', null, E(k))))),
+      h('tbody', null, rows.map(r => h('tr', { class: r.cls }, h('td', null, r.target), h('td', null, r.start), h('td', null, r.dur), h('td', { class: r.cls ? 'ok' : '' }, r.result), h('td', null, r.min))))),
+    T.engaged_hits ? h('div', { class: 'small muted' }, E('eng.bonus', { p: ENGAGE_BONUS })) : null);
 }
 
 // ---------- 2B mini harita ----------

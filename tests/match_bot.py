@@ -48,3 +48,27 @@ def rota_pilotu(s, halkalar, merkez, hiz=60.0, kadar=None):
             k.vn = k.ve = 0.0
     k.adim = adim
     return st
+
+
+def it_pilotu(s, merkez, yon_deg, bas, hiz=10.0, alt=40.0, gecikme_m=0.0, takip=None):
+    """§41 it dalaşı test pilotu (yalnız sahte kinematik): araç `bas` (x, y) noktasından `yon_deg` doğrultusunda `alt` irtifada `hiz` ile düz uçar.
+    `takip` (başka pilotun durum sözlüğü) verilirse onun `gecikme_m` gerisinde, ona dönük uçar (kovalayan). Dönüş: durum {'p': [x, y, z]}."""
+    k = s.sahte
+    h = math.radians(yon_deg)
+    st = {'p': [bas[0], bas[1], 0.0], 'yaw': h}
+
+    def adim(dt):
+        k.sure_ms += dt * 1000
+        k.armed, k.mode = True, 'GUIDED'
+        if takip is not None:
+            tx, ty, tz = takip['p']
+            st['p'] = [tx - math.sin(h) * gecikme_m, ty - math.cos(h) * gecikme_m, tz]
+            st['yaw'] = math.atan2(tx - st['p'][0], ty - st['p'][1])
+        else:
+            st['p'] = [st['p'][0] + math.sin(h) * hiz * dt, st['p'][1] + math.cos(h) * hiz * dt, min(alt, st['p'][2] + 8.0 * dt)]
+        lat, lon = core.latlon(merkez['lat'], merkez['lon'], st['p'][0], st['p'][1])
+        k.lat, k.lon, k.alt_rel = lat, lon, st['p'][2]
+        k.yaw, k.pitch = st['yaw'], 0.0
+        k.vn, k.ve = math.cos(h) * hiz, math.sin(h) * hiz
+    k.adim = adim
+    return st

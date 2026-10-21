@@ -9,6 +9,8 @@
 - `POST /api/match/{id}/ready {ready}` · `/leave` · `/kick {user_id}` (kurucu) · `/start` (kurucu) · `/cancel` (kurucu) · `/password {password}` (kurucu; yenisi).
 - WS: hello{match, me} · match{match} · player · state · countdown{start_at} · pos (10 Hz) · ring · finish · wrong_way · result · pong{now};
   istemci → ping, ready. Oyuncu değilse 4403.
+- HEPGO §41 İT DALAŞI: oluşturma/önizleme gövdesinde `kind: 'dogfight'` + `dogfight {distance_m, alt_m, time_limit_min, range_m, cone_deg, hold_s,
+  area_radius_m, roles}` (oyuncu sayısı 2'ye sabitlenir); WS ek olarak `dogfight {kind}` ve `pos.df` (HUD); anlık görüntüde `kind`, `dogfight`.
 """
 import asyncio
 import json
@@ -39,11 +41,25 @@ class RingsIn(BaseModel):
     seed: Optional[int] = None
 
 
+class DogfightIn(BaseModel):
+    distance_m: Optional[float] = None
+    alt_m: Optional[float] = None
+    time_limit_min: Optional[int] = None
+    range_m: Optional[float] = None
+    cone_deg: Optional[float] = None
+    hold_s: Optional[float] = None
+    area_radius_m: Optional[float] = None
+    roles: Optional[str] = Field(None, max_length=16)
+    seed: Optional[int] = None
+
+
 class PreviewIn(BaseModel):
     drone_id: int
     track_id: int
     rings: Optional[RingsIn] = None
     players: Optional[int] = Field(None, ge=1, le=8)
+    kind: Optional[str] = Field(None, max_length=16)
+    dogfight: Optional[DogfightIn] = None
 
 
 class CreateIn(BaseModel):
@@ -54,6 +70,8 @@ class CreateIn(BaseModel):
     rings: Optional[RingsIn] = None
     password: str = Field(..., max_length=64)
     max_players: int = Field(..., ge=2, le=8)
+    kind: Optional[str] = Field(None, max_length=16)       # HEPGO §41 'rings' | 'dogfight'
+    dogfight: Optional[DogfightIn] = None
 
 
 class JoinIn(BaseModel):
@@ -77,11 +95,15 @@ def _h(e):
     hata_cevir(e)
 
 
-def _cfg(drone_type, rings):
+def _cfg(drone_type, rings, kind=None, dogfight=None):
     tip = M.ctip(drone_type)
     if drone_type not in M.TIPLER or tip is None:
         raise auth.hata(422, 'invalid', 'Karşılaşmada bu araç tipi seçilemez (halkalar havada; kara aracı yok)')
+    if (kind or core.TUR_HALKA) not in core.TURLER:
+        raise auth.hata(422, 'invalid', "kind 'rings' | 'dogfight' olmalı")
     try:
+        if kind == core.TUR_IT:
+            return core.it_ayar_dogrula(dogfight.model_dump(exclude_none=True) if dogfight else {}, tip)
         return core.halka_ayar_dogrula(rings.model_dump(exclude_none=True) if rings else {}, tip)
     except core.MacHata as e:
         raise auth.hata(422, 'invalid', str(e))
@@ -91,7 +113,11 @@ def _limits():
     return {'players': [2, M.oyuncu_siniri()], 'count': list(core.HALKA_SAYI), 'alt_m': list(core.YUKSEKLIK), 'diameter_m': list(core.CAP),
             'radius_m': list(core.PARKUR), 'time_limit_min': list(core.SURE_DK), 'password': list(M.SIFRE), 'types': list(M.TIPLER),
             'defaults': {'dikey': core.halka_ayar_varsayilan('multirotor'), 'ucak': core.halka_ayar_varsayilan('sabit_kanat')},
-            'countdown_s': core.GERI_SAYIM_S, 'lobby_timeout_s': core.LOBI_ZAMAN_ASIMI_S, 'attempts': M.DENEME_KULLANICI}
+            'countdown_s': core.GERI_SAYIM_S, 'lobby_timeout_s': core.LOBI_ZAMAN_ASIMI_S, 'attempts': M.DENEME_KULLANICI,
+            'kinds': list(core.TURLER), 'dogfight': {'distance_m': list(core.IT_MESAFE), 'alt_m': list(core.IT_IRTIFA), 'time_limit_min': list(core.IT_SURE_DK),
+                                                     'range_m': list(core.IT_MENZIL), 'cone_deg': list(core.IT_KONI), 'hold_s': list(core.IT_TUTMA),
+                                                     'area_radius_m': list(core.IT_ALAN), 'roles': list(core.IT_ROLLER), 'guard_s': core.KORUMA_S,
+                                                     'defaults': {'dikey': core.it_ayar_varsayilan('multirotor'), 'ucak': core.it_ayar_varsayilan('sabit_kanat')}}}
 
 
 def _mac(mid, user):
@@ -117,11 +143,13 @@ async def rings_preview(body: PreviewIn, user=User):
     with db.connect() as conn:
         drone = sahip(conn, 'drones', body.drone_id, user)
         track = sahip(conn, 'tracks', body.track_id, user)
-    cfg = _cfg(drone['type'], body.rings)
+    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight)
     if not cfg.get('seed'):
         cfg['seed'] = 1 + int(time.time() * 1000) % (2 ** 31 - 2)
+    if body.kind == core.TUR_IT:   # HEPGO §41: halka yok; iki başlangıç noktası (kovalayan, kaçan)
+        return {'cfg': cfg, 'rings': [], 'starts': M.baslangic_onizleme(2, drone['type'], track, [], dogfight=cfg), 'kind': core.TUR_IT}
     rings = core.halkalar_uret(cfg, {'lat': float(track['lat']), 'lon': float(track['lon']), 'alt': 0.0})
-    return {'cfg': cfg, 'rings': rings, 'starts': M.baslangic_onizleme(body.players or 2, drone['type'], track, rings)}
+    return {'cfg': cfg, 'rings': rings, 'starts': M.baslangic_onizleme(body.players or 2, drone['type'], track, rings), 'kind': core.TUR_HALKA}
 
 
 @router.post('', status_code=201)
@@ -130,10 +158,13 @@ async def create(body: CreateIn, request: Request, user=User):
     with db.connect() as conn:
         drone = sahip(conn, 'drones', body.drone_id, user)
         track = sahip(conn, 'tracks', body.track_id, user)
-    cfg = _cfg(drone['type'], body.rings)
+    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight)
+    kind = body.kind or core.TUR_HALKA
     try:
         sifre = M.sifre_dogrula(body.password)
         ust = M.oyuncu_siniri()
+        if kind == core.TUR_IT and body.max_players != 2:
+            raise M.H(422, 'invalid', 'İt dalaşı tam 2 oyunculu')
         if not (2 <= body.max_players <= ust):
             raise M.H(422, 'invalid', f'Bu sunucuda karşılaşma 2–{ust} oyunculu olabilir (her oyuncu kendi simülatörünü alır)')
         launch = bridge.launch_dogrula(body.launch or {'method': 'wheels'})
@@ -141,7 +172,7 @@ async def create(body: CreateIn, request: Request, user=User):
             camera = flightsim.kamera_dogrula(body.camera)
         except flightsim.SimHata as e:
             raise M.H(422, 'invalid', str(e))
-        m = await M.MANAGER.olustur(user, drone, track, launch, camera, cfg, sifre, body.max_players, auth.client_ip(request))
+        m = await M.MANAGER.olustur(user, drone, track, launch, camera, cfg, sifre, body.max_players, auth.client_ip(request), tur=kind)
     except bridge.BridgeHata as e:
         _h(e)
     return {**m.anlik(), 'me': user['id']}
@@ -151,7 +182,7 @@ async def create(body: CreateIn, request: Request, user=User):
 async def mine(user=User):
     """Son 20 karşılaşmam (oyuncusu olduklarım)."""
     with db.connect() as conn:
-        rs = db.rows(conn.execute('SELECT m.id, m.state, m.reason, m.host_id, m.settings, m.winner_id, m.created_at, m.ended_at, mp.rank, mp.status, mp.flight_id, '
+        rs = db.rows(conn.execute('SELECT m.id, m.state, m.reason, m.host_id, m.settings, m.winner_id, m.created_at, m.ended_at, m.kind, mp.rank, mp.status, mp.flight_id, '
                                   '(SELECT COUNT(*) FROM match_players x WHERE x.match_id = m.id) AS n, '
                                   '(SELECT name FROM match_players x WHERE x.match_id = m.id AND x.user_id = m.winner_id) AS winner_name '
                                   'FROM matches m JOIN match_players mp ON mp.match_id = m.id AND mp.user_id = ? ORDER BY m.id DESC LIMIT 20', (user['id'],)))
@@ -179,7 +210,7 @@ async def invite(code: str, request: Request, user=User):
     st = M.ayar_ozeti(m.settings)
     return {'code': m.code, 'id': m.id if m.oyuncu_mu(user['id']) else None, 'joined': m.oyuncu_mu(user['id']), 'state': m.durum, 'host_name': host.get('name'),
             'track': st['track']['name'], 'world_mode': st['track']['world_mode'], 'drone': {'name': st['drone']['name'], 'type': st['drone']['type']},
-            'rings': len(m.halkalar), 'players': len(m.lobi) if m.k is None else len(m.k.aktifler()), 'max_players': m.max_players,
+            'rings': len(m.halkalar), 'players': len(m.lobi) if m.k is None else len(m.k.aktifler()), 'max_players': m.max_players, 'kind': m.tur,
             'me': {'id': user['id'], 'email': user['email'], 'name': user['display_name']}, 'kicked': user['id'] in m.yasakli}
 
 

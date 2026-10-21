@@ -6,6 +6,7 @@ import { clear, confirmDialog, fmtDateTime, h, onLeave, toast, toastError, t as 
 import { numSlider } from './fs_inputs.js';
 import { hepgoSound } from './flightsim_intro.js';
 import { createMatchLayer } from './flightsim_match3d.js';
+import { DF_LIMITS, createDogfightHud, dfDefaults, dfError, dfResultRows, dfSummary, dfSvg, makeDfT, roleOf } from './flightsim_dogfight.js';   // §41 it dalaşı
 import { ACTIVE, MATCH_LIMITS, REASON_TEXT, STATE_TEXT, STATUS_TEXT, STATUS_TONE, arrowFor, bearingDeg, colorFor, countdownPhase, createClock, fmtClock, fmtDist,
   inviteAdd, inviteError, inviteRemove, liveStandings, lobbyCounts, matchHref, partitionInvite, relAngle, ringDefaults, ringsError, ringsSummary, ringsViewBox, sessionHref } from './flightsim_match.js';
 
@@ -21,7 +22,10 @@ export const matchApi = {
   kick: (id, uid) => api.post(`${API}/${encodeURIComponent(id)}/kick`, { user_id: uid }),
   start: id => api.post(`${API}/${encodeURIComponent(id)}/start`, {}),
   cancel: id => api.post(`${API}/${encodeURIComponent(id)}/cancel`, {}),
+  rematch: id => api.post(`${API}/${encodeURIComponent(id)}/rematch`, {}),   // §41 it dalaşı rövanşı (roller değişir)
 };
+const DT = makeDfT(tr, false);   // §41 metinleri (HEPGO: Türkçe anahtar)
+const isDf = m => (m?.kind || 'rings') === 'dogfight';
 const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
 
 // ---------------------------------------------------------------- CSS
@@ -33,6 +37,14 @@ export function ensureMatchCss() {
   st.dataset.fs = 'match';
   st.textContent = `
 .fs-mt-rings{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,300px);gap:16px;align-items:start}
+.fs-mt-rings[hidden]{display:none}
+.fs-df-kinds{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:14px}
+.fs-df-kind{display:flex;flex-direction:column;gap:4px;text-align:left;padding:10px 12px;border-radius:12px;border:1.5px solid var(--border);background:var(--card,#fff);color:inherit;cursor:pointer}
+.fs-df-kind b{font-size:14px}.fs-df-kind small{color:var(--muted);line-height:1.35}
+.fs-df-kind.on{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 9%,transparent);box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 25%,transparent)}
+.fs-df-rules{line-height:1.45}
+.fs-df-badge{display:inline-block;padding:2px 8px;border-radius:7px;font-weight:800;font-size:11px;letter-spacing:.06em;color:#fff}
+.fs-df-badge.chaser{background:#b91c1c}.fs-df-badge.evader{background:#1d4ed8}
 .fs-mt-rings .fs-mt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 16px}
 .fs-mt-map{border:1px solid var(--border);border-radius:12px;background:var(--bg-soft,rgba(127,127,127,.06));padding:8px}
 .fs-mt-map svg{width:100%;height:auto;display:block}
@@ -157,8 +169,46 @@ export function ringsSvg(rings, { starts = [], me = null } = {}) {
 }
 
 // ---------------------------------------------------------------- sihirbaz: Halkalar
-export function createRingsSection({ getType, getCenter, limits = MATCH_LIMITS, initial = null, onChange = () => {} }) {
+export function createRingsSection({ getType, getCenter, limits = MATCH_LIMITS, initial = null, onChange = () => {}, onKind = () => {} }) {
   ensureMatchCss();
+  // §41 tür seçimi: halka yarışı | it dalaşı (2 kişilik)
+  const DL = { ...DF_LIMITS, ...(limits?.dogfight || {}) };
+  let kind = 'rings', D = dfDefaults(getType(), DL);
+  const dsl = {};
+  const dmk = (key, label, [a, b], step, unit, integer = false) => {
+    dsl[key] = numSlider({ h, label: DT(label), value: D[key], min: a, max: b, step, unit, integer, cls: 'fs-slider', onInput: v => { D[key] = v; dchanged(); } });
+    return dsl[key].el;
+  };
+  const dfMap = h('div', { class: 'fs-mt-map fs-df-map' });
+  const rules = h('p', { class: 'small muted fs-df-rules' });
+  const rolesSel = h('select', { class: 'input', onchange: () => { D.roles = rolesSel.value; dchanged(); } }, DL.roles.map(r => h('option', { value: r }, DT(`df.roles_${r}`))));
+  const dchanged = () => {
+    const e = dfError(D, DL);
+    dfMap.innerHTML = e ? '' : dfSvg(D, { T: DT });
+    if (e) dfMap.append(h('div', { class: 'small fs-warn-txt' }, tr(e)));
+    rules.textContent = DT('df.rules', { r: Math.round(D.range_m), c: Math.round(D.cone_deg), h: Number(D.hold_s).toFixed(1), t: D.time_limit_min, a: Math.round(D.area_radius_m), g: Math.round(DL.guard_s || 60) });
+    onChange();
+  };
+  const dfBox = h('div', { class: 'fs-mt-rings', hidden: true },
+    h('div', null, rules,
+      h('div', { class: 'fs-mt-grid' },
+        dmk('distance_m', 'df.distance', DL.distance_m, 50, 'm'), dmk('alt_m', 'df.alt', DL.alt_m, 5, 'm'), dmk('time_limit_min', 'df.time', DL.time_limit_min, 1, 'dk', true),
+        dmk('range_m', 'df.range', DL.range_m, 10, 'm'), dmk('cone_deg', 'df.cone', DL.cone_deg, 1, '°'), dmk('hold_s', 'df.hold', DL.hold_s, 0.5, 'sn'),
+        dmk('area_radius_m', 'df.area', DL.area_radius_m, 50, 'm')),
+      h('label', { class: 'fs-mt-seed' }, h('span', { class: 'small muted' }, DT('df.roles')), rolesSel)),
+    dfMap);
+  const kindBtns = ['rings', 'dogfight'].map(k => h('button', { type: 'button', class: `fs-df-kind ${k === kind ? 'on' : ''}`, 'data-kind': k, onclick: () => setKind(k) },
+    h('b', null, k === 'rings' ? '◎ ' : '✈ ', DT(`df.kind_${k}`)), h('small', null, DT(`df.kind_${k}_d`))));
+  const kindRow = h('div', { class: 'fs-df-kinds', role: 'radiogroup', 'aria-label': DT('df.kind') }, kindBtns);
+  let ringsBox = null;
+  const setKind = k => {
+    kind = k === 'dogfight' ? 'dogfight' : 'rings';
+    kindBtns.forEach(b => b.classList.toggle('on', b.dataset.kind === kind));
+    if (ringsBox) ringsBox.hidden = kind !== 'rings';
+    dfBox.hidden = kind !== 'dogfight';
+    if (kind === 'dogfight') dchanged(); else changed();
+    onKind(kind);
+  };
   let R = { ...ringDefaults(getType(), limits), ...(initial || {}) };
   if (!R.seed) R.seed = Math.floor(Math.random() * 2147483000) + 1;
   let lastType = getType();
@@ -187,7 +237,7 @@ export function createRingsSection({ getType, getCenter, limits = MATCH_LIMITS, 
   const changed = () => { clearTimeout(tmr); tmr = setTimeout(draw, 250); onChange(); };
   const seedInp = h('input', { class: 'input mono', value: R.seed, inputmode: 'numeric', style: { width: '130px' }, onchange: () => { R.seed = Math.max(1, Math.floor(Number(seedInp.value)) || 1); seedInp.value = R.seed; changed(); } });
   const L = limits;
-  const el = h('div', { class: 'fs-mt-rings' },
+  ringsBox = h('div', { class: 'fs-mt-rings' },
     h('div', null,
       h('p', { class: 'small muted' }, 'Havada farklı yüksekliklerde numaralı halkalar kurulur; herkes aynı halkaları 1’den başlayarak sırayla ve ok yönünde geçmeye çalışır. Tüm halkaları ilk bitiren kazanır ve karşılaşma biter.'),
       h('div', { class: 'fs-mt-grid' },
@@ -201,14 +251,23 @@ export function createRingsSection({ getType, getCenter, limits = MATCH_LIMITS, 
         h('button', { class: 'btn sm', type: 'button', onclick: () => { R.seed = Math.floor(Math.random() * 2147483000) + 1; seedInp.value = R.seed; changed(); } }, '🎲 Yeni parkur')),
       info),
     map);
+  const el = h('div', { class: 'fs-mt-kindwrap' }, kindRow, ringsBox, dfBox);
+  dchanged();
   return {
     el,
     values: () => ({ ...R }),
     rings: () => last,
-    error: () => ringsError(R, limits),
+    kind: () => kind, setKind,
+    dogfight: () => ({ ...D }),
+    error: () => (kind === 'dogfight' ? dfError(D, DL) : ringsError(R, limits)),
+    summary: () => (kind === 'dogfight' ? [[DT('df.kind'), DT('df.kind_dogfight')], [DT('df.rules').split(':')[0], dfSummary(D, DT)]]
+      : [[DT('df.kind'), DT('df.kind_rings')], ['Halkalar', ringsSummary(R)], ['Süre sınırı', tr('{n} dk', { n: R.time_limit_min })], ['Parkur tohumu', String(R.seed)]]),
     refresh: () => {   // tip değişince (dikey ↔ uçak) varsayılanlar
       const t = getType();
-      if (typeClass2(t) !== typeClass2(lastType)) { const d = ringDefaults(t, limits); for (const k of ['min_alt_m', 'max_alt_m', 'diameter_m', 'radius_m']) { R[k] = d[k]; sl[k].set(d[k]); } }
+      if (typeClass2(t) !== typeClass2(lastType)) {
+        const d = ringDefaults(t, limits); for (const k of ['min_alt_m', 'max_alt_m', 'diameter_m', 'radius_m']) { R[k] = d[k]; sl[k].set(d[k]); }
+        const dd = dfDefaults(t, DL); for (const k of Object.keys(dsl)) { D[k] = dd[k]; dsl[k].set(dd[k]); } dchanged();
+      }
       lastType = t; changed();
     },
   };
@@ -219,7 +278,7 @@ const typeClass2 = t => (t === 'sabit_kanat' ? 'ucak' : 'dikey');
 export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChange = () => {} }) {
   ensureMatchCss();
   let invited = new Set(), q = '';
-  const max = (limits.players_max || 8) - 1;
+  let max = (limits.players_max || 8) - 1;
   const selL = new Set(), selR = new Set();
   const listL = h('ul', { class: 'fs-mt-list', role: 'listbox', 'aria-multiselectable': 'true', 'data-side': 'left' });
   const listR = h('ul', { class: 'fs-mt-list', role: 'listbox', 'aria-multiselectable': 'true', 'data-side': 'right' });
@@ -264,7 +323,9 @@ export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChang
       colR),
     note);
   draw();
-  return { el, values: () => [...invited], error: () => inviteError(invited, limits), names: () => users.filter(u => invited.has(u.id)).map(u => u.full_name), set: ids => set(new Set(ids)) };
+  return { el, values: () => [...invited], error: () => (max === 1 && invited.size !== 1 ? DT('df.need_two') : inviteError(invited, limits)), names: () => users.filter(u => invited.has(u.id)).map(u => u.full_name), set: ids => set(new Set(ids)),
+    // §41 it dalaşı: tam 1 davetli (fazlası düşer)
+    setMax: n => { max = Math.max(1, Number(n) || ((limits.players_max || 8) - 1)); if (invited.size > max) set(new Set([...invited].slice(0, max))); else draw(); } };
 }
 
 // ---------------------------------------------------------------- WS istemcisi
@@ -289,7 +350,28 @@ function matchSocket(mid, handlers) {
 }
 
 // ---------------------------------------------------------------- sonuç tablosu
+function dfResultsBody(match, me) {   // §41 it dalaşı sonucu: kazanan, sebep, angajman süresi / en yakın mesafe, roller
+  const res = match.result || {}, d = res.dogfight || {};
+  const rows = dfResultRows(match);
+  const win = rows.find(r => r.won);
+  const meWon = win && win.id === me, mePlayed = rows.some(r => r.id === me);
+  return h('div', { class: 'fs-mt-res fs-df-res' },
+    h('div', { class: 'fs-mt-win' }, h('span', { class: 'cup' }, win ? '🏆' : '🏁'),
+      h('div', null, h('b', null, mePlayed && win ? DT(meWon ? 'df.you_win' : 'df.you_lose') + ' · ' + tr('Kazanan: {n}', { n: win.name }) : win ? tr('Kazanan: {n}', { n: win.name }) : tr('Kazanan yok')),
+        h('div', { class: 'small muted' }, [DT(`df.r_${res.reason || match.reason}`), res.duration_s != null ? tr('Yarış süresi {t}', { t: fmtClock(res.duration_s) }) : null].filter(Boolean).join(' · ')))),
+    h('div', { class: 'fs-df-stats small' }, [[DT('df.engage_time'), d.engage_s != null ? `${Number(d.engage_s).toFixed(1)} s` : '—'], [DT('df.max_hold'), d.max_hold_s != null ? `${Number(d.max_hold_s).toFixed(1)} / ${Number(d.need_s || 0).toFixed(1)} s` : '—'],
+      [DT('df.min_dist'), fmtDist(d.min_dist_m)]].map(([k, v]) => h('span', { style: { marginRight: '14px' } }, h('span', { class: 'muted' }, `${k}: `), h('b', null, v)))),
+    h('div', { class: 'tw' }, h('table', null,
+      h('thead', null, h('tr', null, [DT('df.role'), 'Oyuncu', DT('df.result'), 'Azami hız', 'Çarpışma'].map(x => h('th', null, tr(x))))),
+      h('tbody', null, rows.map(r => h('tr', { class: r.id === me ? 'me' : '', 'data-id': r.id },
+        h('td', null, r.role ? h('span', { class: `fs-df-badge ${r.role}` }, DT(`df.${r.role}`)) : '—'),
+        h('td', null, h('b', null, r.name), r.id === me ? h('span', { class: 'small muted' }, ` (${tr('siz')})`) : null),
+        h('td', null, h('span', { class: `badge ${r.won ? 'green' : 'red'}` }, DT(r.won ? 'df.won' : 'df.lost'))),
+        h('td', { class: 'n' }, r.max_speed_ms != null ? `${Number(r.max_speed_ms).toFixed(1)} m/s` : '—'),
+        h('td', { class: 'n' }, String(r.crashes ?? 0))))))));
+}
 export function resultsBody(match, me) {
+  if (isDf(match)) return dfResultsBody(match, me);
   const res = match.result || null;
   const rows = res?.standings || liveStandings(match.players || []);
   const win = (match.players || []).find(p => p.id === (res?.winner ?? match.winner));
@@ -330,7 +412,7 @@ export async function renderLobby(view, ctx, mid, { head }) {
   const resBox = h('div', { class: 'card card-pad no-collapse', hidden: true });
   const chatLog = h('div', { class: 'log' });
   const chatInp = h('input', { class: 'input', maxlength: 300, placeholder: 'Mesaj yazın…' });
-  let sock = null, left = false;
+  let sock = null, left = false, rematchId = null;   // §41 rövanş: rakibe salon bağlantısı
   const chat = h('div', { class: 'fs-mt-chat' }, h('b', { class: 'small' }, 'Sohbet'), chatLog,
     h('form', { onsubmit: e => { e.preventDefault(); const t = chatInp.value.trim(); if (t) { sock?.send({ t: 'chat', text: t }); chatInp.value = ''; } } }, chatInp, h('button', { class: 'btn sm', type: 'submit' }, 'Gönder')));
   const addChat = m => { chatLog.append(h('div', null, h('b', { style: { color: colorFor(M.players, m.id) } }, `${m.name}: `), m.text)); chatLog.scrollTop = chatLog.scrollHeight; };
@@ -348,7 +430,8 @@ export async function renderLobby(view, ctx, mid, { head }) {
     const online = new Set(M.viewers || []);
     clear(plist, (M.players || []).map(p => h('li', { 'data-status': p.status, 'data-id': p.id },
       h('span', { class: 'av', style: { background: colorFor(M.players, p.id) } }, initials(p.name), h('i', { class: online.has(p.id) ? 'on' : '', title: tr(online.has(p.id) ? 'Çevrimiçi' : 'Çevrimdışı') })),
-      h('div', { class: 'grow' }, h('b', null, p.name), p.host ? h('span', { class: 'badge purple', style: { marginLeft: '6px' } }, 'Kurucu') : null, p.id === me ? h('span', { class: 'small muted' }, ` (${tr('siz')})`) : null,
+      h('div', { class: 'grow' }, h('b', null, p.name), p.host ? h('span', { class: 'badge purple', style: { marginLeft: '6px' } }, 'Kurucu') : null,
+        p.role ? h('span', { class: `fs-df-badge ${p.role}`, style: { marginLeft: '6px' } }, DT(`df.${p.role}`)) : null, p.id === me ? h('span', { class: 'small muted' }, ` (${tr('siz')})`) : null,
         p.drop_reason ? h('div', { class: 'small muted' }, tr(DROP_TEXT[p.drop_reason] || p.drop_reason)) : null),
       h('span', { class: `badge ${STATUS_TONE[p.status] || 'gray'}` }, tr(p.status === 'hazir' && ['YARIS', 'BITTI'].includes(M.state) ? (p.finished ? 'Bitirdi' : 'Yarıştı') : STATUS_TEXT[p.status] || p.status)),
       isHost() && !p.host && ACTIVE.has(p.status) && ['LOBI', 'HAZIRLIK'].includes(M.state) && M.live !== false
@@ -363,22 +446,29 @@ export async function renderLobby(view, ctx, mid, { head }) {
       live && isHost() ? h('button', { class: 'btn danger', type: 'button', onclick: async () => { if (await confirmDialog(tr('Karşılaşmayı iptal et'), tr('Karşılaşma herkes için iptal edilsin mi?'), { okLabel: tr('İptal et'), danger: true })) { try { M = await matchApi.cancel(mid); draw(); } catch (err) { toastError(err); } } } }, 'Karşılaşmayı iptal et') : null,
       live && !isHost() && my && ACTIVE.has(my.status) ? h('button', { class: 'btn', type: 'button', onclick: async () => { if (await confirmDialog(tr('Ayrıl'), tr('Karşılaşmadan ayrılmak istiyor musunuz?'), { okLabel: tr('Ayrıl'), danger: true })) { try { left = true; M = await matchApi.leave(mid); draw(); location.hash = '#/drone/sim?tab=matches'; } catch (err) { toastError(err); } } } }, 'Ayrıl') : null,
       my?.session_id && ['HAZIRLIK', 'GERI_SAYIM', 'YARIS'].includes(M.state) ? h('a', { class: 'btn primary', href: sessionHref(my.session_id, mid) }, 'Simülatöre geç') : null,
+      isDf(M) && M.state === 'BITTI' && isHost() && M.live !== false ? h('button', { class: 'btn primary', type: 'button', onclick: async () => { try { const n = await matchApi.rematch(mid); toast(DT('df.rematch_open')); location.hash = matchHref(n.id); } catch (err) { toastError(err); } } }, DT('df.rematch')) : null,
+      rematchId ? h('a', { class: 'btn primary', href: matchHref(rematchId) }, DT('df.rematch')) : null,
       h('a', { class: 'btn ghost', href: '#/drone/sim?tab=matches' }, 'Karşılaşmalar'));
   };
   const drawSum = () => {
     const s = M.settings || {}, r = M.rings_cfg || {}, w = s.world || {};
     const host = (M.players || []).find(p => p.host);
-    const svg = h('div', { class: 'fs-mt-map', style: { marginTop: '10px' } }); svg.innerHTML = ringsSvg(M.rings || []);
+    const svg = h('div', { class: 'fs-mt-map', style: { marginTop: '10px' } }); svg.innerHTML = isDf(M) ? dfSvg(r, { T: DT }) : ringsSvg(M.rings || []);
+    const myRole = roleOf(M, me);
     clear(sum, h('h3', null, 'Karşılaşma ayarları'),
       h('dl', null,
         h('dt', null, 'Kurucu'), h('dd', null, host?.name || '—'),
         h('dt', null, 'Araç'), h('dd', null, tr(TYPE_NAME[s.type] || s.type || '—')),
         h('dt', null, 'Merkez'), h('dd', null, M.center?.name || '—'),
         h('dt', null, 'Dünya'), h('dd', null, [tr({ real: 'Gerçek arazi', google3d: 'Google 3B (fotogerçekçi)', procedural: 'Prosedürel' }[w.mode] || w.mode || '—'), w.time ? tr({ day: 'Gündüz', dusk: 'Akşam', night: 'Gece' }[w.time] || w.time) : null].filter(Boolean).join(' · ')),
-        h('dt', null, 'Halkalar'), h('dd', null, ringsSummary(r)),
+        h('dt', null, DT('df.kind')), h('dd', null, DT(isDf(M) ? 'df.kind_dogfight' : 'df.kind_rings')),
+        ...(isDf(M) ? [h('dt', null, DT('df.rules').split(':')[0]), h('dd', null, dfSummary(r, DT)),
+          h('dt', null, DT('df.role')), h('dd', null, myRole ? h('span', { class: `fs-df-badge ${myRole}` }, DT(`df.${myRole}`)) : DT('df.role_pending'))]
+          : [h('dt', null, 'Halkalar'), h('dd', null, ringsSummary(r))]),
         h('dt', null, 'Süre sınırı'), h('dd', null, tr('{n} dk', { n: r.time_limit_min ?? '—' })),
         h('dt', null, 'Oluşturuldu'), h('dd', null, typeof M.created_at === 'number' ? new Date(M.created_at * 1000).toLocaleString() : fmtDateTime(M.created_at))),
-      svg, M.live !== false ? chat : null);
+      svg, isDf(M) ? h('p', { class: 'small muted' }, DT('df.rules', { r: Math.round(r.range_m), c: Math.round(r.cone_deg), h: Number(r.hold_s).toFixed(1), t: r.time_limit_min, a: Math.round(r.area_radius_m), g: 60 })) : null,
+      M.live !== false ? chat : null);
   };
   const drawRes = () => {
     resBox.hidden = M.state !== 'BITTI';
@@ -397,7 +487,7 @@ export async function renderLobby(view, ctx, mid, { head }) {
   clear(view, head(tr('Karşılaşma #{id} · Bekleme salonu', { id: M.id })), banner,
     h('div', { class: 'fs-mt-page' }, h('div', null, h('div', { class: 'card card-pad no-collapse' }, h('h3', null, 'Oyuncular'), plist, h('div', { style: { marginTop: '12px' } }, acts)), resBox), sum));
   draw();
-  if (M.live !== false && !['BITTI', 'IPTAL'].includes(M.state)) {
+  if (M.live !== false && (!['BITTI', 'IPTAL'].includes(M.state) || (isDf(M) && M.state === 'BITTI'))) {   // §41: bitmiş it dalaşında rövanş bildirimi için
     sock = matchSocket(mid, {
       pong: (n, s, r) => clock.sample(n, s, r),
       message: m => {
@@ -405,6 +495,7 @@ export async function renderLobby(view, ctx, mid, { head }) {
         if (m.t === 'match') { M = { ...m.match, live: true }; draw(); return; }
         if (m.t === 'chat') addChat(m);
         if (m.t === 'result') { M = { ...M, result: m.result }; draw(); }
+        if (m.t === 'rematch' && m.host !== me) { rematchId = m.id; toast(DT('df.rematch_open')); drawActs(); }
       },
       fatal: () => {},
     });
@@ -418,7 +509,7 @@ export async function renderLobby(view, ctx, mid, { head }) {
 export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/sim?tab=matches', startIntro = () => {}, getTele = () => null }) {
   ensureMatchCss();
   const clock = createClock();
-  let M = null, layer = null, worldReady = false, introDone = false, resultShown = false, disposed = false;
+  let M = null, layer = null, worldReady = false, introDone = false, resultShown = false, disposed = false, dfHud = null;   // dfHud: §41 it dalaşı HUD'u
   const pos = {};   // id → son pos girdisi
   const bar = h('div', { class: 'fs-mt-bar wait' }, 'Karşılaşmaya bağlanılıyor…');
   const board = h('div', { class: 'fs-mt-board' }, h('h6', null, 'Sıralama'), h('ol'));
@@ -439,8 +530,14 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     if (typeof window !== 'undefined') window.__fsMatch = { layer, get match() { return M; }, clock, get sim() { return getSim(); } };   // teşhis (görsel betikler)
   };
   const syncPlayers = () => layer?.setPlayers((M?.players || []).filter(p => ACTIVE.has(p.status)).map(p => ({ id: p.id, name: p.name, color: colorFor(M.players, p.id), plane: M.settings?.type === 'sabit_kanat' })));
+  const ensureDf = () => {   // §41: it dalaşında sıralama tablosu yerine rakip işaretçisi / angajman halkası / uyarı HUD'u
+    if (!M || !isDf(M) || dfHud) return;
+    dfHud = createDogfightHud(stage, { getSim, tr, me });
+    board.hidden = true;
+    if (typeof window !== 'undefined') window.__fsDogfight = dfHud;
+  };
   const drawBoard = () => {
-    if (!M) return;
+    if (!M || isDf(M)) return;
     const rows = liveStandings(M.players, pos);
     const total = (M.rings || []).length;
     clear(board.querySelector('ol'), rows.map((p, i) => h('li', { class: `${p.id === me ? 'me' : ''} ${ACTIVE.has(p.status) ? '' : 'out'}`.trim() },
@@ -456,7 +553,7 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
       const c = lobbyCounts(M.players);
       const ph = st === 'GERI_SAYIM' ? countdownPhase(M.start_at, clock.now()) : null;
       clear(box, h('div', { class: 'ttl' }, st === 'GERI_SAYIM' ? tr('Herkes hazır — yarış başlıyor') : tr('Diğer oyuncular bekleniyor')),
-        h('div', { class: 'small', style: { opacity: '.8' } }, st === 'GERI_SAYIM' ? tr('Kalkış serbest olunca halkaları sırayla geçin.') : tr('{r} / {t} oyuncu hazır', { r: c.ready, t: c.total })),
+        h('div', { class: 'small', style: { opacity: '.8' } }, st === 'GERI_SAYIM' ? (isDf(M) ? DT('df.wait_go') : tr('Kalkış serbest olunca halkaları sırayla geçin.')) : tr('{r} / {t} oyuncu hazır', { r: c.ready, t: c.total })),
         ph ? h('div', { class: 'big' }, String(Math.ceil(ph.remain))) : null,
         h('ul', null, (M.players || []).filter(p => ACTIVE.has(p.status) || p.status === 'dustu').map(p => h('li', null, h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }),
           h('span', { style: { flex: '1' } }, p.name, p.id === me ? ` (${tr('siz')})` : ''), h('span', { class: `badge ${STATUS_TONE[p.status] || 'gray'}` }, tr(STATUS_TEXT[p.status] || p.status))))));
@@ -465,6 +562,8 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
   const drawBar = () => {
     if (!M) return;
     const st = M.state;
+    if (st === 'YARIS' && isDf(M)) { bar.hidden = true; return; }   // §41: şerit it dalaşı HUD'unda
+    bar.hidden = false;
     if (st === 'YARIS') {
       const my = pos[me] || {}, nxt = my.next ?? myP()?.next, total = (M.rings || []).length;
       const el = Math.max(0, clock.now() - (M.start_at || 0));
@@ -512,7 +611,8 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
       if (m.match?.now) clock.sample(m.match.now);
       ensureLayer(); syncPlayers();
       if (layer && myP()) layer.setNext(myP().finished ? null : myP().next ?? 1);
-      if (prevState !== 'YARIS' && M.state === 'YARIS') flashMsg(tr('BAŞLA! Halkaları sırayla geçin'));
+      ensureDf(); dfHud?.update(M, clock.now());
+      if (prevState !== 'YARIS' && M.state === 'YARIS') flashMsg(isDf(M) ? (roleOf(M, me) === 'chaser' ? DT('df.go_chaser') : DT('df.go_evader')) : tr('BAŞLA! Halkaları sırayla geçin'));
       if (M.state === 'BITTI' && M.result) showResult();
       drawBoard(); drawWait(); drawBar(); maybeIntro();
       return;
@@ -521,6 +621,7 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     if (m.t === 'pos') {
       for (const p of m.p || []) pos[p.id] = p;
       layer?.pushPos(m);
+      if (dfHud) { dfHud.setPos(m); dfHud.update(M, clock.now()); }
       if (layer && pos[me]) layer.setNext(pos[me].next ?? null);
       return;
     }
@@ -532,7 +633,14 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     }
     if (m.t === 'wrong_way' && m.id === me) { flashMsg(tr('Ters yön! Halkayı ok yönünde geçin'), 'rgba(248,113,113,.95)'); beep(330, 0.25); return; }
     if (m.t === 'finish') { const nm = (M?.players || []).find(p => p.id === m.id)?.name || ''; flashMsg(m.id === me ? tr('BİTİRDİNİZ! {t}', { t: fmtClock(m.elapsed_s) }) : tr('{n} bitirdi', { n: nm }), 'rgba(250,204,21,.95)'); if (m.id === me) { beep(1568, 0.4); } return; }
-    if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; showResult(); drawBar(); return; }
+    if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; dfHud?.update(M, clock.now()); showResult(); drawBar(); return; }
+    if (m.t === 'dogfight' && M) {   // §41 olaylar: koniye giriş (kaçana uyarı), angaje, alan dışı, çarpma
+      if (m.kind === 'engaged') { flashMsg(DT('df.engaged'), 'rgba(239,68,68,.95)'); beep(1568, 0.35); }
+      else if (m.kind === 'area') flashMsg(DT('df.r_alan_disi'), 'rgba(248,113,113,.95)');
+      else if (m.kind === 'crash') flashMsg(DT('df.r_carpti'), 'rgba(248,113,113,.95)');
+      else if (m.kind === 'guard_off') flashMsg(DT('df.guard_off'));
+      return;
+    }
   };
   const sock = matchSocket(mid, { message: onMsg, pong: (n, s, r) => clock.sample(n, s, r), fatal: () => { clear(bar, tr('Karşılaşmaya bağlanılamadı')); } });
   const iv = setInterval(() => { ensureLayer(); drawBar(); drawBoard(); if (M?.state === 'GERI_SAYIM') drawWait(); maybeIntro(); }, 250);
@@ -540,7 +648,7 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     // 3B dünya kuruldu + oturum HAZIR → sunucuya `ready` (herkes hazır olunca geri sayım başlar)
     onWorldReady() { if (worldReady) return; worldReady = true; ensureLayer(); const send = () => sock.send({ t: 'ready' }); send(); setTimeout(send, 1500); setTimeout(send, 5000); maybeIntro(); },
     get state() { return M?.state || null; },
-    dispose() { disposed = true; clearInterval(iv); sock.close(); layer?.dispose(); bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__fsMatch?.layer === layer) delete window.__fsMatch; },
+    dispose() { disposed = true; clearInterval(iv); sock.close(); layer?.dispose(); dfHud?.dispose(); if (window.__fsDogfight === dfHud) delete window.__fsDogfight; bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__fsMatch?.layer === layer) delete window.__fsMatch; },
   };
 }
 
@@ -554,12 +662,13 @@ export function matchesCard({ onCount = () => {} } = {}) {
     onCount(rows.filter(r => r.live && !['BITTI', 'IPTAL'].includes(r.state)).length);
     if (!rows.length) { clear(el, h('div', { class: 'card empty' }, h('p', null, 'Henüz karşılaşma yok.'), h('p', { class: 'small muted' }, '"Yeni Karşılaşma" ile halka yarışı kurun ve kullanıcıları davet edin.'))); return; }
     clear(el, h('div', { class: 'card card-pad no-collapse' }, h('table', { class: 'table fs-mt-table' },
-      h('thead', null, h('tr', null, ['#', 'Durum', 'Kurucu', 'Araç', 'Oyuncular', 'Kazanan', 'Tarih', ''].map(x => h('th', null, x)))),
+      h('thead', null, h('tr', null, ['#', 'Durum', DT('df.kind'), 'Kurucu', 'Araç', 'Oyuncular', 'Kazanan', 'Tarih', ''].map(x => h('th', null, x)))),
       h('tbody', null, rows.map(r => {
         const win = (r.players || []).find(p => p.id === r.winner);
         const act = ['LOBI', 'HAZIRLIK', 'GERI_SAYIM', 'YARIS'].includes(r.state) && r.live;
         return h('tr', null, h('td', null, `#${r.id}`),
           h('td', null, h('span', { class: `badge ${act ? 'green' : r.state === 'IPTAL' ? 'red' : 'gray'}` }, tr(STATE_TEXT[r.state] || r.state))),
+          h('td', null, DT(isDf(r) ? 'df.kind_dogfight' : 'df.kind_rings')),
           h('td', null, r.host_name || '—'), h('td', null, tr(TYPE_NAME[r.type] || r.type || '—')),
           h('td', null, (r.players || []).map(p => p.name).join(', ')), h('td', null, win ? h('b', null, win.name) : '—'),
           h('td', null, typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toLocaleString() : fmtDateTime(r.created_at)),

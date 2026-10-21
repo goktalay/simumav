@@ -16,6 +16,9 @@ Burada SIMUMAV'a özgü olanlar:
     MATCH_ABANDON_S görünmezse iptal (terk_edildi), görünmeyen davetli lobiden düşer; SITL tavanı: başlatırken n oyuncu için n boş yuva yoksa 429
     (anlaşılır mesaj), yuvalar oturumlar açılana dek ayrılır (bridge.MAC_REZERV). Yarışta simülasyon hızı 1× ve MP TCP köprüsü yok (ham MAVLink kapıyı
     aşmasın). Sunucu yeniden başlarsa bitmemiş satırlar IPTAL `sunucu_yeniden_basladi`; 1 günden eski şifre denemeleri silinir.
+  · HEPGO §41 İT DALAŞI (`kind: 'dogfight'`): oyuncu sınırı tam 2; halka yok; roller BAŞLAT'ta (çekirdek HAZIRLIK) atanır; başlangıç noktaları
+    rol başına (`core.it_baslangiclari`); angajman sunucuda (`core.ItDalasi`; tele kancası, yön + yunuslama); çarpışma → `k.carpti`; `pos`
+    çerçevesinde `df`; yarışta Sıfırla yok (komut kapısı). DB `matches.kind` + `game_cfg` (v4 göçü).
 """
 import asyncio
 import hashlib
@@ -95,9 +98,12 @@ def ayar_ozeti(settings):
             'launch': settings.get('launch'), 'camera': settings.get('camera'), 'type': ctip(d.get('type'))}
 
 
-def baslangic_onizleme(n, drone_type, track, rings):
-    """Önizleme: n oyuncunun başlangıç noktaları [{x, y, yaw_deg}] (yarışta aynı kural)."""
+def baslangic_onizleme(n, drone_type, track, rings, dogfight=None):
+    """Önizleme: n oyuncunun başlangıç noktaları [{x, y, yaw_deg}] (yarışta aynı kural). §41 it dalaşında [kovalayan, kaçan] (+ role)."""
     w = db.j(track.get('world')) if isinstance(track.get('world'), str) else (track.get('world') or {})
+    if dogfight is not None:
+        P = core.it_baslangiclari(dogfight, ctip(drone_type), float(w.get('runway_heading') or 0))
+        return [{'x': round(P[r][0], 1), 'y': round(P[r][1], 1), 'yaw_deg': round(P[r][2], 1), 'role': r} for r in (core.KOVALAYAN, core.KACAN)]
     pts = core.baslangic_noktalari(max(1, n), ctip(drone_type), float(w.get('runway_heading') or 0),
                                    hedef=(rings[0]['x'], rings[0]['y']) if rings else None)
     return [{'x': round(x, 1), 'y': round(y, 1), 'yaw_deg': round(yaw, 1)} for x, y, yaw in pts]
@@ -105,8 +111,9 @@ def baslangic_onizleme(n, drone_type, track, rings):
 
 # ---------------------------------------------------------------- karşılaşma
 class Mac:
-    def __init__(self, yon, mid, code, host, pass_hash, max_players, settings, cfg, merkez, halkalar, now):
+    def __init__(self, yon, mid, code, host, pass_hash, max_players, settings, cfg, merkez, halkalar, now, tur=core.TUR_HALKA):
         self.yon = yon
+        self.tur = tur                    # HEPGO §41 'rings' | 'dogfight' (cfg = it_ayar_dogrula çıktısı, halkalar [])
         self.id = mid
         self.code = code
         self.host_id = int(host['id'])
@@ -178,16 +185,16 @@ class Mac:
             for p in d['players']:
                 lp = self.lobi.get(p['id']) or {}
                 players.append({**p, 'ready': bool(lp.get('ready', True)), 'online': p['id'] in on, 'flight_id': self.flights.get(p['id'])})
-            out = {k: d[k] for k in ('prepare_at', 'start_at', 'ended_at', 'winner', 'result', 'countdown_s')}
+            out = {k: d[k] for k in ('prepare_at', 'start_at', 'ended_at', 'winner', 'result', 'countdown_s', 'dogfight')}
         else:
             players = [{'id': p['id'], 'name': p['name'], 'host': p['host'], 'status': core.GELDI, 'ready': p['ready'], 'online': p['id'] in on,
-                        'joined_at': p['joined_t'], 'rings': 0, 'total': len(self.halkalar), 'finished': False, 'flight_id': None, 'session_id': None}
+                        'joined_at': p['joined_t'], 'rings': 0, 'total': len(self.halkalar), 'finished': False, 'flight_id': None, 'session_id': None, 'role': None}
                        for p in self.lobi.values()]
-            out = {'prepare_at': None, 'start_at': None, 'ended_at': self.bitis_t, 'winner': None, 'result': None, 'countdown_s': core.GERI_SAYIM_S}
+            out = {'prepare_at': None, 'start_at': None, 'ended_at': self.bitis_t, 'winner': None, 'result': None, 'countdown_s': core.GERI_SAYIM_S, 'dogfight': None}
         return {'id': self.id, 'code': self.code, 'state': self.durum, 'reason': self.k.neden if self.k is not None else self.neden, 'host_id': self.host_id,
                 'max_players': self.max_players, 'created_at': self.olusturma_t, 'settings': ayar_ozeti(self.settings), 'rings_cfg': dict(self.cfg),
                 'rings': list(self.k.halkalar if self.k is not None else self.halkalar), 'center': dict(self.merkez), 'players': players,
-                'can_start': self.baslatilabilir(), 'now': now, 'live': True, **out}
+                'can_start': self.baslatilabilir(), 'now': now, 'live': True, 'kind': self.tur, **out}
 
     # ---------------------------------------------------------------- yayın
     def _yay(self, obj):
@@ -305,7 +312,7 @@ class Mac:
         digerleri = [(p['id'], p['name']) for p in self.lobi.values() if not p['host']]
         try:
             k = core.Karsilasma(self.id, (self.host_id, host['name']), digerleri, {'type': ctip(self.settings['drone']['type'])}, self.cfg, self.merkez, now,
-                                self.halkalar)
+                                self.halkalar, tur=self.tur)
         except core.MacHata as e:
             raise H(409 if e.kod == 'limit' else 422, e.kod, str(e))
         self.k = k
@@ -359,8 +366,11 @@ class Mac:
         try:
             n = len(k.aktifler())
             w = db.j(track.get('world')) if isinstance(track.get('world'), str) else (track.get('world') or {})
-            noktalar = core.baslangic_noktalari(n, tip, float(w.get('runway_heading') or 0), hedef=(k.halkalar[0]['x'], k.halkalar[0]['y']) if k.halkalar else None)
-            x, y, yaw = noktalar[(o.sira_no or 0) % len(noktalar)]
+            if k.tur == core.TUR_IT:   # HEPGO §41: rol başına (kaçan önde)
+                x, y, yaw = core.it_baslangiclari(self.cfg, tip, float(w.get('runway_heading') or 0))[o.rol or core.KOVALAYAN]
+            else:
+                noktalar = core.baslangic_noktalari(n, tip, float(w.get('runway_heading') or 0), hedef=(k.halkalar[0]['x'], k.halkalar[0]['y']) if k.halkalar else None)
+                x, y, yaw = noktalar[(o.sira_no or 0) % len(noktalar)]
             lat, lon = core.latlon(self.merkez['lat'], self.merkez['lon'], x, y)
             o.baslangic = {'x': round(x, 1), 'y': round(y, 1), 'lat': round(lat, 7), 'lon': round(lon, 7), 'yaw_deg': round(yaw, 1)}
 
@@ -397,7 +407,8 @@ class Mac:
             if abs(alt0 - float(self.merkez.get('alt') or 0)) > 0.01 and k.durum in (core.HAZIRLIK, core.LOBI):
                 self.merkez['alt'] = alt0
                 k.merkez['alt'] = alt0
-                k.halkalar = core.halkalar_uret(self.cfg, self.merkez)
+                if k.tur == core.TUR_HALKA:
+                    k.halkalar = core.halkalar_uret(self.cfg, self.merkez)
                 self.halkalar = k.halkalar
         self.sessions[o.uid] = s
         self.flights[o.uid] = out['flight_id']
@@ -407,6 +418,9 @@ class Mac:
         self.isle([{'t': 'player', 'id': o.uid, 'status': o.durum, 'session_id': s.id, 'flight_id': out['flight_id']}])
 
     def _kapi(self, ad):
+        if ad == 'reset':   # HEPGO §41: it dalaşında (geri sayım + yarış) Sıfırla yok (başlangıca ışınlanma); halka yarışında serbest
+            k = self.k
+            return 'İt dalaşında Sıfırla yok' if k is not None and k.tur == core.TUR_IT and k.durum in (core.GERI_SAYIM, core.YARIS) else None
         if self.k is not None and self.k.durum == core.YARIS:
             return None
         if self.bitti():
@@ -427,11 +441,15 @@ class Mac:
         o.poz = {'lat': tele.get('lat'), 'lon': tele.get('lon'), 'alt_msl': alt, 'alt_rel': rel, 'yaw': tele.get('yaw'),
                  'roll': tele.get('roll'), 'pitch': tele.get('pitch'), 'gs': tele.get('groundspeed'), 'armed': bool(tele.get('armed'))}
         try:
-            o.carpisma = len(getattr(s.gorev, 'crashes', []) or [])
+            n = len(getattr(s.gorev, 'crashes', []) or [])
+            if n > o.carpisma and k.tur == core.TUR_IT:   # HEPGO §41: kesin çarpışma kaydı → çarpan kaybeder
+                o.carpisma = n
+                self.isle(k.carpti(uid, time.time()))
+            o.carpisma = n
         except Exception:   # noqa: BLE001
             pass
         if k.durum == core.YARIS and tele.get('lat') is not None:
-            self.isle(k.konum(uid, tele['lat'], tele['lon'], float(alt or 0), time.time(), tele.get('groundspeed')))
+            self.isle(k.konum(uid, tele['lat'], tele['lon'], float(alt or 0), time.time(), tele.get('groundspeed'), heading=tele.get('heading'), pitch=tele.get('pitch')))
 
     def pos_cercevesi(self, now):
         p = []
@@ -442,7 +460,10 @@ class Mac:
             p.append({'id': o.uid, **{k: (round(v, 7) if k in ('lat', 'lon') else round(v, 3)) if isinstance(v, float) else v for k, v in o.poz.items()},
                       'rings': len(iz.gecisler) if iz else 0, 'next': (iz.sira + 1) if iz and not iz.bitti else None,
                       'dist': round(iz.mesafe, 1) if iz and iz.mesafe is not None else None})
-        return {'t': 'pos', 'ts': round(now, 3), 'p': p}
+        out = {'t': 'pos', 'ts': round(now, 3), 'p': p}
+        if self.k.tur == core.TUR_IT:   # HEPGO §41 HUD
+            out['df'] = self.k.it_durum()
+        return out
 
     # ---------------------------------------------------------------- döngü
     async def run(self):
@@ -590,7 +611,7 @@ class Yonetici:
     def acik_sayisi(self):
         return sum(1 for m in self.matches.values() if not m.bitti())
 
-    async def olustur(self, user, drone, track, launch, camera, cfg, sifre, max_players, request_ip=None):
+    async def olustur(self, user, drone, track, launch, camera, cfg, sifre, max_players, request_ip=None, tur=core.TUR_HALKA):
         self.kurtar()
         uid = int(user['id'])
         m0 = self.kullanici_maci(uid)
@@ -602,7 +623,10 @@ class Yonetici:
         if not cfg.get('seed'):
             cfg['seed'] = secrets.randbelow(2 ** 31 - 2) + 1
         merkez = {'lat': float(track['lat']), 'lon': float(track['lon']), 'alt': 0.0}   # alt: ilk oyuncu oturumunun ev irtifasıyla düzeltilir
-        halkalar = core.halkalar_uret(cfg, merkez)
+        it = tur == core.TUR_IT
+        if it:
+            max_players = 2   # HEPGO §41: it dalaşı tam 2 oyuncu
+        halkalar = [] if it else core.halkalar_uret(cfg, merkez)
         settings = {'drone': {k: drone.get(k) for k in ('id', 'user_id', 'name', 'type', 'model_key', 'params', 'color', 'airframe', 'power')},
                     'track': {**{k: track.get(k) for k in ('id', 'user_id', 'name', 'lat', 'lon', 'alt_mode', 'radius_m', 'wind', 'time_of_day', 'weather', 'world_mode', 'world')},
                               'gates': '[]'},   # FPV halkaları karşılaşmada yok (yarış halkaları çekirdekten)
@@ -614,14 +638,14 @@ class Yonetici:
 
         def ekle():
             with db.connect() as conn:
-                mid = conn.execute('INSERT INTO matches (code, host_id, pass_hash, state, max_players, settings, rings_cfg, rings, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-                                   (code, uid, ozet, core.LOBI, int(max_players), json.dumps(settings, ensure_ascii=False, default=str), json.dumps(cfg),
-                                    json.dumps(halkalar), db.now())).lastrowid
-                db.audit(conn, 'match_create', uid, request_ip, f"match {mid} {drone.get('type')} · {track.get('name')} · {cfg['count']} halka · ≤ {max_players} oyuncu")
+                mid = conn.execute('INSERT INTO matches (code, host_id, pass_hash, state, max_players, settings, rings_cfg, rings, created_at, kind, game_cfg) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                                   (code, uid, ozet, core.LOBI, int(max_players), json.dumps(settings, ensure_ascii=False, default=str), '{}' if it else json.dumps(cfg),
+                                    json.dumps(halkalar), db.now(), tur, json.dumps(cfg) if it else None)).lastrowid
+                db.audit(conn, 'match_create', uid, request_ip, f"match {mid} {drone.get('type')} · {track.get('name')} · " + ('it dalaşı' if it else f"{cfg['count']} halka") + f" · ≤ {max_players} oyuncu")
                 conn.commit()
                 return mid
         mid = await loop.run_in_executor(None, ekle)
-        m = Mac(self, mid, code, user, ozet, max_players, settings, cfg, merkez, halkalar, now)
+        m = Mac(self, mid, code, user, ozet, max_players, settings, cfg, merkez, halkalar, now, tur=tur)
         self.matches[mid] = m
         self.kodlar[code] = mid
         m.kaydet()
@@ -667,10 +691,12 @@ def satir_dict(r, uid=None):
     with db.connect() as conn:
         ps = db.rows(conn.execute('SELECT * FROM match_players WHERE match_id = ? ORDER BY is_host DESC, joined_at', (r['id'],)))
     res = j(r.get('result'))
+    kind = r.get('kind') or core.TUR_HALKA
     return {'id': r['id'], 'code': r['code'] if r['state'] not in core.SON_DURUMLAR else None, 'state': r['state'], 'reason': r['reason'], 'host_id': r['host_id'],
-            'max_players': r['max_players'], 'settings': ayar_ozeti(st), 'rings_cfg': j(r['rings_cfg'], {}), 'rings': j(r['rings'], []),
+            'max_players': r['max_players'], 'settings': ayar_ozeti(st), 'rings_cfg': j(r.get('game_cfg'), {}) if kind == core.TUR_IT else j(r['rings_cfg'], {}), 'rings': j(r['rings'], []), 'kind': kind,
             'players': [{'id': p['user_id'], 'name': p['name'], 'host': bool(p['is_host']), 'status': p['status'], 'flight_id': p['flight_id'] if p['user_id'] == uid else None,
-                         'rank': p['rank'], 'rings': p['rings'], 'time_s': p['time_s']} for p in ps],
+                         'rank': p['rank'], 'rings': p['rings'], 'time_s': p['time_s'],
+                         'role': ((res or {}).get('dogfight') or {}).get('roles', {}).get(str(p['user_id']))} for p in ps],
             'result': res, 'winner': r['winner_id'], 'created_at': r['created_at'], 'started_at': r['started_at'], 'ended_at': r['ended_at'], 'live': False,
             'can_start': False, 'now': time.time()}
 

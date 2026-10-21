@@ -13,7 +13,8 @@ import { clear, h, toast, toastError, confirmDialog, t as tr, onLeave } from './
 import { net, wsUrl } from './net.js';
 import { genPassword, inviteLink, LIMITS, lobbyHref, lobbyView, joinErrorKey, OUT, passwordErrorKey, phaseOf, playersErrorKey, raceHref, REASON_KEY, resultRows,
   ringsBody, ringsDefaults, ringsErrorKey, ringsLine, shouldEnterRace, STATE_KEY, STATUS_KEY, viewBox } from './match_core.js';
-import { resultTable } from './match_hud.js';
+import { dfResultTable, resultTable } from './match_hud.js';
+import { DF_LIMITS, dfDefaults, dfError, dfSummary, dfSvg, makeDfT } from '/sim/flightsim_dogfight.js';   // HEPGO §41 it dalaşı (ortak)
 import { TYPE_LABEL, WORLD_MODE_LABEL } from './wizard.js';
 
 const PW_KEY = id => `sm.match.pw.${id}`;   // kurucunun şifresi (yalnız bu tarayıcı oturumu; sunucu düz şifreyi saklamaz)
@@ -22,6 +23,9 @@ const COLORS = ['#22c55e', '#3b82f6', '#f97316', '#e11d48', '#a855f7', '#eab308'
 const typeLbl = ty => { const k = `types.${ty}`, r = tr(k); return r && r !== k ? r : TYPE_LABEL[ty] || ty; };
 let metaP = null;
 export const matchMeta = (fresh = false) => { if (fresh) metaP = null; return (metaP ??= net.get('/api/match/meta').catch(e => { metaP = null; throw e; })); };
+const DT = makeDfT(tr, true);   // §41 metinleri: df.* (7 dil)
+const isDf = m => (m?.kind || 'rings') === 'dogfight';
+const dfType = ty => (ty === 'plane' ? 'sabit_kanat' : 'multirotor');   // SIMUMAV tipi → çekirdek sınıfı (dikey / uçak)
 const copy = async (txt, okKey) => { try { await navigator.clipboard.writeText(txt); toast(tr(okKey)); } catch { toast(tr('match.copy_fail'), 'err'); } };
 
 // ---------------------------------------------------------------- parkur çizimi (SVG): kuş bakışı + yükseklik profili
@@ -61,6 +65,11 @@ export function createRingsStep({ W, limits = LIMITS, onChange = () => {} }) {
   const ty = d?.type || 'multirotor';
   if (!W.state.rings || W.state.rings._type !== ty) W.set('rings', { ...ringsDefaults(ty, limits), seed: 1 + Math.floor(Math.random() * 2e9), _type: ty });
   const R = W.state.rings;
+  // HEPGO §41 tür: halka yarışı | it dalaşı (2 kişilik)
+  const DL = { ...DF_LIMITS, ...(limits?.dogfight || {}) };
+  if (!W.state.dogfight || W.state.dogfight._type !== ty) W.set('dogfight', { ...dfDefaults(dfType(ty), DL), _type: ty });
+  const D = W.state.dogfight;
+  if (!W.state.kind) W.set('kind', 'rings');
   const errEl = h('p', { class: 'sm-mt-err', role: 'alert', hidden: true });
   const map = h('div', { class: 'sm-mt-preview' }, h('div', { class: 'muted small' }, tr('common.loading')));
   let pvT = 0, pvSeq = 0;
@@ -76,12 +85,30 @@ export function createRingsStep({ W, limits = LIMITS, onChange = () => {} }) {
       } catch (err) { if (seq === pvSeq) clear(map, h('p', { class: 'sm-mt-err' }, err.message)); }
     }, 250);
   };
+  const dfMap = h('div', { class: 'sm-mt-preview sm-df-preview' });
+  const dfRules = h('p', { class: 'muted small sm-df-rules' });
+  let dfT = 0, dfSeq = 0;
+  const dfPreview = () => {
+    clearTimeout(dfT);
+    dfT = setTimeout(async () => {
+      if (W.state.rings_err || !d || !t) return;
+      const seq = ++dfSeq;
+      try {
+        const pv = await net.post('/api/match/rings-preview', { drone_id: d.id, track_id: t.id, kind: 'dogfight', dogfight: dfBodyOf(D) });
+        if (seq !== dfSeq || !dfMap.isConnected) return;
+        dfMap.innerHTML = dfSvg(pv.cfg, { starts: pv.starts, T: DT });
+        dfMap.append(h('p', { class: 'small muted' }, DT('df.preview')));
+      } catch (err) { if (seq === dfSeq) clear(dfMap, h('p', { class: 'sm-mt-err' }, err.message)); }
+    }, 250);
+  };
   const validate = () => {
-    const e = ringsErrorKey(ringsBody(R), limits);
+    const df = W.state.kind === 'dogfight';
+    const e = df ? (dfError(dfBodyOf(D), DL) ? 'df.err' : null) : ringsErrorKey(ringsBody(R), limits);
     W.set('rings_err', e);
-    errEl.hidden = !e; errEl.textContent = e ? tr(e) : '';
+    errEl.hidden = !e; errEl.textContent = e ? (df ? DT('df.err') : tr(e)) : '';
+    dfRules.textContent = DT('df.rules', { r: Math.round(D.range_m), c: Math.round(D.cone_deg), h: Number(D.hold_s).toFixed(1), t: D.time_limit_min, a: Math.round(D.area_radius_m), g: Math.round(DL.guard_s || 60) });
     onChange(e);
-    if (!e) preview();
+    if (!e) (df ? dfPreview : preview)();
   };
   const num = (key, label, unit, [a, b], step = 1) => {
     const inp = h('input', { type: 'number', min: a, max: b, step, value: R[key], 'data-k': key, inputmode: 'decimal' });
@@ -91,9 +118,32 @@ export function createRingsStep({ W, limits = LIMITS, onChange = () => {} }) {
     return h('label', { class: 'sm-mt-field' }, h('span', null, label), rng, h('span', { class: 'sm-mt-num' }, inp, unit ? h('small', null, unit) : null));
   };
   const L = { ...LIMITS, ...limits };
+  const dnum = (key, label, unit, [a, b], step = 1) => {
+    const inp = h('input', { type: 'number', min: a, max: b, step, value: D[key], 'data-k': key, inputmode: 'decimal' });
+    const rng = h('input', { type: 'range', min: a, max: b, step, value: D[key], 'aria-label': label });
+    const set = v => { D[key] = v === '' ? '' : Number(v); inp.value = String(D[key]); rng.value = String(D[key]); validate(); };
+    inp.addEventListener('input', () => set(inp.value)); rng.addEventListener('input', () => set(rng.value));
+    return h('label', { class: 'sm-mt-field' }, h('span', null, label), rng, h('span', { class: 'sm-mt-num' }, inp, unit ? h('small', null, unit) : null));
+  };
+  const roles = h('div', { class: 'sm-mt-seg sm-df-roles' });
+  const drawRoles = () => clear(roles, DL.roles.map(r => h('button', { type: 'button', class: D.roles === r ? 'on' : '', 'data-role': r, onclick: () => { D.roles = r; drawRoles(); validate(); } }, DT(`df.roles_${r}`))));
+  drawRoles();
+  const dfBox = h('div', { class: 'sm-two sm-df-box', hidden: W.state.kind !== 'dogfight' },
+    h('div', null, h('h2', null, '✈ ', DT('df.kind_dogfight')), dfRules,
+      h('div', { class: 'sm-mt-form' },
+        dnum('distance_m', DT('df.distance'), 'm', DL.distance_m, 50), dnum('alt_m', DT('df.alt'), 'm', DL.alt_m, 5), dnum('time_limit_min', DT('df.time'), tr('match.unit_min'), DL.time_limit_min),
+        dnum('range_m', DT('df.range'), 'm', DL.range_m, 10), dnum('cone_deg', DT('df.cone'), '°', DL.cone_deg), dnum('hold_s', DT('df.hold'), 's', DL.hold_s, 0.5),
+        dnum('area_radius_m', DT('df.area'), 'm', DL.area_radius_m, 50),
+        h('div', { class: 'sm-mt-field col' }, h('span', null, DT('df.roles')), roles))),
+    h('div', { class: 'sm-preview-col' }, dfMap));
+  const kinds = h('div', { class: 'sm-df-kinds', role: 'radiogroup', 'aria-label': DT('df.kind') });
+  let ringsBox = null;
+  const drawKinds = () => clear(kinds, ['rings', 'dogfight'].map(k => h('button', { type: 'button', class: `sm-df-kind ${W.state.kind === k ? 'on' : ''}`, 'data-kind': k,
+    onclick: () => { W.set('kind', k); drawKinds(); if (ringsBox) ringsBox.hidden = k !== 'rings'; dfBox.hidden = k !== 'dogfight'; if (k === 'dogfight') W.set('max_players', 2); validate(); } },
+    h('b', null, k === 'rings' ? '◎ ' : '✈ ', DT(`df.kind_${k}`)), h('small', null, DT(`df.kind_${k}_d`)))));
+  drawKinds();
   const seedOut = h('b', { class: 'mono' }, String(R.seed));
-  const el = h('div', { class: 'sm-mt-step' },
-    h('div', { class: 'sm-two' },
+  ringsBox = h('div', { class: 'sm-two', hidden: W.state.kind === 'dogfight' },
       h('div', null,
         h('h2', null, '◎ ', tr('match.rings_title')), h('p', { class: 'muted' }, tr('match.rings_sub')),
         h('div', { class: 'sm-mt-form' },
@@ -104,11 +154,18 @@ export function createRingsStep({ W, limits = LIMITS, onChange = () => {} }) {
           num('radius_m', tr('match.f_radius'), 'm', L.radius_m, 10),
           num('time_limit_min', tr('match.f_time'), tr('match.unit_min'), L.time_limit_min),
           h('div', { class: 'sm-mt-field' }, h('span', null, tr('match.f_seed')), seedOut,
-            h('button', { class: 'btn sm', type: 'button', title: tr('match.f_seed_new'), onclick: () => { R.seed = 1 + Math.floor(Math.random() * 2e9); seedOut.textContent = String(R.seed); validate(); } }, '↻ ', tr('match.f_seed_new')))),
-        errEl),
-      h('div', { class: 'sm-preview-col' }, map)));
+            h('button', { class: 'btn sm', type: 'button', title: tr('match.f_seed_new'), onclick: () => { R.seed = 1 + Math.floor(Math.random() * 2e9); seedOut.textContent = String(R.seed); validate(); } }, '↻ ', tr('match.f_seed_new'))))),
+      h('div', { class: 'sm-preview-col' }, map));
+  const el = h('div', { class: 'sm-mt-step' }, h('div', { class: 'sm-df-kindhead' }, h('h2', null, DT('df.kind'))), kinds, ringsBox, dfBox, errEl);
   validate();
   return { el };
+}
+// HEPGO §41: form değerleri → sunucu it dalaşı gövdesi (sayılar; _type gibi iç alanlar yok)
+export function dfBodyOf(D) {
+  const out = {};
+  for (const k of ['distance_m', 'alt_m', 'time_limit_min', 'range_m', 'cone_deg', 'hold_s', 'area_radius_m']) if (D?.[k] !== '' && D?.[k] != null && Number.isFinite(Number(D[k]))) out[k] = k === 'time_limit_min' ? Math.round(Number(D[k])) : Number(D[k]);
+  if (D?.roles) out.roles = D.roles;
+  return out;
 }
 
 // ---------------------------------------------------------------- sihirbaz: DAVET adımı (oyuncu sayısı + şifre)
@@ -124,7 +181,8 @@ export function createInviteStep({ W, limits = LIMITS, onChange = () => {} }) {
   };
   pw.addEventListener('input', () => { W.set('password', pw.value); validate(); });
   const players = h('div', { class: 'sm-mt-seg' });
-  const drawPlayers = () => clear(players, Array.from({ length: L.players[1] - L.players[0] + 1 }, (_, i) => L.players[0] + i).map(n =>
+  if (W.state.kind === 'dogfight') W.set('max_players', 2);   // HEPGO §41: it dalaşı tam 2 oyuncu
+  const drawPlayers = () => clear(players, (W.state.kind === 'dogfight' ? [2] : Array.from({ length: L.players[1] - L.players[0] + 1 }, (_, i) => L.players[0] + i)).map(n =>
     h('button', { type: 'button', class: n === W.state.max_players ? 'on' : '', onclick: () => { W.set('max_players', n); drawPlayers(); validate(); } }, String(n))));
   drawPlayers();
   const el = h('div', { class: 'sm-mt-step' },
@@ -161,8 +219,15 @@ const settingsList = m => {
   return h('dl', { class: 'sm-mt-dl' },
     h('dt', null, tr('match.s_vehicle')), h('dd', null, `${s.drone?.name || '—'} · ${typeLbl(s.drone?.type)}`),
     h('dt', null, tr('match.s_track')), h('dd', null, `${s.track?.name || '—'} · ${WORLD_MODE_LABEL[s.track?.world_mode] || s.track?.world_mode || ''}`),
-    h('dt', null, tr('match.s_rings')), h('dd', null, ringsLine(rc)),
+    h('dt', null, DT('df.kind')), h('dd', null, DT(isDf(m) ? 'df.kind_dogfight' : 'df.kind_rings')),
+    ...(isDf(m) ? [h('dt', null, DT('df.rules').split(':')[0]), h('dd', null, dfSummary(rc, DT))] : [h('dt', null, tr('match.s_rings')), h('dd', null, ringsLine(rc))]),
     h('dt', null, tr('match.s_players')), h('dd', null, `${(m.players || []).filter(p => !OUT.has(p.status)).length} / ${m.max_players ?? '—'}`));
+};
+
+// HEPGO §41: salon şeması (başlangıçlar bilinince gerçek konumlar; roller atanınca K/Ç)
+const dfSvgEl = M => {
+  const st = (M.players || []).filter(p => p.start && p.role).map(p => ({ role: p.role, x: p.start.x, y: p.start.y, yaw_deg: p.start.yaw_deg }));
+  const d = h('div', { class: 'sm-mt-preview sm-df-preview' }); d.innerHTML = dfSvg(M.rings_cfg || {}, { starts: st.length === 2 ? st : null, T: DT }); return d;
 };
 
 // ---------------------------------------------------------------- DAVET SAYFASI (#/fly/join/<kod>)
@@ -200,7 +265,9 @@ export async function renderJoin(view, code, ctx = {}) {
       h('div', { class: 'sm-mt-card' }, h('h3', null, tr('match.join_details')),
         h('dl', { class: 'sm-mt-dl' }, h('dt', null, tr('match.s_host')), h('dd', null, inv.host_name || '—'), h('dt', null, tr('match.s_vehicle')), h('dd', null, `${inv.drone?.name || ''} · ${typeLbl(inv.drone?.type)}`),
           h('dt', null, tr('match.s_track')), h('dd', null, `${inv.track || '—'} · ${WORLD_MODE_LABEL[inv.world_mode] || inv.world_mode || ''}`),
-          h('dt', null, tr('match.s_rings')), h('dd', null, String(inv.rings)), h('dt', null, tr('match.s_players')), h('dd', null, `${inv.players} / ${inv.max_players}`)))) });
+          h('dt', null, DT('df.kind')), h('dd', null, DT(inv.kind === 'dogfight' ? 'df.kind_dogfight' : 'df.kind_rings')),
+          inv.kind === 'dogfight' ? null : h('dt', null, tr('match.s_rings')), inv.kind === 'dogfight' ? null : h('dd', null, String(inv.rings)),
+          h('dt', null, tr('match.s_players')), h('dd', null, `${inv.players} / ${inv.max_players}`)))) });
   setTimeout(() => pw.focus(), 50);
 }
 
@@ -234,6 +301,7 @@ export async function renderLobby(view, id, ctx = {}) {
       h('span', { class: `online ${p.online ? 'on' : ''}`, title: tr(p.online ? 'match.online' : 'match.offline') }),
       h('span', { class: 'nm' }, p.name, p.id === me ? ` (${tr('match.you')})` : ''),
       p.host ? h('span', { class: 'sm-mt-badge host' }, tr('match.host')) : null,
+      p.role ? h('span', { class: `sm-df-badge ${p.role}` }, DT(`df.${p.role}`)) : null,
       ph === 'lobby' ? h('span', { class: `sm-mt-badge ${p.ready ? 'st-hazir' : 'st-davetli'}` }, tr(p.host ? 'match.host_ready' : p.ready ? 'match.ready' : 'match.not_ready'))
         : h('span', { class: `sm-mt-badge st-${p.status}` }, tr(STATUS_KEY[p.status] || p.status)),
       V.isHost && !p.host && ph === 'lobby' ? h('button', { class: 'x-btn', type: 'button', title: tr('match.kick'), 'aria-label': tr('match.kick'), onclick: async () => {
@@ -256,7 +324,9 @@ export async function renderLobby(view, id, ctx = {}) {
           } }, '↻ ', tr('match.pw_new'))) : null,
         V.isHost && pwTxt ? h('button', { class: 'btn sm sm-mt-copyall', type: 'button', onclick: () => copy(tr('match.share_text', { l: link, p: pwTxt }), 'match.both_copied') }, tr('match.copy_both')) : null,
         V.isHost && !pwTxt ? h('p', { class: 'small muted' }, tr('match.pw_hidden')) : null) : null,
-      h('div', { class: 'sm-mt-card' }, h('h3', null, tr('match.settings')), settingsList(M), ringsSvg(M.rings || [], (M.players || []).filter(p => p.start).map(p => p.start)), profileSvg(M.rings || [], M.rings_cfg)));
+      h('div', { class: 'sm-mt-card' }, h('h3', null, tr('match.settings')), settingsList(M),
+        ...(isDf(M) ? [dfSvgEl(M), h('p', { class: 'small muted' }, DT('df.rules', { r: Math.round(M.rings_cfg?.range_m), c: Math.round(M.rings_cfg?.cone_deg), h: Number(M.rings_cfg?.hold_s).toFixed(1), t: M.rings_cfg?.time_limit_min, a: Math.round(M.rings_cfg?.area_radius_m), g: 60 }))]
+          : [ringsSvg(M.rings || [], (M.players || []).filter(p => p.start).map(p => p.start)), profileSvg(M.rings || [], M.rings_cfg)])));
     // eylemler
     const mine = V.me;
     clear(actions,
@@ -276,7 +346,7 @@ export async function renderLobby(view, id, ctx = {}) {
     clear(banner, ph === 'race' ? tr(M.state === 'HAZIRLIK' ? 'match.banner_prep' : 'match.banner_race') : ph === 'cancel' ? tr('match.banner_cancel', { r: tr(REASON_KEY[M.reason] || 'match.reason_server') })
       : ph === 'done' ? tr('match.banner_done') : '');
     resBox.hidden = ph !== 'done';
-    if (ph === 'done') clear(resBox, h('h3', null, '⚑ ', tr('match.result_title')), resultTable(resultRows(M), me));
+    if (ph === 'done') clear(resBox, h('h3', null, '⚑ ', tr('match.result_title')), isDf(M) ? h('p', { class: 'muted' }, DT(`df.r_${M.result?.reason || M.reason}`)) : null, isDf(M) ? dfResultTable(M, me) : resultTable(resultRows(M), me));
     // HAZIRLIK: kendi uçuşum açıldıysa yarış ekranına (yarış ekranından "Geri" ile dönüldüyse kendiliğinden geçilmez → "Yarışa dön" düğmesi)
     let noAuto = false; try { noAuto = sessionStorage.getItem(NOAUTO_KEY(M.id)) === '1'; } catch { /* */ }
     if (!entering && !left && !noAuto && shouldEnterRace(M, me)) { entering = true; setTimeout(() => go(raceHref(M.id)), 400); }

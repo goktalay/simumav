@@ -26,7 +26,7 @@ export const ROVER_RC_KEYS = { thrUp: ['w', 'arrowup'], thrDown: ['s', 'arrowdow
 // Kara aracı (`rover`: true ya da {channels}): sol çubuk DİKEY = gaz (yaylı; bırakınca 1500 = dur, aşağı geri/fren), sağ çubuk YATAY = direksiyon (yaylı);
 // klavye W/S ya da ↑/↓ gaz, A/D ya da ←/→ direksiyon, Boşluk dur (gaz + direksiyon orta); kanallar rover.channels({steer, thr, ch5}) (roverRcChannels).
 // ======================================================================
-// HEPGO §37 pad(): fiziksel kumanda durumu {active, axes} (/sim/flightsim_gamepad.js) — aktifken çubuk eksenlerini yazar; lazyThr: varsayılan açık gelişte
+// HEPGO §37 pad(): fiziksel kumanda durumu {active, axes, thrAbs} (/sim/flightsim_gamepad.js; axes kumanda girdi eğrisinden geçmiş, thrAbs uçak mutlak gazı) — aktifken çubuk eksenlerini yazar; lazyThr: varsayılan açık gelişte
 // kopterde ch3 ilk gaz girdisine dek 0 (dokunma).
 export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, env = null, shape = null, rover = null, pad = null, lazyThr = false }) {
   const win = env?.window || globalThis.window, doc = env?.document || globalThis.document;
@@ -112,7 +112,7 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
       const a = ps.axes, set = (k, v) => { if (v != null) ax[k] = clamp(v, -1, 1); };
       if (!drag.l) {
         if (plane && !isRv && ps.profile === 'standard') { if (a.thr) ax.thr = clamp(ax.thr + a.thr * THR_RATE * dt, -1, 1); }   // yaylı gamepad kolu: uçakta tutmalı gaz hızla
-        else set('thr', a.thr);
+        else set('thr', plane && !isRv && ps.thrAbs != null ? ps.thrAbs : a.thr);   // uçakta RC verici: mutlak tek yönlü eğri (rölanti hep −1)
         if (!isRv) set('yaw', a.yaw); if (a.thr) thrUsed = true;
       }
       if (!drag.r) { if (isRv) set('steer', a.roll); else { set('roll', a.roll); set('pitch', a.pitch); } }

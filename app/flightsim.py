@@ -67,7 +67,7 @@ ROVER_TIPLERI = ('rover',)
 DRIVES = ('ackermann', 'skid')
 MAV_TYPE_GROUND_ROVER = 10
 KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend', 'motor_cut', 'wind', 'launch_aim')   # speed: §23 SIM_SPEEDUP {factor: 0.25|0.5|1|2|4|8} (§35 ağır çekim); camera: §22.3 {type}; defend: §26 {action: 'next'}; motor_cut: {on: bool}; wind: §31 {ms, dir, gust, turb} (uçuşta rüzgâr); launch_aim: §31 {azimuth_deg, angle_deg} (rampa, ARM öncesi)
-KOMUTLAR += ('servo_trigger', 'servo_set')   # §34: servo_trigger {on, ch, pwm, cmp, tol, delay_ms} · servo_set {ch, pwm} (DO_SET_SERVO; sahte kipte sanal çıkış)
+KOMUTLAR += ('servo_trigger', 'servo_set', 'engage')   # §34: servo_trigger {on, ch, pwm, cmp, tol, delay_ms} · servo_set {ch, pwm} (DO_SET_SERVO; sahte kipte sanal çıkış) · engage §40 {action: 'lock', i} | {action: 'release', reason}
 # Motor kesme (`motor_cut {on}`; yalnız uçak tipleri): ARM'lı kalır, motor durur, kumanda yüzeyleri ve uçuş kipi çalışmaya devam eder → süzülme.
 # Gerçek ArduPlane 4.7.2 SITL'de ölçüldü (100–145 m AGL; FBWA/FBWB/CRUISE/AUTO/RTL/MANUAL):
 #   · zorla DISARM (400, 21196): yüzeyler stabilize etmeye devam eder ve fizik süzülür, AMA ArduPlane disarm'lıyken HOME'u anlık konuma taşır →
@@ -1138,6 +1138,7 @@ class SimSession:
                                 'thr_mul_sitl': self.thr_mul_sitl, 'stock_ms': round(flightsim_power.stok_hiz(self.type), 1)},
                 # §24 hedefler (model görsel bilgisiyle) + önleme durumu; §25 dikey kalkış tipi
                 'targets': flightsim_targets.zenginlestir(self.hedefler), 'targets_state': self.hedef_iz.ozet() if self.hedef_iz else None,
+                'engagement': self.hedef_iz.angajman_durumu() if self.hedef_iz else None,   # §40 etkin angajman (yeniden bağlanınca)
                 'vertical': self.type in DIKEY_TIPLER,
                 'ground': self.type in ROVER_TIPLERI, 'drive': self.drive,   # §31 kara aracı (kalkış yok; 3B zemine oturur) + sürüş biçimi
                 'motor_cut': bool(self.motor_cut),   # motor kesik (süzülüyor); uçak dışı tiplerde hep False
@@ -2139,10 +2140,61 @@ class SimSession:
         c = self.center
         x, y = flightsim_targets.yerel(float(c['lat']), float(c['lon']), te['lat'], te['lon'])
         for o in self.hedef_iz.adim(float(tbm) / 1000.0, x, y, float(te.get('alt_rel') or 0), bool(te.get('armed'))):
+            if o.get('engage'):   # §40 Sıfırla angajmanı kesti
+                self._angajman_yay({k: v for k, v in o.items() if k != 'engage'})
+                continue
             ek = f" · ilk önleme {o['after_s']:g} sn" if o['first'] else f" · {o['n']}. geçiş"
-            self._yay({'t': 'target', 'kind': 'intercept', **o, 'tt': round(float(tbm) / 1000.0, 3), 'ts': round(time.time(), 3),
+            self._yay({'t': 'target', 'kind': 'intercept', **{k: v for k, v in o.items() if k != 'engagement'}, 'tt': round(float(tbm) / 1000.0, 3), 'ts': round(time.time(), 3),
                        'state': self.hedef_iz.ozet()})
             self._olay(f"ÖNLEME · {o['name']} · {o['dist_m']:g} m{ek}", 5)
+            if o.get('engagement'):
+                self._angajman_yay(o['engagement'])
+
+    # ---- §40 angajman (Boşluk ile kilit) ----
+    def _angajman_komut(self, p):
+        if self.hedef_iz is None:
+            raise SimHata('invalid', 'Bu oturumda hedef yok')
+        act = p.get('action')
+        if act == 'lock':
+            i = p.get('i')
+            if isinstance(i, bool) or not isinstance(i, int):
+                raise SimHata('invalid', 'engage.i hedef numarası (tam sayı) olmalı')
+            try:
+                olaylar = self.hedef_iz.kilit_ac(i)
+            except ValueError:
+                raise SimHata('invalid', f'Bilinmeyen hedef: {i}')
+        elif act == 'release':
+            sebep = p.get('reason') or 'released'
+            if sebep not in ('released', 'lost'):
+                raise SimHata('invalid', "engage.reason 'released' | 'lost' olmalı")
+            olaylar = self.hedef_iz.kilit_birak(sebep)
+        else:
+            raise SimHata('invalid', "engage.action 'lock' | 'release' olmalı")
+        for o in olaylar:
+            self._angajman_yay(o)
+        return {'ok': True, 'engagement': self.hedef_iz.angajman_durumu()}
+
+    def _angajman_yay(self, o):
+        """WS `{t:'engage', kind: start|success|cut, i, name, t0, start_s, dur_s, min_dist_m, result?, reason?, state}` (olay şeridini ön yüz kendi
+        dilinde yazar: "ANGAJMAN · ad" / "ANGAJMAN BAŞARILI · süre" / "ANGAJMAN KESİLDİ") + SITL'e STATUSTEXT (ArduPilot GCS metnini DataFlash
+        MSG'ye yazar → .bin kayıttan oynatmada da olay)."""
+        k = o.get('kind')
+        self._yay({'t': 'engage', **o, 'ts': round(time.time(), 3), 'state': self.hedef_iz.ozet()})
+        no = int(o.get('i', 0)) + 1
+        if k == 'start':
+            self._statustext_gonder(f'ENGAGE T{no} LOCK', 5)
+        elif k == 'success':
+            self._statustext_gonder(f"ENGAGE T{no} OK {o['dur_s']:.1f}s", 5)
+        else:
+            self._statustext_gonder(f"ENGAGE T{no} CUT {o.get('reason') or ''}", 4)
+
+    def _statustext_gonder(self, metin, sev):
+        if self.sahte is not None or not getattr(self, '_heartbeat_alindi', False) or getattr(self, 'mav', None) is None:
+            return
+        try:
+            self._gonder(self.mav.statustext_encode(int(sev), metin.encode('ascii', 'replace')[:50]))
+        except Exception:   # noqa: BLE001
+            pass
 
     # ---- §26 "Yer kontrolünü koru" ----
     def _savunma_adim(self, tbm):
@@ -2310,6 +2362,8 @@ class SimSession:
             if self.type not in PLANE_TIPLERI:   # kopter: kanat yok, motor kesmek düşürür → ön yüz DISARM'ı onayla göndermeli
                 raise SimHata('invalid', 'Motor kesme yalnız uçak tiplerinde (sabit kanat / VTOL / INTERCEPTOR); kopterde havada DISARM aracı düşürür')
             p = {'on': p['on']}
+        if name == 'engage':   # §40 Boşluk ile kilit → angajman (hedef görünürlüğü istemcide; önleme / en yakın mesafe sunucuda)
+            return self._angajman_komut(p)
         if name == 'wind':   # §31 uçuşta rüzgâr (hazırlık sırasında da dünyaya yazılır; SITL kalp atışında uygulanır)
             return {'ok': True, 'wind': await self.ruzgar_degistir(p)}
         if name == 'launch_aim':   # §31 rampa yön/açı (ARM öncesi; yön değişirse SITL yeniden konuşlandırılır)
@@ -2401,7 +2455,7 @@ class SimSession:
             self._gonder(enc.rc_channels_override_encode(s, c, *p['ch']))
         return {'ok': True}
 
-    KAPI_KOMUTLARI = ('arm', 'takeoff')   # §33: yarış dışında kapalı (hub'da ayrıca mission_start)
+    KAPI_KOMUTLARI = ('arm', 'takeoff', 'reset')   # §33: yarış dışında kapalı (hub'da ayrıca mission_start); §41 reset: kapı yalnız it dalaşında reddeder
 
     def _kapi_denetle(self, name):
         if self.komut_kapisi is None or name not in self.KAPI_KOMUTLARI + ('mission_start',):

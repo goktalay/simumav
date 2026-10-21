@@ -184,7 +184,7 @@ async function renderWizard(view, ctx) {
     const siteTxt = sv ? `◈ ${sv}${W.state.defend || m?.kind === 'defend' ? ` · ${tr('site.defend')}` : ''}` : null;   // HEPGO §26
     const drv = d && isRover(d.type) ? DRIVE_SM.find(r => r[0] === W.drive()) : null;
     const drvTxt = drv ? (() => { const r = tr(drv[1]); return r && r !== drv[1] ? r : drv[2]; })() : null;   // §15 sürüş biçimi
-    if (isMatch) { clear(foot.querySelector('.sm-summary'), [d ? d.name : null, t ? t.name : null, W.state.rings && !W.state.rings_err ? `◎ ${ringsLine({ time_limit_min: 15, diameter_m: '—', radius_m: '—', ...W.state.rings })}` : null, W.state.max_players ? `${W.state.max_players} ${tr('match.players').toLocaleLowerCase()}` : null].filter(Boolean).join(' · ')); return; }
+    if (isMatch) { clear(foot.querySelector('.sm-summary'), [d ? d.name : null, t ? t.name : null, W.state.kind === 'dogfight' ? `✈ ${tr('df.kind_dogfight')}` : W.state.rings && !W.state.rings_err ? `◎ ${ringsLine({ time_limit_min: 15, diameter_m: '—', radius_m: '—', ...W.state.rings })}` : null, W.state.max_players ? `${W.state.max_players} ${tr('match.players').toLocaleLowerCase()}` : null].filter(Boolean).join(' · ')); return; }
     clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : d?.type === 'interceptor' ? iceptLaunchLabel(W.state.ilaunch, tr) : drvTxt, pwTxt, m ? m.name : null, siteTxt, tg, p ? p.name : null].filter(Boolean).join(' · '));
   };
   // ---------- §10 güç ve yakıt adımı (dron değişince ön ayar sıfırlanır) ----------

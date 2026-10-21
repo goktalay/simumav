@@ -32,7 +32,7 @@ from app import flightsim  # noqa: E402
 from app import flightsim_match_core as core  # noqa: E402
 from app.simumav import bridge, config, db  # noqa: E402
 from app.simumav import match as M  # noqa: E402
-from tests.match_bot import rota_pilotu  # noqa: E402
+from tests.match_bot import it_pilotu, rota_pilotu  # noqa: E402
 
 ORIGIN = 'http://127.0.0.1:8600'
 A = '/api/match'
@@ -105,11 +105,12 @@ def main():
             calis(c)
     finally:
         core.GERI_SAYIM_S, M.KAPANIS_GECIKME_S = core_geri, kapanis
-    # göç idempotent: ikinci init hata vermez, sürüm 3
+    # göç idempotent: ikinci init hata vermez, sürüm 4 (HEPGO §41: matches.kind + game_cfg)
     db.init()
     db.init()
     with db.connect() as conn:
-        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 3
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 4
+        assert {'kind', 'game_cfg'} <= {r[1] for r in conn.execute('PRAGMA table_info(matches)')}
         tabs = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {'matches', 'match_players', 'match_attempts'} <= tabs, tabs
         assert 'match_id' in {r[1] for r in conn.execute('PRAGMA table_info(flights)')}
@@ -285,6 +286,65 @@ def calis(c):
     finally:
         config.MATCH_ABANDON_S, M.GORULDU_S = eski, eski_g
     print('  API uçtan uca geçti (karşılaşma', mid, ')')
+    it_dalasi(ali, veli, dora, drone, tr)
+
+
+def it_dalasi(ali, veli, dora, drone, tr):
+    """HEPGO §41 it dalaşı (SIMUMAV): tür doğrulaması, oyuncu 2'ye sabit, önizlemede iki başlangıç (kaçan önde), davet özetinde tür, roller,
+    Sıfırla kapısı, sahte kinematikle kovalayan kaçanı tutar → ANGAJE → kovalayan kazanır; pos.df; DB kind/game_cfg; geçmişte tür."""
+    df = {'distance_m': 400, 'alt_m': 30, 'range_m': 150, 'cone_deg': 25, 'hold_s': 2, 'time_limit_min': 3, 'roles': 'host_evader'}
+    pv = ok(ali.post(f'{A}/rings-preview', json={'drone_id': drone['id'], 'track_id': tr['id'], 'kind': 'dogfight', 'dogfight': df}))
+    assert pv['kind'] == 'dogfight' and pv['rings'] == [] and [x['role'] for x in pv['starts']] == ['chaser', 'evader'], pv
+    assert abs(math.dist((pv['starts'][0]['x'], pv['starts'][0]['y']), (pv['starts'][1]['x'], pv['starts'][1]['y'])) - 400) < 0.5
+    govde = {'drone_id': drone['id'], 'track_id': tr['id'], 'password': 'Dalas-77', 'max_players': 2, 'kind': 'dogfight', 'dogfight': df}
+    assert ali.post(A, json={**govde, 'max_players': 3}).status_code == 422
+    assert ali.post(A, json={**govde, 'dogfight': {**df, 'hold_s': 9}}).status_code == 422
+    assert ali.post(A, json={**govde, 'kind': 'kovala'}).status_code == 422
+    mt = ok(ali.post(A, json=govde), 201)
+    mid, code = mt['id'], mt['code']
+    assert mt['kind'] == 'dogfight' and mt['max_players'] == 2 and mt['rings'] == [] and mt['rings_cfg']['cone_deg'] == 25, mt
+    with db.connect() as conn:
+        row = db.row(conn.execute('SELECT kind, game_cfg, rings_cfg FROM matches WHERE id = ?', (mid,)))
+    assert row['kind'] == 'dogfight' and json.loads(row['game_cfg'])['hold_s'] == 2 and row['rings_cfg'] == '{}', dict(row)
+    assert ok(veli.get(f'{A}/invite/{code}'))['kind'] == 'dogfight'
+    ok(veli.post(f'{A}/join', json={'code': code, 'password': 'Dalas-77'}))
+    r = dora.post(f'{A}/join', json={'code': code, 'password': 'Dalas-77'}); assert r.status_code == 409 and r.json()['detail']['error'] == 'full', r.text
+    ok(veli.post(f'{A}/{mid}/ready', json={'ready': True}))
+    with veli.ws(f'/ws/match/{mid}') as wv, ali.ws(f'/ws/match/{mid}') as wa:
+        ws_bekle(wv, lambda x: x['t'] == 'hello'); ws_bekle(wa, lambda x: x['t'] == 'hello')
+        st = ok(ali.post(f'{A}/{mid}/start'))
+        assert {p['id']: p['role'] for p in st['players']} == {ali.id: 'evader', veli.id: 'chaser'}, st['players']
+        d = bekle(lambda: (lambda x: x if all(p['session_id'] and p['flight_id'] for p in x['players']) else None)(ok(ali.get(f'{A}/{mid}'))))
+        sids = {p['id']: p['session_id'] for p in d['players']}
+        ss = {u: flightsim.MANAGER.get(sx) for u, sx in sids.items()}
+        assert all(bekle(lambda sx=sx: sx.state == 'HAZIR') for sx in ss.values())
+        merkez = d['center']
+        P = core.it_baslangiclari(d['rings_cfg'], 'multirotor')
+        pc = core.enu(merkez['lat'], merkez['lon'], ss[veli.id].start['lat'], ss[veli.id].start['lon'])
+        pe = core.enu(merkez['lat'], merkez['lon'], ss[ali.id].start['lat'], ss[ali.id].start['lon'])
+        assert math.dist(pc, P['chaser'][:2]) < 0.5 and math.dist(pe, P['evader'][:2]) < 0.5, (pc, pe, P)
+        for w in (wv, wa):
+            w.send_text(json.dumps({'t': 'ready'}))
+        ws_bekle(wv, lambda x: x['t'] == 'state' and x['state'] == 'YARIS', sn=8)
+        r = veli.post(f"/api/drone/sim/sessions/{sids[veli.id]}/cmd", json={'name': 'reset'})
+        assert r.status_code == 400 and 'Sıfırla' in r.text, r.text
+        yon = P['evader'][2]
+        kac = it_pilotu(ss[ali.id], merkez, yon, P['evader'][:2], hiz=8.0, alt=30.0)
+        it_pilotu(ss[veli.id], merkez, yon, P['chaser'][:2], gecikme_m=100.0, takip=kac)
+        gorulen = []
+        res = ws_bekle(wa, lambda x: x['t'] == 'result', sn=30, biriktir=gorulen)
+        assert res, [x['t'] for x in gorulen][-15:]
+        rs = res['result']
+        assert rs['kind'] == 'dogfight' and rs['winner'] == veli.id and rs['reason'] == 'angaje' and rs['dogfight']['engage_s'] >= 2, rs
+        assert any(x.get('df', {}).get('in_cone') for x in gorulen if x['t'] == 'pos'), 'pos.df'
+        assert ws_bekle(wv, lambda x: x['t'] == 'result')['result']['winner'] == veli.id
+        assert bekle(lambda: all(flightsim.MANAGER.get(sx) is None for sx in sids.values()), sn=20)
+    with db.connect() as conn:
+        row = db.row(conn.execute('SELECT state, reason, winner_id FROM matches WHERE id = ?', (mid,)))
+    assert row['state'] == 'BITTI' and row['reason'] == 'angaje' and row['winner_id'] == veli.id, dict(row)
+    hl = ok(veli.get(A))
+    assert hl[0]['id'] == mid and hl[0]['kind'] == 'dogfight' and hl[0]['rank'] == 1, hl[0]
+    print('  it dalaşı API geçti (karşılaşma', mid, ')')
 
 
 if __name__ == '__main__':

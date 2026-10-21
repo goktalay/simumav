@@ -1069,6 +1069,7 @@ class ReplaySession:
         self.site = None
         self.savunma_kayit = None
         self.site_heading = None
+        self.angajmanlar = []   # §40 kayıtlı angajmanlar (t0 = SITL saati; kayıtta istemci kare tt'siyle gösterir)
         try:
             with db.connect() as conn:
                 r = db.row(conn.execute('SELECT power FROM drone_sim_runs WHERE bin_log_id = ? AND power IS NOT NULL ORDER BY id DESC LIMIT 1', (int(log['id']),)))
@@ -1083,6 +1084,7 @@ class ReplaySession:
                 if h.get('targets'):
                     tj = json.loads(h['targets']) or {}
                     self.hedefler = tj.get('config') or None
+                    self.angajmanlar = [a for a in ((tj.get('result') or {}).get('engagements') or []) if isinstance(a, dict) and a.get('t0') is not None]   # §40
                     self.site = tj.get('site') or None                       # §26 yer kontrol sahası
                     self.savunma_kayit = tj.get('defend') or None            # §26 {config, result}: plan tohumdan yeniden üretilir
                     with contextlib.suppress(Exception):
@@ -1109,7 +1111,8 @@ class ReplaySession:
                 'client': dict(self.client) if self.client else None,
                 'gcs': {'connected': False, 'addr': None, 'since': None}, 'sitl': dict(self.sitl), 'replay': dict(self.replay),
                 'power': dict(self.power) if self.power else None, 'camera': self.camera or 'day',
-                'targets': self._fs.flightsim_targets.zenginlestir(self.hedefler) if self.hedefler else None, 'vertical': self.type in self._fs.DIKEY_TIPLER,
+                'targets': self._fs.flightsim_targets.zenginlestir(self.hedefler) if self.hedefler else None,
+                'engagements': list(self.angajmanlar) if self.hedefler else None, 'vertical': self.type in self._fs.DIKEY_TIPLER,
                 **self._site_dict()}
 
     def _site_dict(self):

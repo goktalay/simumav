@@ -54,6 +54,12 @@ BUILTIN_HIZ = {'caymaz': (90.0, 162.0), 'delta': (72.0, 126.0), 'talon': (65.0, 
                'icept_x4': (216.0, 400.0), 'p1sun': (150.0, 300.0), 'sting': (150.0, 315.0)}
 
 
+ANGAJMAN_BONUS = 250               # §40 kilitli angajmanla önleme (hedef başına bir kez)
+ANGAJMAN_MAX = 200                 # kayıtta tutulan en çok angajman
+ANGAJMAN_SEBEPLERI = ('released', 'lost', 'switched', 'reset', 'end')
+ANGAJMAN_KAYIP_S = 3.0             # kilitli hedef bu süreden uzun görüş dışında → KESİLDİ (istemci ölçer, `lost` bildirir)
+
+
 def _yuvarla(v, n=2):
     return round(float(v), n)
 
@@ -199,6 +205,59 @@ class HedefIzleyici:
                    for h in cfg['items']]
         self.t_arm = None
         self.t_son = None
+        # §40 angajman (Boşluk ile kilit): etkin angajman {i, name, t0, start_s, start_dist_m, min_dist_m} + biten angajmanlar listesi
+        self.ang = None
+        self.angajmanlar = []
+        self._son_konum = None
+
+    # ---- §40 angajman (kilitli hedef) ----
+    def _mesafe(self, i, t):
+        h = next((h for h in self.cfg['items'] if h['i'] == i), None)
+        if h is None or self._son_konum is None:
+            return None
+        st = durum(h, t)
+        x, y, z = self._son_konum
+        return math.sqrt((st['x'] - x) ** 2 + (st['y'] - y) ** 2 + (st['z'] - z) ** 2)
+
+    def kilit_ac(self, i):
+        """Hedef i'ye kilit → angajman başlar (etkin angajman varsa 'switched' ile kesilir). Dönüş: olay listesi [{kind, …}]."""
+        h = next((h for h in self.cfg['items'] if h['i'] == i), None)
+        if h is None:
+            raise ValueError('bilinmeyen hedef')
+        olaylar = []
+        if self.ang is not None:
+            if self.ang['i'] == i:
+                return olaylar
+            olaylar.append(self._bitir('cut', 'switched'))
+        t = self.t_son if self.t_son is not None else 0.0
+        d = self._mesafe(i, t)
+        d = round(d, 1) if d is not None else None
+        self.ang = {'i': i, 'name': h['name'], 't0': round(t, 3), 'start_s': round(t - (self.t_arm if self.t_arm is not None else t), 1),
+                    'start_dist_m': d, 'min_dist_m': d}
+        olaylar.append({'kind': 'start', **self._ang_gorunum(self.ang, t)})
+        return olaylar
+
+    def kilit_birak(self, sebep='released'):
+        """Kilit bırakıldı ('released') / hedef görüş dışı ('lost') / oturum ('reset', 'end') → angajman KESİLDİ."""
+        if self.ang is None:
+            return []
+        return [self._bitir('cut', sebep if sebep in ANGAJMAN_SEBEPLERI else 'released')]
+
+    def _ang_gorunum(self, a, t):
+        return {'i': a['i'], 'name': a['name'], 't0': a['t0'], 'start_s': a['start_s'], 'dur_s': round(max(0.0, t - a['t0']), 1),
+                'start_dist_m': a['start_dist_m'], 'min_dist_m': a['min_dist_m']}
+
+    def _bitir(self, sonuc, sebep, dist=None):
+        a = self.ang
+        t = self.t_son if self.t_son is not None else a['t0']
+        kayit = {**self._ang_gorunum(a, t), 'result': sonuc, 'reason': sebep}
+        if dist is not None:
+            kayit['end_dist_m'] = round(dist, 1)
+        self.angajmanlar.append(kayit)
+        if len(self.angajmanlar) > ANGAJMAN_MAX:
+            del self.angajmanlar[0]
+        self.ang = None
+        return {'kind': 'success' if sonuc == 'success' else 'cut', **kayit}
 
     def adim(self, t, x, y, z, armed):
         olaylar = []
@@ -208,7 +267,10 @@ class HedefIzleyici:
             self.t_arm = None
             for d in self.iz:
                 d['inside'] = False
+            if self.ang is not None:   # §40: Sıfırla angajmanı keser
+                olaylar.append({**self._bitir('cut', 'reset'), 'engage': True})
         self.t_son = t
+        self._son_konum = (float(x), float(y), float(z))
         if armed and self.t_arm is None:
             self.t_arm = t
         for h, d in zip(self.cfg['items'], self.iz):
@@ -226,23 +288,45 @@ class HedefIzleyici:
                 ilk = d['first_s'] is None
                 if ilk:
                     d['first_s'] = round(t - (self.t_arm if self.t_arm is not None else t), 1)
-                olaylar.append({'i': h['i'], 'name': h['name'], 'model': h['model'], 'dist_m': round(dist, 1), 'n': d['intercepts'], 'first': ilk,
-                                'after_s': d['first_s'] if ilk else round(t - (self.t_arm or t), 1)})
+                o = {'i': h['i'], 'name': h['name'], 'model': h['model'], 'dist_m': round(dist, 1), 'n': d['intercepts'], 'first': ilk,
+                     'after_s': d['first_s'] if ilk else round(t - (self.t_arm or t), 1)}
+                if self.ang is not None and self.ang['i'] == h['i']:   # §40 kilitli angajmanla önleme → ANGAJMAN BAŞARILI
+                    self.ang['min_dist_m'] = round(dist, 1) if self.ang['min_dist_m'] is None else min(self.ang['min_dist_m'], round(dist, 1))
+                    o['locked'] = True
+                    o['engagement'] = self._bitir('success', 'intercept', dist)
+                    d['locked_hits'] = d.get('locked_hits', 0) + 1
+                olaylar.append(o)
+            if self.ang is not None and self.ang['i'] == h['i']:
+                r = round(dist, 1)
+                if self.ang['min_dist_m'] is None or r < self.ang['min_dist_m']:
+                    self.ang['min_dist_m'] = r
         return olaylar
+
+    def angajman_durumu(self):
+        """Etkin angajman (WS / hello) — yoksa None."""
+        if self.ang is None:
+            return None
+        t = self.t_son if self.t_son is not None else self.ang['t0']
+        return {**self._ang_gorunum(self.ang, t), 'dist_m': (round(self._mesafe(self.ang['i'], t), 1) if self._son_konum else None)}
 
     def ozet(self):
         items = [{k: (round(v, 1) if isinstance(v, float) else v) for k, v in d.items() if k != 'inside'} for d in self.iz]
         toplam = sum(d['intercepts'] for d in items)
         vurulan = sum(1 for d in items if d['intercepts'])
+        angs = [dict(a) for a in self.angajmanlar]
+        if self.ang is not None:   # sürmekte olan angajman (özet oturum açıkken de istenebilir)
+            angs.append({**self._ang_gorunum(self.ang, self.t_son if self.t_son is not None else self.ang['t0']), 'result': 'active', 'reason': None})
         out = {'radius_m': self.R, 'count': len(items), 'items': items, 'total': toplam, 'hit_targets': vurulan,
-               'all_hit': bool(items) and vurulan == len(items)}
+               'all_hit': bool(items) and vurulan == len(items), 'engagements': angs,
+               'engaged_hits': sum(1 for a in angs if a['result'] == 'success')}
         out.update(puan(out))
         return out
 
 
 def puan(oz):
     """SIMUMAV oyunlaştırma (HEPGO raporunda da bilgi): hedef başına ilk önleme 1000 − 5·saniye (≥ 200), sonraki her geçiş +100, en yakın geçiş
-    bonusu (≤ 5 m: +150). Rozetler: first (ilk önleme), ace (tüm hedefler), quick (ilk önleme ≤ 60 sn), close (≤ 5 m), hunter (≥ 5 önleme)."""
+    bonusu (≤ 5 m: +150), §40 kilitli angajmanla önleme bonusu (hedef başına bir kez: +250). Rozetler: first (ilk önleme), ace (tüm hedefler),
+    quick (ilk önleme ≤ 60 sn), close (≤ 5 m), hunter (≥ 5 önleme)."""
     p = 0
     rozet = []
     ilkler = [d['first_s'] for d in oz['items'] if d.get('first_s') is not None]
@@ -252,6 +336,8 @@ def puan(oz):
             p += 100 * (int(d['intercepts']) - 1)
             if d.get('min_dist_m') is not None and d['min_dist_m'] <= 5:
                 p += 150
+            if d.get('locked_hits'):
+                p += ANGAJMAN_BONUS
     if ilkler:
         rozet.append('first')
         if min(ilkler) <= 60:

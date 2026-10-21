@@ -128,5 +128,15 @@ export function targetsReportCard({ h, t, sum }) {
       h('span', { class: 'sm-tg-rep-hit' }, t('targets.hit', { h: T.hit_targets, n: T.count, t: T.total }))),
     T.badges?.length ? h('div', { class: 'sm-tg-badges' }, T.badges.map(b => h('span', { class: `sm-tg-badge b-${b}` }, BADGE_ICON[b] || '★', ' ', t(`targets.badge_${b}`)))) : null,
     h('div', { class: 'sm-tg-rows' }, T.items.map(d => h('div', { class: `sm-tg-row ${d.intercepts ? 'hit' : ''}` }, h('b', null, `${d.i + 1}`), h('span', null, d.name),
-      h('span', { class: 'mono' }, d.intercepts ? t('targets.row_hit', { n: d.intercepts, s: d.first_s, m: d.min_dist_m }) : t('targets.row_miss', { m: d.min_dist_m }))))));
+      h('span', { class: 'mono' }, d.intercepts ? t('targets.row_hit', { n: d.intercepts, s: d.first_s, m: d.min_dist_m }) : t('targets.row_miss', { m: d.min_dist_m }))))),
+    engagementRowsEl({ h, t, list: T.engaged_hits != null ? T.engagements : null, bonus: !!T.engaged_hits }));
+}
+// HEPGO §40 angajman listesi (Boşluk ile kilit): hedef · başlangıç · süre · sonuç · en yakın
+function engagementRowsEl({ h, t, list, bonus }) {
+  if (!Array.isArray(list) || !list.length) return null;
+  const res = { success: 'eng.res_success', cut: 'eng.res_cut', active: 'eng.res_active' };
+  return h('div', { class: 'sm-tg-eng' }, h('div', { class: 'sm-tg-eng-head' }, '◆ ', t('eng.report'), ` · ${list.filter(a => a.result === 'success').length}/${list.length}`),
+    h('div', { class: 'sm-tg-rows' }, list.map(a => h('div', { class: `sm-tg-row ${a.result === 'success' ? 'hit' : ''}` }, h('b', null, `T${(a.i ?? 0) + 1}`), h('span', null, a.name || ''),
+      h('span', { class: 'mono' }, `${(Number(a.start_s) || 0).toFixed(1)} s · ${(Number(a.dur_s) || 0).toFixed(1)} s · ${t(res[a.result] || res.cut)}${a.result === 'cut' && a.reason ? ` (${t(`eng.r_${a.reason}`)})` : ''} · ${a.min_dist_m != null ? Math.round(a.min_dist_m) : '—'} m`)))),
+    bonus ? h('div', { class: 'sm-tg-eng-bonus' }, t('eng.bonus', { p: 250 })) : null);
 }

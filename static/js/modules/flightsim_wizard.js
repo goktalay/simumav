@@ -19,7 +19,7 @@ export const STEP_DEFS = [
   { key: 'targets', title: 'Hedefler', modes: ['sitl'], preview: false, optional: true, noMatch: true, desc: 'Havada dairesel yörüngede uçan hedefler.' },
   { key: 'site', title: 'Yer kontrol', modes: ['sitl'], preview: false, optional: true, noMatch: true, desc: 'Radar, istasyon, EO kulesi ve görev.' },
   // §33 çok oyunculu karşılaşma ("Yeni Karşılaşma"): radar / EO / yer kontrol (ve hedefler) yok; Halkalar + Davet et; son adımda yalnız Başlat
-  { key: 'rings', title: 'Halkalar', modes: ['sitl'], preview: false, matchOnly: true, desc: 'Havadaki halkaların sayısı, yükseklik aralığı ve parkur.' },
+  { key: 'rings', title: 'Tür ve kurallar', modes: ['sitl'], preview: false, matchOnly: true, desc: 'Karşılaşma türü (halka yarışı / it dalaşı) ve kuralları: halkalar ya da angajman menzili, konisi, süre.' },   // §41
   { key: 'invite', title: 'Davet et', modes: ['sitl'], preview: false, matchOnly: true, desc: 'Karşılaşmaya davet edilecek kullanıcılar.' },
   { key: 'summary', title: 'Kayıt ve özet', matchTitle: 'Özet ve başlat', modes: ['sitl', 'replay'], preview: false, desc: 'Kayıt seçenekleri ve tüm seçimlerin özeti.',
     matchDesc: 'Seçimlerin özeti; Başlat ile bekleme salonu açılır ve davetlilere bildirim gider.' },

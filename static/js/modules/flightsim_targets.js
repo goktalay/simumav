@@ -73,6 +73,7 @@ export function createInterceptTracker(cfg) {
 }
 
 /** Puan + rozetler (sunucu `puan` eşleniği). */
+export const ENGAGE_BONUS = 250;   // §40 (app/flightsim_targets.ANGAJMAN_BONUS)
 export function scoreOf(o) {
   let p = 0; const badges = [];
   const firsts = o.items.filter(d => d.first_s != null).map(d => d.first_s);
@@ -81,6 +82,7 @@ export function scoreOf(o) {
     p += Math.max(200, Math.trunc(1000 - 5 * (Number(d.first_s) || 0)));
     p += 100 * (d.intercepts - 1);
     if (d.min_dist_m != null && d.min_dist_m <= 5) p += 150;
+    if (d.locked_hits) p += ENGAGE_BONUS;   // §40 kilitli angajmanla önleme (hedef başına bir kez)
   }
   if (firsts.length) { badges.push('first'); if (Math.min(...firsts) <= 60) badges.push('quick'); }
   if (o.all_hit && o.count > 1) badges.push('ace');

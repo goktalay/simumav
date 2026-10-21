@@ -15,6 +15,7 @@
 //   yanında sapma açısı (°, boresight'tan) + menzil.
 // • Seçim (selectTarget/lockedIndex): varsayılan "oto" = en yakın hedef; Tab / Shift+Tab sıradaki / önceki hedefe kilitlenir (i sırasıyla döngü); kilitli
 //   hedef listeden düşerse oto'ya döner.
+// • §40 angajman (Boşluk ile kilit; flightsim_engage.js): data.eng = {i} → o hedefin TD kutusu çift çerçeve + üstte "KİLİT" (ekran dışında ok bloğunda).
 // • Önleme: hedef önleme yarıçapı içindeyse (ya da önleme olayından sonraki 2 sn) prizma + kutu yanıp söner ve "ÖNLEME" (İng. SHOOT) ibaresi.
 // • Renk: HUD rengi (yeşil/beyaz/amber; OSD beyaz) + siyah dış çizgi → termal/gece görüşü görüntüsünde de okunur. DOM yok; 60 fps'te ~0,1 ms.
 // Testler: tests/test_flightsim_tgthud.mjs.
@@ -152,7 +153,7 @@ export function symbology(data, W, H, opts = {}) {
     const x = p.sx * W, y = p.sy * H;
     const on = p.front && x >= m && x <= W - m && y >= m && y <= H - m;
     const r = { i: it.i, label: String(it.i + 1), name: it.name || '', dist: it.dist, dz: it.dz, vc: closureRate(sub(it.center, data.player?.pos || v.pos), it.vel || [0, 0, 0], vp),
-      off: offAngle(v, it.center), inside: !!it.inside, flash: !!it.flash, locked: it.i === lockI, on, x, y, pts: null, bb: null, arrow: null };
+      off: offAngle(v, it.center), inside: !!it.inside, flash: !!it.flash, locked: it.i === lockI, engaged: data.eng?.i === it.i, on, x, y, pts: null, bb: null, arrow: null };
     if (on) {
       const cs = (it.corners || []).map(c => projectView(v, c));
       if (cs.length === 8 && cs.every(c => c.front)) {
@@ -220,6 +221,7 @@ export function drawSymbology(g, sym, o = {}) {
     const { x0, y0, x1, y1 } = L.td, c = Math.max(7 * S, (x1 - x0) * 0.22), vis = !hot(L) || blinkOn;
     if (vis) {
       g.beginPath(); g.rect(x0, y0, x1 - x0, y1 - y0); stroke(1.4 * S);
+      if (L.engaged) { const q = 4 * S; g.beginPath(); g.rect(x0 - q, y0 - q, x1 - x0 + 2 * q, y1 - y0 + 2 * q); stroke(1.4 * S); }   // §40 kilit: çift çerçeve
       g.fillStyle = C;   // dolgulu köşeler (kilit)
       for (const [sx, sy] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
         const dx = sx === x0 ? 1 : -1, dy = sy === y0 ? 1 : -1;
@@ -235,6 +237,7 @@ export function drawSymbology(g, sym, o = {}) {
     text(`T${L.label} ${L.name}`.slice(0, 26), tx, ty, { align: al, px: F * 0.95, bold: true }); ty += lh;
     text(`${fmtRange(L.dist)}  Vc ${L.vc >= 0 ? '+' : '−'}${Math.abs(L.vc).toFixed(0)}`, tx, ty, { align: al, px: F * 0.92 }); ty += lh;
     text(`ΔH ${L.dz >= 0 ? '+' : '−'}${Math.abs(L.dz).toFixed(0)}m`, tx, ty, { align: al, px: F * 0.92 });
+    if (L.engaged) text(tr('KİLİT'), (x0 + x1) / 2, y0 - 12 * S, { align: 'center', px: F * 1.05, bold: true });   // §40
     if (hot(L)) text(tr('ÖNLEME'), (x0 + x1) / 2, y1 + 12 * S, { align: 'center', px: F * 1.35, bold: true, col: blinkOn ? C : 'rgba(0,0,0,0)' });
   }
   // kenar okları (ekran dışı hedefler): üçgen dışa bakar; numara içeride; kilitliye sapma açısı + menzil
@@ -252,6 +255,7 @@ export function drawSymbology(g, sym, o = {}) {
       const dy = d[1] > 0.35 ? -F * 1.8 : d[1] < -0.35 ? F * 0.6 : -F * 0.6;   // alt kenarda blok yukarı, üst kenarda aşağı
       text(`${Math.round(r.off)}°`, qx, qy + dy, { align: al, px: F * 1.0, bold: true });
       text(fmtRange(r.dist), qx, qy + dy + F * 1.15, { align: al, px: F * 0.85 });
+      if (r.engaged) text(tr('KİLİT'), qx, qy + dy - F * 1.15, { align: al, px: F * 0.95, bold: true });   // §40
       if (hot(r)) text(tr('ÖNLEME'), qx, qy + dy + F * 2.35, { align: al, px: F * 1.1, bold: true, col: blinkOn ? C : 'rgba(0,0,0,0)' });
     }
   }
