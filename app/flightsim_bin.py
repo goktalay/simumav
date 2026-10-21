@@ -15,7 +15,8 @@ from . import config, db
 
 MAX_MB = max(1, int(os.environ.get('SIM_BIN_MAX_MB', '500') or 500))
 MAX_BYTES = MAX_MB * 1024 * 1024
-TIP_ADLARI = {'multirotor': 'Multikopter', 'hexarotor': 'Hexakopter', 'helikopter': 'Helikopter', 'sabit_kanat': 'Sabit Kanat', 'vtol': 'VTOL'}
+TIP_ADLARI = {'multirotor': 'Multikopter', 'hexarotor': 'Hexakopter', 'helikopter': 'Helikopter', 'sabit_kanat': 'Sabit Kanat', 'vtol': 'VTOL',
+             'interceptor': 'INTERCEPTOR', 'rover': 'Kara Aracı'}
 
 
 def dosya_adi(sid, created_at):

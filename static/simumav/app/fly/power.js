@@ -1,11 +1,16 @@
 // SIMUMAV › GÜÇ VE YAKIT (docs/simumav.md §10) — saf katman (node testi: tests/test_simumav_power.mjs) + oyun tarzı DOM parçaları (h parametreyle).
 // Sunucu eşleniği app/simumav/power.py; HEPGO çekirdeği app/flightsim_power.py + static/js/modules/flightsim_power.js (§23).
 //   • Hangar kaydı `drone.power` = {engine 'fuel'|'electric', max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w, defaults, measured:{fuel_km_per_l, elec_w, at}|null}
-//   • Yakıtlı motor yalnız sabit kanat ailesinde (plane / interceptor / vtol); kopterde (multirotor / fpv / heli) elektrikli, yakıt 0, azami hız yok.
+//   • Yakıtlı motor sabit kanat ailesinde (plane / interceptor / vtol) ve kara aracında (rover: varsayılan elektrikli, azami hız yok — SIM_Rover sabit;
+//     §15); kopterde (multirotor / fpv / heli) elektrikli, yakıt 0, azami hız yok. Kara aracı varsayılanı çekirdek ROVER_VARSAYILAN ile aynı.
 //   • Sihirbaz "Güç ve yakıt" adımı: hangar değerleri ön dolu; son uçuşun ölçümü (measured) "Önerilen" rozetiyle (tıkla → uygula); simülasyon hızı
 //     1×/2×/4×/8× (sunucunun izin verdiği kadar: meta.power.speedups). `powerBody()` → POST /api/fly/start `power`, `speedup`.
 //   • Uçuşta HEPGO kadranları (createPowerGauges; /sim/flightsim_power.js — kopya değil, aynı modül) SIMUMAV çevirisiyle (trPower).
-export const FUEL_TYPES = ['plane', 'interceptor', 'vtol'];
+export const FUEL_TYPES = ['plane', 'interceptor', 'vtol', 'rover'];
+export const SPEED_TYPES = ['plane', 'interceptor', 'vtol'];   // azami hız (SITL itki ölçeği) anlamlı
+// Kara aracı (app/flightsim_power.py ROVER_VARSAYILAN; HEPGO flightsim_power.js defaultsFor('rover') ile aynı): elektrikli, 4S 16000 mAh 60 W, yakıt seçilirse 12 km/L
+export const ROVER_DEFAULTS = { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 12, elec_cells: 4, elec_mah: 16000, elec_w: 60 };
+export const ROVER_FUEL_L = 20;   // elektrikliden yakıtlıya geçişte depo (sunucu power.ROVER_YAKIT_L)
 export const ENGINES = ['fuel', 'electric'];
 export const FIELDS = ['max_speed_ms', 'fuel_l', 'fuel_km_per_l', 'elec_cells', 'elec_mah', 'elec_w'];
 // Sunucu (flightsim_power.SINIRLAR) ile aynı; meta.power.limits gelirse o kullanılır
@@ -15,6 +20,8 @@ export const CELL_V = 3.7;
 export const SPEEDUPS = [1, 2, 4, 8];
 export const STEP = { max_speed_ms: 1, fuel_l: 0.1, fuel_km_per_l: 0.5, elec_cells: 1, elec_mah: 100, elec_w: 1 };
 export const canFuel = t => FUEL_TYPES.includes(t);
+export const canSpeed = t => SPEED_TYPES.includes(t);
+const fuelDefaultOn = t => canFuel(t) && t !== 'rover';   // kara aracı varsayılan elektrikli
 const num = (v, d = null) => (v == null || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
@@ -36,12 +43,12 @@ export function clampField(k, v, limits = DEFAULT_LIMITS) {
 /** Dron kaydından (drone.power) tam ayar; yoksa tipe göre güvenli varsayılan. Kural: kopterde elektrikli + yakıt 0 + azami hız null. */
 export function powerOf(drone) {
   const t = drone?.type || 'multirotor', p = drone?.power || {};
-  const fuelOk = canFuel(t);
+  const fuelOk = canFuel(t), rv = t === 'rover', D = rv ? ROVER_DEFAULTS : null;
   const out = {
-    engine: fuelOk && p.engine === 'fuel' ? 'fuel' : (fuelOk && p.engine == null && !drone?.power ? 'fuel' : 'electric'),
-    max_speed_ms: fuelOk ? num(p.max_speed_ms, 45) : null,
-    fuel_l: num(p.fuel_l, fuelOk ? 5 : 0), fuel_km_per_l: num(p.fuel_km_per_l, 25),
-    elec_cells: Math.round(num(p.elec_cells, 4)), elec_mah: num(p.elec_mah, fuelOk ? 10000 : 1500), elec_w: num(p.elec_w, fuelOk ? 30 : 180),
+    engine: fuelOk && p.engine === 'fuel' ? 'fuel' : (fuelDefaultOn(t) && p.engine == null && !drone?.power ? 'fuel' : 'electric'),
+    max_speed_ms: canSpeed(t) ? num(p.max_speed_ms, 45) : null,
+    fuel_l: num(p.fuel_l, rv ? D.fuel_l : fuelOk ? 5 : 0), fuel_km_per_l: num(p.fuel_km_per_l, rv ? D.fuel_km_per_l : 25),
+    elec_cells: Math.round(num(p.elec_cells, 4)), elec_mah: num(p.elec_mah, rv ? D.elec_mah : fuelOk ? 10000 : 1500), elec_w: num(p.elec_w, rv ? D.elec_w : fuelOk ? 30 : 180),
   };
   if (out.engine !== 'fuel') out.fuel_l = 0;
   return out;
@@ -64,9 +71,9 @@ export function createPowerState(drone, { limits = DEFAULT_LIMITS, speedups = SP
   // HEPGO davranışı: son ölçüm önerisi ön dolu gelir ("Önerilen" rozeti); kullanıcı ↺ ile hangar değerine döner
   if (autoSuggest) for (const [k, v] of Object.entries(sug)) { S.values[k] = clampField(k, v, limits); S.applied.add(k); }
   const set = (k, v) => {
-    if (k === 'engine') { if (!canFuel(type) && v === 'fuel') return false; S.values.engine = v; if (v === 'electric') S.values.fuel_l = 0; else if (!(num(S.values.fuel_l, 0) >= FUEL_MIN_L)) S.values.fuel_l = base.engine === 'fuel' && base.fuel_l >= FUEL_MIN_L ? base.fuel_l : 5; return true; }
+    if (k === 'engine') { if (!canFuel(type) && v === 'fuel') return false; S.values.engine = v; if (v === 'electric') S.values.fuel_l = 0; else if (!(num(S.values.fuel_l, 0) >= FUEL_MIN_L)) S.values.fuel_l = base.engine === 'fuel' && base.fuel_l >= FUEL_MIN_L ? base.fuel_l : type === 'rover' ? ROVER_FUEL_L : 5; return true; }
     if (!FIELDS.includes(k)) return false;
-    if (k === 'max_speed_ms' && !canFuel(type)) return false;
+    if (k === 'max_speed_ms' && !canSpeed(type)) return false;
     const c = clampField(k, v, limits); if (c == null) return false;
     S.values[k] = c; S.applied.delete(k); return true;
   };
@@ -75,7 +82,8 @@ export function createPowerState(drone, { limits = DEFAULT_LIMITS, speedups = SP
   const setSpeedup = f => { if (speedups.includes(Number(f))) { S.speedup = Number(f); return true; } return false; };
   const body = () => {
     const v = S.values, out = { engine: canFuel(type) ? v.engine : 'electric', elec_cells: Math.round(v.elec_cells), elec_mah: v.elec_mah, elec_w: v.elec_w };
-    if (canFuel(type)) { out.max_speed_ms = v.max_speed_ms; if (out.engine === 'fuel') { out.fuel_l = Math.max(FUEL_MIN_L, v.fuel_l); out.fuel_km_per_l = v.fuel_km_per_l; } }
+    if (canSpeed(type)) out.max_speed_ms = v.max_speed_ms;
+    if (canFuel(type) && out.engine === 'fuel') { out.fuel_l = Math.max(FUEL_MIN_L, v.fuel_l); out.fuel_km_per_l = v.fuel_km_per_l; }
     return out;
   };
   const valid = () => FIELDS.every(k => S.values[k] == null || (Number.isFinite(S.values[k]) && S.values[k] >= (limits[k] || [-Infinity])[0] && S.values[k] <= (limits[k] || [0, Infinity])[1])) && (S.values.engine !== 'fuel' || S.values.fuel_l >= FUEL_MIN_L);
@@ -137,7 +145,7 @@ export function createPowerStep({ h, t, drone, limits = DEFAULT_LIMITS, speedups
   const ps = createPowerState(drone, { limits, speedups, speedup: preset?.speedup ?? 1, autoSuggest });
   if (preset?.values) for (const k of ['engine', ...FIELDS]) if (preset.values[k] != null) { if (k === 'engine') ps.set('engine', preset.values.engine); else { ps.state.values[k] = preset.values[k]; } }
   if (preset?.applied) { ps.state.applied.clear(); for (const k of preset.applied) ps.state.applied.add(k); }
-  const fuelOk = canFuel(ps.type);
+  const fuelOk = canFuel(ps.type), speedOk = canSpeed(ps.type), rover = ps.type === 'rover';
   const el = h('div', { class: 'sm-pw' });
   const field = (k, label, unit, hint) => {
     const inp = h('input', { class: 'sm-pw-inp mono', type: 'number', min: limits[k][0], max: limits[k][1], step: STEP[k], inputmode: 'decimal', value: String(ps.values[k] ?? ''), 'data-pw': k });
@@ -162,12 +170,12 @@ export function createPowerStep({ h, t, drone, limits = DEFAULT_LIMITS, speedups
   const engineSeg = fuelOk ? h('div', { class: 'sm-pw-seg', role: 'radiogroup', 'aria-label': t('power.engine') },
     ['fuel', 'electric'].map(e => h('button', { class: 'sm-pw-seg-btn', type: 'button', 'data-engine': e, onclick: () => { ps.set('engine', e); redraw(); onChange(ps); } }, ico(h, e === 'fuel' ? 'fuel' : 'elec'), h('b', null, t(`power.engine_${e}`)), h('small', null, t(`power.engine_${e}_desc`))))) : null;
   const rows = {
-    max_speed_ms: fuelOk ? field('max_speed_ms', t('power.max_speed'), 'm/s', t('power.max_speed_hint')) : null,
+    max_speed_ms: speedOk ? field('max_speed_ms', t('power.max_speed'), 'm/s', t('power.max_speed_hint')) : null,
     fuel_l: fuelOk ? field('fuel_l', t('power.fuel_tank'), 'L', null) : null,
     fuel_km_per_l: fuelOk ? field('fuel_km_per_l', t('power.consumption'), 'km/L', t('power.consumption_hint')) : null,
     elec_cells: field('elec_cells', t('power.cells'), 'S', null),
     elec_mah: field('elec_mah', t('power.capacity'), 'mAh', null),
-    elec_w: field('elec_w', t('power.hourly_w'), 'W', fuelOk ? t('power.hourly_w_hint_plane') : t('power.hourly_w_hint_copter')),
+    elec_w: field('elec_w', t('power.hourly_w'), 'W', rover ? t('power.hourly_w_hint_rover') : fuelOk ? t('power.hourly_w_hint_plane') : t('power.hourly_w_hint_copter')),
   };
   const syncAll = () => { for (const r of Object.values(rows)) r?.__sync(); };
   const stats = h('div', { class: 'sm-pw-stats' });
@@ -175,13 +183,13 @@ export function createPowerStep({ h, t, drone, limits = DEFAULT_LIMITS, speedups
     const v = ps.values, wh = batteryWh(v.elec_mah, v.elec_cells), end = enduranceMin(v), rng = rangeKm(v);
     const stat = (icon, val, lbl, cls = '') => h('div', { class: `sm-pw-stat ${cls}` }, ico(h, icon), h('b', { class: 'mono' }, val), h('small', null, lbl));
     clear(stats,
-      fuelOk && v.max_speed_ms ? stat('speed', `${Math.round(v.max_speed_ms * 3.6)} km/h`, t('power.stat_top')) : null,
+      speedOk && v.max_speed_ms ? stat('speed', `${Math.round(v.max_speed_ms * 3.6)} km/h`, t('power.stat_top')) : null,
       v.engine === 'fuel' ? stat('fuel', fmtKm(rng), t('power.stat_range'), 'fuel') : null,
       stat('elec', `${wh.toFixed(0)} Wh`, `${Math.round(v.elec_cells)}S · ${(Math.round(v.elec_cells) * CELL_V).toFixed(1)} V`, 'elec'),
       stat('clock', fmtMin(end), t('power.stat_endurance'), 'elec'));
   };
   const colMotor = fuelOk ? h('section', { class: 'sm-pw-col motor' }, h('h3', null, ico(h, 'fuel'), t('power.col_motor')), engineSeg, rows.max_speed_ms, rows.fuel_l, rows.fuel_km_per_l) : null;
-  const colBatt = h('section', { class: 'sm-pw-col batt' }, h('h3', null, ico(h, 'elec'), t(fuelOk ? 'power.col_batt_plane' : 'power.col_batt')), rows.elec_cells, rows.elec_mah, rows.elec_w);
+  const colBatt = h('section', { class: 'sm-pw-col batt' }, h('h3', null, ico(h, 'elec'), t(rover ? 'power.col_batt_rover' : fuelOk ? 'power.col_batt_plane' : 'power.col_batt')), rows.elec_cells, rows.elec_mah, rows.elec_w);
   const spdBtns = speedups.map(x => h('button', { class: 'sm-pw-spd', type: 'button', 'data-speed': x, onclick: () => { ps.setSpeedup(x); redraw(); onChange(ps); } }, `${x}×`));
   const spd = h('section', { class: 'sm-pw-speed' }, h('div', null, h('b', null, t('power.sim_speed')), h('small', null, t('power.sim_speed_hint'))), h('div', { class: 'sm-pw-spds' }, spdBtns));
   const measured = drone?.power?.measured;
@@ -207,11 +215,11 @@ export function powerTag({ h, p, extra = '' }) {
 
 /** Hangar güç özeti (oyun kartı): motor rozeti + 3–4 stat + son ölçüm. */
 export function powerSummary({ h, t, drone }) {
-  const p = powerOf(drone), m = drone?.power?.measured, fuelOk = canFuel(drone?.type);
+  const p = powerOf(drone), m = drone?.power?.measured, speedOk = canSpeed(drone?.type);
   const chip = (icon, v, l, cls = '') => h('div', { class: `pw-chip ${cls}` }, ico(h, icon), h('b', { class: 'mono' }, v), h('small', null, l));
   return h('div', { class: 'pw-summary', 'data-engine': p.engine },
     h('span', { class: `pw-engine ${p.engine}` }, t(`power.engine_${p.engine}`)),
-    fuelOk && p.max_speed_ms ? chip('speed', `${Math.round(p.max_speed_ms * 3.6)}`, 'km/h') : null,
+    speedOk && p.max_speed_ms ? chip('speed', `${Math.round(p.max_speed_ms * 3.6)}`, 'km/h') : null,
     p.engine === 'fuel' ? chip('fuel', `${p.fuel_l} L`, `${p.fuel_km_per_l} km/L`, 'fuel') : null,
     chip('elec', `${Math.round(p.elec_cells)}S ${p.elec_mah}`, `mAh · ${p.elec_w} W`, 'elec'),
     chip('clock', fmtMin(enduranceMin(p)), t('power.stat_endurance'), 'elec'),

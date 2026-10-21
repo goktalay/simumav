@@ -214,5 +214,9 @@
   "sys.alt.tgt": "Gimbal kamerada F-16 tarzı hedef sembolojisi",
   "sys.alt.tgtthermal": "Termal kamerada hedef sembolojisi",
   "sys.alt.launch": "Uç sihirbazında INTERCEPTOR fırlatıcı seçimi: dörtlü ve sekizli kutu, tekli tüp, el fırlatıcısı ve 3B önizleme",
-  "sys.alt.report": "Yer kontrolünü koru görev raporu"
+  "sys.alt.report": "Yer kontrolünü koru görev raporu",
+  "type.rover": "Kara aracı",
+  "fleet.rover_4x4.d": "Ön tekerden dönen (Ackermann) 4×4 keşif aracı, EO/IR + LIDAR direği; ArduRover ile 72 km/h’e kadar.",
+  "fleet.rover_ugv.d": "Paletli insansız kara aracı: yerinde döner (diferansiyel sürüş), sensör kulesi.",
+  "fleet.rover_bot.d": "6 tekerli kaldırım teslimat robotu (0,78 m), diferansiyel sürüş, bayrak direği."
 }

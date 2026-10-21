@@ -37,6 +37,7 @@ def drone_api(d):
     return {**d, 'params': db.j(d.get('params')), 'is_default': bool(d.get('is_default')), 'proc': g['proc'],
             'preview': d.get('preview') or g['preview'], 'orient': g['orient'], 'has_prop': g['has_prop'], 'model_label': g['label'],
             'airframe': bridge.drone_airframe(d),   # kontrol düzeni (HEPGO §13.1): sütun → katalog modeli → classic; kopter/heli/VTOL None
+            'drive': bridge.model_drive(d.get('type'), d.get('model_key')),   # kara aracı (§15): modelin sürüş biçimi ackermann | skid; diğer tiplerde None
             'power': power.kayit_oku(d)}            # güç ve yakıt (§10): etkin ayar + defaults + son uçuş ölçümü (measured)
 
 

@@ -16,6 +16,8 @@
 //   sabit_kanat (delta/caymaz aynı)  benzinli tek silindirli iki zamanlı: devir 1500 (rölanti) → 7500 (tam gaz); ateşleme f = devir/60 × silindir;
 //                         testere (ana) + kare (alt harmonik) + egzoz gürültüsü (lowpass gazla açılır) + pervane (2 pala sinüs). Armed + gaz 0 = rölanti.
 //   vtol                  kopter + uçak; karışım hava hızına göre (5 → 20 m/s arasında kopterden uçağa).
+//   rover (§31)           elektrikli kara aracı: motor/inverter uğultusu (üçgen + 2,97× dişli ıslığı; frekans yer hızıyla 90 → 850 Hz), armed + duruşta
+//                         alçak inverter vızıltısı (100 Hz kare, kısık), lastik / zemin gürültüsü (lowpass, hızla açılır ve yükselir). Pervane yok.
 //   Kalkış yöntemi: rampa (launch) → pnömatik "pşşt" (bant geçiren gürültü patlaması) + released → kızak çarpması (80 Hz vuruş);
 //                   araç (vehicle) → pickup motoru (V8 4 zamanlı, 800 → 4500 d/dk hızla), released → fren gürültüsü, rölantiye düşer, 3 sn'de susar.
 //   ARM/DISARM geçişi (`spinStep`): ARM olunca motor HEMEN çalışır — devir 0 → rölanti rampası: kopter 0,6 sn (ESC başlatma), helikopter 3 sn (rotor
@@ -31,7 +33,7 @@ export const TAU_UP = 0.35, TAU_DOWN = 0.7;   // sn: devir gazı yukarı/aşağ�
 export const MUTE_SPEED = 2;         // kayıt oynatma hızı ≥ bu → sessiz
 // ARM geçişi: motor başlatma süresi (sn; devir 0 → rölanti, doğrusal) ve DISARM sönme süresi (sn). Kopter ESC başlatma 0,6; heli rotor sarmalı 3;
 // uçak marş 0,8 (bu sürede marş sesi duyulur); vtol kopter gibi.
-export const SPIN_UP = { copter: 0.6, heli: 3.0, plane: 0.8, vtol: 0.6 }, SPIN_DOWN = 1.0;
+export const SPIN_UP = { copter: 0.6, heli: 3.0, plane: 0.8, vtol: 0.6, rover: 0.4 }, SPIN_DOWN = 1.0;
 // Çarpışma darbesi (§18 ek): çarpma hızına göre şiddet 0…1 (3 m/s → 0,25 · 40 m/s ≈ 1). Ayrı "darbe" yolu motor/master kazancından bağımsız,
 // tercih edilen ses düzeyiyle × IMPACT_BOOST çalar (önceki tek lowpass gürültüden belirgin yüksek); kompresör tepe kırpmayı önler. Ses kapalıysa çalmaz.
 export const IMPACT_BOOST = 2.2;
@@ -52,6 +54,7 @@ export const AUDIO_MODELS = {
   sabit_kanat: { kind: 'plane', cylinders: 1, blades: 2, idleRpm: 1500, maxRpm: 7500 },
   vtol: { kind: 'vtol', motors: 4, blades: 2, cylinders: 1, idleRpm: 1500, maxRpm: 7500 },
   interceptor: { kind: 'copter', motors: 4, blades: 3 },   // §25 tailsitter: 4 elektrik motoru (askıda ve yatayda aynı motorlar)
+  rover: { kind: 'rover', gear: 2.97 },                     // §31 elektrikli kara aracı: motor + redüktör ıslığı, lastik gürültüsü
 };
 export const audioModel = type => AUDIO_MODELS[type] || AUDIO_MODELS.multirotor;
 // Motor oranları: her motor hafif farklı devir (üretim toleransı + kontrolcü düzeltmesi) → doğal "vuruş"; 4 ve 6 için farklı diziler
@@ -68,6 +71,8 @@ export const heliBpf = thr => 20 + 10 * clamp(thr, 0, 100) / 100;
 export const vtolMix = airspeed => clamp((num(airspeed) - 5) / 15, 0, 1);
 // Araç (pickup) devri: hıza göre (800 rölanti, 4500 tavan)
 export const vehicleRpm = speedMs => clamp(800 + 120 * Math.max(0, num(speedMs)), 800, 4500);
+// §31 kara aracı: elektrik motoru uğultusu (Hz) yer hızıyla: 0 → 90, 20 m/s → 850 (25 m/s'de kırpılır); geri viteste de |hız|
+export const roverMotorHz = speedMs => 90 + 38 * clamp(Math.abs(num(speedMs)), 0, 25);
 
 // Telemetri → hedef ses parametreleri (yumuşatma öncesi). ctx: { launchMethod, launchPhase, vehicleSpeed } (yalnız sabit kanat canlı).
 export function engineTargets(type, t, ctx = {}) {
@@ -75,7 +80,7 @@ export function engineTargets(type, t, ctx = {}) {
   const armed = !!t?.armed, thr = clamp(num(t?.throttle), 0, 100), air = num(t?.airspeed), gnd = num(t?.groundspeed);
   const wob = clamp(Math.hypot(num(t?.rs), num(t?.ps), num(t?.ys)) / 2, 0, 1);   // gövde açısal hızı → küçük modülasyon (rad/s; 2 → tam)
   const out = { kind: m.kind, armed, thr, wobble: wob, wind: clamp(Math.max(air, gnd) / 40, 0, 1), copter: 0, plane: 0, heli: 0, mix: 0,
-    bpf: 0, rpm: 0, fire: 0, heliBpf: 0, vehicle: 0, vehicleRpm: 0 };
+    bpf: 0, rpm: 0, fire: 0, heliBpf: 0, vehicle: 0, vehicleRpm: 0, rover: 0, roverHz: 0, tire: 0 };
   if (m.kind === 'copter' || m.kind === 'vtol') {
     out.bpf = copterBpf(thr, t?.batt_pct);
     out.copter = armed ? COPTER_IDLE + 0.5 * thr / 100 : 0;    // armed + gaz 0 = rölanti (belirgin); disarm = sessiz
@@ -86,6 +91,13 @@ export function engineTargets(type, t, ctx = {}) {
     out.plane = armed ? 0.3 + 0.6 * thr / 100 : 0;        // armed + gaz 0 = rölanti
   }
   if (m.kind === 'vtol') { out.mix = vtolMix(air); out.copter *= (1 - out.mix * 0.85); out.plane *= (0.25 + 0.75 * out.mix); }
+  if (m.kind === 'rover') {   // §31: uğultu hızla (motor devri tekerle bağlı), kazanç gaz + hız; lastik gürültüsü yalnız hızla (disarm yuvarlanırken de)
+    const v = clamp(gnd / 20, 0, 1);
+    out.roverHz = roverMotorHz(gnd);
+    out.rover = armed ? 0.18 + 0.32 * Math.max(thr / 100, v) : 0;
+    out.tire = 0.45 * v;
+    out.wind = clamp(gnd / 40, 0, 1);
+  }
   if (m.kind === 'heli') {
     out.heliBpf = heliBpf(thr);
     out.heli = armed ? 0.35 + 0.5 * thr / 100 : 0;
@@ -179,7 +191,7 @@ export function createEngineAudio(stage, opts = {}) {
     const fpv = ctx.createBiquadFilter(); fpv.type = 'lowpass'; fpv.frequency.value = 20000; fpv.Q.value = 0.5; fpv.connect(master);
     const pan = ctx.createPanner(); pan.panningModel = 'equalpower'; pan.distanceModel = 'inverse'; pan.refDistance = REF_DISTANCE; pan.rolloffFactor = 1; pan.maxDistance = 5000; pan.connect(fpv);
     const src = ctx.createGain(); src.gain.value = 1; src.connect(pan);   // motor grubu (çarpışmada 0)
-    const g = { master, fpv, pan, src, copter: null, plane: null, heli: null, vehicle: null, wind: null, crashN: null };
+    const g = { master, fpv, pan, src, copter: null, plane: null, heli: null, rover: null, vehicle: null, wind: null, crashN: null };
     if (model.kind === 'copter' || model.kind === 'vtol') {
       const bus = ctx.createGain(); bus.gain.value = 0; bus.connect(src);
       const ratios = MOTOR_RATIOS[model.motors] || MOTOR_RATIOS[4];
@@ -209,6 +221,15 @@ export function createEngineAudio(stage, opts = {}) {
       const turbineH = noise('bandpass', 2400, 2.5, bus, 0.05);
       const tail = osc('sawtooth', 110, bus, 0.05);
       g.heli = { bus, rotorAM, lfo, lfoG, rotorN, rotorH, turbine, turbineH, tail };
+    }
+    if (model.kind === 'rover') {   // §31 elektrik motoru: üçgen (ana) + dişli ıslığı (sinüs, × gear) + inverter vızıltısı + lastik gürültüsü
+      const bus = ctx.createGain(); bus.gain.value = 0; bus.connect(src);
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2400; lp.Q.value = 0.6; lp.connect(bus);
+      const hum = osc('triangle', 90, lp, 0.22);
+      const whine = osc('sine', 90 * model.gear, lp, 0.05);
+      const inv = osc('square', 100, lp, 0.025);
+      const tire = noise('lowpass', 180, 0.6, src, 0);   // lastik: motor kazancından bağımsız (yuvarlanırken de)
+      g.rover = { bus, lp, hum, whine, inv, tire };
     }
     if (launchMethod === 'vehicle') {
       const bus = ctx.createGain(); bus.gain.value = 0; bus.connect(src);
@@ -301,7 +322,7 @@ export function createEngineAudio(stage, opts = {}) {
     const tg = engineTargets(type, t, { launchMethod, launchPhase: phase, vehicleSpeed: vehSpeed });
     sm.thr = smoothFollow(sm.thr, tg.thr, dt);
     sm.bpf = smoothFollow(sm.bpf, tg.bpf || 150, dt);
-    sm.rpm = smoothFollow(sm.rpm, tg.rpm, dt);
+    sm.rpm = smoothFollow(sm.rpm, model.kind === 'rover' ? tg.roverHz : tg.rpm, dt);   // §31 kara aracında motor uğultusu frekansı
     sm.vehRpm = smoothFollow(sm.vehRpm, tg.vehicleRpm || 800, dt, 0.5, 1.2);
     sm.veh = smoothFollow(sm.veh, tg.vehicle, dt, 0.3, 1.5);
     sm.spin = spinStep(sm.spin, tg.armed, dt, model.kind);   // ARM → motor başlatma rampası; DISARM → 1 sn sönme
@@ -359,6 +380,14 @@ export function createEngineAudio(stage, opts = {}) {
       P(G.heli.turbine.o.frequency, (900 + 600 * sm.thr / 100) * (0.3 + 0.7 * spin) * doppler, 0.3);
       P(G.heli.turbineH.fl.frequency, 2000 + 1200 * sm.thr / 100, 0.3);
       P(G.heli.rotorN.fl.frequency, 250 + 120 * spin, 0.3);
+    }
+    if (G.rover) {   // §31: frekans yumuşatılmış hızdan (sm.bpf yerine sm.rpm alanı roverHz'i taşır), spin ile açılır
+      const f = Math.max(40, sm.rpm || tg.roverHz) * doppler * wob;
+      P(G.rover.bus.gain, (tg.rover || 0) * spin, 0.12);
+      P(G.rover.hum.o.frequency, f, 0.08); P(G.rover.whine.o.frequency, f * model.gear, 0.08);
+      P(G.rover.whine.g.gain, 0.03 + 0.07 * clamp(sm.thr / 100, 0, 1), 0.1);
+      P(G.rover.lp.frequency, 1400 + 2 * f, 0.15);
+      P(G.rover.tire.g.gain, tg.tire, 0.2); P(G.rover.tire.fl.frequency, 140 + 30 * clamp(Math.abs(num(t.groundspeed)), 0, 25), 0.2);
     }
     if (G.vehicle) {
       const f = sm.vehRpm / 60 * 4;

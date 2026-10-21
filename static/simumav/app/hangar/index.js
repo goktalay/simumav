@@ -28,9 +28,12 @@ import { loadThree, makeStage, lights } from '../core/three.js';
 import { buildDrone, animateDrone, loadGlb, TYPE_TEMPLATE } from './procmodels.js';
 import * as sfx from '../ui/sfx.js';
 
-export const TYPES = ['multirotor', 'plane', 'heli', 'vtol', 'fpv', 'interceptor'];
+export const TYPES = ['multirotor', 'plane', 'heli', 'vtol', 'fpv', 'interceptor', 'rover'];
 // hız / menzil / dayanıklılık / çeviklik (0–100)
-const SPECS = { multirotor: [45, 40, 70, 65], plane: [70, 90, 60, 35], heli: [55, 50, 55, 60], vtol: [75, 85, 65, 45], fpv: [85, 25, 35, 100], interceptor: [100, 60, 40, 80] };
+const SPECS = { multirotor: [45, 40, 70, 65], plane: [70, 90, 60, 35], heli: [55, 50, 55, 60], vtol: [75, 85, 65, 45], fpv: [85, 25, 35, 100], interceptor: [100, 60, 40, 80], rover: [30, 45, 90, 50] };
+// KARA ARACI (§15; SIM_Rover): sürüş biçimi → azami hız (km/h). Ackermann 20 m/s = 72 km/h, paletli/diferansiyel (skid) 4 m/s ≈ 14 km/h
+export const ROVER_MAX_KMH = { ackermann: 72, skid: 14 };
+export const roverStat = (drive, tt = t) => `${tt(`drive.${drive === 'skid' ? 'skid_short' : 'ackermann_short'}`)} · ${tt('drive.max', { v: ROVER_MAX_KMH[drive === 'skid' ? 'skid' : 'ackermann'] })}`;
 const COLORS = ['#38bdf8', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#f472b6', '#f8fafc', '#64748b', '#0ea5e9', '#f97316'];
 
 /** Dönen tek model sahnesi; setModel(drone) ile değişir. */
@@ -38,7 +41,7 @@ export async function modelViewer(host, { speed = 0.6, env = true } = {}) {
   const lib = await loadThree();
   const { THREE } = lib;
   let model = null, hover = 0;
-  const stage = makeStage(lib, host, { alpha: true, fov: 32, env, onFrame: (dt, tm) => { if (model) { model.rotation.y += dt * speed; model.position.y = Math.sin(tm * 1.3) * 0.04; animateDrone(model, dt, tm); } hover = tm; } });
+  const stage = makeStage(lib, host, { alpha: true, fov: 32, env, onFrame: (dt, tm) => { if (model) { model.rotation.y += dt * speed; model.position.y = (model.userData.baseY || 0) + (model.userData.wheels ? 0 : Math.sin(tm * 1.3) * 0.04); animateDrone(model, dt, tm); } hover = tm; } });   // kara aracı platformda durur (süzülmez)
   stage.camera.position.set(0, 0.9, 3.4); stage.camera.lookAt(0, 0, 0);
   lights(THREE, stage.scene);
   // zemin halkası (platform)
@@ -54,6 +57,8 @@ export async function modelViewer(host, { speed = 0.6, env = true } = {}) {
     if (seq !== setSeq) return;   // bu arada başka model seçildi
     if (!m) m = buildDrone(THREE, d?.model_key, d?.color || '#38bdf8', d?.type);
     if (model) { stage.scene.remove(model); model = null; }
+    // §15 kara aracı: birim kutu en büyük boyuta göre (araç yüksek/kübik) → biraz küçült ve platforma oturt (alt yazıyı örtmesin)
+    if (m.userData.wheels && !m.userData.fitDone) { m.scale.multiplyScalar(0.72); m.userData.baseY = 0.1; m.userData.fitDone = true; }
     model = m; stage.scene.add(model);
   };
   stage.start();
@@ -82,7 +87,7 @@ export async function mount(root, ctx) {
   const modelLabel = d => d?.model_label || (d?.model_key?.startsWith('proc:') ? t('hangar.proc_model') : d?.model_key || '');
   const select = d => {
     selected = d;
-    clear(caption, h('h2', { class: 'title xl' }, d ? d.name : t('hangar.empty_title')), h('p', { class: 'sub' }, d ? `${t(`types.${d.type}`)} · ${modelLabel(d)}${d.airframe ? ` · ${t(`airframe.${d.airframe}`)}` : ''}` : t('hangar.empty_sub')));   // §13.1 düzen
+    clear(caption, h('h2', { class: 'title xl' }, d ? d.name : t('hangar.empty_title')), h('p', { class: 'sub' }, d ? `${t(`types.${d.type}`)} · ${modelLabel(d)}${d.airframe ? ` · ${t(`airframe.${d.airframe}`)}` : ''}${d.type === 'rover' ? ` · ${roverStat(d.drive)}` : ''}` : t('hangar.empty_sub')));   // §13.1 düzen · §15 kara aracı sürüş biçimi
     for (const c of strip.children) c.classList.toggle('sel', c.dataset.id === String(d?.id));
     clear(powerBox, d ? [powerSummary({ h, t, drone: d }), btn([svg('0 0 24 24', BOLT_SVG), ` ${t('power.edit')}`], () => editPower(d), 'pw-edit-btn')] : null);
     viewer?.setModel(d);
@@ -98,6 +103,7 @@ export async function mount(root, ctx) {
         miniBtn(svg('0 0 24 24', TRASH_SVG), () => remove(d), 'danger', t('common.delete'))),
       h('div', { class: 'thumb' }, h('span', { class: 'badge', style: null }, t(`types.${d.type}`))),
       h('b', {}, d.name), h('small', {}, d.is_default ? `★ ${t('common.default')}` : modelLabel(d)), d.airframe ? h('small', { class: 'airframe-tag' }, t(`airframe.${d.airframe}`)) : null,   // §13.1
+      d.type === 'rover' ? h('small', { class: 'airframe-tag drive-tag' }, roverStat(d.drive)) : null,   // §15
       powerTag({ h, p: d.power }));   // §10
     const sw = h('i', { class: 'swatch on' }); sw.style.background = d.color || '#38bdf8'; sw.style.width = '22px'; sw.style.height = '22px';
     c.querySelector('.thumb').append(sw);
@@ -176,7 +182,8 @@ export async function mount(root, ctx) {
       for (const m of models) grid.append(h('div', { class: 'card lift strip-card', tabindex: '0', dataset: { key: m.key }, onclick: () => { if (m.key !== draft.model_key) draft.airframe = null; draft.model_key = m.key; paint(); } },
         h('div', { class: 'thumb' }, m.thumb ? h('img', { src: m.thumb, alt: '' }) : h('span', { class: 'badge accent' }, m.key.startsWith('proc:') ? 'PROC' : 'GLB')), h('b', {}, m.label || m.key),
         m.airframe ? h('small', { class: 'airframe-tag' }, t(`airframe.${m.airframe}`)) : null,
-        powerTag({ h, p: m.power, extra: m.power?.engine === 'fuel' ? ` · ${m.power.max_speed_ms} m/s` : ' mAh' })));   // §10 güç varsayılanı
+        draft.type === 'rover' ? h('small', { class: 'airframe-tag drive-tag' }, roverStat(m.drive)) : null,   // §15 sürüş biçimi + azami hız (SIM_Rover)
+        powerTag({ h, p: m.power, extra: m.power?.engine === 'fuel' && m.power.max_speed_ms ? ` · ${m.power.max_speed_ms} m/s` : m.power?.engine === 'fuel' ? '' : ' mAh' })));   // §10 güç varsayılanı
       clear(body, stage3, grid, afBox, h('div', { class: 'btn-row' }, btn(t('common.back'), () => openWizard(), 'ghost'), btn(t('common.next'), () => stepColor(), 'primary lg')));
       if (pv) { stage3.append(prevHost); pv.stage.resize(); }
       paint();

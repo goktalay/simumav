@@ -3,8 +3,9 @@
 Hangar kaydı (`drones.power` JSON; NULL → katalog modelinin varsayılanı, göç verisi bozmaz):
   {engine: 'fuel'|'electric', max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w,
    fuel_km_per_l_last?, elec_w_last?, measured_at?}   — *_last / measured_at YALNIZ sunucu yazar (uçuş sonu ölçümü).
-Kurallar (HEPGO `flightsim_power.dogrula` ile aynı): yakıtlı motor yalnız sabit kanat ailesinde (plane / interceptor / vtol → çekirdek
-sabit_kanat | vtol); kopterlerde (multirotor / fpv / heli) motor 'electric', yakıt 0 L ve azami hız yok (None). Elektrikli uçakta yakıt 0 L
+Kurallar (HEPGO `flightsim_power.dogrula` ile aynı): yakıtlı motor sabit kanat ailesinde (plane / interceptor / vtol → çekirdek
+sabit_kanat | vtol) ve kara aracında (rover; §15 — varsayılan elektrikli, içten yanmalı 4×4 için yakıt seçilebilir, azami hız yok: SIM_Rover sabit);
+kopterlerde (multirotor / fpv / heli) motor 'electric', yakıt 0 L ve azami hız yok (None). Elektrikli uçakta yakıt 0 L
 (gösterge yok). Sayısal sınırlar çekirdeğin SINIRLAR tablosundan; bool / NaN / ∞ / dize / bilinmeyen anahtar reddedilir (422).
 Uçuş açılışı (`ucus_power`): hangar değerleri + sihirbaz gövdesi (aynı doğrulama) → çekirdeğe TAM `power` sözlüğü (ALANLAR) gider; çekirdeğin
 drone_sitl_options önerisi kullanılmaz (SIMUMAV dron kimlikleri yeniden kullanılabilir → başka kullanıcının ölçümü sızmasın).
@@ -17,7 +18,10 @@ from datetime import datetime
 from .. import flightsim_power as P
 
 ENGINES = ('fuel', 'electric')
-YAKIT_TIPLERI = ('plane', 'interceptor', 'vtol')          # azami hız + (isteğe bağlı) yakıt anlamlı (çekirdek PLANE_TIPLERI: sabit_kanat, vtol, interceptor)
+YAKIT_TIPLERI = ('plane', 'interceptor', 'vtol', 'rover')  # (isteğe bağlı) yakıt anlamlı
+HIZ_TIPLERI = ('plane', 'interceptor', 'vtol')            # azami hız (SIM_PLN_THR_MUL) anlamlı (çekirdek PLANE_TIPLERI: sabit_kanat, vtol, interceptor)
+VARSAYILAN_ELEKTRIK = ('rover',)                          # yakıt seçilebilir ama varsayılan motor elektrikli
+ROVER_YAKIT_L = 20.0                                       # kara aracında elektrikliden yakıtlıya geçişte depo (4×4 sınıfı)
 ALANLAR = P.ALANLAR                                        # max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w
 SINIRLAR = dict(P.SINIRLAR)
 OLCUM_ALANLARI = ('fuel_km_per_l_last', 'elec_w_last', 'measured_at')
@@ -52,10 +56,18 @@ MODEL_VARSAYILAN = {
     'builtin:icept_x4': {'engine': _E, 'max_speed_ms': 111.1, 'elec_cells': 6, 'elec_mah': 8000, 'elec_w': 40},
     'glb:p1sun': {'engine': _E, 'max_speed_ms': 83.3, 'elec_cells': 6, 'elec_mah': 4000, 'elec_w': 30},
     'glb:sting': {'engine': _E, 'max_speed_ms': 87.5, 'elec_cells': 6, 'elec_mah': 4000, 'elec_w': 30},
+    # KARA ARACI (§15; çekirdek ROVER_VARSAYILAN 4S 16000 mAh 60 W, 12 km/L): 4×4 çekirdekle aynı; paletli UGV 6S 20000 mAh 150 W; teslimat robotu 4S 10000 mAh 40 W
+    'glb:rover_4x4': {'engine': _E, 'fuel_km_per_l': 12, 'elec_cells': 4, 'elec_mah': 16000, 'elec_w': 60},
+    'builtin:rover_4x4': {'engine': _E, 'fuel_km_per_l': 12, 'elec_cells': 4, 'elec_mah': 16000, 'elec_w': 60},
+    'glb:rover_ugv': {'engine': _E, 'fuel_km_per_l': 6, 'elec_cells': 6, 'elec_mah': 20000, 'elec_w': 150},
+    'builtin:rover_ugv': {'engine': _E, 'fuel_km_per_l': 6, 'elec_cells': 6, 'elec_mah': 20000, 'elec_w': 150},
+    'glb:rover_bot': {'engine': _E, 'fuel_km_per_l': 12, 'elec_cells': 4, 'elec_mah': 10000, 'elec_w': 40},
+    'builtin:rover_bot': {'engine': _E, 'fuel_km_per_l': 12, 'elec_cells': 4, 'elec_mah': 10000, 'elec_w': 40},
 }
 TIP_VARSAYILAN = {
     'fpv': MODEL_VARSAYILAN['glb:iris_fpv'], 'multirotor': MODEL_VARSAYILAN['glb:iris'], 'heli': MODEL_VARSAYILAN['glb:heli'],
     'plane': MODEL_VARSAYILAN['builtin:caymaz'], 'vtol': MODEL_VARSAYILAN['glb:standard_vtol'], 'interceptor': MODEL_VARSAYILAN['glb:icept_x4'],
+    'rover': MODEL_VARSAYILAN['glb:rover_4x4'],
 }
 
 
@@ -67,10 +79,14 @@ def yakit_olabilir(tip):
     return tip in YAKIT_TIPLERI
 
 
+def hiz_olabilir(tip):
+    return tip in HIZ_TIPLERI
+
+
 def _tam(tip, kaynak):
     """Eksik alanları çekirdek tip varsayılanıyla doldurup kurallara uydurur (engine, yakıt 0, azami hız None)."""
-    ctip = 'sabit_kanat' if yakit_olabilir(tip) else 'multirotor'
-    out = {'engine': 'fuel' if yakit_olabilir(tip) else 'electric', **P.varsayilanlar(ctip)}
+    ctip = 'rover' if tip == 'rover' else 'sabit_kanat' if yakit_olabilir(tip) else 'multirotor'
+    out = {'engine': 'fuel' if yakit_olabilir(tip) and tip not in VARSAYILAN_ELEKTRIK else 'electric', **P.varsayilanlar(ctip)}
     out.update({k: v for k, v in (kaynak or {}).items() if k in GIRIS_ALANLARI and v is not None})
     return _kurallar(tip, out)
 
@@ -78,10 +94,11 @@ def _tam(tip, kaynak):
 def _kurallar(tip, out):
     if not yakit_olabilir(tip):
         out['engine'] = 'electric'
+    if not hiz_olabilir(tip):
         out['max_speed_ms'] = None
     if out['engine'] == 'electric':
         out['fuel_l'] = 0.0
-    if out.get('max_speed_ms') is None and yakit_olabilir(tip):
+    if out.get('max_speed_ms') is None and hiz_olabilir(tip):
         out['max_speed_ms'] = float(P.CAYMAZ_VARSAYILAN['max_speed_ms'])
     for k in ALANLAR:
         v = out.get(k)
@@ -123,18 +140,18 @@ def dogrula(tip, govde, taban=None):
         if govde['engine'] not in ENGINES:
             raise GucHata('power.engine fuel | electric olmalı')
         if govde['engine'] == 'fuel' and not yakit_olabilir(tip):
-            raise GucHata('Yakıtlı motor yalnız sabit kanat / interceptor / VTOL için seçilebilir')
+            raise GucHata('Yakıtlı motor yalnız sabit kanat / interceptor / VTOL / kara aracı için seçilebilir')
         out['engine'] = govde['engine']
     for k in ALANLAR:
         if k in govde and govde[k] is not None:
-            if k == 'max_speed_ms' and not yakit_olabilir(tip):
-                continue   # kopterde azami hız yok (HEPGO dogrula: yok sayılır)
+            if k == 'max_speed_ms' and not hiz_olabilir(tip):
+                continue   # kopter / kara aracında azami hız yok (HEPGO dogrula: yok sayılır)
             out[k] = _sayi(k, govde[k])
     out = _tam(tip, out)
     if out['engine'] == 'fuel' and float(out['fuel_l'] or 0) < YAKIT_MIN_L:
         if govde.get('fuel_l') is not None:
             raise GucHata(f'Yakıtlı motorda yakıt deposu en az {YAKIT_MIN_L:g} L olmalı')
-        out['fuel_l'] = float(P.CAYMAZ_VARSAYILAN['fuel_l'])   # elektrikliden yakıtlıya geçiş: depo tip varsayılanı
+        out['fuel_l'] = ROVER_YAKIT_L if tip == 'rover' else float(P.CAYMAZ_VARSAYILAN['fuel_l'])   # elektrikliden yakıtlıya geçiş: depo tip varsayılanı
     return out
 
 
@@ -215,6 +232,7 @@ def olcum_yaz(conn, drone_id, user_id, ozet):
 
 def api_bilgisi(max_speedup):
     """Katalog/meta: sınırlar, motor türleri, yakıt tipleri, hız seçenekleri (sunucu üst sınırıyla), stok SITL tam gaz hızı."""
-    return {'limits': {k: list(v) for k, v in SINIRLAR.items()}, 'engines': list(ENGINES), 'fuel_types': list(YAKIT_TIPLERI), 'fuel_min_l': YAKIT_MIN_L,
+    return {'limits': {k: list(v) for k, v in SINIRLAR.items()}, 'engines': list(ENGINES), 'fuel_types': list(YAKIT_TIPLERI), 'speed_types': list(HIZ_TIPLERI),
+            'fuel_min_l': YAKIT_MIN_L, 'rover_fuel_l': ROVER_YAKIT_L,
             'speedups': [x for x in P.SPEEDUPS if x <= max_speedup], 'max_speedup': max_speedup, 'stock_max_ms': round(P.plane_tam_gaz_hizi(), 1),
             'cell_v': P.HUCRE_V}

@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS drones (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    type TEXT NOT NULL,                         -- multirotor | plane | heli | fpv | interceptor | vtol
+    type TEXT NOT NULL,                         -- multirotor | plane | heli | fpv | interceptor | vtol | rover (CHECK yok → göç gerekmez)
     model_key TEXT NOT NULL,                    -- flightsim_models anahtarı (builtin:…) ya da proc:<şablon>
     params TEXT NOT NULL DEFAULT '{}',          -- JSON {AD: değer} — yalnız beyaz liste (bridge.params_dogrula)
     color TEXT NOT NULL DEFAULT '#ff6a00',

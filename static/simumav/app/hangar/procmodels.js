@@ -1,4 +1,4 @@
-// Prosedürel dron modelleri (`proc:` şablonları): quad250 (FPV), interceptor, multirotor, plane, heli, vtol.
+// Prosedürel dron modelleri (`proc:` şablonları): quad250 (FPV), interceptor, multirotor, plane, heli, vtol, rover (kara aracı yedeği; asıl GLB).
 // buildDrone(THREE, 'quad250', '#38bdf8') → Group; group.userData.spin = [{mesh, axis, speed}] döner parçalar (pervane/rotor).
 
 const mat = (THREE, color, { metal = 0.6, rough = 0.35, emissive = 0, flat = false } = {}) =>
@@ -108,6 +108,23 @@ function vtol(THREE, color) {
   return g;
 }
 
+// Kara aracı yedeği (GLB yüklenemezse): kasa + 4 teker (teker düğümleri `wheel_*`, ön tekerler `steer_*` altında → animateDrone döndürür)
+function rover(THREE, color) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.45, 0.9), mat(THREE, color, { metal: 0.4, rough: 0.45 })); body.position.y = 0.35; g.add(body);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.3, 0.8), mat(THREE, 0x1b2a44, { metal: 0.8, rough: 0.15 })); cab.position.set(-0.1, 0.72, 0); g.add(cab);
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.5, 8), mat(THREE, 0x888888)); mast.position.set(-0.45, 1.0, 0); g.add(mast);
+  for (const [x, z, n] of [[0.55, -0.5, 'fl'], [0.55, 0.5, 'fr'], [-0.55, -0.5, 'rl'], [-0.55, 0.5, 'rr']]) {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.2, 20), mat(THREE, 0x111111, { metal: 0, rough: 0.95 }));
+    w.rotation.x = Math.PI / 2;
+    const wn = new THREE.Group(); wn.name = `wheel_${n}`; wn.add(w);
+    if (n === 'fl' || n === 'fr') { const st = new THREE.Group(); st.name = `steer_${n}`; st.position.set(x, 0.24, z); st.add(wn); g.add(st); }
+    else { wn.position.set(x, 0.24, z); g.add(wn); }
+  }
+  g.userData.spin = [];
+  return g;
+}
+
 export const TEMPLATES = {
   quad250: (T, c) => quad(T, c, { size: 1.1, carbon: true, cam: true }),
   fpv: (T, c) => quad(T, c, { size: 1.1, carbon: true, cam: true }),
@@ -117,8 +134,9 @@ export const TEMPLATES = {
   interceptor: (T, c) => plane(T, c, { span: 1.6, delta: true, jet: true, prop: false, gear: false }),
   heli: (T, c) => heli(T, c),
   vtol: (T, c) => vtol(T, c),
+  rover: (T, c) => rover(T, c),
 };
-export const TYPE_TEMPLATE = { fpv: 'quad250', multirotor: 'multirotor', plane: 'plane', interceptor: 'interceptor', heli: 'heli', vtol: 'vtol' };
+export const TYPE_TEMPLATE = { fpv: 'quad250', multirotor: 'multirotor', plane: 'plane', interceptor: 'interceptor', heli: 'heli', vtol: 'vtol', rover: 'rover' };
 
 /** model_key 'proc:<şablon>' ya da tür anahtarına göre model üret. */
 export function buildDrone(THREE, modelKey, color = '#38bdf8', type = null) {
@@ -131,12 +149,27 @@ export function buildDrone(THREE, modelKey, color = '#38bdf8', type = null) {
   g.scale.setScalar(s);
   const c = box.getCenter(new THREE.Vector3()).multiplyScalar(s); g.position.sub(c);
   const wrap = new THREE.Group(); wrap.add(g); wrap.userData.spin = g.userData.spin; wrap.userData.flame = g.userData.flame;
+  wrap.userData.wheels = roverParts(g);
   return wrap;
+}
+
+// Kara aracı düğümleri (tools/rover_models_build.py): `wheel_*` teker merkezli (aks yerel +Z) → yavaş yuvarlanma; `steer_fl/fr` Ackermann mafsalı → hafif
+// sağ-sol salınım (yerel +Y ekseni, ±12°). Paletli araçta `track_*` düğümleri durağandır.
+const WHEEL_RE = /^wheel_/i, STEER_RE = /^steer_/i;
+export function roverParts(root) {
+  const wheels = [], steers = [];
+  root.traverse(n => { if (WHEEL_RE.test(n.name || '')) wheels.push(n); else if (STEER_RE.test(n.name || '')) steers.push({ node: n, y0: n.rotation.y }); });
+  return wheels.length || steers.length ? { wheels, steers } : null;
 }
 
 /** Her karede dönen parçaları çevir. */
 export function animateDrone(group, dt, t) {
   for (const s of group.userData.spin || []) s.mesh.rotation[s.axis] += s.speed * dt;
+  const W = group.userData.wheels;
+  if (W) {   // hangar önizlemesi: tekerler yavaşça döner (~1 tur / 2 sn), ön tekerler direksiyon salınımı
+    for (const w of W.wheels) w.rotation.z -= 3.2 * dt;
+    for (const s of W.steers) s.node.rotation.y = s.y0 + Math.sin(t * 0.9) * 0.21;
+  }
   if (group.userData.flame) group.userData.flame.scale.set(1, 0.9 + Math.sin(t * 40) * 0.15, 1);
 }
 
@@ -173,7 +206,7 @@ export async function loadGlb(lib, url, color = null) {
     });
     const box = new THREE.Box3().setFromObject(g), s = 1.8 / Math.max(...box.getSize(new THREE.Vector3()).toArray());
     g.scale.setScalar(s); g.position.sub(box.getCenter(new THREE.Vector3()).multiplyScalar(s));
-    const wrap = new THREE.Group(); wrap.add(g); wrap.userData.spin = spin; wrap.userData.glb = url;
+    const wrap = new THREE.Group(); wrap.add(g); wrap.userData.spin = spin; wrap.userData.glb = url; wrap.userData.wheels = roverParts(g);
     return wrap;
   } catch { return null; }
 }

@@ -42,9 +42,20 @@ TIP_ESLEME = {
     'vtol': ('arduplane', 'quadplane'),
     # INTERCEPTOR (§25): 4 pervaneli tailsitter — dikey kalkış, yatay uçuş (ArduPlane quadplane + Q_TAILSIT; parametre seti flightsim_icept.PARM)
     'interceptor': ('arduplane', 'quadplane-copter_tailsitter'),
+    # KARA ARACI (§31): ArduRover — `rover` (Ackermann: ön tekerlek direksiyonu, SERVO1 direksiyon / SERVO3 gaz); paletli / diferansiyel sürüş
+    # `--model rover-skid` (SERVO1 sol / SERVO3 sağ gaz) oturumda `drive` ile seçilir (ROVER_SKID_MODEL; TIP_ESLEME değişmez)
+    'rover': ('ardurover', 'rover'),
 }
+ROVER_SKID_MODEL = 'rover-skid'
+# ArduPilot Tools/autotest/default_params/rover.parm özü (SITL fiziğiyle ayarlı hız/direksiyon kazançları, RC/SERVO aralıkları; kalibrasyon ve
+# röle/pin satırları hariç) + rover-skid.parm (diferansiyel: SERVO1 73 ThrottleLeft, SERVO3 74 ThrottleRight). Kayıtlı parametrelerden ÖNCE yazılır.
+ROVER_PARM = (('CRUISE_SPEED', 5), ('CRUISE_THROTTLE', 30), ('ATC_SPEED_P', 0.1), ('ATC_STR_RAT_FF', 0.75), ('WP_RADIUS', 3), ('WP_SPEED', 5),
+              ('RC1_MIN', 1000), ('RC1_MAX', 2000), ('RC3_MIN', 1000), ('RC3_MAX', 2000), ('SERVO1_MIN', 1000), ('SERVO1_MAX', 2000),
+              ('SERVO3_MIN', 1000), ('SERVO3_MAX', 2000), ('BATT_MONITOR', 4))
+ROVER_SKID_PARM = (('ATC_STR_RAT_FF', 0.2), ('CRUISE_SPEED', 3), ('CRUISE_THROTTLE', 75), ('SERVO1_FUNCTION', 73), ('SERVO3_FUNCTION', 74), ('WP_SPEED', 3))
+ROVER_ACKERMANN_PARM = (('SERVO1_FUNCTION', 26), ('SERVO3_FUNCTION', 70))   # stok değerler: eeprom'dan kalan skid eşlemesi ezilsin
 # Sürüm SABİTLENİR (GÖKTUNGU 'stable/' kullanıyordu; eş oturum önerisi: sürüm klasörü + sha kaydı)
-SURUM = {'arducopter': ('Copter', 'stable-4.7.2'), 'arduplane': ('Plane', 'stable-4.7.2')}
+SURUM = {'arducopter': ('Copter', 'stable-4.7.2'), 'arduplane': ('Plane', 'stable-4.7.2'), 'ardurover': ('Rover', 'stable-4.7.2')}   # Rover 4.7.2 resmi (yamasız)
 INDIRME = 'https://firmware.ardupilot.org/{arac}/{surum}/SITL_x86_64_linux_gnu/{ikili}'
 
 SANAL_PORT_BASI = 15670      # GÖKTUNGU baglantilar.SANAL_PORT_BASI
@@ -55,6 +66,8 @@ EV_IRTIFA = 100.0            # --home irtifası (GÖKTUNGU varsayılanı)
 def model_tipi(model):
     """Dron kaydının model metninden SITL tipi (tanımsızsa çok rotorlu)."""
     m = str(model or '').lower()
+    if 'rover' in m or 'ugv' in m or 'kara' in m:
+        return 'rover'
     if 'interceptor' in m or 'tailsit' in m or 'önleyici' in m:
         return 'interceptor'
     if 'vtol' in m or 'quadplane' in m:
@@ -189,22 +202,30 @@ def bos_taban_port(baslangic, adim=PORT_ADIM, deneme=200, kullanilan=()):
     return None
 
 
-def tip_parm_satirlari(tip):
-    """Tipe özgü SITL varsayılanları (HEPGO tabanından SONRA, kayıtlı parametrelerden ÖNCE): INTERCEPTOR tailsitter seti (flightsim_icept.PARM)."""
+def rover_parametreleri(model=None):
+    """Kara aracı (§31) SITL başlangıç seti (ad, değer): rover.parm özü + sürüş biçimi (Ackermann stok / skid 73-74)."""
+    return list(ROVER_PARM) + list(ROVER_SKID_PARM if model == ROVER_SKID_MODEL else ROVER_ACKERMANN_PARM)
+
+
+def tip_parm_satirlari(tip, model=None):
+    """Tipe özgü SITL varsayılanları (HEPGO tabanından SONRA, kayıtlı parametrelerden ÖNCE): INTERCEPTOR tailsitter seti (flightsim_icept.PARM);
+    kara aracı rover.parm özü (+ `model` rover-skid ise diferansiyel sürüş seti)."""
     if tip == 'interceptor':
         from . import flightsim_icept
         return flightsim_icept.parm_satirlari()
+    if tip == 'rover':
+        return ['# HEPGO kara araci (rover.parm ozu)'] + [f'{a} {v:g}' for a, v in rover_parametreleri(model)]
     return []
 
 
-def parm_metni(sysid, log_bin=False, ekstra=None, tip=None):
+def parm_metni(sysid, log_bin=False, ekstra=None, tip=None, model=None):
     """SITL `--defaults` dosyası içeriği (Tuzak A). `log_bin`: DataFlash .BIN kaydı (LOG_BACKEND_TYPE 1 = dosya) yalnız armed süre
     (LOG_DISARMED 0) ve disarm'da dosya kapanır/döner (LOG_FILE_DSRMROT 1) → oturum kapanışında son .BIN uçuş loglarına kaydedilir
     (flightsim_bin). Kapalıyken kayıt tamamen kapalı: GÖKTUNGU'da tek sanal dron 43 GB .BIN üretmişti.
     `ekstra`: dronun KAYITLI parametreleri (`AD DEĞER` satırları; drone_params.parm_satirlari) — HEPGO varsayılanlarından SONRA yazılır
     (aynı ad varsa son satır geçerli); simülatör oturum parametreleri kalp atışında PARAM_SET ile sonra gelir."""
     satirlar = [
-        'FRAME_CLASS 1',            # çok rotorlu için anlamlı; plane'de yok sayılır
+        'FRAME_CLASS 1',            # çok rotorlu için anlamlı; plane'de yok sayılır (rover'da FRAME_CLASS 1 = Rover; aynı anlam)
         'FS_GCS_ENABLE 0',          # GCS kalp atışı kaybı failsafe'i test akışını bozmasın
         f'MAV_SYSID {int(sysid)}',  # eeprom'daki eski değere karşı komut satırıyla birlikte
         'ARMING_SKIPCHK 16',        # yalnız INS biti ("PreArm: 3D Accel calibration needed"; ARMING_CHECK bu sürümde yok)
@@ -213,7 +234,7 @@ def parm_metni(sysid, log_bin=False, ekstra=None, tip=None):
         satirlar += ['LOG_BACKEND_TYPE 1', 'LOG_DISARMED 0', 'LOG_FILE_DSRMROT 1']
     else:
         satirlar += ['LOG_BACKEND_TYPE 0', 'LOG_DISARMED 0']
-    satirlar += tip_parm_satirlari(tip)
+    satirlar += tip_parm_satirlari(tip, model)
     if ekstra:
         satirlar += ['# HEPGO kayitli parametreler (drone_sitl_params)'] + [str(s).strip() for s in ekstra if str(s).strip()]
     return '\n'.join(satirlar) + '\n'
@@ -321,7 +342,7 @@ class SitlYoneticisi:
                 return None, f'SITL eski parametre belleği (eeprom.bin) silinemedi: {e}'
         parm = dizin / 'varsayilan.parm'     # Tuzak A: gerçek defaults dosyası
         try:
-            parm.write_text(parm_metni(sysid, log_bin, ekstra_parm, tip), encoding='utf-8')
+            parm.write_text(parm_metni(sysid, log_bin, ekstra_parm, tip, model), encoding='utf-8')
         except OSError as e:
             return None, f'SITL varsayılan parametre dosyası yazılamadı: {e}'
         bin_temizle(kimlik)   # önceki oturumun .BIN artıkları (kaydedilmişse zaten taşındı)
@@ -392,7 +413,7 @@ class SitlYoneticisi:
                     cmd = Path(f'/proc/{pid}/cmdline').read_bytes().decode('utf-8', 'ignore')
                 except OSError:
                     continue
-                if kok in cmd and ('arducopter' in cmd or 'arduplane' in cmd):
+                if kok in cmd and ('arducopter' in cmd or 'arduplane' in cmd or 'ardurover' in cmd):
                     try:
                         os.kill(int(pid), 15)
                         sayi += 1

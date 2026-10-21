@@ -15,8 +15,8 @@ import { launchLabel } from './flightsim_launch.js';
 import { budgetView, fmtKm, fmtMin, fmtSec, nameError, normName, resultBadge, runFacts, NAME_MAX, DESC_MAX } from './flightsim_presets.js';
 import { flightBudget } from './flightsim_power.js';
 
-const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
-const DEFAULT_MODEL = { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', sabit_kanat: 'builtin:caymaz', vtol: 'builtin:caymaz', interceptor: 'builtin:icept_x4' };
+const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR', rover: 'Kara Aracı' };   // §31
+const DEFAULT_MODEL = { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', sabit_kanat: 'builtin:caymaz', vtol: 'builtin:caymaz', interceptor: 'builtin:icept_x4', rover: 'builtin:rover_4x4' };
 const WORLD_MODE = { real: 'Gerçek arazi', google3d: 'Google 3B', procedural: 'Prosedürel' };
 const CAMERA = { day: 'Gündüz', thermal: 'Termal', night: 'Gece görüşü' };
 const svg = body => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
@@ -523,6 +523,7 @@ export function savedScreen({ be, tr, user = null, canWrite = false, initial = n
       budgetBox({ tr, budget: p.budget || flightBudget(st.power, p.type), compact: true }),
       dl([['Pilot', p.pilot_name || tr('Pilot atanmadı')], ['Tasarlayan', p.created_by_name || '—'], ['Merkez', p.center_name || '—'],
         ['Dünya', tr(WORLD_MODE[w.mode] || w.mode || 'Prosedürel')], w.launch?.method && p.type === 'sabit_kanat' ? ['Kalkış', launchLabel(w.launch, tr)] : null,
+        p.type === 'rover' && st.drive ? ['Sürüş biçimi', tr(st.drive === 'skid' ? 'Paletli / diferansiyel' : 'Ackermann')] : null,   // §31
         st.camera ? ['Kamera', tr(CAMERA[st.camera] || st.camera)] : null, st.targets?.items?.length || Array.isArray(st.targets) ? ['Hedefler', String((st.targets.items || st.targets).length)] : null,
         ['Uçuş', tr('{n} kez · son {t}', { n: p.run_count || 0, t: p.last_run_at ? fmtDateTime(p.last_run_at) : '—' })], ['Güncellendi', fmtDateTime(p.updated_at)]]),
       h('div', { class: 'fs-sv-dacts' },

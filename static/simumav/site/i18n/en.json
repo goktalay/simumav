@@ -214,5 +214,9 @@
   "sys.alt.tgt": "F-16 style target symbology on the gimbal camera",
   "sys.alt.tgtthermal": "Target symbology on the thermal camera",
   "sys.alt.launch": "INTERCEPTOR launcher choice in the Fly wizard: four- and eight-cell boxes, single tube, handheld launcher and 3D preview",
-  "sys.alt.report": "Defend ground control mission report"
+  "sys.alt.report": "Defend ground control mission report",
+  "type.rover": "Ground vehicle",
+  "fleet.rover_4x4.d": "Ackermann-steered 4×4 scout with an EO/IR + LIDAR mast; up to 72 km/h on ArduRover.",
+  "fleet.rover_ugv.d": "Tracked unmanned ground vehicle: turns on the spot (skid steering), sensor turret.",
+  "fleet.rover_bot.d": "Six-wheeled sidewalk delivery robot (0.78 m), skid steering, flag mast."
 }

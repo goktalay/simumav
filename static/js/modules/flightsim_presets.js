@@ -5,7 +5,7 @@
 // • presetBodyFromSession: sihirbaz gövdesinden kayda girecek alanlar (mode/log_id/airframe atılır; sunucu ALANLAR ile aynı).
 
 export const NAME_MAX = 80, DESC_MAX = 500;
-export const PRESET_FIELDS = ['type', 'center_id', 'world', 'model', 'drone_id', 'rec', 'power', 'camera', 'layout', 'targets', 'site', 'defend'];
+export const PRESET_FIELDS = ['type', 'center_id', 'world', 'model', 'drone_id', 'rec', 'power', 'camera', 'layout', 'targets', 'site', 'defend', 'drive'];
 
 export const normName = s => String(s ?? '').normalize('NFC').trim().replace(/\s+/g, ' ');
 export const nameKey = s => normName(s).replace(/I/g, 'ı').replace(/İ/g, 'i').toLowerCase();

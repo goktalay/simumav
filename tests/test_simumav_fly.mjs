@@ -6,7 +6,7 @@
 //   • gates.js: düzlem kesişimi (içinde / dışında / ters yön / düzlem geçilmedi), izleyici (pass/miss/atlama/ters yön/tur/bitiş), replayGatesAt, gateStats
 //   • session.js: installWsBridge (yalnız /ws/drone/live yolu yönlendirilir) — DOM gerektirmeyen kısım sahte `win` ile
 import assert from 'node:assert/strict';
-import { ICEPT_LAUNCH_SM, createWizard, hasLaunchStep, iceptLaunchBody, iceptLaunchLabel, isIceptLaunch, normIceptLaunch, normLaunch, launchBody, speedScale, speedAngle, speedTicks, modelFor, worldFromTrack, countdownAt, needsLaunch, simType, STEPS, timeOfDay, AIRFRAMES, airframeOf, airframeForModel, airframeLabel, needsAirframe } from '../static/simumav/app/fly/wizard.js';
+import { DRIVE_SM, DRIVES, driveForModel, driveOf, isRover, TYPE_MAP, startCameraFor, audioTypeFor, ICEPT_LAUNCH_SM, createWizard, hasLaunchStep, iceptLaunchBody, iceptLaunchLabel, isIceptLaunch, normIceptLaunch, normLaunch, launchBody, speedScale, speedAngle, speedTicks, modelFor, worldFromTrack, countdownAt, needsLaunch, simType, STEPS, timeOfDay, AIRFRAMES, airframeOf, airframeForModel, airframeLabel, needsAirframe } from '../static/simumav/app/fly/wizard.js';
 import { HAND, handPoseAt, handReleaseTime, shimTelemetry, replayHandTimeline, replayHandPhaseAt, replayHandPhaseStart, handCfg, REPLAY_HAND_RELEASE } from '../static/simumav/app/fly/hand_launch.js';
 import { CAMERA_KEYS, cameraDefault, camTr } from '../static/simumav/app/fly/camera_pick.js';
 import { ICEPT_METHODS } from '../static/js/modules/flightsim_launcher.js';
@@ -244,5 +244,23 @@ test('HEPGO §27 INTERCEPTOR fırlatıcısı: kalkış adımı açılır, ayrı 
   assert.deepEqual(iceptLaunchBody({ method: 'pod4', loaded: 2, aim_az_deg: 10 }), { method: 'pod4', loaded: 2 });
   const W3 = createWizard(D2, { drone_id: 9, launch: { method: 'handheld', aim_az_deg: 20, aim_el_deg: 40 } });   // süren uçuş / önceki seçim
   assert.equal(W3.state.ilaunch.method, 'handheld'); assert.equal(W3.state.ilaunch.aim_el_deg, 40);
+});
+test('§15 KARA ARACI: tip eşlemesi, kalkış adımı yok, sürüş biçimi (modelin / seçilen), start gövdesi drive, hız ölçeği, model yedeği', () => {
+  assert.equal(simType('rover'), 'rover'); assert.equal(TYPE_MAP.rover, 'rover'); assert.ok(isRover('rover') && !isRover('plane'));
+  assert.ok(!needsLaunch('rover') && !hasLaunchStep('rover')); assert.equal(startCameraFor('rover'), 'follow'); assert.equal(audioTypeFor('rover'), 'rover');
+  assert.deepEqual(DRIVES, ['ackermann', 'skid']); assert.deepEqual(DRIVE_SM.map(r => r[0]), DRIVES);
+  assert.equal(driveForModel('glb:rover_ugv'), 'skid'); assert.equal(driveForModel('glb:rover_bot'), 'skid'); assert.equal(driveForModel('glb:rover_4x4'), 'ackermann'); assert.equal(driveForModel('glb:rover_4x4', 'skid'), 'skid');
+  assert.equal(driveOf({ type: 'plane', model_key: 'x' }), null); assert.equal(driveOf({ type: 'rover', model_key: 'glb:rover_4x4', drive: 'ackermann' }, 'skid'), 'skid');
+  const D2 = { ...DATA, drones: [...DATA.drones, { id: 20, name: 'K4', type: 'rover', model_key: 'glb:rover_4x4', drive: 'ackermann' }, { id: 21, name: 'UGV', type: 'rover', model_key: 'glb:rover_ugv', drive: 'skid' }] };
+  const W = createWizard(D2, { drone_id: 20, launch: { method: 'ramp' } });
+  assert.deepEqual(W.steps(), ['drone', 'track', 'power', 'mission', 'site', 'targets', 'pilot'], 'kalkış adımı yok');
+  assert.equal(W.drive(), 'ackermann'); assert.equal(W.payload().drive, 'ackermann'); assert.deepEqual(W.payload().launch, { method: 'wheels' }, 'kalkış yöntemi gönderilmez (nötr)');
+  W.set('drive', 'skid'); assert.equal(W.payload().drive, 'skid'); W.set('drive', 'tank'); assert.equal(W.state.drive, null); assert.equal(W.payload().drive, 'ackermann');
+  W.set('drive', 'skid'); W.set('drone_id', 21); assert.equal(W.state.drive, null, 'dron değişince seçim sıfırlanır'); assert.equal(W.payload().drive, 'skid');
+  W.set('drone_id', 1); assert.equal(W.payload().drive, undefined, 'kopterde drive yok');
+  assert.equal(speedScale('rover', 'glb:rover_4x4'), 80); assert.equal(speedScale('rover', 'glb:rover_ugv'), 20); assert.equal(speedScale('rover', 'glb:rover_4x4', 'skid'), 20);
+  assert.deepEqual(speedTicks(20), [0, 5, 10, 15, 20]); assert.deepEqual(speedTicks(80), [0, 20, 40, 60, 80]);
+  assert.deepEqual(modelFor({ type: 'rover' }), { id: 'builtin:rover_4x4' });
+  assert.deepEqual(modelFor({ type: 'rover', model_key: 'glb:rover_ugv', preview: '/static/simumav/models/rover_ugv.glb', orient: { forward: '+x', up: '+y' }, has_prop: false }), { id: 'glb:rover_ugv', glb_url: '/static/simumav/models/rover_ugv.glb', orient: { forward: '+x', up: '+y' }, has_prop: false });
 });
 console.log(`\n${n} test geçti`);

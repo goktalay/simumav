@@ -23,11 +23,14 @@ export const CAYMAZ_DEFAULTS = { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25,
 export const COPTER_DEFAULTS = { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25, elec_cells: 4, elec_mah: 10000, elec_w: 30 };
 // §25 INTERCEPTOR: elektrikli tailsitter — yakıt yok, 400 km/h (111,1 m/s), 6S aviyonik bataryası (sunucu INTERCEPTOR_VARSAYILAN)
 export const INTERCEPTOR_DEFAULTS = { max_speed_ms: 111.1, fuel_l: 0, fuel_km_per_l: 25, elec_cells: 6, elec_mah: 8000, elec_w: 40 };
+// §31 KARA ARACI (ArduRover): varsayılan elektrikli (yakıt 0 L; içten yanmalı 4×4 için L / km/L girilir), 4S 16000 mAh, sürüş elektroniği 60 W (sunucu ROVER_VARSAYILAN)
+export const ROVER_DEFAULTS = { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 12, elec_cells: 4, elec_mah: 16000, elec_w: 60 };
 const PLANE_TYPES = ['sabit_kanat', 'vtol', 'interceptor'];
 const num = (v, d = null) => (v == null || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 export const isPlaneType = t => PLANE_TYPES.includes(t);
-export const defaultsFor = t => ({ ...(t === 'interceptor' ? INTERCEPTOR_DEFAULTS : isPlaneType(t) ? CAYMAZ_DEFAULTS : COPTER_DEFAULTS) });
+export const isRoverType = t => t === 'rover';
+export const defaultsFor = t => ({ ...(t === 'interceptor' ? INTERCEPTOR_DEFAULTS : t === 'rover' ? ROVER_DEFAULTS : isPlaneType(t) ? CAYMAZ_DEFAULTS : COPTER_DEFAULTS) });
 
 // ---------- saf hesaplar (sunucuyla birebir) ----------
 // Anlık tüketim (L/dk): (v km/h ÷ 60) ÷ (km/L) × (0,5 + 0,5·gaz)
@@ -201,11 +204,14 @@ export function elecGauge(e, sitl = null) {
 }
 // Hız kadranı: yer hızı km/h; ölçek 0 … niceScaleMax(azami × 1,2); azami hız üstü kırmızı bölge; uçakta hava hızı ikinci okuma (IAS);
 // uyarı üçgeni: çarpışma, aşırı hız (> azami) ya da stall (uçak, armed, havada > 10 m AGL, IAS < azami × 0,25). Azami yoksa (kopter) 100 km/h ölçek, kırmızı bölge yok.
-export function speedGauge(t, settings = null, { plane = false, collision = false } = {}) {
+// §31 kara aracı (rover: true): ölçek 0 … niceScaleMax(72 km/h = SIM_Rover 20 m/s), hava hızı / stall yok, kırmızı bölge yok.
+export const ROVER_GAUGE_KMH = 72;
+export function speedGauge(t, settings = null, { plane = false, collision = false, rover = false } = {}) {
   if (!t) return null;
-  const gs = Math.max(0, num(t.groundspeed ?? t.gs, 0)) * 3.6, air = t.airspeed != null ? Math.max(0, num(t.airspeed, 0)) * 3.6 : null;
-  const vmax = num(settings?.max_speed_ms, null), maxKmh = vmax ? vmax * 3.6 : null;
-  const sc = niceScaleMax(maxKmh || 100 / 1.2);
+  if (rover) plane = false;
+  const gs = Math.max(0, num(t.groundspeed ?? t.gs, 0)) * 3.6, air = !rover && t.airspeed != null ? Math.max(0, num(t.airspeed, 0)) * 3.6 : null;
+  const vmax = rover ? null : num(settings?.max_speed_ms, null), maxKmh = vmax ? vmax * 3.6 : null;
+  const sc = niceScaleMax(rover ? ROVER_GAUGE_KMH : (maxKmh || 100 / 1.2));
   const airborne = !!t.armed && num(t.alt_rel, 0) > 10;
   const over = maxKmh != null && gs > maxKmh * 1.02, stall = plane && airborne && air != null && maxKmh != null && air < maxKmh * 0.25;
   const warn = !!collision || over || stall;
@@ -309,7 +315,7 @@ function dialSvg(kind) {
 const SPEEP = kind => SPEC[kind];
 // §27.3 tasarım seçenekleri (flightsim_gtheme.js): kapsayıcıda data-gtheme; cam kokpitte .fs-gauge-bar seviye şeridi (--f = ibre doluluğu);
 // ayrıntı kutusunda tema satırı + G tuşu (döngü). theme: başlangıç (yoksa kalıcı tercih); gtT: tema metinleri (HEPGO tr / SIMUMAV keyed); onTheme(t).
-export function createPowerGauges(stage, { h, tr, getSettings = () => null, getSummary = () => null, plane = false, getCollision = () => false, theme = null, gtT = null, onTheme = () => {} }) {
+export function createPowerGauges(stage, { h, tr, getSettings = () => null, getSummary = () => null, plane = false, rover = false, getCollision = () => false, theme = null, gtT = null, onTheme = () => {} }) {
   ensureGaugeThemeCss();
   const GT = gtT || makeGThemeT(tr, false);
   let gtheme = normGaugeTheme(theme ?? loadGaugeTheme());
@@ -400,7 +406,7 @@ export function createPowerGauges(stage, { h, tr, getSettings = () => null, getS
     const now = performance.now();
     if (now - lastAt < 100) return;   // ≤ 10 Hz DOM yazımı (ibre rAF ile aradaki kareleri doldurur)
     lastAt = now;
-    const m = dashModels(t, getSettings(), { plane, collision: !!getCollision() });
+    const m = dashModels(t, getSettings(), { plane, rover, collision: !!getCollision() });
     apply(G.fuel, m.fuel); apply(G.speed, m.speed); apply(G.engine, m.engine); apply(G.elec, m.elec);
     const on = !!(m.fuel || m.elec);
     el.hidden = !on; stage.classList.toggle('fs-power-on', on);
@@ -433,7 +439,7 @@ export function createPowerSection({ h, tr, api = null, getType, getDroneId = ()
     h('div', { class: 'fs-pw-grid' },
       h('div', { class: 'fs-pw-col' }, h('h4', { class: 'fs-sub-h' }, 'Motor'),
         mk('max_speed_ms', 'Azami hız', 'm/s', 1, 'Tam gazda seviye uçuş hızı (CAYMAZ 222 cc karbüratörlü motor: 45 m/s). SITL itki çarpanı + AIRSPEED_MAX/CRUISE, THR_MAX 100.'),
-        mk('fuel_l', 'Yakıt', 'L', 0.1, '0 = yakıt göstergesi yok (elektrikli).'),
+        mk('fuel_l', 'Yakıt', 'L', 0.1, '0 = yakıt göstergesi yok (elektrikli).'),   // §31 kara aracında ipucu applyType'ta değişir
         mk('fuel_km_per_l', 'Tüketim', 'km/L', 0.5, 'Seyirde kat edilen km başına yakıt; gaz kolu %100\'de tüketim 2 katına çıkar.')),
       h('div', { class: 'fs-pw-col' }, h('h4', { class: 'fs-sub-h' }, 'Elektronik batarya'),
         mk('elec_cells', 'Hücre sayısı', 'S', 1, null),
@@ -451,7 +457,9 @@ export function createPowerSection({ h, tr, api = null, getType, getDroneId = ()
     warn.hidden = !nos;
     if (nos) warn.textContent = tr('SITL ikilisi itki ölçeği (SIM_PLN_THR_MUL) desteklemiyor: azami hız yalnız ArduPilot sınırlarına uygulanır; tam gaz hızı stok fizikte ≈ {s} m/s kalır.', { s: info.stock_max_ms });
   };
-  const applyType = () => { rows.max_speed_ms.hidden = !isPlaneType(getType()); };
+  // §31 kara aracı: azami hız satırı yok (isPlaneType), yakıt ipucu içten yanmalı 4×4'e göre
+  const FUEL_HINT = { def: '0 = yakıt göstergesi yok (elektrikli).', rover: '0 = elektrikli; içten yanmalı 4×4 için L ve km/L girin.' };
+  const applyType = () => { rows.max_speed_ms.hidden = !isPlaneType(getType()); if (inp.fuel_l.hint) inp.fuel_l.hint.textContent = tr(isRoverType(getType()) ? FUEL_HINT.rover : FUEL_HINT.def); };
   const setValues = (vals, from) => {
     for (const k of POWER_FIELDS) { if (vals[k] !== undefined) { V[k] = vals[k]; if (V[k] != null) inp[k].set(V[k]); } srcBadge[k].textContent = from && from[k] != null ? tr('dron kaydından') : ''; }
     src = from && Object.keys(from).length ? 'drone' : 'default';
@@ -486,6 +494,7 @@ export function createSpeedPill({ h, tr, onPick, cls = '' }) {
 // Yakıt menzili = L × km/L ÷ (0,5 + 0,5·gaz), süre = menzil ÷ v_seyir · batarya süresi = Wh ÷ W, menzil = süre × v_seyir · sınırlayan = süresi kısa olan.
 // Azami hızda (gaz 1) aynı hesap *_max alanlarında. Yuvarlama floor(x·10ⁿ + 0,5)/10ⁿ (Python ile aynı).
 export const KOPTER_SEYIR_MS = 10, KOPTER_AZAMI_MS = 12.5, KOPTER_ASKI_GAZ = 0.5, SEYIR_ORAN = 12 / 22, ICEPT_SEYIR_ORAN = 0.8;
+export const ROVER_SEYIR_MS = 5, ROVER_AZAMI_MS = 20, ROVER_SEYIR_GAZ = 0.3;   // §31 (sunucu ROVER_SEYIR_MS / ROVER_AZAMI_MS / ROVER_SEYIR_GAZ)
 export const roundN = (x, n = 1) => (x == null ? null : Math.floor(Number(x) * 10 ** n + 0.5) / 10 ** n);
 export function flightBudget(p, type) {
   const a = defaultsFor(type);
@@ -496,7 +505,8 @@ export function flightBudget(p, type) {
     vmax = fin(a.max_speed_ms) || defaultsFor(type).max_speed_ms;
     vc = vmax * (type === 'interceptor' ? ICEPT_SEYIR_ORAN : SEYIR_ORAN);
     thr = clamp((vc / vmax) ** 2, 0, 1);
-  } else { vmax = KOPTER_AZAMI_MS; vc = KOPTER_SEYIR_MS; thr = KOPTER_ASKI_GAZ; }
+  } else if (type === 'rover') { vmax = ROVER_AZAMI_MS; vc = ROVER_SEYIR_MS; thr = ROVER_SEYIR_GAZ; }   // §31 rover.parm CRUISE_SPEED 5 m/s @ CRUISE_THROTTLE %30; SIM_Rover azami 20 m/s
+  else { vmax = KOPTER_AZAMI_MS; vc = KOPTER_SEYIR_MS; thr = KOPTER_ASKI_GAZ; }
   const kmhC = vc * 3.6, kmhM = vmax * 3.6;
   const fl = fin(a.fuel_l), kml = fin(a.fuel_km_per_l);
   let fuel = null;

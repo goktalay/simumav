@@ -15,10 +15,12 @@ export const FLIGHT_MODES = {
   vtol: ['MANUAL', 'FBWA', 'FBWB', 'CRUISE', 'TAKEOFF', 'AUTO', 'LOITER', 'CIRCLE', 'GUIDED', 'RTL', 'QSTABILIZE', 'QHOVER', 'QLOITER', 'QACRO', 'QLAND', 'QRTL'],
   icept: ['FBWA', 'FBWB', 'CRUISE', 'AUTO', 'LOITER', 'GUIDED', 'RTL', 'QSTABILIZE', 'QHOVER', 'QLOITER', 'QLAND', 'QRTL'],
   copter: ['STABILIZE', 'ALT_HOLD', 'LOITER', 'POSHOLD', 'ACRO', 'GUIDED', 'AUTO', 'BRAKE', 'CIRCLE', 'RTL', 'SMART_RTL', 'LAND'],
+  rover: ['MANUAL', 'ACRO', 'STEERING', 'HOLD', 'LOITER', 'FOLLOW', 'SIMPLE', 'AUTO', 'RTL', 'SMART_RTL', 'GUIDED'],   // §31 ArduRover (flightsim_rover ROVER_MODES)
 };
-/** Oturum tipi → aile: 'plane' | 'vtol' | 'icept' | 'copter'. */
+/** Oturum tipi → aile: 'plane' | 'vtol' | 'icept' | 'copter' | 'rover'. */
 export function modeKind(type) {
   const t = String(type || '');
+  if (t === 'rover') return 'rover';
   if (t === 'interceptor') return 'icept';
   if (t === 'vtol') return 'vtol';
   if (/sabit|plane|delta|caymaz|talon|wing/i.test(t)) return 'plane';
@@ -32,9 +34,9 @@ export function modeGroups(kind, modes = flightModesFor(kind)) {
   if (kind !== 'vtol' && kind !== 'icept') return [['all', [...modes]]];
   return [['fw', modes.filter(m => !qMode(m))], ['q', modes.filter(qMode)]];
 }
-/** Havada mı: yere göre irtifa > 3 m ya da hız > 6 m/s (rampada/pistte armed ama hareketsiz → yerde). */
-export function isAirborne(t) {
-  if (!t) return false;
+/** Havada mı: yere göre irtifa > 3 m ya da hız > 6 m/s (rampada/pistte armed ama hareketsiz → yerde). Kara aracı (§31) hiçbir zaman havada değildir. */
+export function isAirborne(t, kind = null) {
+  if (!t || kind === 'rover') return false;
   const alt = Number(t.alt_rel ?? t.alt ?? 0), v = Math.max(Number(t.airspeed) || 0, Number(t.groundspeed) || 0);
   return alt > 3 || v > 6;
 }
@@ -45,7 +47,7 @@ export function isAirborne(t) {
 export function disarmAction(kind, t) {
   if (t?.motor_cut) return 'motor_restore';
   if (!t?.armed) return 'arm';
-  if (!isAirborne(t)) return 'disarm';
+  if (kind === 'rover' || !isAirborne(t)) return 'disarm';   // §31 kara aracı: DISARM her zaman yerde (motorlar durur, araç durur)
   if (kind === 'plane') return 'motor_cut';
   if ((kind === 'vtol' || kind === 'icept') && !qMode(t.mode) && !['QSTABILIZE', 'QHOVER'].includes(String(t.mode || ''))) return 'motor_cut';
   return 'confirm_disarm';
@@ -157,7 +159,7 @@ export function createFlightBar({ tr, keyed = false, kind = 'copter', modes = nu
     modeTxt.textContent = m || '—';
     modeTxt.toggleAttribute('data-q', qMode(m));
     modeTxt.toggleAttribute('data-auto', m === 'AUTO' || m === 'GUIDED');
-    modeTxt.toggleAttribute('data-rtl', /RTL|LAND/.test(m || ''));
+    modeTxt.toggleAttribute('data-rtl', /RTL|LAND|HOLD/.test(m || ''));
     for (const [k, b] of btns) { b.classList.toggle('on', k === m); b.classList.toggle('pend', k === pending); }
     const a = disarmAction(kind, tele);
     xBtn.textContent = a === 'arm' ? T('flt.arm') : a === 'motor_restore' ? T('flt.restore') : T('flt.disarm');

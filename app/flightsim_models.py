@@ -55,9 +55,21 @@ BUILTIN = {
     'sting': {'name': 'Sting', 'types': ('interceptor',), 'format': 'glb', 'glb': 'simumav/models/sting.glb', 'has_prop': True,
               'orient': {'forward': '+x', 'up': '+y', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}},
               'desc': 'Wild Hornets Sting önleyici (~0,45 m), 4 pervane'},
+    # §31 KARA ARACI kataloğu — prosedürel GLB'ler SIMUMAV ile ortak (static/simumav/models; tools/rover_models_build.py; LICENSES.md). Çerçeve burun +X,
+    # yukarı +Y; `wheel_*` düğümleri teker merkezli (aks yerel +Z), `steer_fl/fr` Ackermann mafsalı. `drive`: oturumun SITL modelini seçer
+    # (ackermann → `rover`, skid → `rover-skid`; oturum `drive` verilmezse bu kullanılır).
+    'rover_4x4': {'name': 'Keşif 4×4', 'types': ('rover',), 'format': 'glb', 'glb': 'simumav/models/rover_4x4.glb', 'has_prop': False, 'drive': 'ackermann',
+                  'orient': {'forward': '+x', 'up': '+y', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}},
+                  'desc': 'Ön tekerden dönen (Ackermann) 4×4 keşif aracı: 2,2 m, teker Ø 66 cm, sensör direği (EO/IR + LIDAR); azami 72 km/h (SITL rover)'},
+    'rover_ugv': {'name': 'Paletli UGV', 'types': ('rover',), 'format': 'glb', 'glb': 'simumav/models/rover_ugv.glb', 'has_prop': False, 'drive': 'skid',
+                  'orient': {'forward': '+x', 'up': '+y', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}},
+                  'desc': 'Paletli insansız kara aracı (2,5 m): yerinde döner (diferansiyel sürüş, SITL rover-skid), sensör kulesi'},
+    'rover_bot': {'name': 'Teslimat robotu', 'types': ('rover',), 'format': 'glb', 'glb': 'simumav/models/rover_bot.glb', 'has_prop': False, 'drive': 'skid',
+                  'orient': {'forward': '+x', 'up': '+y', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}},
+                  'desc': '6 tekerli kaldırım teslimat robotu (0,78 m): diferansiyel sürüş (SITL rover-skid), bayrak direği'},
 }
 VARSAYILAN = {'multirotor': 'builtin:quad', 'hexarotor': 'builtin:hexa', 'helikopter': 'builtin:heli', 'sabit_kanat': 'builtin:caymaz', 'vtol': 'builtin:caymaz',
-              'interceptor': 'builtin:icept_x4'}
+              'interceptor': 'builtin:icept_x4', 'rover': 'builtin:rover_4x4'}
 ORIENT_VARSAYILAN = {'forward': '+y', 'up': '+z', 'scale': 1.0, 'offset': [0.0, 0.0, 0.0], 'prop': {'mode': 'none', 'pos': [0.0, 0.0, 0.0], 'r': 0.3}}
 
 
@@ -102,7 +114,7 @@ def builtin_api(key, tip):
             'thumb_url': _url(mid, 'thumb', tip) if builtin_thumb_yolu(key, tip).is_file() else None,
             'glb_url': f"/static/{b['glb']}" if glb else None, 'file_url': None, 'format': b['format'],
             'size': glb.stat().st_size if glb and glb.is_file() else None, 'ready': True, 'orient': json.loads(json.dumps(b['orient'])) if b.get('orient') else None,
-            'has_prop': bool(b.get('has_prop')), 'layout': b.get('layout'), 'created_by': None, 'created_at': None}
+            'has_prop': bool(b.get('has_prop')), 'layout': b.get('layout'), 'drive': b.get('drive'), 'created_by': None, 'created_at': None}
 
 
 def orient_dogrula(o):

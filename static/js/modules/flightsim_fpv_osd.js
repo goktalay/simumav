@@ -18,6 +18,7 @@ export const LS = { analog: 'fs.fpv.analog', pip: 'fs.fpv.pip', nose: 'fs.fpv.no
 export const LOW_BATT_PCT = 25, LOW_ALT_M = 10, LOW_RSSI = 30, LOW_FUEL_PCT = 20;
 export const CELL = { min: 3.5, max: 4.2, nominal: 3.8 };   // LiPo hücre gerilimleri (yüzde kestirimi)
 const DEG = Math.PI / 180;
+import { createRoverHud } from './flightsim_rover_hud.js';   // §31 kara aracı göstergesi
 import { symbology, drawSymbology } from './flightsim_tgthud.js';   // §24.5 hedef sembolojisi (balıkgözü düzeltmeli izdüşüm 3B'den)
 import { gaugeLevel } from './flightsim_power.js';   // §23.6: güç çubuğu seviye eşikleri (yeşil ≥ 30 · sarı < 30 · kırmızı < 15 · bitti) kadranlarla aynı
 const WHITE = '#f4f6f8', DIM = 'rgba(244,246,248,.6)', RED = '#ff4a4a', YEL = '#ffd84a';
@@ -127,7 +128,8 @@ export function createFpvPrefs(storage = null) {
 }
 
 // ---------------------------------------------------------------- canvas katmanı ----------------------------------------------------------------
-export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null } = {}) {
+export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null, keyed } = {}) {
+  if (ctx.session?.type === 'rover') return createRoverHud(stage, ctx, { tr, keyed, cam: 'pilot', key: 'o' });   // §31 kara aracı: KOKPİT göstergesi
   const prefs = createFpvPrefs(storage);
   const canvas = document.createElement('canvas');
   canvas.className = 'fs-osd';

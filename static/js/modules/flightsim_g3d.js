@@ -184,15 +184,19 @@ export async function createGoogleTiles(opts) {
   // Nitelikli örnek (§13 düzenek yüzeyi): { z, fine, err, leaf } ya da null (karo yok). Işın YALNIZ karo grubuna (tiles.raycast → activeTiles
   // sahneleri) atılır: uçak, düzenek ve kamera yardımcıları hiç denenmez. fine: karonun geometricError'ı ≤ fineErr ya da yaprak karo (daha ince LOD
   // yok); kaba/kök karo (onlarca m hata) fine=false → düzenek önceki kabul edilmiş değerini korur (yedek yüksekliği çağıran verir).
-  const surfaceAt = (x, y, fineErr = 2) => {
+  // `top` (isteğe bağlı, §31 kara aracı): ışın bu yükseklikten başlar ve yalnız altındaki en yüksek yüzey alınır — aracın üstündeki ağaç tacı / köprü /
+  // saçak yüzey sayılmaz (verilmezse RAY_TOP: en üst yüzey, düzenek davranışı aynen)
+  const surfaceAt = (x, y, fineErr = 2, top = null) => {
     if (!tiles.root) return null;
     hits.length = 0;
-    from.set(x, y, RAY_TOP);
+    const z0 = Number.isFinite(top) ? Math.min(RAY_TOP, top) : RAY_TOP;
+    from.set(x, y, z0);
     ray.set(from, down);
     tiles.raycast(ray, hits);
     if (!hits.length) return null;
     let best = null;
-    for (const h of hits) if (!best || h.point.z > best.point.z) best = h;
+    for (const h of hits) if (h.point.z <= z0 && (!best || h.point.z > best.point.z)) best = h;
+    if (!best) return null;
     const t = tileOf(best.object);
     const err = t && Number.isFinite(t.geometricError) ? t.geometricError : Infinity;
     const leaf = !!t && Array.isArray(t.children) && t.children.length === 0;

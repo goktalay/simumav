@@ -214,5 +214,9 @@
   "sys.alt.tgt": "Simbología de objetivos estilo F-16 en la cámara gimbal",
   "sys.alt.tgtthermal": "Simbología de objetivos en la cámara térmica",
   "sys.alt.launch": "Elección del lanzador INTERCEPTOR en el asistente Volar: cajas de cuatro y ocho celdas, tubo único, lanzador portátil y vista 3D",
-  "sys.alt.report": "Informe de la misión Defender el control en tierra"
+  "sys.alt.report": "Informe de la misión Defender el control en tierra",
+  "type.rover": "Vehículo terrestre",
+  "fleet.rover_4x4.d": "Explorador 4×4 con dirección Ackermann y mástil EO/IR + LIDAR; hasta 72 km/h con ArduRover.",
+  "fleet.rover_ugv.d": "Vehículo terrestre no tripulado de orugas: gira sobre sí mismo (diferencial), torreta de sensores.",
+  "fleet.rover_bot.d": "Robot de reparto de acera de seis ruedas (0,78 m), dirección diferencial, mástil con bandera."
 }

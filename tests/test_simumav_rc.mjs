@@ -8,7 +8,8 @@
 // Çalıştırma: node tests/test_simumav_rc.mjs
 import * as T from '../static/vendor/three/three.module.min.js';
 import { createTimeline } from '../static/js/modules/flightsim_interp.js';
-import { channelsOf, netsimDeliver, parseNetsim, pwm, virtualRC } from '../static/simumav/app/fly/rc.js';
+import { channelsOf, netsimDeliver, parseNetsim, pwm, roverChannelsOf, virtualRC } from '../static/simumav/app/fly/rc.js';
+import { roverRcChannels } from '../static/js/modules/flightsim_rover.js';
 import { shimTelemetry } from '../static/simumav/app/fly/hand_launch.js';
 
 let fail = 0;
@@ -147,6 +148,36 @@ console.log('3) titreme: SIMUMAV tele akışı → uyarlanır tampon (tek yönl�
   const o = shimTelemetry(raw, { dx: 0.5, dz: 1.6, pitch_deg: 12, roll_deg: 0, blend: 0, hold: true, phase: 'armed' }, 90);
   ok('shimTelemetry: tbm/tbm_pos/rs/ps/ys korunur, konum/irtifa kaydırılır, hızlar 0', o.tbm === 1234 && o.tbm_pos === 1227 && o.rs === raw.rs && o.ps === 0 && o.alt_rel === raw.alt_rel + 1.6 && o.groundspeed === 0 && o.vn === 0 && Math.abs(o.pitch - 12 * Math.PI / 180) < 1e-9 && o.lon > raw.lon);
   ok('shimTelemetry: blend ≥ 1 ve tutuş yok → aynı nesne', shimTelemetry(raw, { blend: 1, hold: false }) === raw);
+}
+
+console.log('§15 kara aracı sanal kumandası');
+{
+  const E = fakeEnv(), L = fakeStick(), R = fakeStick(), sent = [];
+  const rc = virtualRC({ plane: true, rover: { channels: roverRcChannels }, stickL: L, stickR: R, send: ch => sent.push(ch), env: E.env, throttle0: 80 });
+  const tick = (n, ms = 50) => { for (let i = 0; i < n; i++) { E.step(ms); rc.tick(); } };
+  ok('rover başlangıç: RC1/RC3 1500 (dur), RC2/RC4 0 (dokunma); uçak bayrağı/gaz tutuşu etkisiz', JSON.stringify(rc.channels()) === JSON.stringify([1500, 0, 1500, 0, 1500, 0, 0, 0]), JSON.stringify(rc.channels()));
+  ok('yedek eşleme roverRcChannels ile aynı', JSON.stringify(roverChannelsOf({ steer: 0.4, thr: -0.7, ch5: 2000 })) === JSON.stringify(roverRcChannels({ steer: 0.4, thr: -0.7, ch5: 2000 })));
+  E.win.keydown({ key: 'w', preventDefault() {} }); E.win.keydown({ key: 'd', preventDefault() {} }); tick(10);
+  const c1 = rc.channels();
+  ok('W ileri gaz (RC3 > 1500), D sağ direksiyon (RC1 > 1500)', c1[2] > 1800 && c1[0] > 1800 && c1[1] === 0 && c1[3] === 0, JSON.stringify(c1));
+  E.win.keyup({ key: 'w' }); E.win.keyup({ key: 'd' }); tick(20);
+  ok('bırakınca yaylı: gaz ve direksiyon merkeze (1500 = dur)', rc.channels()[2] === 1500 && rc.channels()[0] === 1500, JSON.stringify(rc.channels()));
+  E.win.keydown({ key: 'arrowdown', preventDefault() {} }); E.win.keydown({ key: 'arrowleft', preventDefault() {} }); tick(10);
+  ok('↓ geri/fren (RC3 < 1500), ← sol (RC1 < 1500)', rc.channels()[2] < 1200 && rc.channels()[0] < 1200, JSON.stringify(rc.channels()));
+  E.win.keydown({ key: ' ', preventDefault() {} });
+  ok('Boşluk: dur (gaz + direksiyon orta)', rc.axes.thr === 0 && rc.axes.steer === 0);
+  E.win.keyup({ key: 'arrowdown' }); E.win.keyup({ key: 'arrowleft' });
+  L.listeners.pointerdown({ pointerId: 1, clientX: 165 + 40, clientY: 165 - 57, preventDefault() {} });
+  ok('sol çubuk: yatay yok sayılır, dikey gaz', rc.axes.thr > 0.9 && rc.axes.steer === 0 && rc.axes.yaw === 0, JSON.stringify(rc.axes));
+  R.listeners.pointerdown({ pointerId: 2, clientX: 165 - 57, clientY: 165 + 40, preventDefault() {} });
+  ok('sağ çubuk: yatay direksiyon, dikey yok sayılır', rc.axes.steer < -0.9 && rc.axes.pitch === 0, JSON.stringify(rc.axes));
+  L.listeners.pointerup({ pointerId: 1 }); R.listeners.pointerup({ pointerId: 2 }); tick(20);
+  ok('çubuklar bırakılınca merkeze döner', rc.channels()[2] === 1500 && rc.channels()[0] === 1500, JSON.stringify(rc.channels()));
+  const shaped = virtualRC({ plane: false, rover: true, stickL: fakeStick(), stickR: fakeStick(), send: () => {}, env: fakeEnv().env, shape: (k, v) => (k === 'roll' ? v * 0.5 : v) });
+  shaped.axes.steer = 1; shaped.axes.thr = 1;
+  ok('hassasiyet eğrisi: direksiyon roll eğrisinden, gaz thr eğrisinden', JSON.stringify(shaped.channels()) === JSON.stringify([1750, 0, 2000, 0, 1500, 0, 0, 0]), JSON.stringify(shaped.channels()));
+  rc.dispose(); shaped.dispose();
+  ok('dispose → 8×0 (override serbest)', JSON.stringify(sent[sent.length - 1]) === JSON.stringify([0, 0, 0, 0, 0, 0, 0, 0]));
 }
 
 if (fail) { console.log(`\n${fail} kontrol BAŞARISIZ`); process.exit(1); }

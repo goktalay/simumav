@@ -63,7 +63,7 @@ export async function openReplay(root, ctx, id) {
       psim = MP.createPowerSim(pset);
       sc.classList.add('sm-replay-power');
       const trP = trPower(t);
-      gauges = MP.createPowerGauges(sc, { h: hSim, tr: trP, getSettings: () => pset, getSummary: () => psim.summary(), plane: ['plane', 'vtol', 'interceptor'].includes(flight.drone?.type) });
+      gauges = MP.createPowerGauges(sc, { h: hSim, tr: trP, getSettings: () => pset, getSummary: () => psim.summary(), plane: ['plane', 'vtol', 'interceptor'].includes(flight.drone?.type), rover: flight.drone?.type === 'rover' });   // §15 kara aracı
       gauges.el.classList.add('sm-game');
     } catch (e) { console.warn('güç kadranları yok:', e.message); psim = null; gauges = null; }
   }

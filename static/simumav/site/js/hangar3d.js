@@ -8,7 +8,7 @@ import { THREE, renderTo, prepareModel, spinProps, studioEnv, isSmall } from './
 import { FLEET, specLine, isRotor } from './fleet.js';
 
 const FIT = 2.2;
-const TYPES = ['all', 'interceptor', 'plane', 'multirotor', 'vtol', 'heli', 'fpv'];
+const TYPES = ['all', 'interceptor', 'plane', 'multirotor', 'vtol', 'heli', 'fpv', 'rover'];
 
 function el(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);

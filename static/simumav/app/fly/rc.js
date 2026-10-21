@@ -12,6 +12,10 @@ export const pwm = v => Math.round(clamp(1500 + v * 500, 1000, 2000));
 // ArduPilot RC: ch1 roll, ch2 pitch (ileri = burun aşağı = düşük PWM), ch3 gaz, ch4 yaw, ch5 mod anahtarı; 6–8: 0 = o kanala dokunma
 // shape(eksen, v): HEPGO §27.1 hassasiyet eğrisi (/sim/flightsim_rcfeel.js makeShaper) — çubuk ve klavye aynı eğriden; yoksa doğrusal
 export const channelsOf = (ax, ch5, shape = null) => { const S = (k, v) => (shape ? shape(k, v) : v); return [pwm(S('roll', ax.roll)), pwm(-S('pitch', ax.pitch)), pwm(S('thr', ax.thr)), pwm(S('yaw', ax.yaw)), ch5, 0, 0, 0]; };
+// KARA ARACI (HEPGO §31; docs/simumav.md §15): ArduRover RC1 direksiyon, RC3 gaz (1500 = dur; ileri / geri-fren çift yönlü), RC2/RC4 dokunulmaz (0).
+// Asıl eşleme /sim/flightsim_rover.js roverRcChannels (session.js `rover.channels` olarak verir); burada aynı biçimin yedeği (tarayıcısız test).
+export const roverChannelsOf = ({ steer = 0, thr = 0, ch5 = 1500 } = {}) => [pwm(steer), 0, pwm(thr), 0, Math.round(clamp(Number(ch5) || 1500, 1000, 2000)), 0, 0, 0];
+export const ROVER_RC_KEYS = { thrUp: ['w', 'arrowup'], thrDown: ['s', 'arrowdown'], left: ['a', 'arrowleft'], right: ['d', 'arrowright'] };
 
 // ======================================================================
 // Sanal kumanda: iki sanal çubuk (Mode 2: sol gaz/yaw, sağ pitch/roll; dokunmatik + fare, pointer events) + klavye.
@@ -19,21 +23,25 @@ export const channelsOf = (ax, ch5, shape = null) => { const S = (k, v) => (shap
 // Eksenler −1…1: tuş basılıyken KEY_RATE ile uca gider, bırakılınca yaylı (üstel) merkeze döner. Kopterde gaz çubuğu merkeze yaylıdır
 // (1500 ≈ askı); uçakta gaz tutmalıdır (W/S kaydırır, çubuk bırakıldığı yerde kalır). Boşluk = gaz 1500. Q/E = ch5 1000/1500/2000.
 // 20 Hz: tick (klavye entegrasyonu + çizim) → send(channels()). dispose(): zamanlayıcı/dinleyiciler kalkar, 8×0 (override serbest) gönderilir.
+// Kara aracı (`rover`: true ya da {channels}): sol çubuk DİKEY = gaz (yaylı; bırakınca 1500 = dur, aşağı geri/fren), sağ çubuk YATAY = direksiyon (yaylı);
+// klavye W/S ya da ↑/↓ gaz, A/D ya da ←/→ direksiyon, Boşluk dur (gaz + direksiyon orta); kanallar rover.channels({steer, thr, ch5}) (roverRcChannels).
 // ======================================================================
-export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, env = null, shape = null }) {
+export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, env = null, shape = null, rover = null }) {
   const win = env?.window || globalThis.window, doc = env?.document || globalThis.document;
   const nowMs = env?.now || (() => performance.now());
   const setIv = env?.setInterval || ((fn, ms) => setInterval(fn, ms)), clearIv = env?.clearInterval || (id => clearInterval(id));
   // thr: −1 = 1000 (uçak boşta), 0 = 1500 (kopter askı). Uçakta kumanda uçuş sırasında açılırsa (throttle0: telemetri gazı %) çubuk o gazda başlar:
   // ArduPlane TAKEOFF/AUTO'da gazı RC'den bağımsız verir; çubuk altta (1000) iken HUD %100 "ters" görünmesin, FBWA'ya geçişte gaz aniden kesilmesin.
   const thr0 = plane && throttle0 != null && Number.isFinite(Number(throttle0)) ? clamp(Number(throttle0) / 50 - 1, -1, 1) : null;
-  const ax = { roll: 0, pitch: 0, thr: plane ? (thr0 ?? -1) : 0, yaw: 0 };
+  const isRv = !!rover, rvCh = typeof rover?.channels === 'function' ? rover.channels : roverChannelsOf;
+  const ax = { roll: 0, pitch: 0, thr: plane && !isRv ? (thr0 ?? -1) : 0, yaw: 0, steer: 0 };
   let ch5 = 1500, lastT = nowMs(), disposed = false;
   const keys = new Set();
   const drag = { l: null, r: null };          // sürüklenen çubuk: {id, x0, y0, r}
   const KEY_RATE = 3.5, SPRING = 9, THR_RATE = 0.7;
   const editable = el => el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
-  const channels = () => channelsOf(ax, ch5, shape);
+  const S = (k, v) => (shape ? shape(k, v) : v);
+  const channels = () => (isRv ? rvCh({ steer: S('roll', ax.steer), thr: S('thr', ax.thr), ch5 }) : channelsOf(ax, ch5, shape));
 
   // --- klavye ---
   const onKeyDown = e => {
@@ -42,7 +50,7 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
     if (!RC_KEYS.has(k)) return;
     e.preventDefault?.();
     if (e.repeat) return;
-    if (k === ' ') { ax.thr = 0; return; }
+    if (k === ' ') { ax.thr = 0; if (isRv) ax.steer = 0; return; }
     if (k === 'q' || k === 'e') { ch5 = clamp(ch5 + (k === 'e' ? 500 : -500), 1000, 2000); return; }
     keys.add(k);
   };
@@ -63,6 +71,7 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
       const d = drag[side];
       if (!d || e.pointerId !== d.id) return;
       const x = clamp((e.clientX - d.cx) / d.r, -1, 1), y = clamp(-(e.clientY - d.cy) / d.r, -1, 1);
+      if (isRv) { if (side === 'l') ax.thr = y; else ax.steer = x; return; }   // kara aracı: sol dikey gaz, sağ yatay direksiyon
       if (side === 'l') { ax.yaw = x; ax.thr = y; } else { ax.roll = x; ax.pitch = y; }
     };
     const up = e => { if (drag[side] && e.pointerId === drag[side].id) { drag[side] = null; el.classList.remove('on'); } };
@@ -73,6 +82,7 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
   const L = bind(stickL, 'l'), R = bind(stickR, 'r');
   const draw = () => {
     const place = (knob, x, y) => { if (knob) knob.style.transform = `translate(${(x * 40).toFixed(1)}px, ${(-y * 40).toFixed(1)}px)`; };
+    if (isRv) { place(L.knob, 0, ax.thr); place(R.knob, ax.steer, 0); return; }
     place(L.knob, ax.yaw, ax.thr); place(R.knob, ax.roll, ax.pitch);
   };
 
@@ -82,8 +92,12 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
     const kax = (neg, pos) => (keys.has(pos) ? 1 : 0) - (keys.has(neg) ? 1 : 0);
     const decay = Math.exp(-SPRING * dt);
     const spring = (key, dir) => { if (dir) ax[key] = clamp(ax[key] + dir * KEY_RATE * dt, -1, 1); else { ax[key] *= decay; if (Math.abs(ax[key]) < 0.004) ax[key] = 0; } };
-    if (!drag.r) { spring('roll', kax('arrowleft', 'arrowright')); spring('pitch', kax('arrowdown', 'arrowup')); }
-    if (!drag.l) {
+    if (isRv) {   // kara aracı: iki eksen de yaylı (bırakınca dur / düz)
+      const any = list => list.some(k => keys.has(k));
+      if (!drag.r) spring('steer', (any(ROVER_RC_KEYS.right) ? 1 : 0) - (any(ROVER_RC_KEYS.left) ? 1 : 0));
+      if (!drag.l) spring('thr', (any(ROVER_RC_KEYS.thrUp) ? 1 : 0) - (any(ROVER_RC_KEYS.thrDown) ? 1 : 0));
+    } else if (!drag.r) { spring('roll', kax('arrowleft', 'arrowright')); spring('pitch', kax('arrowdown', 'arrowup')); }
+    if (!drag.l && !isRv) {
       spring('yaw', kax('a', 'd'));
       const t = kax('s', 'w');
       if (plane) { if (t) ax.thr = clamp(ax.thr + t * THR_RATE * dt, -1, 1); }   // tutmalı gaz

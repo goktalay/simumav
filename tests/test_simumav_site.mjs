@@ -168,7 +168,8 @@ test('filo: anahtarlar bridge.GLB_MODELS ile aynı; hızlar HEDEF_HIZ/BUILTIN_HI
   const keys = [...glb.matchAll(/^\s{4}'(glb:[a-z0-9_]+)':/gm)].map(m => m[1]);
   const fleetGlb = FL.FLEET.filter(m => m.key.startsWith('glb:')).map(m => m.key);
   assert.deepEqual([...fleetGlb].sort(), [...keys].sort(), 'site filosu = GLB kataloğu');
-  const hiz = Object.fromEntries([...bridge.slice(bridge.indexOf('HEDEF_HIZ = {')).split('}')[0].matchAll(/'(glb:[a-z0-9_]+)': \((\d+), (\d+)\)/g)].map(m => [m[1], [+m[2], +m[3]]]));
+  const hizOf = ad => [...bridge.slice(bridge.indexOf(`${ad} = {`)).split('}')[0].matchAll(/'(glb:[a-z0-9_]+)': \((\d+), (\d+)\)/g)].map(m => [m[1], [+m[2], +m[3]]]);
+  const hiz = Object.fromEntries([...hizOf('HEDEF_HIZ'), ...hizOf('ROVER_HIZ')]);   // §13 kara araçları hedef değil: ayrı hız tablosu
   for (const m of FL.FLEET.filter(x => x.key.startsWith('glb:'))) assert.deepEqual([m.cruise, m.max], hiz[m.key], m.key);
   const cz = targetsPy.match(/'caymaz': \(([\d.]+), ([\d.]+)\)/);
   const caymaz = FL.byId('caymaz'); assert.deepEqual([caymaz.cruise, caymaz.max], [+cz[1], +cz[2]]); assert.equal(caymaz.nose, 'z');

@@ -11,6 +11,9 @@
 //   Açıkken 3B klavye kilidi (WASD/ok tuşları kumandaya gider). HUD altında ağ göstergesi: 'net: 48 Hz · jitter 3 ms' (sim.netStats()).
 // • `?mock=1`: arka uç yokken yerel kinematik üretici (WS yerine) — sihirbaz, 3B dünya ve HUD arka uçsuz denenir. Mock oturumlar yalnız
 //   bu sekmede (bellekte) yaşar; komutlar (arm/disarm/mode/takeoff/rtl/reset/crash) üreticiye uygulanır.
+// • §31 KARA ARACI (`rover`, ArduRover): sihirbazda Kalkış ve kontrol düzeni adımı yok, sürüş biçimi (Ackermann / paletli-diferansiyel) seçilir;
+//   oturumda Kalkış düğmesi yok (RTL + Dur/HOLD), HUD'da eğim / yatış / km/h, sanal kumandada sol çubuk dikey gaz (yaylı, 1500 = dur), sağ çubuk
+//   yatay direksiyon (roverRcChannels). Sahte kipte araç yerde sürer (alt_rel 0; servo çıkışı ArduRover SERVO_OUTPUT_RAW taklidi).
 import { api } from '../api.js';
 import { clear, confirmDialog, field, fmtDateTime, fmtDuration, goBack, h, modal, onLeave, pref, segmented, setPref, statStrip, toast, toastError, t as tr } from '../ui.js';
 import { logOrigin, originBadge } from './flightlog_origin.js';   // uçuş logu kaynağı: gerçek / simülasyon
@@ -44,7 +47,8 @@ import { LAUNCH_OPTIONS, LAUNCH_PARAM_DEFS, createStepper, firstInvalid, launchO
 import { numSlider } from './fs_inputs.js';   // §6.1 görsel giriş: kaydırıcı + düzenlenebilir değer kutusu + birim
 import { askPresetName, budgetBox, countdown, ensureSavedCss, pilotPicker, savedScreen } from './flightsim_saved.js';   // §27 Kayıtlı Simülasyonlar: üç sütunlu ekran, Uç/Kaydet, pilot, ad sorma, geri sayım
 import { presetBodyFromSession } from './flightsim_presets.js';
-import { flightBudget } from './flightsim_power.js';   // §27 sihirbaz özeti: azami süre / menzil (sunucu flightsim_power.menzil_sure ile aynı)
+import { flightBudget } from './flightsim_power.js';
+import { ROVER_LIMITS, ROVER_MODES, ROVER_RC_TEXT, normDrive, roverRcChannels } from './flightsim_rover.js';   // §31 KARA ARACI (ArduRover): kipler, sanal kumanda eşlemesi (RC1 direksiyon / RC3 gaz)   // §27 sihirbaz özeti: azami süre / menzil (sunucu flightsim_power.menzil_sure ile aynı)
 
 const API = '/api/drone/sim';
 // §8 ön hazırlık: sihirbazın hazırlık kartında indirilen kayıt kareleri oturum ekranına devredilir (aynı belge; be.replay yeniden çekilmez)
@@ -77,7 +81,12 @@ const TYPES = [
   ['sabit_kanat', 'Sabit Kanat', 'Caymaz uçak; pistten kalkış, uzun menzil. ArduPlane.', 'plane'],
   ['vtol', 'VTOL', 'Uçak + dört dikey rotor (quadplane). ArduPlane.', 'vtol'],
   ['interceptor', 'INTERCEPTOR', '4 pervaneli tailsitter: kuyruk üstünde dikey kalkar, havada yatay uçar; ~400 km/h. ArduPlane quadplane tailsitter.', 'icept'],
+  ['rover', 'Kara Aracı', 'Tekerlekli/paletli insansız kara aracı: zeminde sürüş, kalkış yok. ArduRover (Ackermann / diferansiyel).', 'rover'],   // §31
 ];
+// §31 kara aracı sürüş biçimleri (sunucu DRIVES; oturum gövdesi `drive`)
+const DRIVE_NAME = { ackermann: 'Ackermann', skid: 'Paletli / diferansiyel' };
+const DRIVE_DESC = { ackermann: 'Ön tekerlekler döner (otomobil gibi); SITL rover modeli, azami 72 km/h.', skid: 'Sol / sağ taraf ayrı hızda döner, yerinde dönüş; SITL rover-skid, azami 14 km/h.' };
+const isRoverType = type => type === 'rover';
 const TYPE_NAME = Object.fromEntries(TYPES.map(([k, n]) => [k, n]));
 const STATE_BADGE = { BASLIYOR: 'yellow', HAZIR: 'green', HATA: 'red', KAPANDI: 'gray' };
 const STATE_TEXT = { BASLIYOR: 'Başlıyor', HAZIR: 'Hazır', HATA: 'Hata', KAPANDI: 'Kapandı' };
@@ -88,7 +97,7 @@ const ICEPT_MODES = ['QHOVER', 'QLOITER', 'GUIDED', 'FBWA', 'FBWB', 'CRUISE', 'A
 const isPlane = type => type === 'sabit_kanat' || type === 'vtol' || type === 'interceptor';
 // Görsel model (§12): oturuma {id, orient} gönderilir (dahili için yalnız id); sahte kipte tam nesne (blob GLB adresi aynı sekmede geçerli)
 const modelBody = (m, mock) => (m ? (mock ? { ...m } : { id: m.id, orient: String(m.id).startsWith('builtin:') ? undefined : m.orient }) : undefined);
-const modesFor = type => (type === 'interceptor' ? ICEPT_MODES : type === 'vtol' ? VTOL_MODES : isPlane(type) ? PLANE_MODES : COPTER_MODES);
+const modesFor = type => (type === 'rover' ? ROVER_MODES : type === 'interceptor' ? ICEPT_MODES : type === 'vtol' ? VTOL_MODES : isPlane(type) ? PLANE_MODES : COPTER_MODES);
 const f1 = v => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(1));
 const f0 = v => (v == null || Number.isNaN(Number(v)) ? '—' : String(Math.round(Number(v))));
 const clock = sec => { sec = Math.max(0, Math.floor(Number(sec) || 0)); const hh = Math.floor(sec / 3600), mm = Math.floor(sec % 3600 / 60), ss = sec % 60; return `${hh ? `${hh}:` : ''}${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`; };
@@ -102,6 +111,8 @@ const TYPE_ICON = {
   vtol: svgIco('<path d="M12 4v16M5 12l7-2 7 2M9 20l3-1.5 3 1.5"/><circle cx="6" cy="7" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="6" cy="17" r="2"/><circle cx="18" cy="17" r="2"/>'),
   // §25 INTERCEPTOR: puro gövde (dikey), X kanat, 4 çekici pervane + hız çizgileri
   icept: svgIco('<path d="M12 2.5c1.3 1.4 1.8 3 1.8 5v11.5h-3.6V7.5c0-2 .5-3.6 1.8-5Z"/><path d="M10.2 13 5 17.5M13.8 13l5.2 4.5M10.2 16 7.5 21M13.8 16l2.7 5"/><path d="M3.5 15.8h3M17.5 15.8h3"/><path d="M2 7h3M2 10h2"/>'),
+  // §31 kara aracı: yandan 4×4 gövde (kabin + kaput), iki büyük teker, sensör direği + kafa
+  rover: svgIco('<path d="M2.5 15.5v-3.2l2.3-.8 2-3.5h7.4l2.3 3.5h3.6c.9 0 1.4.6 1.4 1.4v2.6"/><path d="M8 11.5h7.4M11.3 8v3.5"/><circle cx="6.5" cy="16.5" r="2.4"/><circle cx="17.5" cy="16.5" r="2.4"/><path d="M8.9 16.5h6.2"/><path d="M13.3 8V4.5"/><rect x="11.8" y="2.6" width="3" height="1.9" rx=".5"/>'),
 };
 // Kontrol düzeni simgeleri (§13.1): klasik (düz kanat + T-kuyruk), elevon (delta kanat, arka kenar iki yüzey), V-kuyruk (düz kanat + V)
 const LAYOUT_ICON = {
@@ -364,7 +375,8 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   if (P0) last = { type: P0.type, center: P0.center_id, launch: P0.world?.launch };   // §27: kayıtlı ayarlar önerinin yerine
   const S = { mode: preset.mode === 'replay' ? 'replay' : 'sitl', type: types.some(t => t.key === last.type) ? last.type : (types[0]?.key || 'multirotor'), center: centers.some(c => c.id === last.center) ? last.center : (P0 ? null : (centers[0]?.id ?? null)), log: preset.log ?? null, logs: null, q: '', drone: P0?.drone_id ?? null,
     origin: ['', 'REAL', 'SIM'].includes(pref('fs.logOrigin', '')) ? pref('fs.logOrigin', '') : '', sort: LOG_SORTS.some(x => x[0] === pref('fs.logSort', '')) ? pref('fs.logSort', '') : 'new',
-    world: { ...defaults, ...(P0?.world || {}), seed: P0?.world?.seed ?? randomSeed(), launch: { ...LAUNCH_DEFAULTS, ...(defaults.launch || {}), ...(last.launch && typeof last.launch === 'object' ? pickLaunch(last.launch) : {}) } }, layout: P0?.layout || 'elevon' };   // §13.1 kontrol düzeni; varsayılan model Caymaz → elevon (model seçilince modelin düzeni)
+    world: { ...defaults, ...(P0?.world || {}), seed: P0?.world?.seed ?? randomSeed(), launch: { ...LAUNCH_DEFAULTS, ...(defaults.launch || {}), ...(last.launch && typeof last.launch === 'object' ? pickLaunch(last.launch) : {}) } }, layout: P0?.layout || 'elevon',
+    drive: P0?.drive ? normDrive(P0.drive) : null };   // §31 kara aracı sürüş biçimi: null = seçili modelin `drive`'ı (kullanıcı seçince sabitlenir)   // §13.1 kontrol düzeni; varsayılan model Caymaz → elevon (model seçilince modelin düzeni)
   // Etkin dron tipi: canlı kipte seçilen kart, kayıt kipinde seçili logun araç tipi (model kütüphanesi bu tipe göre listelenir)
   const activeType = () => (S.mode === 'replay' ? ((S.logs || []).find(x => x.id === S.log)?.type || 'multirotor') : S.type);
 
@@ -372,11 +384,11 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   const typeCards = h('div', { class: 'fs-types' });
   // Görsel model kütüphanesi (§12): tip kartının altında kart ızgarası (dahili + tasarım + yüklenen), seçim önizlemeye uygulanır
   const picker = modelPicker({ getType: activeType, canWrite, mock, getSim: () => preview, getLayout: () => (activeType() === 'sabit_kanat' ? S.layout : null),
-    onSelect: m => { const l = layoutForModel(m); if (l) { S.layout = l; drawLayout?.(); } preview?.setType(activeType(), m).then(() => { if (!l) { const d = preview?.ctrlLayout?.(); if (d) { S.layout = d; drawLayout?.(); } } }); } });   // §13.1: model seçilince düzen modelin düzeni (Caymaz → elevon, Talon → V-kuyruk, Cessna → klasik); kullanıcı sonra değiştirebilir
+    onSelect: m => { if (activeType() === 'rover' && !S.drive) drawDrive?.(); const l = layoutForModel(m); if (l) { S.layout = l; drawLayout?.(); } preview?.setType(activeType(), m).then(() => { if (!l) { const d = preview?.ctrlLayout?.(); if (d) { S.layout = d; drawLayout?.(); } } }); } });   // §13.1: model seçilince düzen modelin düzeni (Caymaz → elevon, Talon → V-kuyruk, Cessna → klasik); kullanıcı sonra değiştirebilir
   const modelBox = h('div', { class: 'fs-model-step' }, h('h4', { class: 'fs-wz-sec-h' }, 'Görsel model'), h('p', { class: 'small muted' }, 'Dron tipi için görsel gövde: dahili modeller her zaman vardır; sistemdeki STEP/GLB/OBJ dosyaları ya da yüklediğiniz model seçilince tarayıcıda GLB\'ye dönüştürülür.'), picker.el);
   if (P0?.model) picker.prefer(P0.type, typeof P0.model === 'object' ? P0.model : { id: P0.model });   // §27 kayıtlı model
-  const refreshModels = () => picker.refresh(activeType()).then(m => { if (m) preview?.setType(activeType(), m); if (W?.step === 'summary') drawSummary(); });   // özet açıksa model adı güncellensin (§27 hızlı başlat)
-  const drawTypes = () => clear(typeCards, types.map(t => h('button', { type: 'button', class: `fs-type ${S.type === t.key ? 'on' : ''}`, onclick: () => { S.type = t.key; drawTypes(); drawLaunch(); drawLayout(); refreshModels(); powerSec?.refresh(); siteSec?.refresh(); } },
+  const refreshModels = () => picker.refresh(activeType()).then(m => { if (m) preview?.setType(activeType(), m); drawDrive(); if (W?.step === 'summary') drawSummary(); });   // §31: model gelince varsayılan sürüş biçimi   // özet açıksa model adı güncellensin (§27 hızlı başlat)
+  const drawTypes = () => clear(typeCards, types.map(t => h('button', { type: 'button', class: `fs-type ${S.type === t.key ? 'on' : ''}`, onclick: () => { S.type = t.key; drawTypes(); drawLaunch(); drawLayout(); drawDrive(); refreshModels(); powerSec?.refresh(); siteSec?.refresh(); } },
     h('span', { class: 'fs-type-ico', html: TYPE_ICON[t.icon] || TYPE_ICON.quad }),
     h('b', null, t.name), h('span', { class: 'small muted' }, t.desc || ''))));
   drawTypes();
@@ -440,6 +452,28 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   };
   const layoutBox = h('div', { class: 'fs-launch-step fs-layout-step' }, h('h4', null, 'Kontrol düzeni'), layoutDesc, layoutCards, layoutInfo);
   drawLayout();
+
+  // ---------- 1D. sürüş biçimi (§31; yalnız Kara Aracı, canlı kip): Ackermann (ön teker direksiyonu) · paletli / diferansiyel (skid) ----------
+  // Varsayılan seçili modelin `drive`'ı (Keşif 4×4 → Ackermann; Paletli UGV / Teslimat robotu → skid); kullanıcı seçince model değişse de korunur.
+  const DRIVE_ICON = { ackermann: svgIco('<rect x="7" y="4" width="10" height="16" rx="2.5"/><path d="M4.5 6.5l2 1M4.5 9.5l2-1M19.5 6.5l-2 1M19.5 9.5l-2-1"/><path d="M5 15.5h2M17 15.5h2M5 18.5h2M17 18.5h2"/>'),
+    skid: svgIco('<rect x="8" y="4.5" width="8" height="15" rx="2"/><rect x="3.5" y="4" width="3.5" height="16" rx="1.6"/><rect x="17" y="4" width="3.5" height="16" rx="1.6"/><path d="M3.5 8h3.5M3.5 12h3.5M3.5 16h3.5M17 8h3.5M17 12h3.5M17 16h3.5"/>') };
+  const driveCards = h('div', { class: 'fs-launches fs-drives' });
+  const driveInfo = h('div', { class: 'small muted fs-launch-info fs-drive-info' });
+  const driveOf = () => normDrive(S.drive || picker.selectionFor('rover')?.drive || 'ackermann');
+  let driveBox = null;
+  function drawDrive() {
+    if (!driveBox) return;
+    driveBox.hidden = activeType() !== 'rover' || S.mode === 'replay';
+    const cur = driveOf(), md = picker.selectionFor('rover')?.drive || null;
+    clear(driveCards, Object.keys(DRIVE_NAME).map(k => h('button', { type: 'button', class: `fs-type fs-launch fs-drive ${cur === k ? 'on' : ''}`, 'data-drive': k, onclick: () => { S.drive = k; drawDrive(); } },
+      h('span', { class: 'fs-type-ico', html: DRIVE_ICON[k] }), h('b', null, DRIVE_NAME[k], md === k ? h('span', { class: 'badge gray fs-launch-badge2' }, tr('modelin')) : null), h('span', { class: 'small muted' }, DRIVE_DESC[k]))));
+    const L_ = ROVER_LIMITS[cur];
+    driveInfo.textContent = cur === 'skid' ? tr('ArduRover diferansiyel sürüş: SERVO1 sol / SERVO3 sağ gaz; azami {v} km/h, yerinde dönüş {r}°/sn.', { v: Math.round(L_.vmax * 3.6), r: L_.turnRateDeg })
+      : tr('ArduRover Ackermann: SERVO1 direksiyon / SERVO3 gaz; azami {v} km/h, teker açısı ±{a}°.', { v: Math.round(L_.vmax * 3.6), a: L_.steerDeg });
+  }
+  driveBox = h('div', { class: 'fs-launch-step fs-drive-step' }, h('h4', null, 'Sürüş biçimi'),
+    h('p', { class: 'small muted' }, 'Kara aracının yönlendirme biçimi: SITL araç modeli ve 3B tekerlek hareketi buna göre kurulur. Varsayılan seçili modelin biçimidir; değiştirebilirsiniz.'), driveCards, driveInfo);
+  drawDrive();
 
   // ---------- 2. merkez ----------
   const centerList = h('div', { class: 'fs-centers' });
@@ -727,7 +761,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   // ---------- 4. başlat (pencere altbilgisindeki "Başlat"; startBtn modal kurulduktan sonra atanır) ----------
   const goStep = k => { W.goto(k, { force: true }); draw(true); };   // doğrulama hatasında ilgili adıma dön
   // Canlı oturum gövdesi (Başlat ve §27 Kaydet ortak; kayıtlı simülasyonun `settings`i bunun aynısıdır)
-  const sitlBody = () => ({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model: modelBody(picker.selectionFor(activeType()), mock), drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values(), layout: S.type === 'sabit_kanat' ? S.layout : undefined, camera: camCards.value,
+  const sitlBody = () => ({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model: modelBody(picker.selectionFor(activeType()), mock), drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values(), layout: S.type === 'sabit_kanat' ? S.layout : undefined, drive: S.type === 'rover' ? driveOf() : undefined, camera: camCards.value,
     targets: targetsSec.values(), site: siteSec.values().site || undefined, defend: siteSec.values().defend || undefined });   // §23 güç ve yakıt · §13.1 kontrol düzeni · §22.3 kamera türü · §24 hedefler · §26 yer kontrol sahası + görev
   const preCheck = () => {   // Başlat / Kaydet öncesi: ilgili adıma dön
     if (S.mode === 'replay' && S.log == null) { toast('Önce bir uçuş logu seçin', 'err'); goStep('log'); return false; }
@@ -806,7 +840,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   const startNote = h('div', { class: 'small muted fs-wz-note' });
   const panel = (key, ...kids) => h('section', { class: 'fs-wz-panel', 'data-step': key, hidden: true }, ...kids);
   const panels = {
-    vehicle: panel('vehicle', sec('Dron tipi', typeCards), sec('Dron kaydı (isteğe bağlı)', droneBox), modelBox, layoutBox),
+    vehicle: panel('vehicle', sec('Dron tipi', typeCards), sec('Dron kaydı (isteğe bağlı)', droneBox), modelBox, layoutBox, driveBox),
     log: panel('log', stepLog),
     world: panel('world', centerSec, worldHint, sec('Dünya', worldForm)),
     launch: panel('launch', launchBox),
@@ -870,11 +904,11 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     const timeName = tr({ day: 'Gündüz', dusk: 'Akşam', night: 'Gece' }[W0.time] || W0.time);
     const rows = {
       vehicle: [['Dron tipi', types.find(x => x.key === S.type)?.name || TYPE_NAME[S.type] || S.type], ['Görsel model', sel?.name || '—'],
-        S.type === 'sabit_kanat' ? ['Kontrol düzeni', layoutLabel(S.layout, tr)] : null, ['Dron kaydı', S.drone != null ? droneSel.selectedOptions[0]?.textContent || `#${S.drone}` : tr('Yok — "Simülatör #N" sanal dronu')]],
+        S.type === 'sabit_kanat' ? ['Kontrol düzeni', layoutLabel(S.layout, tr)] : null, S.type === 'rover' ? ['Sürüş biçimi', tr(DRIVE_NAME[driveOf()])] : null, ['Dron kaydı', S.drone != null ? droneSel.selectedOptions[0]?.textContent || `#${S.drone}` : tr('Yok — "Simülatör #N" sanal dronu')]],
       log: [['Uçuş logu', lg?.file_name || '—'], lg ? ['Araç', [TYPE_NAME[lg.type] || lg.type, lg.aircraft].filter(Boolean).join(' · ')] : null, lg && (lg.flight_s ?? lg.duration_s) != null ? ['Süre', fmtDuration(lg.flight_s ?? lg.duration_s)] : null, ['Görsel model', sel?.name || '—']],
       world: [S.mode === 'sitl' ? ['Merkez', centerOf() ? `${centerOf().name} · ${Number(centerOf().lat).toFixed(4)}, ${Number(centerOf().lon).toFixed(4)}` : '—'] : null,
         ['Dünya kipi', `${worldName} · ${fmtKm(W0.size_m)}`], ['Saat', timeName], ['Rüzgâr', `${W0.wind_ms} m/s · ${W0.wind_dir}°`], ['Sis', `%${Math.round(W0.fog * 100)}`],
-        ['Pist', W0.runway === false ? tr('Kapalı') : `${tr('Açık')} · ${W0.runway_heading}°`]],
+        S.type === 'rover' && W0.runway === false ? null : ['Pist', W0.runway === false ? tr('Kapalı') : `${tr('Açık')} · ${W0.runway_heading}°`]],
       launch: [['Kalkış yöntemi', launchLabel(L, tr)]],
       power: [isPlane(t) && pv.max_speed_ms ? ['Azami hız', `${pv.max_speed_ms} m/s (${Math.round(pv.max_speed_ms * 3.6)} km/h)`] : null,
         ['Yakıt', pv.fuel_l > 0 ? `${pv.fuel_l} L · ${pv.fuel_km_per_l} km/L` : tr('Yok')],
@@ -927,7 +961,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
       : 'Oturum açmak için Dron Yönetimi yazma izni gerekir; açık oturumları izleyebilirsiniz.');
     if (rp) panels.log.append(modelBox); else panels.vehicle.insertBefore(modelBox, layoutBox);   // model bölümü: canlı kipte Araç adımında (düzenin üstünde), kayıtta log listesinin altında
     recOpts.sync();   // .bin seçeneği yalnız canlı SITL'de
-    drawLaunch(); drawLayout();
+    drawLaunch(); drawLayout(); drawDrive();
     if (rp && S.logs === null) loadLogs().then(() => { refreshModels(); draw(); }); else refreshModels();
   };
   const modeSeg = segmented([['sitl', 'Canlı simülasyon (SITL + Mission Planner)'], ['replay', 'Kayıttan oynat']], S.mode, v => { S.mode = v; drawMode(); W.goto(W.steps[0], { force: true }); draw(true); });
@@ -1002,6 +1036,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   }
   const replay = session.mode === 'replay';   // kayıttan oynatma: SITL/UDP/komut yok; kareler sunucudan bir kez çekilir, tarayıcıda oynatılır
   const type = session.type, modes = modesFor(type);
+  const rover = isRoverType(type), drive = rover ? normDrive(session.drive || session.model?.drive) : null;   // §31 kara aracı + sürüş biçimi
   const world = { ...WORLD_DEFAULTS, ...(session.world || {}) };
   // Sabit kanat kalkış yöntemi (§13): session.launch {method, angle_deg, release_kmh, phase}. Canlıda aşamalar sunucudan (WS `launch`); kayıtta
   // (§8) sunucu olay yaymaz, aşamalar log karelerinden türetilir (replayLaunchTimeline) ve oynatıcı zamanına göre uygulanır (atlamada `snap`).
@@ -1036,6 +1071,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     replay ? h('span', { class: 'badge purple', title: 'Kayıttan oynatma: yüklü uçuş logu aynen oynatılır; kontrol yok' }, 'Kayıt') : null,
     launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, launchLabel(launch, tr)) : null,
     session.layout ? h('span', { class: `badge ${session.layout_effective && session.layout_effective !== session.layout ? 'yellow' : 'gray'} fs-layout-badge`, title: `${tr('Kontrol düzeni')}: ${layoutLabel(session.layout, tr)}${session.layout_sitl_model ? ` · SITL ${session.layout_sitl_model}` : ''}${session.layout_effective && session.layout_effective !== session.layout ? ` · ${tr('kalıcı kayıt öncelikli')}: ${layoutShort(session.layout_effective, tr)}` : ''}` }, layoutShort(session.layout, tr)) : null,   // §13.1
+    rover ? h('span', { class: 'badge gray fs-drive-badge', title: `${tr('Sürüş biçimi')}: ${tr(DRIVE_NAME[drive])}` }, DRIVE_NAME[drive]) : null,   // §31
     mock ? h('span', { class: 'badge purple' }, 'Sahte veri') : null,
     replay ? null : speedPill.el,   // §23 simülasyon hızı 1×/2×/4×/8× (SIM_SPEEDUP); yazma izni yoksa yalnız gösterir
     h('button', { class: 'fs-nav-btn fs-full-btn', type: 'button', title: 'Tam ekran', onclick: () => { (document.fullscreenElement ? document.exitFullscreen?.() : document.documentElement.requestFullscreen?.())?.then(() => onFullChange()).catch(() => {}); } }, '⛶'));
@@ -1057,7 +1093,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // HUD (sağ): sabit satırlar, değerler textContent ile güncellenir (DOM yeniden kurulmaz)
   const val = cls => h('b', { class: `fs-v ${cls || ''}` }, '—');
   const V = { mode: h('span', { class: 'badge blue fs-mode' }, '—'), arm: h('span', { class: 'badge gray fs-arm' }, 'DISARMED'),
-    agl: val(), msl: val(), air: val(), gnd: val(), climb: val(), hdg: val(), gps: val(), batt: val(), fuel: val(), thr: val(), wind: val() };
+    agl: val(), msl: val(), air: val(), gnd: val(), climb: val(), hdg: val(), gps: val(), batt: val(), fuel: val(), thr: val(), wind: val(), pitch: val(), roll: val(), kmh: val() };
   // §23: güç ve yakıt — canlıda sunucunun tele.fuel/tele.elec'i; kayıt ve sahte kipte istemci modeli (session.power ayarlarıyla karelerden)
   const powerSet = session.power || null;
   const clientPower = (replay || mock) && powerSet ? createPowerSim(powerSet) : null;
@@ -1069,8 +1105,9 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const netLbl = h('div', { class: 'fs-net', title: 'Telemetri alım hızı, jitter (alım aralığı − kaynak aralığı) ve uyarlanır gecikme tamponu; DR = ölü hesap' }, '');
   const hud = h('div', { class: 'fs-hud mono' },
     h('div', { class: 'fs-hud-head' }, V.mode, V.arm),
-    row('AGL', V.agl, 'm'), row('MSL', V.msl, 'm'),
-    row('Hava hızı', V.air, 'm/s'), row('Yer hızı', V.gnd, 'm/s'), row('Dikey hız', V.climb, 'm/s'),
+    ...(rover   // §31 kara aracı: irtifa / hava hızı / dikey hız yerine eğim, yatış, hız (km/h)
+      ? [row('Eğim', V.pitch, '°'), row('Yatış', V.roll, '°'), row('Hız', V.kmh, 'km/h')]
+      : [row('AGL', V.agl, 'm'), row('MSL', V.msl, 'm'), row('Hava hızı', V.air, 'm/s'), row('Yer hızı', V.gnd, 'm/s'), row('Dikey hız', V.climb, 'm/s')]),
     row('Yön', V.hdg, '°'), row('GPS', V.gps), row('Batarya', V.batt),
     h('div', { class: 'fs-row fs-row-fuel', hidden: true }, h('span', null, 'Yakıt'), h('span', { class: 'fs-rv' }, V.fuel)),   // §23: tele.fuel varsa görünür
     h('div', { class: 'fs-row' }, h('span', null, 'Gaz'), h('span', { class: 'fs-rv' }, V.thr, h('i', null, '%'))), thrBar,
@@ -1143,7 +1180,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   let ops = null;
   const opsBtn = h('button', { class: 'btn sm fs-ops-btn', type: 'button', title: tr('Harekât panelini göster/gizle (P): dron kartı (başlık, uçuş göstergesi, telemetri karoları, işlemler ve haberleşme konsolu) 3B dünyanın üstünde; gizliyken sade görünüm (eski HUD ve alt çubuk komutları)'), onclick: () => { if (!ops) return; ops.toggle(); } }, 'Panel');
   const armBtn = h('button', { class: 'btn sm', type: 'button', onclick: () => cmd(last?.armed ? 'disarm' : 'arm') }, 'ARM');
-  const rcBtn = h('button', { class: 'btn sm', type: 'button', title: 'Sanal kumanda: iki sanal çubuk + klavye (W/S gaz, A/D yaw, ok tuşları pitch/roll, Q/E mod kanalı, Boşluk gaz orta). RC_CHANNELS_OVERRIDE 20 Hz.', onclick: () => rcToggle() }, '🎮 ', 'Sanal kumanda');
+  const rcBtn = h('button', { class: 'btn sm', type: 'button', title: rover ? `${tr('Sanal kumanda (kara aracı)')}: ${tr(ROVER_RC_TEXT.hint)}. RC_CHANNELS_OVERRIDE 20 Hz.` : 'Sanal kumanda: iki sanal çubuk + klavye (W/S gaz, A/D yaw, ok tuşları pitch/roll, Q/E mod kanalı, Boşluk gaz orta). RC_CHANNELS_OVERRIDE 20 Hz.', onclick: () => rcToggle() }, '🎮 ', 'Sanal kumanda');
   const modeSel = h('select', { class: 'input sm fs-modesel', onchange: () => { if (modeSel.value) cmd('mode', { mode: modeSel.value }); } },
     h('option', { value: '' }, 'Mod…'), modes.map(mm => h('option', { value: mm }, mm)));
   // Kayıt kipi: oynatma çubuğu (Oynat/Duraklat · hız 0.5×–8× · zaman kaydırıcısı · süre · Baştan); komut düğmeleri yok
@@ -1162,7 +1199,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     h('div', { class: 'fs-seek-wrap' }, seek, h('i', { class: 'fs-seek-marks' })),
     timeLbl, clockLbl, lodLbl) : null;
   // §27.1 kumanda hassasiyeti: ⚙ düğmesi alt çubukta (🎮 yanında), küçük açılır panel (oran / expo / ölü bölge, eksen başına; localStorage fs.rc.feel)
-  const rcFeel = createRcFeelPanel(stage, { tr, plane: isPlane(type), onChange: () => { rcShape = rcFeel.shaper(); } });
+  const rcFeel = createRcFeelPanel(stage, { tr, plane: isPlane(type), rover, onChange: () => { rcShape = rcFeel.shaper(); } });   // §31 kara aracı: direksiyon + gaz
   let rcShape = rcFeel.shaper();
   // §29.6 uçuş denetimi (harekât paneli açıkken de görünür): mod seçici + DISARM (sabit kanatta havada motor kesme → süzülme; kopterde onaylı)
   const fltBar = canWrite && !replay ? createFlightBar({ tr, kind: modeKind(type), modes: flightModesFor(modeKind(type)), stage,
@@ -1174,7 +1211,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     replay ? playBar : h('span', { class: 'spacer' }),
     fltBar ? fltBar.el : null,   // §29.6 mod + DISARM: her zaman (ARM/mod seçici eski .fs-cmds'ten buraya taşındı)
     canWrite && !replay ? h('div', { class: 'pill-group fs-cmds' },   // .fs-cmds: harekât paneli açıkken gizli (komutlar panelden)
-      h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
+      rover ? h('button', { class: 'btn sm fs-hold-btn', type: 'button', title: tr('Aracı durdur (HOLD kipi)'), onclick: () => cmd('mode', { mode: 'HOLD' }) }, 'Dur')   // §31 kara aracında kalkış yok
+        : h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
       h('button', { class: 'btn sm', type: 'button', onclick: () => cmd('rtl') }, 'RTL')) : null,
     canWrite && !replay ? h('div', { class: 'pill-group' }, rcBtn, rcFeel.el) : null,   // §27.1 ⚙ hassasiyet
     h('div', { class: 'pill-group' },
@@ -1182,10 +1220,11 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       h('button', { class: 'btn sm danger', type: 'button', onclick: () => endSession() }, 'Bitir')));
   const ended = h('div', { class: 'fs-ended', hidden: true });
   // Sanal kumanda katmanı: sol çubuk gaz/yaw, sağ çubuk pitch/roll (Mode 2); klavye ipucu; Mission Planner joystick uyarısı
-  const stickL = h('div', { class: 'fs-stick', 'data-side': 'l' }, h('i', { class: 'fs-stick-knob' }), h('small', null, 'Gaz / Yaw'));
-  const stickR = h('div', { class: 'fs-stick', 'data-side': 'r' }, h('i', { class: 'fs-stick-knob' }), h('small', null, 'Pitch / Roll'));
+  // §31 kara aracı: sol çubuk dikey gaz / fren (yaylı, merkez = dur), sağ çubuk yatay direksiyon (yaylı); etiketler flightsim_rover ROVER_RC_TEXT
+  const stickL = h('div', { class: 'fs-stick', 'data-side': 'l', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? ROVER_RC_TEXT.left : 'Gaz / Yaw'));
+  const stickR = h('div', { class: 'fs-stick', 'data-side': 'r', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? ROVER_RC_TEXT.right : 'Pitch / Roll'));
   const rcWarn = h('div', { class: 'fs-rc-warn', hidden: true }, 'Mission Planner joystick de açıksa son gelen RC komutu geçerli olur');
-  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', null, 'W/S gaz · A/D yaw · ↑↓ pitch · ←→ roll · Q/E mod kanalı · Boşluk gaz orta'), rcWarn);
+  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', null, rover ? ROVER_RC_TEXT.hint : 'W/S gaz · A/D yaw · ↑↓ pitch · ←→ roll · Q/E mod kanalı · Boşluk gaz orta'), rcWarn);
   const sticks = h('div', { class: 'fs-sticks', hidden: true }, stickL, stickR, rcHint);
   // Kaynak atfı: gerçek arazi sağ altta metin; Google 3B'de ToS gereği Google logosu + canlı veri sağlayıcı metni (sol alt, MP kutusu üstü)
   const g3dMode = world.mode === 'google3d';
@@ -1194,7 +1233,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // §23.6 güç paneli: alt çubuğun üstünde ortada dört otomobil tarzı kadran (YAKIT · HIZ · MOTOR · BATARYA), takip/serbest/yer kiplerinde ve panelden bağımsız;
   // FPV OSD / gimbal HUD açıkken onlar çizer (CSS gizler). Hız kadranı azami hızı session.power'dan; uyarı üçgeni çarpışma bandından (getCollision).
   // Ayrıntı kutusu kayıt/sahte kipte istemci modelinin özetinden (mesafe, harcanan, ölçülen), canlıda kendi mesafe toplayıcısından.
-  const gauges = createPowerGauges(stage, { h, tr, getSettings: () => session.power || null, getSummary: () => clientPower?.summary() || null, plane: isPlane(type), getCollision: () => !crash.hidden,
+  const gauges = createPowerGauges(stage, { h, tr, getSettings: () => session.power || null, getSummary: () => clientPower?.summary() || null, plane: isPlane(type), rover, getCollision: () => !crash.hidden,
     onTheme: t => addEvent(tr('Gösterge tasarımı: {t}', { t: tr(gaugeThemeLabel(t)) })) });   // §27.3 tasarım (sihirbaz seçimi; uçuşta G / kadran kutusu)
   stage.append(mount, msg, crash, hud, ...(mp ? [mp] : []), events, sticks, gauges.el, bar, nav, ended);
   if (attrib) stage.append(attrib);
@@ -1328,7 +1367,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
         if (g3dMode) { msg.hidden = false; msg.textContent = tr('Google 3B karoları yükleniyor… %{p}', { p: 0 }); }
         simOrigin = { ...o };
         const s3 = await createFlightSim3D(mount, world, {
-          type, model: session.model || session.airframe, launch, origin: { ...o },
+          type, model: session.model || session.airframe, launch, origin: { ...o }, drive,   // §31 kara aracı sürüş biçimi (3B tekerlek kinematiği)
           camera: fpvPrefs.cam, pilotFov: fpvPrefs.fov, fpvAnalog: fpvPrefs.analog, fpvNose: fpvPrefs.nose,   // §22: oturumlar arası kalıcı kamera/FPV tercihleri (localStorage)
           camType: camType0, thermalPalette: camPrefs.palette, onGimbalZoom: () => camPip?.redraw(),   // §22.3 kamera türü (oturumun seçimi) + termal paleti
           site: session.site || null,   // §26 saha çevresi açık alan (dünya kurulurken)
@@ -1463,6 +1502,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     V.arm.textContent = t.armed ? 'ARMED' : 'DISARMED';
     V.arm.className = `badge ${t.armed ? 'red' : 'gray'} fs-arm`;
     V.agl.textContent = f1(t.alt_rel); V.msl.textContent = f1(t.alt_msl);
+    if (rover) { const ps = sim?.getPose?.() || t; V.pitch.textContent = f1(Number(ps.pitch || 0) * 180 / Math.PI); V.roll.textContent = f1(Number(ps.roll || 0) * 180 / Math.PI);   // zemine oturmuş gövde (3B), yoksa telemetri
+      V.kmh.textContent = f1(t.groundspeed != null ? Number(t.groundspeed) * 3.6 : null); }   // §31
     V.air.textContent = f1(t.airspeed); V.gnd.textContent = f1(t.groundspeed);
     const climb = t.climb != null ? t.climb : (t.vd != null ? -t.vd : null);
     V.climb.textContent = (climb != null && climb > 0.05 ? '+' : '') + f1(climb);
@@ -1574,6 +1615,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     try { await be.cmd(sid, name, params); addEvent(tr('Komut: {c}', { c: name + (params.mode ? ` ${params.mode}` : params.alt != null ? ` ${params.alt} m` : '') })); } catch (err) { toastError(err); }
   };
   const takeoffDialog = () => {
+    if (rover) { toast(tr('Kara aracında kalkış yok; ARM edip sürün (MANUAL) ya da AUTO / GUIDED kipine geçin.'), 'err'); return; }   // §31
     const alt = h('input', { class: 'input', type: 'number', min: 1, max: 500, value: type === 'interceptor' ? 60 : isPlane(type) ? 80 : 30 });
     const m = launch?.method;
     const hint = m === 'ramp' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; 1 sn sonra pnömatik rampa kızağı {a}° açıyla fırlatır (SITL mancınık tetiği). Fırlatma ivmesi algılanınca gaz açılır.', { a: Math.round(launch.angle_deg) })
@@ -1694,7 +1736,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       addEvent(tr('Sanal kumanda kapatıldı (RC override serbest)'));
       return;
     }
-    rc = virtualRC({ plane: isPlane(type), stickL, stickR, send: ch => socket?.send({ t: 'rc', ch }), onChange: () => drawRcBars(last?.rc),
+    rc = virtualRC({ plane: isPlane(type), rover, stickL, stickR, send: ch => socket?.send({ t: 'rc', ch }), onChange: () => drawRcBars(last?.rc),
       throttle0: last?.armed ? last.throttle : null, shape: (k, v) => rcShape(k, v) });   // §27.1 hassasiyet (⚙ panel; değişiklik anında)   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000)
     sticks.hidden = false; stage.classList.add('rc-on'); rcBtn.classList.add('primary');
     rcWarn.hidden = !last?.gcs_connected;
@@ -1742,9 +1784,13 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
 // Eksenler −1…1: tuş basılıyken KEY_RATE ile uca gider, bırakılınca yaylı (üstel) merkeze döner. Kopterde gaz çubuğu merkeze yaylıdır
 // (1500 ≈ askı); uçakta gaz tutmalıdır (W/S kaydırır, çubuk bırakıldığı yerde kalır). Boşluk = gaz 1500. Q/E = ch5 1000/1500/2000.
 // 20 Hz: tick (klavye entegrasyonu + çizim) → send(channels()). dispose(): zamanlayıcı/dinleyiciler kalkar, 8×0 (override serbest) gönderilir.
+// §31 KARA ARACI (rover): sol çubuk DİKEY = gaz / fren (yaylı; bırakınca 1500 = dur), sağ çubuk YATAY = direksiyon (yaylı); diğer eksenler yok.
+// Klavye W/S ve ↑↓ gaz, A/D ve ←→ direksiyon, Boşluk dur (gaz + direksiyon 0), Q/E ch5. Kanallar flightsim_rover.roverRcChannels (RC1 direksiyon, RC3 gaz;
+// RC2/RC4 0 = dokunma). Hassasiyet: direksiyon 'roll' eğrisi, gaz 'thr' eğrisi (çift yönlü).
 // ======================================================================
 const RC_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
-function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, shape = null }) {   // shape(eksen, v): §27.1 hassasiyet eğrisi (flightsim_rcfeel.js) — çıkışa uygulanır
+function virtualRC({ plane, rover = false, stickL, stickR, send, onChange, throttle0 = null, shape = null }) {
+  if (rover) plane = false;   // shape(eksen, v): §27.1 hassasiyet eğrisi (flightsim_rcfeel.js) — çıkışa uygulanır
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   // thr: −1 = 1000 (uçak boşta), 0 = 1500 (kopter askı). Uçakta kumanda uçuş sırasında açılırsa (throttle0: telemetri gazı %) çubuk o gazda başlar:
   // ArduPlane TAKEOFF/AUTO'da gazı RC'den bağımsız verir; çubuk altta (1000) iken HUD %100 "ters" görünmesin, FBWA'ya geçişte gaz aniden kesilmesin.
@@ -1757,7 +1803,8 @@ function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, sh
   const editable = el => el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
   const pwm = v => Math.round(clamp(1500 + v * 500, 1000, 2000));
   const S = (k, v) => (shape ? shape(k, v) : v);
-  const channels = () => [pwm(S('roll', ax.roll)), pwm(-S('pitch', ax.pitch)), pwm(S('thr', ax.thr)), pwm(S('yaw', ax.yaw)), ch5, 0, 0, 0];   // 6–8: 0 = o kanala dokunma
+  const channels = () => (rover ? roverRcChannels({ steer: S('roll', ax.roll), thr: S('thr', ax.thr), ch5 })   // §31: [RC1 direksiyon, 0, RC3 gaz, 0, ch5, 0, 0, 0]
+    : [pwm(S('roll', ax.roll)), pwm(-S('pitch', ax.pitch)), pwm(S('thr', ax.thr)), pwm(S('yaw', ax.yaw)), ch5, 0, 0, 0]);   // 6–8: 0 = o kanala dokunma
 
   // --- klavye ---
   const onKeyDown = e => {
@@ -1766,7 +1813,7 @@ function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, sh
     if (!RC_KEYS.has(k)) return;
     e.preventDefault();
     if (e.repeat) return;
-    if (k === ' ') { ax.thr = 0; return; }
+    if (k === ' ') { ax.thr = 0; if (rover) ax.roll = 0; return; }   // §31 kara aracı: Boşluk = dur (gaz + direksiyon orta)
     if (k === 'q' || k === 'e') { ch5 = clamp(ch5 + (k === 'e' ? 500 : -500), 1000, 2000); return; }
     keys.add(k);
   };
@@ -1787,6 +1834,7 @@ function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, sh
       const d = drag[side];
       if (!d || e.pointerId !== d.id) return;
       const x = clamp((e.clientX - d.cx) / d.r, -1, 1), y = clamp(-(e.clientY - d.cy) / d.r, -1, 1);
+      if (rover) { if (side === 'l') ax.thr = y; else ax.roll = x; return; }   // §31: sol dikey gaz, sağ yatay direksiyon
       if (side === 'l') { ax.yaw = x; ax.thr = y; } else { ax.roll = x; ax.pitch = y; }
     };
     const up = e => { if (drag[side] && e.pointerId === drag[side].id) { drag[side] = null; el.classList.remove('on'); } };
@@ -1797,6 +1845,7 @@ function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, sh
   const L = bind(stickL, 'l'), R = bind(stickR, 'r');
   const draw = () => {
     const place = (knob, x, y) => { knob.style.transform = `translate(${(x * 40).toFixed(1)}px, ${(-y * 40).toFixed(1)}px)`; };
+    if (rover) { place(L.knob, 0, ax.thr); place(R.knob, ax.roll, 0); return; }
     place(L.knob, ax.yaw, ax.thr); place(R.knob, ax.roll, ax.pitch);
   };
 
@@ -1806,12 +1855,17 @@ function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, sh
     const kax = (neg, pos) => (keys.has(pos) ? 1 : 0) - (keys.has(neg) ? 1 : 0);
     const decay = Math.exp(-SPRING * dt);
     const spring = (key, dir) => { if (dir) ax[key] = clamp(ax[key] + dir * KEY_RATE * dt, -1, 1); else { ax[key] *= decay; if (Math.abs(ax[key]) < 0.004) ax[key] = 0; } };
+    if (rover) {   // §31: iki eksen de yaylı; harf ve ok tuşları aynı ekseni sürer
+      if (!drag.r) spring('roll', Math.max(-1, Math.min(1, kax('a', 'd') + kax('arrowleft', 'arrowright'))));
+      if (!drag.l) spring('thr', Math.max(-1, Math.min(1, kax('s', 'w') + kax('arrowdown', 'arrowup'))));
+    } else {
     if (!drag.r) { spring('roll', kax('arrowleft', 'arrowright')); spring('pitch', kax('arrowdown', 'arrowup')); }
     if (!drag.l) {
       spring('yaw', kax('a', 'd'));
       const t = kax('s', 'w');
       if (plane) { if (t) ax.thr = clamp(ax.thr + t * THR_RATE * dt, -1, 1); }   // tutmalı gaz
       else spring('thr', t);                                                     // askıya yaylı
+    }
     }
     draw();
     const ch = channels();
@@ -1951,14 +2005,19 @@ const SAMPLE_CENTERS = [
 function mockBackend(ctx) {
   let centersP = null;
   const centers = () => (centersP ??= api.get('/api/drone/centers').then(r => (Array.isArray(r) && r.length ? r.map(c => ({ id: c.id, name: c.name, lat: c.lat, lon: c.lon, alt: c.alt ?? 0, location_name: c.location_name })) : SAMPLE_CENTERS)).catch(() => SAMPLE_CENTERS));
-  const mockModel = (type, model) => (model && typeof model === 'object' ? model : { id: model || ({ multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli' }[type] || 'builtin:caymaz'), source: 'builtin', type, ready: true });
-  const mk = async (type, centerId, world, model, power = null, layout = null, camera = null) => {
+  const mockModel = (type, model) => (model && typeof model === 'object' ? model : { id: model || ({ multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', interceptor: 'builtin:icept_x4', rover: 'builtin:rover_4x4' }[type] || 'builtin:caymaz'), source: 'builtin', type, ready: true,
+    ...(type === 'rover' && (!model || String(model).startsWith('builtin:rover')) ? { drive: String(model || '').includes('4x4') || !model ? 'ackermann' : 'skid', glb_url: `/static/simumav/models/${String(model || 'builtin:rover_4x4').replace('builtin:', '')}.glb`, orient: { forward: '+x', up: '+y', scale: 1, offset: [0, 0, 0], prop: { mode: 'none', pos: [0, 0, 0], r: 0.3 } }, has_prop: false } : {}) });   // §31 kara aracı
+  // §23 sahte kip güç varsayılanı (sunucu varsayilanlar ile aynı aile): uçak CAYMAZ · kara aracı elektrikli 4S 16000 mAh 60 W · kopter yakıtsız
+  const mockPower = type => (isPlane(type) ? { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25, elec_cells: 4, elec_mah: 10000, elec_w: 30 } : type === 'rover' ? { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 12, elec_cells: 4, elec_mah: 16000, elec_w: 60 }
+    : { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25, elec_cells: 4, elec_mah: 10000, elec_w: 30 });
+  const mk = async (type, centerId, world, model, power = null, layout = null, camera = null, drive = null) => {
     const cs = await centers();
     const center = cs.find(c => String(c.id) === String(centerId)) || cs[0];
     const id = `mock-${++MOCK.seq}`;
     const mdl = mockModel(type, model);
     const s = { id, type, model: mdl, airframe: isPlane(type) ? ({ 'builtin:caymaz': 'caymaz', 'builtin:delta': 'delta' }[mdl.id] || null) : null, layout: type === 'sabit_kanat' ? (layout || layoutForModel(mdl) || 'classic') : null, center, world: { ...WORLD_DEFAULTS, ...(world || {}) }, state: 'HAZIR', udp_port: 14550 + MOCK.seq - 1, host: location.hostname,
-      power: { ...(isPlane(type) ? { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25 } : { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25 }), elec_cells: 4, elec_mah: 10000, elec_w: 30, ...(power || {}) },   // §23 (sahte kip: göstergeler istemci modelinden)
+      power: { ...mockPower(type), ...(power || {}) },   // §23 (sahte kip: göstergeler istemci modelinden)
+      ground: type === 'rover', drive: type === 'rover' ? normDrive(drive || mdl.drive) : null,   // §31 kara aracı (sunucu to_dict ile aynı alanlar)
       launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: type === 'sabit_kanat' || (type === 'interceptor' && isIceptLauncher((world || {}).launch?.method)) ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null }, camera: normCamType(camera),
       created_at: new Date().toISOString(), owner: { id: ctx.user?.id, name: ctx.user?.full_name || ctx.user?.username || '—' }, gcs: { connected: false, addr: null, since: null }, sitl: { pid: 0, port: 0, error: null } };
     s.flight = new MockFlight(s);
@@ -1976,7 +2035,7 @@ function mockBackend(ctx) {
       launch: { ...LAUNCH_DEFAULTS, ...((world || {}).launch || {}), method: log.type === 'sabit_kanat' ? ((world || {}).launch?.method || 'wheels') : 'wheels', phase: null },
       state: 'HAZIR', udp_port: null, host: location.hostname, camera: normCamType(camera), created_at: new Date().toISOString(), owner: { id: ctx.user?.id, name: ctx.user?.full_name || ctx.user?.username || '—' },
       gcs: { connected: false, addr: null, since: null }, sitl: { pid: null, port: null, error: null },
-      power: { ...(isPlane(log.type) ? { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25 } : { max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 25 }), elec_cells: 4, elec_mah: 10000, elec_w: 30 },   // §23.6: sahte kayıtta da kadranlar (gerçekte kaydın canlı oturum ayarları)
+      power: mockPower(log.type), ground: log.type === 'rover', drive: log.type === 'rover' ? 'ackermann' : null,   // §23.6: sahte kayıtta da kadranlar (gerçekte kaydın canlı oturum ayarları) · §31
       replay: { log_id: log.id, file_name: log.file_name, size: log.size, progress: 100, frames: data.n, duration_s: data.duration_s, home: data.home, hz: data.hz, takeoff_t: data.takeoff_t, start_utc: data.start_utc, vehicle: data.vehicle, modes: data.modes } };
     s.data = data;
     MOCK.sessions.set(id, s);
@@ -1985,7 +2044,7 @@ function mockBackend(ctx) {
   const pub = s => { const { flight, data, ...rest } = s; return rest; };
   return {
     mock: true,
-    meta: async () => ({ types: TYPES.map(([key, name]) => ({ key, name, binary: isPlane(key) ? 'arduplane' : 'arducopter' })), centers: await centers(), world_defaults: WORLD_DEFAULTS, limits: { max_sessions: 2, max_minutes: 120 }, host: location.hostname,
+    meta: async () => ({ types: TYPES.map(([key, name]) => ({ key, name, binary: isPlane(key) ? 'arduplane' : key === 'rover' ? 'ardurover' : 'arducopter' })), centers: await centers(), world_defaults: WORLD_DEFAULTS, limits: { max_sessions: 2, max_minutes: 120 }, host: location.hostname,
       replay: { logs_allowed: true, hz: 25, formats: ['.bin', '.log', '.tlog'] }, google3d: { enabled: true } }),
     g3dKey: async () => 'MOCK-GECERSIZ-ANAHTAR',   // sahte kip: Google 400/403 döner → hata yolu ("… prosedürele düşüldü") denenir
     logs: async () => MOCK_LOGS.map(l => ({ ...l })),
@@ -2005,10 +2064,13 @@ function mockBackend(ctx) {
     create: async body => {
       if ([...MOCK.sessions.values()].filter(s => s.state !== 'KAPANDI').length >= 2) throw Object.assign(new Error('Oturum sınırı'), { status: 409 });
       if (body.mode === 'replay') { const s = await mkReplay(body.log_id, body.world, body.model, body.camera); MOCK.sessions.delete(s.id); s.id = `${s.id}r`; MOCK.sessions.set(s.id, s); return pub(s); }
-      return pub(await mk(body.type, body.center_id, body.world, body.model || body.airframe, body.power, body.layout, body.camera));
+      if (body.drive != null && body.drive !== '' && !['ackermann', 'skid'].includes(body.drive)) throw Object.assign(new Error('drive ackermann | skid olmalı'), { status: 400 });
+      return pub(await mk(body.type, body.center_id, body.world, body.model || body.airframe, body.power, body.layout, body.camera, body.drive));
     },
     end: async id => { const s = MOCK.sessions.get(id); if (s) { s.state = 'KAPANDI'; s.flight?.end('Kullanıcı bitirdi'); MOCK.sessions.delete(id); } return { ok: true }; },
-    cmd: async (id, name, params) => { const s = MOCK.sessions.get(id); if (!s) throw Object.assign(new Error('Oturum yok'), { status: 404 }); if (name === 'camera') { s.camera = normCamType(params?.type); return { ok: true, camera: s.camera }; } if (s.mode === 'replay') { if (name !== 'reset') throw Object.assign(new Error('Kayıtta komut yok'), { status: 400 }); return { ok: true }; } s.flight.cmd(name, params || {}); return { ok: true }; },
+    cmd: async (id, name, params) => { const s = MOCK.sessions.get(id); if (!s) throw Object.assign(new Error('Oturum yok'), { status: 404 }); if (name === 'camera') { s.camera = normCamType(params?.type); return { ok: true, camera: s.camera }; } if (s.mode === 'replay') { if (name !== 'reset') throw Object.assign(new Error('Kayıtta komut yok'), { status: 400 }); return { ok: true }; }
+      if (s.type === 'rover' && (name === 'takeoff' || name === 'motor_cut')) throw Object.assign(new Error(name === 'takeoff' ? 'Kara aracında kalkış yok; ARM edip sürün ya da AUTO/GUIDED kipine geçin' : 'Kara aracında motor kesme yok; DISARM kullanın'), { status: 400 });   // §31 sunucuyla aynı
+      s.flight.cmd(name, params || {}); return { ok: true }; },
     socket: (id, handlers) => {
       const s = MOCK.sessions.get(id);
       if (!s) { handlers.fatal?.('notfound'); return { send() {}, close() {} }; }
@@ -2029,18 +2091,20 @@ const MOCK_LOGS = [
   { id: 1, file_name: '00000012.BIN', ext: 'bin', size: 253034496, uploaded_at: '2026-09-26T09:40:00', takeoff_utc: '2026-09-21T13:24:00Z', start_utc: '2026-09-21T13:01:41Z', aircraft: 'CZ-07', pilot: 'A. Yılmaz', location: 'Akyurt', task_code: 'SG-2026-014', vehicle: 'ArduPlane V4.7.1', type: 'sabit_kanat', flight_s: 120, duration_s: 150, cached: true, status: 'TAMAM', origin: 'REAL' },
   { id: 2, file_name: '20261016T093821-1-4e2a6023.tlog', ext: 'tlog', size: 233827, uploaded_at: '2026-10-16T09:40:00', start_utc: '2026-10-16T06:38:21Z', aircraft: 'Sanal dron', pilot: null, location: null, task_code: null, vehicle: 'ArduCopter', type: 'multirotor', flight_s: 95, duration_s: 120, cached: false, status: 'TAMAM', origin: 'SIM' },
   { id: 3, file_name: '00000009.BIN', ext: 'bin', size: 491417600, uploaded_at: '2026-09-26T10:19:00', takeoff_utc: '2026-09-20T08:12:00Z', aircraft: 'CZ-05', pilot: 'M. Kaya', location: 'Akyurt', task_code: null, vehicle: 'ArduPlane V4.6.0', type: 'sabit_kanat', flight_s: 1860, duration_s: 2400, cached: false, status: 'TAMAM' },
+  { id: 4, file_name: '00000021.BIN', ext: 'bin', size: 18874368, uploaded_at: '2026-10-20T15:02:00', takeoff_utc: '2026-10-20T14:40:00Z', start_utc: '2026-10-20T14:39:10Z', aircraft: 'UGV-02', pilot: 'A. Yılmaz', location: 'Akyurt', task_code: null, vehicle: 'ArduRover V4.7.0', type: 'rover', flight_s: 100, duration_s: 120, cached: true, status: 'TAMAM', origin: 'REAL' },   // §31 kara aracı
 ];
 function mockReplayData(log, c) {
-  const plane = isPlane(log.type), hz = 25, dur = 120, home = { lat: c.lat, lon: c.lon, alt: Number(c.alt) || 0 };
+  const plane = isPlane(log.type), rover = log.type === 'rover', hz = 25, dur = 120, home = { lat: c.lat, lon: c.lon, alt: Number(c.alt) || 0 };   // §31 kara aracı: yerde sürüş (z 0)
   const fields = ['t', 'lat', 'lon', 'alt_msl', 'alt_rel', 'roll', 'pitch', 'yaw', 'vn', 've', 'vd', 'gs', 'as', 'hdg', 'thr', 'mode', 'armed', 'batt_v', 'batt_pct', 'sats', 'fix', 'rc'];
-  const modes = plane ? ['MANUAL', 'TAKEOFF', 'AUTO', 'RTL'] : ['STABILIZE', 'GUIDED', 'LOITER', 'LAND'];
+  const modes = rover ? ['HOLD', 'MANUAL', 'AUTO', 'RTL'] : plane ? ['MANUAL', 'TAKEOFF', 'AUTO', 'RTL'] : ['STABILIZE', 'GUIDED', 'LOITER', 'LAND'];
   const frames = [], events = [{ t: 0, text: `${log.vehicle || 'ArduPlane'} (sahte kayıt)`, sev: 6 }, { t: 3, text: 'GPS 1: detected as u-blox at 115200 baud', sev: 6 }, { t: 8, text: 'EKF3 IMU0 is using GPS', sev: 6 }];
-  const V = plane ? 22 : 8, R = plane ? 400 : 120, cosLat = Math.cos(home.lat * Math.PI / 180);
+  const V = rover ? 5 : plane ? 22 : 8, R = rover ? 60 : plane ? 400 : 120, cosLat = Math.cos(home.lat * Math.PI / 180), cruiseZ = rover ? 0 : plane ? 120 : 30;
   let x = 0, y = 0, z = 0, yaw = 0, roll = 0, pitch = 0, vx = 0, vy = 0, vz = 0, mode = 0, armed = 0, thr = 0, ang = 0, batt = 100;
   let phase = 'ground';
   for (let i = 0; i <= dur * hz; i++) {
     const t = i / hz, dt = 1 / hz;
     if (phase === 'ground' && t >= 10) { phase = 'takeoff'; armed = 1; mode = 1; events.push({ t, text: 'Throttle armed', sev: 6 }, { t, text: `Mode ${modes[1]}`, sev: 6 }); }
+    if (phase === 'takeoff' && rover) { phase = 'cruise'; mode = 2; ang = Math.atan2(y, x); events.push({ t, text: `Mode ${modes[2]}`, sev: 6 }); }
     if (phase === 'takeoff') {
       if (plane) { const sp = Math.min(V, Math.hypot(vx, vy) + 4 * dt); vx = Math.sin(yaw) * sp; vy = Math.cos(yaw) * sp; vz = sp > 15 ? 6 : 0; pitch = sp > 15 ? 0.25 : 0; thr = 95; }
       else { vz = 2.5; thr = 65; }
@@ -2050,12 +2114,12 @@ function mockReplayData(log, c) {
       ang += (V / r) * dt;
       const nx = Math.cos(ang) * r, ny = Math.sin(ang) * r;
       vx = (nx - x) / dt; vy = (ny - y) / dt; x = nx - vx * dt; y = ny - vy * dt;
-      vz = ((plane ? 120 : 30) + (plane ? 8 : 2) * Math.sin(t * 0.3) - z) * 0.5;
-      yaw = Math.atan2(vx, vy); roll = plane ? Math.atan((V * V) / (r * 9.81)) : 0.06 * Math.sin(t * 0.8); pitch = (plane ? 0.04 : 0) + vz * 0.02; thr = plane ? 55 : 48;
+      vz = rover ? 0 : (cruiseZ + (plane ? 8 : 2) * Math.sin(t * 0.3) - z) * 0.5;
+      yaw = Math.atan2(vx, vy); roll = rover ? 0 : plane ? Math.atan((V * V) / (r * 9.81)) : 0.06 * Math.sin(t * 0.8); pitch = rover ? 0 : (plane ? 0.04 : 0) + vz * 0.02; thr = rover ? 25 : plane ? 55 : 48;
       if (t >= 85) { phase = 'rtl'; mode = 3; events.push({ t, text: `Mode ${modes[3]}`, sev: 6 }); if (plane) events.push({ t: t + 0.2, text: 'Low battery warning (sahte)', sev: 4 }); }
     } else if (phase === 'rtl') {
       const d = Math.hypot(x, y);
-      if (d > 3) { const sp = Math.min(V, d); vx = -x / d * sp; vy = -y / d * sp; vz = -Math.min(3, z / Math.max(1, d / V)); yaw = Math.atan2(vx, vy); roll = 0; pitch = -0.05; thr = 40; }
+      if (d > 3) { const sp = Math.min(V, d); vx = -x / d * sp; vy = -y / d * sp; vz = rover ? 0 : -Math.min(3, z / Math.max(1, d / V)); yaw = Math.atan2(vx, vy); roll = 0; pitch = rover ? 0 : -0.05; thr = rover ? 25 : 40; }
       else { vx = vy = 0; vz = -Math.min(1.5, Math.max(0.3, z * 0.3)); roll = pitch = 0; thr = 25; }
       if (z <= 0.05 && d <= 3) { z = 0; vz = 0; if (armed) { armed = 0; thr = 0; mode = 0; phase = 'ground'; events.push({ t, text: 'Disarming motors', sev: 6 }); } }
     }
@@ -2074,12 +2138,13 @@ function mockReplayData(log, c) {
 // 20 Hz `tele` paketi sözleşme §3 alanlarıyla; STATUSTEXT benzeri olaylar; komutlar: arm/disarm/mode/takeoff/rtl/reset/crash/set_home/rc.
 class MockFlight {
   constructor(session) {
-    this.s = session; this.plane = isPlane(session.type); this.handlers = new Set(); this.timer = 0; this.reset();
+    this.s = session; this.plane = isPlane(session.type); this.rover = session.type === 'rover'; this.handlers = new Set(); this.timer = 0; this.reset();
   }
   reset() {
     const w = this.s.world;
     this.st = { t: 0, phase: 'ground', x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: (Number(w.runway_heading) || 0) * Math.PI / 180, roll: 0, pitch: 0,
-      mode: this.plane ? 'MANUAL' : 'STABILIZE', armed: false, thr: 0, batt_v: 16.8, batt_pct: 100, ang: 0, targetAlt: this.plane ? 150 : 30, auto: true, gcsAt: 10 };
+      mode: this.plane || this.rover ? 'MANUAL' : 'STABILIZE', armed: false, thr: 0, batt_v: 16.8, batt_pct: 100, ang: 0, targetAlt: this.plane ? 150 : 30, auto: true, gcsAt: 10,
+      v: 0, steer: 0 };   // §31 kara aracı: işaretli hız (m/s) + direksiyon (−1…1)
   }
   attach(handlers, pubSession) {
     this.handlers.add(handlers);
@@ -2095,6 +2160,7 @@ class MockFlight {
   end(reason) { this.emit({ t: 'end', reason }); clearInterval(this.timer); this.timer = 0; }
   cmd(name, p) {
     const S = this.st;
+    if (this.rover) { this.cmdRover(name, p); return; }   // §31
     if (name === 'arm') { S.armed = true; S.auto = false; this.event('Arming motors'); }
     else if (name === 'disarm') { S.armed = false; S.auto = false; S.phase = 'ground'; this.event('Disarming motors'); }
     else if (name === 'mode') { S.mode = p.mode || S.mode; S.auto = false; this.event(`Mode ${S.mode}`); if (S.mode === 'RTL') S.phase = 'rtl'; if (S.mode === 'LAND' || S.mode === 'QLAND') S.phase = 'land'; if ((S.mode === 'AUTO' || S.mode === 'LOITER') && S.armed && S.z > 2) S.phase = 'cruise'; }
@@ -2115,10 +2181,66 @@ class MockFlight {
     else if (name === 'set_home') this.event('Home set');
     else if (name === 'speed') { this.speedup = Number(p.factor) || 1; this.event(`Simülasyon hızı ${this.speedup}× (sahte)`); }   // §23: adım dt × speedup
   }
+  // §31 kara aracı komutları (sunucu SahteKinematik ile aynı davranış): kalkış / motor kesme yok; RTL eve sürer → HOLD
+  cmdRover(name, p) {
+    const S = this.st;
+    if (name === 'arm') { S.armed = true; S.auto = false; this.event('Arming motors'); }
+    else if (name === 'disarm') { S.armed = false; S.auto = false; S.phase = 'ground'; this.event('Disarming motors'); }
+    else if (name === 'mode') { S.mode = p.mode || S.mode; S.auto = false; S.phase = S.mode === 'RTL' || S.mode === 'SMART_RTL' ? 'rtl' : 'ground'; this.event(`Mode ${S.mode}`); }
+    else if (name === 'rtl') { S.mode = 'RTL'; S.phase = 'rtl'; S.auto = false; this.event('Mode RTL'); }
+    else if (name === 'takeoff' || name === 'motor_cut') this.event(name === 'takeoff' ? 'Kara aracında kalkış yok' : 'Kara aracında motor kesme yok', 'warning');
+    else if (name === 'reset') { this.reset(); this.emit({ t: 'state', state: 'BASLIYOR' }); this.event('SITL yeniden başlatıldı', 'warning'); setTimeout(() => this.emit({ t: 'state', state: 'HAZIR' }), 800); }
+    else if (name === 'crash') { S.armed = false; S.phase = 'crashed'; S.auto = false; S.thr = 0; S.v = 0; this.event('Crash: Disarming', 'critical'); }
+    else if (name === 'set_home') this.event('Home set');
+    else if (name === 'speed') { this.speedup = Number(p.factor) || 1; this.event(`Simülasyon hızı ${this.speedup}× (sahte)`); }
+  }
+  // §31 yerde sürüş (sunucu SahteKinematik._surus eşleniği): MANUAL/ACRO/STEERING → RC1 direksiyon + RC3 gaz (1500 dur); HOLD durur; RTL eve sürer;
+  // diğer otomatik kipler merkez çevresinde seyir hızıyla tur. Otomatik senaryo: 4 sn sonra ARM + AUTO (tur). alt_rel her zaman 0.
+  stepRover(dt) {
+    const S = this.st, c = this.s.center, drv = normDrive(this.s.drive), Lm = ROVER_LIMITS[drv];
+    const vmax = Lm.vmax, acc = Lm.accel, cruise = Math.min(5, vmax), R0 = 60;
+    if (S.auto && S.t > 4) { S.auto = false; this.cmdRover('arm', {}); this.cmdRover('mode', { mode: 'AUTO' }); }
+    let tv = 0, ts = 0;
+    const wrap = a => { let d = a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return d; };
+    if (S.armed && S.phase !== 'rtl' && ['MANUAL', 'ACRO', 'STEERING'].includes(S.mode)) {
+      const n = i => Math.max(-1, Math.min(1, ((Number(this.rc?.[i]) || 1500) - 1500) / 500));
+      tv = n(2) * vmax; ts = n(0);
+    } else if (S.armed && S.phase === 'rtl') {
+      const d = Math.hypot(S.x, S.y);
+      if (d > 2) { tv = Math.min(cruise, d); ts = Math.max(-1, Math.min(1, wrap(Math.atan2(-S.x, -S.y) - S.yaw) * 1.5)); }
+      else { S.phase = 'ground'; S.mode = 'HOLD'; this.event('Mode HOLD'); this.event('Reached destination'); }
+    } else if (S.armed && S.mode !== 'HOLD') {
+      const r = Math.hypot(S.x, S.y), tan = r > 1 ? Math.atan2(S.x, S.y) + Math.PI / 2 : S.yaw;   // saat yönünde tur + yarıçapa çekim
+      const want = tan - Math.max(-0.6, Math.min(0.6, (r - R0) / R0));
+      tv = cruise; ts = Math.max(-1, Math.min(1, wrap(want - S.yaw) * 1.5));
+    }
+    S.v += Math.max(-acc * dt, Math.min(acc * dt, tv - S.v));
+    S.steer += Math.max(-3 * dt, Math.min(3 * dt, ts - S.steer));
+    let yr = 0;
+    if (S.armed) {
+      if (drv === 'skid') yr = S.steer * Lm.turnRateDeg * Math.PI / 180;
+      else if (Math.abs(S.steer) > 1e-3) { const T = Lm.steerDeg * Math.PI / 180, Rt = Lm.turnD * Math.sin(T) / Math.sin(Math.abs(S.steer) * T); yr = Math.sign(S.steer) * S.v / Rt; }
+    } else S.v *= Math.exp(-3 * dt);
+    S.yaw = wrap(S.yaw + yr * dt);
+    S.vx = Math.sin(S.yaw) * S.v; S.vy = Math.cos(S.yaw) * S.v; S.vz = 0;
+    S.x += S.vx * dt; S.y += S.vy * dt; S.z = 0; S.roll = 0; S.pitch = 0;
+    S.thr = S.armed ? Math.round(Math.abs(S.v) / vmax * 1000) / 10 : 0;
+    if (S.armed) { S.batt_pct = Math.max(0, S.batt_pct - dt * 0.01 * (1 + S.thr / 100)); S.batt_v = 14.2 + 2.6 * S.batt_pct / 100; }
+    const g = Math.max(-1, Math.min(1, S.v / vmax));
+    const [a, b] = drv === 'skid' ? [Math.max(-1, Math.min(1, g + S.steer)), Math.max(-1, Math.min(1, g - S.steer))] : [S.steer, g];   // SERVO_OUTPUT_RAW taklidi (sunucu servo())
+    const servo = [Math.round(1500 + 500 * a), 1500, Math.round(1500 + 500 * b), 1500, 0, 0, 0, 0];
+    const lat = c.lat + S.y / 110574, lon = c.lon + S.x / (111320 * Math.cos(c.lat * Math.PI / 180)), gs = Math.abs(S.v);
+    const rc = this.rc || [Math.round(1500 + 500 * S.steer), 1500, Math.round(1500 + 500 * g), 1500, 1500, 1000, 1000, 1500];
+    this.emit({ t: 'tele', ts: Date.now(), lat, lon, alt_msl: Number(c.alt) || 0, alt_rel: 0, roll: 0, pitch: 0, yaw: S.yaw, vn: S.vy, ve: S.vx, vd: 0,
+      airspeed: gs, groundspeed: gs, heading: ((S.yaw * 180 / Math.PI) + 360) % 360, climb: 0, ys: yr, mode: S.mode, armed: S.armed, gps_fix: 3, sats: 14,
+      batt_v: S.batt_v, batt_pct: S.batt_pct, throttle: S.thr, rc, servo, home: { lat: c.lat, lon: c.lon, alt: c.alt }, gcs_connected: this.s.gcs.connected, gcs_addr: this.s.gcs.addr,
+      speedup: this.speedup || 1, tbm: Math.round(S.t * 1000) });
+  }
   step(dt) {
     const S = this.st, w = this.s.world, g = 9.81;
     S.t += dt;
     if (S.t > S.gcsAt && !this.s.gcs.connected) { this.s.gcs.connected = true; this.s.gcs.addr = '192.0.2.10:14550'; this.event('GCS bağlandı (192.0.2.10)'); }
+    if (this.rover) { this.stepRover(dt); return; }   // §31 kara aracı
     // Otomatik senaryo (komut gelmediyse): 4 sn sonra arm + kalkış
     if (S.auto && S.phase === 'ground' && S.t > 4) { this.cmd('takeoff', { alt: S.targetAlt }); S.auto = false; }
     const V = this.plane ? 22 : 8, R = MOCK.bankDeg ? Math.max(20, V * V / (9.81 * Math.tan(MOCK.bankDeg * Math.PI / 180))) : this.plane ? 450 : 150;   // ?bank=20: yatış açısından yarıçap (teşhis)

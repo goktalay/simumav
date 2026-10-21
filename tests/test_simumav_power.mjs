@@ -6,8 +6,8 @@
 //   • trPower: HEPGO kadran metinleri → i18n anahtarları; localizeUnits; warnInfo; reportModel (karolar, bitme anları, çubuklar)
 //   • HEPGO flightsim_power.js ile uyum: aynı Wh formülü, LIMITS sunucu SINIRLAR ile eşit
 import assert from 'node:assert/strict';
-import { powerOf, suggestionsOf, createPowerState, trPower, localizeUnits, warnInfo, reportModel, batteryWh, enduranceMin, rangeKm, clampField, canFuel, DEFAULT_LIMITS, FUEL_MIN_L, TR_KEYS } from '../static/simumav/app/fly/power.js';
-import { batteryWh as hepgoWh, LIMITS as HEPGO_LIMITS } from '../static/js/modules/flightsim_power.js';
+import { powerOf, suggestionsOf, createPowerState, trPower, localizeUnits, warnInfo, reportModel, batteryWh, enduranceMin, rangeKm, clampField, canFuel, canSpeed, ROVER_DEFAULTS, ROVER_FUEL_L, DEFAULT_LIMITS, FUEL_MIN_L, TR_KEYS } from '../static/simumav/app/fly/power.js';
+import { batteryWh as hepgoWh, LIMITS as HEPGO_LIMITS, defaultsFor as hepgoDefaults } from '../static/js/modules/flightsim_power.js';
 
 let n = 0;
 const test = (name, fn) => { fn(); n++; console.log('  ✓', name); };
@@ -79,5 +79,19 @@ test('rapor modeli: karolar, bitme anları, çubuklar, drona yazılan', () => {
   assert.deepEqual(M.events, [{ key: 'power.ev_fuel_empty', t: '00:34' }, { key: 'power.ev_elec_empty', t: '01:06' }]);
   assert.equal(M.bars.length, 2); assert.equal(M.speedupMax, 4); assert.deepEqual(M.written, pw.drone_written);
   assert.equal(reportModel({ dist_m: 1 }), null); assert.equal(reportModel(null), null);
+});
+test('§15 kara aracı: elektrik varsayılan (HEPGO defaultsFor(\'rover\') ile aynı), yakıt isteğe bağlı (20 L), azami hız yok', () => {
+  assert.ok(canFuel('rover') && !canSpeed('rover') && canSpeed('plane'));
+  const H = hepgoDefaults('rover');
+  for (const k of ['fuel_l', 'fuel_km_per_l', 'elec_cells', 'elec_mah', 'elec_w']) assert.equal(ROVER_DEFAULTS[k], H[k], k);
+  assert.equal(H.max_speed_ms ?? null, null);
+  const p0 = powerOf({ type: 'rover' });
+  assert.deepEqual(p0, { engine: 'electric', max_speed_ms: null, fuel_l: 0, fuel_km_per_l: 12, elec_cells: 4, elec_mah: 16000, elec_w: 60 });
+  const ps = createPowerState({ type: 'rover' });
+  assert.ok(!ps.set('max_speed_ms', 30), 'azami hız yok');
+  assert.deepEqual(ps.body(), { engine: 'electric', elec_cells: 4, elec_mah: 16000, elec_w: 60 });
+  assert.ok(ps.set('engine', 'fuel')); assert.equal(ps.values.fuel_l, ROVER_FUEL_L);
+  assert.deepEqual(ps.body(), { engine: 'fuel', elec_cells: 4, elec_mah: 16000, elec_w: 60, fuel_l: 20, fuel_km_per_l: 12 });
+  assert.equal(powerOf({ type: 'rover', power: { engine: 'fuel', fuel_l: 8, fuel_km_per_l: 9, max_speed_ms: 50 } }).max_speed_ms, null);
 });
 console.log(`\n${n} test geçti`);

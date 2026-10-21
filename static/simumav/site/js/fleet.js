@@ -1,6 +1,6 @@
 // SIMUMAV tanıtım sitesi — dron filosu (statik katalog; /api/hangar/catalog oturum ister, site oturumsuz açılır) + saf yardımcılar.
 // DOM'suz: hero3d.js, hangar3d.js ve node testi (tests/test_simumav_site.mjs) aynı dosyayı kullanır.
-// Kaynak: app/simumav/bridge.py GLB_MODELS (ad/tip/boyut) + HEDEF_HIZ (seyir, azami km/h); CAYMAZ: app/flightsim_models.py BUILTIN + flightsim_targets.BUILTIN_HIZ.
+// Kaynak: app/simumav/bridge.py GLB_MODELS (ad/tip/boyut) + HEDEF_HIZ / ROVER_HIZ (seyir, azami km/h); CAYMAZ: app/flightsim_models.py BUILTIN + flightsim_targets.BUILTIN_HIZ.
 // Test, anahtarların bridge.GLB_MODELS'te olduğunu ve hızların HEDEF_HIZ ile aynı olduğunu doğrular.
 // GLB çerçevesi: SIMUMAV modelleri Y yukarı, burun +X (nose:'x'); CAYMAZ (HEPGO STEP→GLB) Y yukarı, burun +Z (nose:'z').
 
@@ -22,6 +22,10 @@ export const FLEET = [
   { id: 'iris', key: 'glb:iris', name: '3DR Iris', type: 'multirotor', url: SM + 'iris.glb', nose: 'x', size: 0.5, cruise: 36, max: 60 },
   { id: 'talon_vtail', key: 'glb:talon_vtail', name: 'Talon V-tail', type: 'plane', url: SM + 'talon_vtail.glb', nose: 'x', size: 1.72, cruise: 65, max: 110 },
   { id: 'jet', key: 'glb:jet', name: 'Jet', type: 'plane', url: SM + 'jet.glb', nose: 'x', size: null, cruise: 300, max: 610 },
+  // Kara araçları (§15; HEPGO §31 ArduRover): hızlar bridge.ROVER_HIZ (SIM_Rover: Ackermann 72 km/h, paletli/diferansiyel 14 km/h)
+  { id: 'rover_4x4', key: 'glb:rover_4x4', name: 'Scout 4×4', type: 'rover', url: SM + 'rover_4x4.glb', nose: 'x', size: 2.2, cruise: 18, max: 72 },
+  { id: 'rover_ugv', key: 'glb:rover_ugv', name: 'UGV', type: 'rover', url: SM + 'rover_ugv.glb', nose: 'x', size: 2.5, cruise: 11, max: 14 },
+  { id: 'rover_bot', key: 'glb:rover_bot', name: 'Delivery Bot', type: 'rover', url: SM + 'rover_bot.glb', nose: 'x', size: 0.78, cruise: 11, max: 14 },
 ];
 /** Açılış sahnesi (sinematik gösterim) sırası: CAYMAZ → INTERCEPTOR'lar → diğer gerçekçi modeller. */
 export const REEL = ['caymaz', 'icept_x4', 'sting', 'p1sun', 'typhoon_h480', 'standard_vtol', 'believer', 'zephyr', 'x500', 'heli', 'iris_fpv'];

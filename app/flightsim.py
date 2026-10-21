@@ -54,9 +54,14 @@ TELE_TBM_KAPI = 18                    # ms: iki yayın arası en az SITL zamanı
 RC_PARAMLAR = (('SIM_RC_FAIL', 0), ('FS_THR_ENABLE', 0), ('THR_FAILSAFE', 0), ('RC_OVERRIDE_TIME', 3.0))
 
 TIP_ADLARI = {'multirotor': 'Multikopter', 'hexarotor': 'Hexakopter', 'helikopter': 'Helikopter', 'sabit_kanat': 'Sabit Kanat', 'vtol': 'VTOL',
-              'interceptor': 'INTERCEPTOR'}
+              'interceptor': 'INTERCEPTOR', 'rover': 'Kara Aracı'}
 PLANE_TIPLERI = ('sabit_kanat', 'vtol', 'interceptor')   # ArduPlane ikilisi (interceptor = quadplane tailsitter, §25)
 DIKEY_TIPLER = ('interceptor',)   # §25: dikey kalkış/iniş yapan uçak tipi (pist/rampa yok; GUIDED VTOL kalkışı, RTL → dikey iniş)
+# §31 KARA ARACI (ArduRover): kalkış/iniş yok, motor kesme yok; sürüş biçimi `drive` — ackermann (ön tekerlek direksiyonu; SITL `rover`) | skid
+# (paletli / diferansiyel; SITL `rover-skid`, SERVO1 sol / SERVO3 sağ gaz). Eksikse modelin `drive`'ı (dahili 4×4 → ackermann, palet/robot → skid).
+ROVER_TIPLERI = ('rover',)
+DRIVES = ('ackermann', 'skid')
+MAV_TYPE_GROUND_ROVER = 10
 KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend', 'motor_cut')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}; defend: §26 {action: 'next'}; motor_cut: {on: bool}
 # Motor kesme (`motor_cut {on}`; yalnız uçak tipleri): ARM'lı kalır, motor durur, kumanda yüzeyleri ve uçuş kipi çalışmaya devam eder → süzülme.
 # Gerçek ArduPlane 4.7.2 SITL'de ölçüldü (100–145 m AGL; FBWA/FBWB/CRUISE/AUTO/RTL/MANUAL):
@@ -232,6 +237,18 @@ def layout_etkin(fn):
     return 'elevon' if ek == '-elevon' else 'vtail' if ek == '-vtail' else 'classic'
 
 
+def drive_dogrula(tip, drive, model=None):
+    """§31 sürüş biçimi: yalnız kara aracında anlamlı (aksi None). Eksikse modelin `drive`'ı, o da yoksa 'ackermann'. Bilinmeyen → SimHata('invalid')."""
+    if tip not in ROVER_TIPLERI:
+        return None
+    if drive is None or drive == '':
+        m = (model or {}).get('drive') if isinstance(model, dict) else None
+        return m if m in DRIVES else 'ackermann'
+    if not isinstance(drive, str) or drive not in DRIVES:
+        raise SimHata('invalid', 'drive ackermann | skid olmalı')
+    return drive
+
+
 def airframe_dogrula(tip, a):
     """Gövde seçimi yalnız uçak tiplerinde anlamlı: eksikse 'caymaz'; bilinmeyen değer SimHata('invalid'). Kopterlerde None."""
     if tip not in ('sabit_kanat', 'vtol'):
@@ -245,9 +262,9 @@ def airframe_dogrula(tip, a):
 
 def _model_eski(tip, airframe):
     """`model` verilmeden açılan oturum (eski istemci / doğrudan MANAGER.ac): dahili modelin özet nesnesi (DB'siz; §12 kütüphanesinde her zaman var)."""
-    if tip in DIKEY_TIPLER:   # §25: INTERCEPTOR dahili GLB'si (yönelimli; buildLibrary)
+    if tip in DIKEY_TIPLER or tip in ROVER_TIPLERI:   # §25 INTERCEPTOR / §31 kara aracı dahili GLB'si (yönelimli; buildLibrary)
         from . import flightsim_models
-        return flightsim_models.builtin_api('icept_x4', tip)
+        return flightsim_models.builtin_api('icept_x4' if tip in DIKEY_TIPLER else 'rover_4x4', tip)
     key = {'multirotor': 'quad', 'hexarotor': 'hexa', 'helikopter': 'heli'}.get(tip) or (airframe if airframe in AIRFRAMES else 'caymaz')
     return {'id': f'builtin:{key}', 'source': 'builtin', 'type': tip, 'orient': None, 'has_prop': True, 'glb_url': None, 'ready': True}
 
@@ -381,7 +398,7 @@ def _modlar(vtype):
 
 
 def _varsayilan_vtype(tip):
-    return 1 if tip in PLANE_TIPLERI else 2
+    return 1 if tip in PLANE_TIPLERI else MAV_TYPE_GROUND_ROVER if tip in ROVER_TIPLERI else 2
 
 
 def _rc_dogrula(ch):
@@ -431,8 +448,18 @@ class SahteKinematik:
     HIZ = 12.0           # m/s
     TIRMANMA = 3.0       # m/s
 
-    def __init__(self, tip, lat, lon, alt, ruzgar_ms, launch=None, heading=0):
+    # §31 kara aracı sahte sürüşü (SIM_Rover sabitleri: Ackermann azami 20 m/s, 35° teker, 1,8 m dönüş çapı; skid 4 m/s, 140°/sn)
+    ROVER_VMAX = {'ackermann': 20.0, 'skid': 4.0}
+    ROVER_IVME = {'ackermann': 10.0, 'skid': 14.0}
+    ROVER_SEYIR = 5.0
+    ROVER_TEKER = math.radians(35.0)
+    ROVER_DONUS_CAPI = 1.8
+    ROVER_SKID_DONUS = math.radians(140.0)
+
+    def __init__(self, tip, lat, lon, alt, ruzgar_ms, launch=None, heading=0, drive=None):
         self.tip = tip
+        self.rover = tip in ROVER_TIPLERI
+        self.drive = drive if drive in DRIVES else 'ackermann'
         self.plane = tip in PLANE_TIPLERI
         self.dikey = tip in DIKEY_TIPLER   # §25 INTERCEPTOR: dikey kalkış (pist koşusu yok), havada yatay uçuş; gövde yönelimi `att_body`
         self.lat0, self.lon0, self.alt0 = float(lat), float(lon), float(alt or 0)
@@ -446,15 +473,17 @@ class SahteKinematik:
         self.lat, self.lon, self.alt_rel = self.lat0, self.lon0, 0.0
         self.home = {'lat': self.lat0, 'lon': self.lon0, 'alt': self.alt0}
         self.armed = False
-        self.mode = 'MANUAL' if self.plane else 'STABILIZE'
+        self.mode = 'MANUAL' if (self.plane or self.rover) else 'STABILIZE'
         self.hedef_alt = 0.0
         self.aci = 0.0
+        self.hiz = 0.0                              # §31 kara aracı: ileri hız (m/s; geri vites −)
+        self.direksiyon = 0.0                       # §31 −1…1 (sağ +); servo çıkışı ve 3B teker açısı
         self.kalkis = None   # sabit kanat kalkış aşaması: {'faz': 'run'|'air', 'hiz', 'yol', 'tetik'}
         self.nisan = None    # §27 el fırlatıcısı: (az, el) derece → dikey yerine nişan ışını boyunca tırmanış
         self.roll = self.pitch = self.yaw = 0.0
         self.rs = self.ps = self.ys = 0.0          # açısal hızlar (rad/s; ATTITUDE rollspeed/pitchspeed/yawspeed karşılığı)
         self.vn = self.ve = self.vd = 0.0
-        self.rc = list(self.RC_VARSAYILAN)
+        self.rc = list(self.RC_VARSAYILAN_ROVER if self.rover else self.RC_VARSAYILAN)
         self.throttle = 0.0
         self.batt_v = 12.6
         self.eve = False
@@ -463,6 +492,7 @@ class SahteKinematik:
         self.sure_ms = 0.0                          # time_boot_ms karşılığı
 
     RC_VARSAYILAN = (1500, 1500, 1000, 1500, 1500, 1500, 1500, 1500)
+    RC_VARSAYILAN_ROVER = (1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500)   # ArduRover: gaz ortası = dur (ileri/geri çift yönlü)
 
     def komut(self, name, p):
         p = p or {}
@@ -482,7 +512,7 @@ class SahteKinematik:
                 self.alt_rel, self.hedef_alt = 0.0, 0.0
         elif name == 'mode':
             self.mode = str(p.get('mode') or '').upper() or self.mode
-            self.eve = self.mode in ('RTL', 'QRTL')
+            self.eve = self.mode in ('RTL', 'QRTL', 'SMART_RTL')
         elif name == 'takeoff':
             self._motor_ver()
             self.armed = True
@@ -505,10 +535,10 @@ class SahteKinematik:
         elif name == 'rc':
             ch = list(p['ch'])
             if not any(ch):                        # 8×0 = override serbest: kanallar varsayılana döner
-                self.rc = list(self.RC_VARSAYILAN)
+                self.rc = list(self.RC_VARSAYILAN_ROVER if self.rover else self.RC_VARSAYILAN)
                 return
             self.rc = [v if v else eski for v, eski in zip(ch, self.rc)]   # 0 = o kanalı değiştirme
-            if ch[2]:
+            if ch[2] and not self.rover:
                 self.throttle = max(0.0, min(100.0, (self.rc[2] - 1000) / 10.0))
 
     def _motor_ver(self):
@@ -553,7 +583,68 @@ class SahteKinematik:
             self.roll = self.pitch = 0.0
             self.hedef_alt = 0.0
 
+    def _surus(self, dt):
+        """§31 kara aracı: yerde (alt_rel 0) sürüş. MANUAL/ACRO/STEERING: RC1 direksiyon, RC3 gaz (1500 dur, çift yönlü); HOLD durur;
+        RTL/SMART_RTL eve sürer ve HOLD'a geçer; diğer otomatik kipler (AUTO/GUIDED/LOITER/FOLLOW/SIMPLE) merkez çevresinde seyir hızıyla tur."""
+        vmax, ivme = self.ROVER_VMAX[self.drive], self.ROVER_IVME[self.drive]
+        cos_lat = math.cos(math.radians(self.lat0))
+        hedef_v, hedef_s = 0.0, 0.0
+        if self.armed and not self.eve and self.mode in ('MANUAL', 'ACRO', 'STEERING'):
+            hedef_v = max(-1.0, min(1.0, ((self.rc[2] or 1500) - 1500) / 500.0)) * vmax
+            hedef_s = max(-1.0, min(1.0, ((self.rc[0] or 1500) - 1500) / 500.0))
+        elif self.armed and self.eve:
+            dn = (self.home['lat'] - self.lat) * 110574.0
+            de = (self.home['lon'] - self.lon) * 111320.0 * cos_lat
+            mesafe = math.hypot(dn, de)
+            if mesafe > 2.0:
+                hedef_v = min(self.ROVER_SEYIR, vmax, mesafe)
+                hata = (math.atan2(de, dn) - self.yaw + math.pi) % (2 * math.pi) - math.pi
+                hedef_s = max(-1.0, min(1.0, hata * 1.5))
+            else:
+                self.eve, self.mode = False, 'HOLD'
+        elif self.armed and self.mode not in ('HOLD', 'MANUAL', 'ACRO', 'STEERING', 'INITIALISING'):
+            dn, de = (self.lat - self.lat0) * 110574.0, (self.lon - self.lon0) * 111320.0 * cos_lat
+            r = math.hypot(dn, de)
+            teget = math.atan2(de, dn) + math.pi / 2 if r > 1.0 else self.yaw   # saat yönünde tur + yarıçapa çekim
+            hedef_yon = teget - max(-0.6, min(0.6, (r - self.YARICAP) / self.YARICAP))
+            hata = (hedef_yon - self.yaw + math.pi) % (2 * math.pi) - math.pi
+            hedef_v, hedef_s = min(self.ROVER_SEYIR, vmax), max(-1.0, min(1.0, hata * 1.5))
+        adim_v = ivme * dt
+        self.hiz += max(-adim_v, min(adim_v, hedef_v - self.hiz))
+        self.direksiyon += max(-3.0 * dt, min(3.0 * dt, hedef_s - self.direksiyon))
+        if self.drive == 'skid':
+            yr = self.direksiyon * self.ROVER_SKID_DONUS * (1.0 if abs(self.hiz) > 0.05 or self.armed else 0.0)
+        elif abs(self.direksiyon) > 1e-3:
+            R = self.ROVER_DONUS_CAPI * math.sin(self.ROVER_TEKER) / math.sin(abs(self.direksiyon) * self.ROVER_TEKER)
+            yr = math.copysign(self.hiz / R, self.direksiyon)
+        else:
+            yr = 0.0
+        if not self.armed:
+            yr = 0.0
+        self.yaw = (self.yaw + yr * dt + math.pi) % (2 * math.pi) - math.pi
+        self.vn, self.ve, self.vd = self.hiz * math.cos(self.yaw), self.hiz * math.sin(self.yaw), 0.0
+        self.lat += self.vn * dt / 110574.0
+        self.lon += self.ve * dt / (111320.0 * cos_lat)
+        self.alt_rel = 0.0
+        self.roll = self.pitch = 0.0
+        self.throttle = round(abs(self.hiz) / vmax * 100.0, 1) if self.armed else 0.0
+        if self.armed:
+            self.batt_v = max(10.5, self.batt_v - 0.0004 * dt)
+
+    def servo(self):
+        """§31 kara aracı servo çıkışı (ArduRover SERVO_OUTPUT_RAW taklidi): Ackermann SERVO1 direksiyon / SERVO3 gaz; skid SERVO1 sol / SERVO3 sağ."""
+        g = max(-1.0, min(1.0, self.hiz / self.ROVER_VMAX[self.drive]))
+        if self.drive == 'skid':
+            sol, sag = max(-1.0, min(1.0, g + self.direksiyon)), max(-1.0, min(1.0, g - self.direksiyon))
+            a, b = sol, sag
+        else:
+            a, b = self.direksiyon, g
+        return [int(1500 + 500 * a), 1500, int(1500 + 500 * b), 1500, 0, 0, 0, 0]
+
     def _adim(self, dt):
+        if self.rover:
+            self._surus(dt)
+            return
         if self.plane and (self.motor_cut or not self.armed) and self.havada():
             self.kalkis = None
             if not self.armed:
@@ -690,7 +781,7 @@ class SahteKinematik:
 
     def tele(self):
         hs = math.hypot(self.vn, self.ve)
-        ek = {'att_body': self.govde()} if self.dikey else {}
+        ek = {'att_body': self.govde()} if self.dikey else {'servo': self.servo()} if self.rover else {}
         return {**ek, 'lat': round(self.lat, 7), 'lon': round(self.lon, 7), 'alt_msl': round(self.alt0 + self.alt_rel, 2), 'alt_rel': round(self.alt_rel, 2),
                 'roll': round(self.roll, 4), 'pitch': round(self.pitch, 4), 'yaw': round(self.yaw, 4),
                 'rs': round(self.rs, 3), 'ps': round(self.ps, 3), 'ys': round(self.ys, 3), 'tbm': int(self.sure_ms), 'tbm_pos': int(self.sure_ms),
@@ -724,7 +815,7 @@ class _UdpProto(asyncio.DatagramProtocol):
 # ======================================================================
 class SimSession:
     def __init__(self, sid, tip, center, world, owner, yonetici, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None,
-                 targets=None, gcs=None, defend=None):
+                 targets=None, gcs=None, defend=None, drive=None):
         self.id = int(sid)
         # §26 yer kontrol merkezi + EO/radar kulesi (doğrulanmış flightsim_gcs.gcs_dogrula) ve "Yer kontrolünü koru" görevi (SavunmaGorevi; yalnız INTERCEPTOR).
         # Görev istasyonu gerektirir: gcs yoksa istasyon + radar + EO varsayılanlarla açılır, istasyon kapalı seçildiyse açılır.
@@ -789,6 +880,7 @@ class SimSession:
         # §13.1 kontrol düzeni (yalnız sabit kanat): classic | elevon | vtail; eksikse modelin düzeni. `layout_etkin` SITL'de fiilen uçan düzen
         # (kalıcı kayıt öncelikli olabilir), `layout_sitl_model` açılan SITL modeli (`plane[-elevon|-vtail][-catapult]`), `layout_atlanan` kalıcı yüzünden yazılmayanlar.
         self.layout = layout_dogrula(tip, layout, self.model)
+        self.drive = drive_dogrula(tip, drive, self.model)   # §31 kara aracı sürüş biçimi (ackermann | skid); diğer tiplerde None
         self.layout_etkin = self.layout
         self.layout_sitl_model = None
         self.layout_atlanan = []
@@ -822,7 +914,7 @@ class SimSession:
         self._motor_cut_istek = None     # (on, zaman): son 218 isteği (red ACK'inde bayrak geri alınır)
         self.sahte = None
         if not SITL_ENABLED:
-            self.sahte = SahteKinematik(tip, center['lat'], center['lon'], center.get('alt'), world.get('wind_ms'), self.launch, world.get('runway_heading'))
+            self.sahte = SahteKinematik(tip, center['lat'], center['lon'], center.get('alt'), world.get('wind_ms'), self.launch, world.get('runway_heading'), self.drive)
         d = _dialect()
         self.mav = d.MAVLink(None, srcSystem=GCS_SYSID, srcComponent=GCS_COMP)   # kodlayıcı
         self.mav_arac = d.MAVLink(None, srcSystem=1, srcComponent=1)             # sahte kip: hub'a araç çerçeveleri (sysid 1)
@@ -874,6 +966,7 @@ class SimSession:
                 # §24 hedefler (model görsel bilgisiyle) + önleme durumu; §25 dikey kalkış tipi
                 'targets': flightsim_targets.zenginlestir(self.hedefler), 'targets_state': self.hedef_iz.ozet() if self.hedef_iz else None,
                 'vertical': self.type in DIKEY_TIPLER,
+                'ground': self.type in ROVER_TIPLERI, 'drive': self.drive,   # §31 kara aracı (kalkış yok; 3B zemine oturur) + sürüş biçimi
                 'motor_cut': bool(self.motor_cut),   # motor kesik (süzülüyor); uçak dışı tiplerde hep False
                 # §26 yer kontrol merkezi (yerleşimiyle) + "Yer kontrolünü koru" görevi (yapılandırma, deterministik plan, anlık durum)
                 'site': {**self.gcs, 'layout': self.gcs_yer} if self.gcs else None,   # ('gcs' anahtarı Mission Planner bağlantısıdır)
@@ -1392,7 +1485,10 @@ class SimSession:
         return layout_parametreleri(self.layout, [r['name'] for r in self.kayitli_params])
 
     def _sitl_modeli(self):
-        """Sabit kanat SITL modeli: `plane` + düzen son eki (ETKİN fonksiyonlardan: kalıcı kayıt öncelikli) + rampa `-catapult`; diğer tiplerde None."""
+        """Sabit kanat SITL modeli: `plane` + düzen son eki (ETKİN fonksiyonlardan: kalıcı kayıt öncelikli) + rampa `-catapult`; kara aracı (§31)
+        `rover` | `rover-skid` (sürüş biçimi); diğer tiplerde None."""
+        if self.type in ROVER_TIPLERI:
+            return drone_sitl.ROVER_SKID_MODEL if self.drive == 'skid' else 'rover'
         if self.type != 'sabit_kanat':
             return None
         fn = layout_etkin_fn(self.layout, self.kayitli_params)
@@ -1831,6 +1927,8 @@ class SimSession:
         if name == 'rc':
             p = {'ch': _rc_dogrula(p.get('ch'))}
         elif name == 'takeoff':
+            if self.type in ROVER_TIPLERI:   # §31: kara aracı kalkmaz — ARM + kip (MANUAL sürüş / AUTO görev)
+                raise SimHata('invalid', 'Kara aracında kalkış yok: ARM edip MANUAL ile sürün ya da AUTO ile görevi başlatın')
             alt = p.get('alt')
             if alt is None:
                 alt = 50.0 if self.type in PLANE_TIPLERI else 10.0
@@ -1854,6 +1952,8 @@ class SimSession:
         elif name == 'motor_cut':
             if not isinstance(p.get('on'), bool):
                 raise SimHata('invalid', 'motor_cut.on doğru/yanlış (true/false) olmalı')
+            if self.type in ROVER_TIPLERI:
+                raise SimHata('invalid', 'Kara aracında motor kesme yok: durdurmak için HOLD kipi ya da DISARM kullanın')
             if self.type not in PLANE_TIPLERI:   # kopter: kanat yok, motor kesmek düşürür → ön yüz DISARM'ı onayla göndermeli
                 raise SimHata('invalid', 'Motor kesme yalnız uçak tiplerinde (sabit kanat / VTOL / INTERCEPTOR); kopterde havada DISARM aracı düşürür')
             p = {'on': p['on']}
@@ -2002,8 +2102,12 @@ class SimSession:
                 raise RuntimeError('Dron komutu reddetti (MAV_RESULT 4): yüklü görev yok')
             k.komut('mode', {'mode': mode}); return {'mode': mode}
         if name == 'takeoff':
+            if self.type in ROVER_TIPLERI:
+                raise RuntimeError('Kara aracında kalkış yok (MAV_RESULT 3)')
             k.komut('takeoff', {'alt': float(p.get('alt_rel_m') or 30)}); return {'ack': 0}
         if name == 'land':
+            if self.type in ROVER_TIPLERI:   # ArduRover'da LAND yok: dur (HOLD)
+                k.komut('mode', {'mode': 'HOLD'}); return {'mode': 'HOLD'}
             k.komut('mode', {'mode': 'QLAND' if self.type == 'vtol' else 'LAND'}); k.eve = True; return {'mode': 'LAND'}
         if name == 'rtl':
             k.komut('rtl', {}); return {'mode': 'RTL'}
@@ -2183,7 +2287,7 @@ class SimSession:
                 if now - hb >= 1.0 and self.gcs_addr is not None:
                     hb = now
                     try:
-                        m = self.mav.heartbeat_encode(1 if self.type in PLANE_TIPLERI else 2, 3, 128 if self.sahte.armed else 0, 0, 4)
+                        m = self.mav.heartbeat_encode(_varsayilan_vtype(self.type), 3, 128 if self.sahte.armed else 0, 0, 4)
                         self._gcs_gonder(m.pack(self.mav))
                         self.mav.seq = (self.mav.seq + 1) % 256
                     except Exception:   # noqa: BLE001
@@ -2358,7 +2462,7 @@ class SimManager:
         return len([s for s in self.sessions.values() if s.state != 'KAPANDI'])
 
     async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None, targets=None,
-                 targets_katalog=None, site=None, defend=None):
+                 targets_katalog=None, site=None, defend=None, drive=None):
         """Yeni oturum: doğrulama (400) → limit (409) → SITL ikilisi (503) → UDP port (503, oturum içinde HATA) → görev.
         `model`: flightsim_models.coz ile çözülmüş kütüphane nesnesi (router); yoksa `airframe` ile dahili model.
         `drone` (§14, isteğe bağlı): Dron Envanteri kaydı {id, code, name, model} — harekât panelinde telemetri bu adla akar.
@@ -2380,6 +2484,7 @@ class SimManager:
             raise SimHata('invalid', str(e))
         airframe = airframe_dogrula(tip, airframe)
         layout = layout_dogrula(tip, layout, model)   # §13.1 kontrol düzeni (400)
+        drive = drive_dogrula(tip, drive, model)      # §31 kara aracı sürüş biçimi (400)
         try:
             targets = flightsim_targets.dogrula(targets, targets_katalog)   # §24 hedefler (≤ 8; irtifa, çap, hız ≤ model azami; 400) — SIMUMAV kendi kataloğunu verir
         except flightsim_targets.HedefHata as e:
@@ -2423,7 +2528,7 @@ class SimManager:
         self._next += 1
         s = SimSession(sid, tip, {'id': center.get('id'), 'name': center.get('name'), 'lat': float(center['lat']), 'lon': float(center['lon']),
                                   'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout, camera, targets,
-                       site, defend)
+                       site, defend, drive)
         s.alt_not = alt_not
         self.sessions[sid] = s
         s.task = asyncio.get_running_loop().create_task(s.run())

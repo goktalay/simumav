@@ -214,5 +214,9 @@
   "sys.alt.tgt": "Zielsymbolik im F-16-Stil auf der Gimbal-Kamera",
   "sys.alt.tgtthermal": "Zielsymbolik auf der Wärmebildkamera",
   "sys.alt.launch": "INTERCEPTOR-Starterwahl im Flug-Assistenten: Vierer- und Achterbox, Einzelrohr, Handstarter und 3D-Vorschau",
-  "sys.alt.report": "Missionsbericht Bodenkontrolle verteidigen"
+  "sys.alt.report": "Missionsbericht Bodenkontrolle verteidigen",
+  "type.rover": "Bodenfahrzeug",
+  "fleet.rover_4x4.d": "4×4-Aufklärer mit Ackermann-Lenkung und EO/IR- + LIDAR-Mast; bis 72 km/h mit ArduRover.",
+  "fleet.rover_ugv.d": "Unbemanntes Kettenfahrzeug: dreht auf der Stelle (Differenziallenkung), Sensorturm.",
+  "fleet.rover_bot.d": "Sechsrädriger Gehweg-Lieferroboter (0,78 m), Differenziallenkung, Fahnenmast."
 }

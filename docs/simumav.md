@@ -615,3 +615,39 @@ doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
   (F) + ARM/DISARM/motor kes (X) her zaman görünür; `.fs-cmds`'te yalnız Kalkış/RTL kaldı. Komutlar hub `cmd` yolundan (`mode`, `arm`, `disarm`, `motor_cut`);
   havada kopter DISARM'ı `confirmDialog` onayı ister. Çarpışma bandı açılınca `sim.crashFx({speed})`, ses `getCrashSpeed`.
 - Metinler `flt.*` ve `site.eo_follow*`, `site.eo_manual`, `site.eo_drag_hint`, `site.eo_body_t` (7 dil). Hassasiyet düğmesi etiketli (`rcfeel.btn`).
+
+## 15. KARA ARACI (rover) — HEPGO docs/ucus-simulatoru.md §31'in SIMUMAV karşılığı (`bridge.py`, `power.py`, `fly/*`, `hangar/*`)
+- **Tip eşlemesi:** `drones.type 'rover'` → çekirdek `rover` (ArduRover 4.7.2 SITL; `bridge.TIP_ESLEME['rover']`, `TYPE_LABELS` "Kara aracı"; `drones.type`'ta CHECK yok →
+  göç gerekmez). `GET /api/meta.types` ve CAYSIM `GET /types` (çekirdek `tipler()`) rover'ı içerir.
+- **Katalog:** `glb:rover_4x4` (Keşif 4×4, `drive` ackermann; varsayılan), `glb:rover_ugv` (Paletli UGV, skid), `glb:rover_bot` (Teslimat robotu, skid) —
+  `static/simumav/models/rover_*.glb` (prosedürel, `tools/rover_models_build.py`; LICENSES.md). `MODEL_ESLEME glb:rover_* → builtin:rover_*`; çekirdeğin dahili
+  rover modelleri aynı dosya olduğundan katalogda ikinci kez listelenmez (INTERCEPTOR kalıbı). `glb_model_api` rover'da `has_prop: false` ve `drive` döner;
+  `drone_api` kayda `drive` (modelin sürüş biçimi; rover dışı `null`) ekler. Kara aracı **hava hedefi değildir**: `hedef_katalogu()` rover modellerini atlar;
+  tanıtım sitesi filo hızları ayrı `ROVER_HIZ` tablosunda (Ackermann 18–72 km/h, skid 11–14 km/h; `site/js/fleet.js`, test eşitliği denetler).
+- **`POST /api/fly/start`:** isteğe bağlı `drive` (`ackermann` | `skid`; yoksa modelin `drive`'ı; bilinmeyen → 422; rover dışında yok sayılır) →
+  `bridge.drive_dogrula` → `MANAGER.ac(drive=)` (SITL modeli `rover` | `rover-skid`). Rover'da kalkış yöntemi **yok sayılır** (`launch` nötr `{method:'wheels'}`;
+  `flights.launch = 'wheels'`). Yanıt ve `flights.snapshot.drone.drive` oturumun etkin sürüş biçimini taşır; oturum `to_dict` `ground: true`, `drive`.
+  WS `takeoff` rover'da kalp atışı beklenmeden reddedilir (çekirdek 400), `motor_cut` reddedilir, `land` → HOLD.
+- **Güç (§10):** `power.YAKIT_TIPLERI` += `rover` (yakıt isteğe bağlı), `HIZ_TIPLERI = plane/interceptor/vtol` (rover'da azami hız yok, `max_speed_ms` NULL);
+  varsayılan motor **elektrikli**; elektrikliden yakıta geçişte depo 20 L (`ROVER_YAKIT_L`). Model varsayılanları: 4×4 = çekirdek `ROVER_VARSAYILAN`
+  (4S 16000 mAh 60 W, 12 km/L), UGV 6S 20000 mAh 150 W 6 km/L, robot 4S 10000 mAh 40 W. Meta `power.fuel_types` / `speed_types` / `rover_fuel_l`.
+  JS `fly/power.js`: `canFuel('rover')`, `canSpeed`, `ROVER_DEFAULTS` (HEPGO `defaultsFor('rover')` ile aynı; node testi eşitliği denetler), "Sürüş bataryası" sütunu.
+- **Hangar:** tür seçicide 7. kart (Kara Aracı; çubuklar hız 30 / menzil 45 / dayanıklılık 90 / çeviklik 50), model kartlarında "Ackermann · azami 72 km/h" /
+  "Paletli · azami 14 km/h" (`roverStat`), şeritte ve başlıkta aynı etiket. 3B önizleme (`procmodels.js`): `wheel_*` düğümleri yavaşça döner, `steer_fl/fr`
+  ±12° salınır (`roverParts` / `animateDrone`); GLB yüklenemezse prosedürel `rover` şablonu.
+- **Uç sihirbazı:** rover'da Kalkış adımı yok (drone → track → power → mission → site → targets → pilot; hedef ve yer kontrol isteğe bağlı, "Yer kontrolünü koru"
+  görevi yalnız INTERCEPTOR). Dron adımında **Sürüş biçimi** kartları (Ackermann / Paletli-diferansiyel; modelin biçimi "Model" rozetli) → `W.state.drive`
+  (dron değişince sıfırlanır) → gövde `drive`. Hız ölçeği 80 km/h (Ackermann) / 20 km/h (skid). Alt özet sürüş biçimini gösterir.
+- **Uçuş ekranı** (`fly/session.js`): `loadSim` listesinde `/sim/flightsim_rover.js` (`MRover`); mod seçici ArduRover kipleri (`ROVER_MODES`, başlangıç MANUAL;
+  fltbar `modeKind('rover')`); `.fs-cmds`'te Kalkış yerine **Dur** (HOLD) + RTL; `takeoffDialog` rover'da uyarı verir; geri sayım/elden atış/fırlatıcı yok.
+  3B'ye `drive` verilir (teker kinematiği), güç kadranları `rover: true`, hız kadranı yer hızı, üst çubukta sürüş biçimi rozeti.
+- **Sanal kumanda** (`fly/rc.js virtualRC({ rover: { channels } })`): sol çubuk DİKEY gaz (yaylı, bırakınca 1500 = dur; aşağı geri/fren), sağ çubuk YATAY
+  direksiyon (yaylı); klavye W/S ya da ↑/↓ gaz, A/D ya da ←/→ direksiyon, Boşluk dur, Q/E mod kanalı. Kanallar `roverRcChannels` → `[RC1, 0, RC3, 0, ch5, 0, 0, 0]`
+  (yedek `roverChannelsOf` aynı biçim); hassasiyet: direksiyon `roll`, gaz `thr` eğrisi (`createRcFeelPanel({ rover: true })`, `rcfeel.steer`).
+- **i18n (7 dil):** `types.rover(_desc)`, `drive.*` (title, ackermann/skid + _desc + _short, max, model_badge, note), `rover.*` (çekirdek `ROVER_TEXTS`'in 16
+  anahtarı + rc_hint/rc_left/rc_right/rc_title, hold/hold_title, no_takeoff, gauge_title), `power.step_sub_rover`, `power.hourly_w_hint_rover`,
+  `power.col_batt_rover`, `rcfeel.steer`; tanıtım sitesi `type.rover`, `fleet.rover_*.d`.
+- **Testler:** `tests/test_simumav_rover.py` (eşleme, katalog, hedef dışı, hangar, drive 422/varsayılan/ezme, launch yok sayılır, snapshot, WS hello, takeoff /
+  motor_cut reddi, ARM + RC ile sahte sürüş, land → HOLD), `test_simumav_power.py|mjs`, `test_simumav_fly.mjs`, `test_simumav_rc.mjs`, `test_simumav_models.py`
+  (rover GLB'lerinde pervane yok, `wheel_*`/`steer_*`), `test_simumav_site.mjs` (filo). Gerçek SITL: `SMP_REAL=1 HEPGO_SITL_DIR=/opt/hepgo/sitl/bin`.
+  Görsel: `tests/rover_shots_simumav.py` → `/tmp/rover-shots/simumav-*.png`.

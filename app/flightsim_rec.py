@@ -25,7 +25,8 @@ KEEP_DAYS = max(1, int(os.environ.get('SIM_REC_KEEP_DAYS', '30') or 30))   # pay
 KEEP_S = KEEP_DAYS * 24 * 3600
 MIMES = {'video/webm': '.webm', 'video/mp4': '.mp4', 'video/x-matroska': '.mkv'}
 _ID = re.compile(r'^[0-9a-f]{16}$')
-TIP_ADLARI = {'multirotor': 'Multirotor', 'hexarotor': 'Hexarotor', 'helikopter': 'Helikopter', 'sabit_kanat': 'Sabit kanat', 'vtol': 'VTOL'}
+TIP_ADLARI = {'multirotor': 'Multirotor', 'hexarotor': 'Hexarotor', 'helikopter': 'Helikopter', 'sabit_kanat': 'Sabit kanat', 'vtol': 'VTOL',
+             'interceptor': 'INTERCEPTOR', 'rover': 'Kara aracı'}
 YONTEM = {'ramp': 'rampa', 'vehicle': 'araç', 'wheels': 'pist'}
 
 

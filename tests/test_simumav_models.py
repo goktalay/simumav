@@ -58,7 +58,13 @@ class GlbTest(unittest.TestCase):
                 self.assertIn('bufferView', im, f'{key}: doku gömülü olmalı')
             adlar = [n.get('name', '') for n in j.get('nodes', [])]
             props = [a for a in adlar if PROP_RE.search(a) and not re.search(r'_v\d+$', a)]
-            if key != 'glb:jet':
+            if g['type'] == 'rover':   # §15 kara aracı: pervane yok; teker düğümleri (wheel_*; 4×4'te steer_fl/fr direksiyon mafsalı)
+                self.assertFalse(props, f'{key}: kara aracında pervane düğümü olmamalı ({props[:4]})')
+                self.assertTrue(any(a.startswith('wheel_') for a in adlar), f'{key}: wheel_* düğümü yok')
+                if g.get('drive') == 'ackermann':
+                    self.assertTrue({'steer_fl', 'steer_fr'} <= set(adlar), f'{key}: steer_fl/fr yok')
+                self.assertFalse(self.bridge.glb_model_api(key)['has_prop'])
+            elif key != 'glb:jet':
                 self.assertTrue(props, f'{key}: pervane düğümü yok ({adlar[:8]})')
             if pygltflib is not None:
                 gl = pygltflib.GLTF2().load(str(p))
@@ -88,7 +94,7 @@ class GlbTest(unittest.TestCase):
             self.assertIn(key, keys[g['type']])
             self.assertIn(key, b.MODEL_ESLEME, f'{key}: çekirdek eşlemesi yok')
             self.assertIn(b.MODEL_ESLEME[key], ('builtin:quad', 'builtin:hexa', 'builtin:heli', 'builtin:caymaz', 'builtin:delta', 'builtin:talon',
-                                                  'builtin:icept_x4', 'builtin:p1sun', 'builtin:sting'))
+                                                  'builtin:icept_x4', 'builtin:p1sun', 'builtin:sting', 'builtin:rover_4x4', 'builtin:rover_ugv', 'builtin:rover_bot'))
             m = b.glb_model_api(key)
             self.assertEqual(m['glb'], f"/static/simumav/models/{g['file']}.glb")
             self.assertEqual((m['orient']['forward'], m['orient']['up']), ('+x', '+y'))

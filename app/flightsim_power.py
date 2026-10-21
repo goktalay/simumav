@@ -39,6 +39,8 @@ CAYMAZ_VARSAYILAN = {'max_speed_ms': 45.0, 'fuel_l': 5.0, 'fuel_km_per_l': 25.0,
 KOPTER_VARSAYILAN = {'max_speed_ms': None, 'fuel_l': 0.0, 'fuel_km_per_l': 25.0, 'elec_cells': 4, 'elec_mah': 10000.0, 'elec_w': 30.0}
 # §25 INTERCEPTOR: elektrikli 4 pervaneli tailsitter — yakıt yok, 400 km/h (111,1 m/s) azami hız, 6S aviyonik bataryası
 INTERCEPTOR_VARSAYILAN = {'max_speed_ms': 111.1, 'fuel_l': 0.0, 'fuel_km_per_l': 25.0, 'elec_cells': 6, 'elec_mah': 8000.0, 'elec_w': 40.0}
+# §31 KARA ARACI (ArduRover): varsayılan elektrikli (yakıt 0 L; içten yanmalı 4×4 için sihirbazda L / km/L girilir), 4S 16000 mAh, sürüş elektroniği 60 W
+ROVER_VARSAYILAN = {'max_speed_ms': None, 'fuel_l': 0.0, 'fuel_km_per_l': 12.0, 'elec_cells': 4, 'elec_mah': 16000.0, 'elec_w': 60.0}
 PLANE_TIPLERI = ('sabit_kanat', 'vtol', 'interceptor')
 SIM_PLN_THR_MUL = 'SIM_PLN_THR_MUL'
 SIM_SPEEDUP = 'SIM_SPEEDUP'
@@ -50,6 +52,8 @@ HIZ_DESTEK_YOK = 'SITL ikilisi itki ölçeği (SIM_PLN_THR_MUL) desteklemiyor; a
 def varsayilanlar(tip):
     if tip == 'interceptor':
         return dict(INTERCEPTOR_VARSAYILAN)
+    if tip == 'rover':
+        return dict(ROVER_VARSAYILAN)
     return dict(CAYMAZ_VARSAYILAN if tip in PLANE_TIPLERI else KOPTER_VARSAYILAN)
 
 
@@ -74,7 +78,7 @@ def dogrula(p, tip, oneri=None):
             raise ValueError(f'power.{k} {alt:g}…{ust:g} arasında olmalı')
         out[k] = int(round(v)) if k in TAMSAYI else float(v)
     if tip not in PLANE_TIPLERI:
-        out['max_speed_ms'] = None   # kopterde itki ölçeği/AIRSPEED yok
+        out['max_speed_ms'] = None   # kopter / kara aracında itki ölçeği/AIRSPEED yok
     if out['elec_cells'] is not None:
         out['elec_cells'] = int(out['elec_cells'])
     return out
@@ -341,6 +345,9 @@ def drona_yazilacaklar(ozet):
 KOPTER_SEYIR_MS = 10.0       # ArduCopter WPNAV_SPEED varsayılanı 1000 cm/s
 KOPTER_AZAMI_MS = 12.5       # ArduCopter LOIT_SPEED varsayılanı 1250 cm/s
 KOPTER_ASKI_GAZ = 0.5        # MOT_THST_HOVER ≈ 0,5
+ROVER_SEYIR_MS = 5.0         # §31 ArduRover CRUISE_SPEED (rover.parm 5 m/s; skid 3)
+ROVER_AZAMI_MS = 20.0        # SIM_Rover max_speed (Ackermann; skid 4 m/s)
+ROVER_SEYIR_GAZ = 0.3        # rover.parm CRUISE_THROTTLE %30
 SEYIR_ORAN = 12.0 / 22.0     # ArduPlane AIRSPEED_CRUISE / AIRSPEED_MAX varsayılanı (hiz_parametreleri ile aynı)
 ICEPT_SEYIR_ORAN = 0.8       # flightsim_icept.CRUISE_ORAN (döngüsel içe aktarma yerine sabit; tests.test_flightsim eşitliği denetler)
 
@@ -371,6 +378,8 @@ def menzil_sure(p, tip):
         vmax = _sayi(a.get('max_speed_ms')) or varsayilanlar(tip)['max_speed_ms']
         vc = vmax * (ICEPT_SEYIR_ORAN if tip == 'interceptor' else SEYIR_ORAN)
         thr = min(1.0, max(0.0, (vc / vmax) ** 2))
+    elif tip == 'rover':   # §31 kara aracı: rover.parm CRUISE_SPEED 5 m/s @ CRUISE_THROTTLE %30; SIM_Rover azami ≈ 20 m/s
+        vmax, vc, thr = ROVER_AZAMI_MS, ROVER_SEYIR_MS, ROVER_SEYIR_GAZ
     else:
         vmax, vc, thr = KOPTER_AZAMI_MS, KOPTER_SEYIR_MS, KOPTER_ASKI_GAZ
     kmh_c, kmh_m = vc * 3.6, vmax * 3.6

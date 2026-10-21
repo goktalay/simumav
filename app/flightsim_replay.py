@@ -81,8 +81,10 @@ def _thin(points, limit):
 
 
 def arac_tipi(vehicle):
-    """Firmware adından simülatör dron tipi (3B model): ArduPlane → sabit_kanat, ArduCopter heli → helikopter, diğer → multirotor."""
+    """Firmware adından simülatör dron tipi (3B model): ArduPlane → sabit_kanat, ArduCopter heli → helikopter, ArduRover → rover (§31), diğer → multirotor."""
     v = (vehicle or '').lower()
+    if 'rover' in v:
+        return 'rover'
     if 'plane' in v:
         return 'sabit_kanat'
     if 'heli' in v:

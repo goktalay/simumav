@@ -68,6 +68,8 @@ def katalog():
                     'has_prop': True, 'cruise_ms': _yuvarla(m['cruise_kmh'] / 3.6), 'max_ms': _yuvarla(m['max_kmh'] / 3.6), 'desc': m['desc'], 'source': 'target'})
     for ad, b in flightsim_models.BUILTIN.items():
         tip = b['types'][0]
+        if tip in flightsim.ROVER_TIPLERI:   # §31 kara araçları hava hedefi değildir
+            continue
         hz = BUILTIN_HIZ.get(ad, (60.0, 100.0))
         api = flightsim_models.builtin_api(ad, tip)
         out.append({'key': f'builtin:{ad}', 'name': f"{flightsim.TIP_ADLARI.get(tip, tip)} · {api['name']}", 'kind': 'rotor' if tip in ('multirotor', 'hexarotor', 'helikopter') else 'plane',

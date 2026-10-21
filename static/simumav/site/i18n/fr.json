@@ -214,5 +214,9 @@
   "sys.alt.tgt": "Symbologie de cible façon F-16 sur la caméra nacelle",
   "sys.alt.tgtthermal": "Symbologie de cible sur la caméra thermique",
   "sys.alt.launch": "Choix du lanceur INTERCEPTOR dans l'assistant Voler : caissons à quatre et huit cellules, tube unique, lanceur portatif et aperçu 3D",
-  "sys.alt.report": "Rapport de mission Défendre le contrôle au sol"
+  "sys.alt.report": "Rapport de mission Défendre le contrôle au sol",
+  "type.rover": "Véhicule terrestre",
+  "fleet.rover_4x4.d": "Éclaireur 4×4 à direction Ackermann, mât EO/IR + LIDAR ; jusqu’à 72 km/h sous ArduRover.",
+  "fleet.rover_ugv.d": "Véhicule terrestre sans pilote à chenilles : pivote sur place (différentiel), tourelle capteurs.",
+  "fleet.rover_bot.d": "Robot de livraison de trottoir à six roues (0,78 m), direction différentielle, mât à fanion."
 }

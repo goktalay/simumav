@@ -21,7 +21,7 @@ const DEFLECTIONS = [1.5, 3, 6, 12, 25];   // mm: STEP lineer sapma kademeleri (
 const AXES = ['+x', '-x', '+y', '-y', '+z', '-z'];
 const SOURCE_LABEL = { builtin: 'Dahili', design: 'Tasarım', upload: 'Yüklenen' };
 const SOURCE_TONE = { builtin: 'gray', design: 'purple', upload: 'blue' };
-const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
+const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR', rover: 'Kara Aracı' };   // §31 rover
 const LAYOUT_SHORT = { classic: 'Klasik', elevon: 'Elevon', vtail: 'V-kuyruk' };   // §13.1 kart rozeti (flightsim_airframe.LAYOUT_SHORT ile aynı)
 const fmtSize = b => (b == null ? '—' : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const isBuiltin = m => !!m && String(m.id).startsWith('builtin:');
@@ -360,13 +360,19 @@ export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false,
 // ======================================================================
 function mockModels() {
   const B = { caymaz: ['Caymaz V3', ['sabit_kanat', 'vtol'], 'glb', 'elevon'], delta: ['Delta kanat', ['sabit_kanat', 'vtol'], 'procedural', 'elevon'], talon: ['Talon V-kuyruk', ['sabit_kanat'], 'glb', 'vtail'], quad: ['Quad', ['multirotor'], 'procedural'], hexa: ['Hexa', ['hexarotor'], 'procedural'], heli: ['Heli', ['helikopter'], 'procedural'],
-    icept_x4: ['INTERCEPTOR X4', ['interceptor'], 'glb'], p1sun: ['P1-SUN', ['interceptor'], 'glb'], sting: ['Sting', ['interceptor'], 'glb'] };
+    icept_x4: ['INTERCEPTOR X4', ['interceptor'], 'glb'], p1sun: ['P1-SUN', ['interceptor'], 'glb'], sting: ['Sting', ['interceptor'], 'glb'],
+    // §31 kara aracı (sunucu BUILTIN ile aynı ad / açıklama / sürüş biçimi; GLB'ler SIMUMAV ile ortak, burun +X yukarı +Y)
+    rover_4x4: ['Keşif 4×4', ['rover'], 'glb', null, { drive: 'ackermann', desc: 'Ön tekerden dönen (Ackermann) 4×4 keşif aracı: 2,2 m, teker Ø 66 cm, sensör direği (EO/IR + LIDAR); azami 72 km/h (SITL rover)' }],
+    rover_ugv: ['Paletli UGV', ['rover'], 'glb', null, { drive: 'skid', desc: 'Paletli insansız kara aracı (2,5 m): yerinde döner (diferansiyel sürüş, SITL rover-skid), sensör kulesi' }],
+    rover_bot: ['Teslimat robotu', ['rover'], 'glb', null, { drive: 'skid', desc: '6 tekerli kaldırım teslimat robotu (0,78 m): diferansiyel sürüş (SITL rover-skid), bayrak direği' }] };
+  const ROVER_ORIENT = { forward: '+x', up: '+y', scale: 1, offset: [0, 0, 0], prop: { mode: 'none', pos: [0, 0, 0], r: 0.3 } };
   const extra = [];
   let seq = 0;
   const thumbs = new Map();
   return {
     list: async type => ({ models: [...Object.entries(B).filter(([, v]) => v[1].includes(type)).map(([k, v]) => ({ id: `builtin:${k}`, name: type === 'vtol' && (k === 'caymaz' || k === 'delta') ? `VTOL-${v[0]}` : v[0], source: 'builtin', type, types: v[1], format: v[2], ready: true, has_prop: true, layout: v[3] || null, size: k === 'caymaz' ? 1500000 : k === 'talon' ? 44000 : null, thumb_url: thumbs.get(`builtin:${k}:${type}`) || null, glb_url: k === 'caymaz' ? '/static/models/caymaz-sim.glb' : k === 'talon' ? '/static/models/talon-vtail.glb' : null, orient: k === 'talon' ? { forward: '+x', up: '+y', scale: 1, offset: [0, 0, 0], prop: { mode: 'none', pos: [0, 0, 0], r: 0.3 } } : null })),
-      ...extra.filter(m => m.type === type)], defaults: { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', sabit_kanat: 'builtin:caymaz', vtol: 'builtin:caymaz', interceptor: 'builtin:icept_x4' }, can_write: true, design_allowed: false, limits: { max_bytes: 50 * 1024 * 1024 } }),
+      ...extra.filter(m => m.type === type)].map(m => (B[String(m.id).replace('builtin:', '')]?.[4] ? { ...m, ...B[String(m.id).replace('builtin:', '')][4], has_prop: false, glb_url: `/static/simumav/models/${String(m.id).replace('builtin:', '')}.glb`, orient: { ...ROVER_ORIENT } } : m)),
+    defaults: { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', sabit_kanat: 'builtin:caymaz', vtol: 'builtin:caymaz', interceptor: 'builtin:icept_x4', rover: 'builtin:rover_4x4' }, can_write: true, design_allowed: false, limits: { max_bytes: 50 * 1024 * 1024 } }),
     designFiles: async () => [],
     fromDesign: async () => { throw new Error('Sahte kipte yok'); },
     patch: async (id, body) => { const m = extra.find(x => x.id === id); Object.assign(m, body); return m; },

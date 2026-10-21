@@ -46,7 +46,7 @@ def _guc(tip, govde, taban, request, user):
 
 def _dogrula(tip, model_key, params, color, request, user):
     if tip not in bridge.TYPES:
-        raise auth.hata(422, 'invalid', 'type multirotor | plane | heli | fpv | interceptor | vtol olmalı')
+        raise auth.hata(422, 'invalid', 'type multirotor | plane | heli | fpv | interceptor | vtol | rover olmalı')
     if not bridge.model_gecerli(tip, model_key):
         raise auth.hata(422, 'invalid', 'model_key bu tip için katalogda yok')
     if color is not None and not _RENK.match(color):

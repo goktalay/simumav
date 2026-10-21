@@ -13,6 +13,7 @@
 
 import { launchHud } from './flightsim_launch.js';   // kalkış yöntemi satırı (§13)
 import { symbology, drawSymbology } from './flightsim_tgthud.js';   // §24.5 F-16 tarzı hedef sembolojisi (prizma, TD kutusu, TLL, kenar okları)
+import { createRoverHud } from './flightsim_rover_hud.js';   // §31 kara aracı göstergesi
 
 const COLORS = [['green', '#9cff6a'], ['white', '#f2f5f0'], ['amber', '#ffbf47']];
 const RED = '#ff4444';
@@ -35,7 +36,8 @@ export function hudPowerBars(t) {
   return out;
 }
 
-export function createMilHud(stage, ctx = {}, { tr = s => s } = {}) {
+export function createMilHud(stage, ctx = {}, { tr = s => s, keyed } = {}) {
+  if (ctx.session?.type === 'rover') return createRoverHud(stage, ctx, { tr, keyed, cam: 'fpv', key: 'h' });   // §31 kara aracı: sensör kamerası göstergesi (irtifa/ufuk yok)
   const canvas = document.createElement('canvas');
   canvas.className = 'fs-mhud';
   canvas.hidden = true;

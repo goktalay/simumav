@@ -27,11 +27,14 @@
 //   (/ws/fly → RC_CHANNELS_OVERRIDE); kapatınca 8×0; FPV'de görünür, panel gizli; MP joystick uyarısı; 3B WASD kilidi. Alt çubukta panel kapalıyken
 //   Kalkış (hub akışı: GUIDED → ARM → NAV_TAKEOFF; pilot ayrıca ARM etmez) · RTL (.fs-cmds; panel açıkken gizli); mod seçici (F) + ARM/DISARM/motor kes (X)
 //   HER ZAMAN görünür (/sim/flightsim_fltbar.js — HEPGO §30.3). Esc → Geri.
+//   KARA ARACI (rover; HEPGO §31, docs/simumav.md §15): kalkış/geri sayım/takeoff yok — alt çubukta "Kalkış" yerine "Dur" (HOLD) · RTL; mod seçici ArduRover
+//   kipleri (/sim/flightsim_rover.js ROVER_MODES; fltbar modeKind 'rover'); sanal kumanda rover eşlemesi (sol dikey gaz yaylı 1500 = dur, sağ yatay direksiyon;
+//   kanallar roverRcChannels; metinler rover.rc_* anahtarları); hız kadranı yer hızı (80 / 20 km/h); sürüş biçimi rozeti.
 //   P/O/H/C tuşları HEPGO modüllerinin kendi dinleyicilerindedir (panel/OSD/HUD/3B) — burada yeniden bağlanmaz (çift tetikleme olurdu).
 import { clear, confirmDialog, fmtDateTime, fmtDuration, h, modal, toast, toastError, t as tr, onLeave } from './simui.js';
 import { net, wsUrl } from './net.js';
 import { createScoreBadge, targetsReportCard } from './targets.js';   // HEPGO §24 hedefler: skor rozeti + rapor kartı
-import { JET_AUDIO, TYPE_LABEL, WORLD_MODE_LABEL, audioTypeFor, iceptLaunchBody, iceptLaunchLabel, isIceptLaunch, launchBody, launchLabelSm, modelFor, needsLaunch, simType, speedAngle, speedScale, speedTicks, startCameraFor, worldFromTrack } from './wizard.js';
+import { DRIVE_SM, isRover, JET_AUDIO, TYPE_LABEL, WORLD_MODE_LABEL, audioTypeFor, iceptLaunchBody, iceptLaunchLabel, isIceptLaunch, launchBody, launchLabelSm, modelFor, needsLaunch, simType, speedAngle, speedScale, speedTicks, startCameraFor, worldFromTrack } from './wizard.js';
 import { HAND, HAND_PHASES, createHandOverlay, handCfg, handHud, handReleaseTime, shimTelemetry } from './hand_launch.js';
 import { createOverlay3D } from './overlay3d.js';
 import { createGateLayer } from './gates.js';
@@ -47,7 +50,8 @@ const COPTER_MODES = ['STABILIZE', 'ALT_HOLD', 'LOITER', 'GUIDED', 'AUTO', 'RTL'
 const PLANE_MODES = ['MANUAL', 'FBWA', 'FBWB', 'CRUISE', 'LOITER', 'GUIDED', 'AUTO', 'RTL', 'TAKEOFF', 'CIRCLE'];
 const VTOL_MODES = ['QSTABILIZE', 'QHOVER', 'QLOITER', 'QLAND', 'QRTL', 'FBWA', 'CRUISE', 'GUIDED', 'AUTO', 'RTL', 'TAKEOFF'];
 const ICEPT_MODES = ['QHOVER', 'QLOITER', 'GUIDED', 'FBWA', 'FBWB', 'CRUISE', 'AUTO', 'LOITER', 'RTL', 'QRTL', 'QLAND'];   // HEPGO §25 tailsitter
-const modesFor = st => (st === 'interceptor' ? ICEPT_MODES : st === 'vtol' ? VTOL_MODES : st === 'sabit_kanat' ? PLANE_MODES : COPTER_MODES);
+const ROVER_MODES_SM = ['MANUAL', 'ACRO', 'STEERING', 'HOLD', 'LOITER', 'FOLLOW', 'SIMPLE', 'AUTO', 'RTL', 'SMART_RTL', 'GUIDED'];   // yedek (asıl: MRover.ROVER_MODES)
+const modesFor = (st, MRover = null) => (st === 'rover' ? (MRover?.ROVER_MODES || ROVER_MODES_SM) : st === 'interceptor' ? ICEPT_MODES : st === 'vtol' ? VTOL_MODES : st === 'sabit_kanat' ? PLANE_MODES : COPTER_MODES);
 const STATE_TEXT = { BASLIYOR: 'Başlıyor', HAZIR: 'Hazır', HATA: 'Hata', KAPANDI: 'Kapandı' };
 const STATE_BADGE = { BASLIYOR: 'yellow', HAZIR: 'green', HATA: 'red', KAPANDI: 'gray' };
 const LAUNCH_PHASE_TEXT = {
@@ -65,8 +69,8 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js', 'flightsim_rover.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
 // HEPGO §27: INTERCEPTOR + fırlatıcı (pod4 | pod8 | tube | handheld) → {method, loaded? | aim_*?}; fırlatıcısız INTERCEPTOR → null (pad, eski davranış)
@@ -186,11 +190,14 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover } = await loadSim();
   MSiteRef = MSite;
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
   const drone = picked.drone || start.drone || { name: 'Dron', type: 'multirotor' }, track = picked.track || start.track || {}, pilot = picked.pilot || start.pilot || null, mission = picked.mission || start.mission || null;
-  const dType = drone.type || 'multirotor', type = simType(dType), modes = modesFor(type);
+  const dType = drone.type || 'multirotor', type = simType(dType), modes = modesFor(type, MRover);
+  const rover = isRover(dType);   // §15 kara aracı
+  const drive = rover ? ([picked.drive, start.drive, start.session?.drive, drone.drive].find(d => d === 'ackermann' || d === 'skid') || (/rover_(ugv|bot)/.test(String(drone.model_key || '')) ? 'skid' : 'ackermann')) : null;
+  const LT = (k, tx) => { const r = tr(k); return r && r !== k ? r : tx; };   // anahtar yoksa Türkçe yedek
   const launch = hepgoLaunchFor(dType, picked.launch || start.launch);
   const isHand = launch?.method === 'hand';
   const isIcept = isIceptLaunch(launch?.method);   // HEPGO §27 fırlatıcı
@@ -206,8 +213,9 @@ export async function openSession(view, start, picked, ctx = {}) {
     center: { name: track.name || 'Parkur', lat: num(track.lat, 0), lon: num(track.lon, 0), alt: num(track.alt, null) },
     drone: { code: '', name: drone.name || 'Dron' }, hub: { bridge_id: start.session?.hub?.bridge_id ?? -(9000 + (Number(sid) || 0)), name: drone.name || 'Dron' },
     gcs: { connected: false, addr: '' }, sitl: { port: mp.port }, route: [], launch: launch ? { ...launch, phase: null } : null, world,
-    power: (() => { const p = picked.power || start.power || start.session?.power; if (!p) return null; const { engine, ...rest } = p; void engine; return rest; })() };   // §10: kadranların azami hız ölçeği (hello'da çekirdek değeri gelir)
-  const maxKmh = speedScale(dType, drone.model_key);
+    power: (() => { const p = picked.power || start.power || start.session?.power; if (!p) return null; const { engine, ...rest } = p; void engine; return rest; })(),   // §10: kadranların azami hız ölçeği (hello'da çekirdek değeri gelir)
+    ...(rover ? { ground: true, drive } : {}) };   // §15 kara aracı (çekirdek to_dict ile aynı alanlar; hello'da güncellenir)
+  const maxKmh = speedScale(dType, drone.model_key, drive);
   const gates = Array.isArray(track.gates) ? track.gates : [];
   const gatePlan = mission?.kind === 'fpv_gates' ? (mission.plan || {}) : {};
   const fpvPrefs = MOsd.createFpvPrefs();
@@ -237,7 +245,10 @@ export async function openSession(view, start, picked, ctx = {}) {
   speedPill.set(picked.speedup || start.speedup || 1);
   const scoreBadge = createScoreBadge({ h, t: tr }); scoreBadge.update(null);   // HEPGO §24 (hedef yoksa gizli)
   if (!session.targets && start.session?.targets) session.targets = start.session.targets;
-  const nav = h('div', { class: 'fs-nav' }, backBtn, h('b', null, 'SIMUMAV'), h('span', { class: 'fs-nav-sub' }, `${TYPE_LABEL[dType] || dType} · ${drone.name || ''} · ${track.name || '—'}${pilot ? ` · ${pilot.name}` : ''} · ${WORLD_MODE_LABEL[world.mode] || world.mode}`), stateBadge, wsBadge,
+  const driveRow = rover ? DRIVE_SM.find(r => r[0] === drive) : null;
+  const typeName = (() => { const k = `types.${dType}`, r = tr(k); return r && r !== k ? r : TYPE_LABEL[dType] || dType; })();
+  const nav = h('div', { class: 'fs-nav' }, backBtn, h('b', null, 'SIMUMAV'), h('span', { class: 'fs-nav-sub' }, `${typeName} · ${drone.name || ''} · ${track.name || '—'}${pilot ? ` · ${pilot.name}` : ''} · ${WORLD_MODE_LABEL[world.mode] || world.mode}`), stateBadge, wsBadge,
+    driveRow ? h('span', { class: 'badge gray fs-drive-badge', title: LT('drive.title', 'Sürüş biçimi') }, LT(driveRow[1], driveRow[2])) : null,   // §15
     launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, isIcept ? iceptLaunchLabel(launch, tr) : launchLabelSm(launch)) : null, gates.length ? h('span', { class: 'badge purple', title: tr('FPV halkaları') }, `${gates.length} halka`) : null, scoreBadge.el, speedPill.el, fullBtn);   // §10 hız kapsülü üst çubukta (HEPGO nav kalıbı)
   const onFullChange = () => { const full = !!document.fullscreenElement; stage.classList.toggle('fs-full', full); document.body.classList.toggle('fs-full', full); fullBtn.title = tr(full ? 'Tam ekrandan çık' : 'Tam ekran'); };
   document.addEventListener('fullscreenchange', onFullChange); onFullChange();
@@ -267,16 +278,19 @@ export async function openSession(view, start, picked, ctx = {}) {
     } });
   const drawFpv = () => { camCtl?.sync(); camPip?.layout(); fpvRows.forEach(r => r.__sync()); const fov = sim?.getPilotFov?.() ?? fpvPrefs.fov; fovTxt.textContent = `${fov}°`; fpvBtn.classList.toggle('primary', !!osd?.enabled); };
   const opsBtn = h('button', { class: 'btn sm fs-ops-btn', type: 'button', title: tr('Dron panelini göster/gizle (P)'), onclick: () => ops?.toggle() }, 'Panel');
-  const gauge = createSpeedGauge(maxKmh, dType === 'interceptor' ? 'INTERCEPTOR' : (TYPE_LABEL[dType] || '').toUpperCase());
+  const gauge = createSpeedGauge(maxKmh, dType === 'interceptor' ? 'INTERCEPTOR' : rover ? LT('rover.speed', 'HIZ') : (TYPE_LABEL[dType] || '').toUpperCase());
+  if (rover) { gauge.el.classList.add('rover'); gauge.el.title = LT('rover.gauge_title', 'Yer hızı (km/h)'); }
   const endBtn = h('button', { class: 'btn sm danger fs-end-btn', type: 'button', onclick: () => endFlight() }, '■ ', 'Uçuşu Bitir');
   // HEPGO alt çubuk komutları (.fs-cmds; panel açıkken CSS gizler): ARM/DISARM · mod · Kalkış · RTL
   const armBtn = h('button', { class: 'btn sm', type: 'button', onclick: () => cmd(last?.armed ? 'disarm' : 'arm') }, 'ARM');
-  const rcBtn = h('button', { class: 'btn sm fs-rc-btn', type: 'button', title: tr('Sanal kumanda: iki sanal çubuk + klavye (W/S gaz, A/D yaw, ok tuşları pitch/roll, Q/E mod kanalı, Boşluk gaz orta). RC_CHANNELS_OVERRIDE 20 Hz.'), onclick: () => rcToggle() }, '🎮 ', 'Sanal kumanda');
+  const RVT = MRover?.ROVER_RC_TEXT || { hint: 'W/S gaz · A/D direksiyon · ↑↓ gaz · ←→ direksiyon · Boşluk dur · Q/E mod kanalı', left: 'Gaz / Fren', right: 'Direksiyon' };
+  const rvHint = LT('rover.rc_hint', RVT.hint);
+  const rcBtn = h('button', { class: 'btn sm fs-rc-btn', type: 'button', title: rover ? `${LT('rover.rc_title', 'Sanal kumanda (kara aracı)')}: ${rvHint}. RC_CHANNELS_OVERRIDE 20 Hz.` : tr('Sanal kumanda: iki sanal çubuk + klavye (W/S gaz, A/D yaw, ok tuşları pitch/roll, Q/E mod kanalı, Boşluk gaz orta). RC_CHANNELS_OVERRIDE 20 Hz.'), onclick: () => rcToggle() }, '🎮 ', 'Sanal kumanda');
   const modeSel = h('select', { class: 'input sm fs-modesel', onchange: () => { if (modeSel.value) cmd('mode', { mode: modeSel.value }); } },
     h('option', { value: '' }, 'Mod…'), modes.map(mm => h('option', { value: mm }, mm)));
   const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış', hand: 'Elden at', pod4: 'Fırlat', pod8: 'Fırlat', tube: 'Fırlat', handheld: 'Fırlat' };
   // HEPGO §27.1 kumanda hassasiyeti (⚙ panel: eksen başına oran / expo / ölü bölge; localStorage fs.rc.feel; rcfeel.* i18n)
-  const rcFeel = MFeel.createRcFeelPanel(stage, { tr, keyed: true, plane: type === 'sabit_kanat' || type === 'vtol', onChange: () => { rcShape = rcFeel.shaper(); } });
+  const rcFeel = MFeel.createRcFeelPanel(stage, { tr, keyed: true, plane: type === 'sabit_kanat' || type === 'vtol', rover, onChange: () => { rcShape = rcFeel.shaper(); } });   // §15: direksiyon + gaz
   let rcShape = rcFeel.shaper();
   // HEPGO §29.6 uçuş denetimi (panel açıkken de görünür): mod seçici (F) + DISARM (X; sabit kanatta havada motor kesme → süzülme, kopterde onaylı)
   const fltKind = MFlt.modeKind(type);
@@ -286,15 +300,16 @@ export async function openSession(view, start, picked, ctx = {}) {
   const bar = h('div', { class: 'fs-bar' }, h('div', { class: 'pill-group' }, camBtns), gimbalLbl, mhudBtn, fpvCtl, camCtl.el, opsBtn, h('span', { class: 'spacer' }),
     fltBar.el,
     h('div', { class: 'pill-group fs-cmds' },
-      h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
+      rover ? h('button', { class: 'btn sm fs-hold-btn', type: 'button', title: LT('rover.hold_title', 'Aracı durdur (HOLD kipi)'), onclick: () => cmd('mode', { mode: 'HOLD' }) }, LT('rover.hold', 'Dur'))   // §15 kara aracında kalkış yok
+        : h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
       h('button', { class: 'btn sm', type: 'button', onclick: () => cmd('rtl') }, 'RTL')),
     h('div', { class: 'pill-group' }, rcBtn, rcFeel.el),   // HEPGO §27.1 ⚙ hassasiyet
     h('div', { class: 'pill-group' }, h('button', { class: 'btn sm', type: 'button', title: 'SITL aynı ayarlarla yeniden başlar; çarpışma kaldırılır', onclick: () => reset() }, '↺ Sıfırla'), endBtn));
   // Sanal kumanda katmanı (HEPGO birebir): sol çubuk gaz/yaw, sağ çubuk pitch/roll (Mode 2); klavye ipucu; Mission Planner joystick uyarısı
-  const stickL = h('div', { class: 'fs-stick', 'data-side': 'l' }, h('i', { class: 'fs-stick-knob' }), h('small', null, 'Gaz / Yaw'));
-  const stickR = h('div', { class: 'fs-stick', 'data-side': 'r' }, h('i', { class: 'fs-stick-knob' }), h('small', null, 'Pitch / Roll'));
+  const stickL = h('div', { class: 'fs-stick', 'data-side': 'l', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? LT('rover.rc_left', RVT.left) : 'Gaz / Yaw'));
+  const stickR = h('div', { class: 'fs-stick', 'data-side': 'r', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? LT('rover.rc_right', RVT.right) : 'Pitch / Roll'));
   const rcWarn = h('div', { class: 'fs-rc-warn', hidden: true }, 'Mission Planner joystick de açıksa son gelen RC komutu geçerli olur');
-  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', null, 'W/S gaz · A/D yaw · ↑↓ pitch · ←→ roll · Q/E mod kanalı · Boşluk gaz orta'), rcWarn);
+  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', null, rover ? rvHint : 'W/S gaz · A/D yaw · ↑↓ pitch · ←→ roll · Q/E mod kanalı · Boşluk gaz orta'), rcWarn);
   const sticks = h('div', { class: 'fs-sticks', hidden: true }, stickL, stickR, rcHint);
   const netLbl = h('div', { class: 'fs-net mono', title: tr('Telemetri alım hızı, jitter (alım aralığı − kaynak aralığı) ve uyarlanır gecikme tamponu; DR = ölü hesap') }, '');
   const netsim = ctx.netsim !== undefined ? parseNetsim(ctx.netsim) : netsimFromLocation();   // §5 teşhis: ?netsim=jitter30,loss5,delay40
@@ -305,7 +320,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const attribTxt = h('span', null, g3dMode ? 'Google' : M3D.ATTRIBUTION);
   const attrib = h('div', { class: `fs-attrib ${g3dMode ? 'fs-attrib-g3d' : ''}`, hidden: !(g3dMode || realMode) }, g3dMode ? h('img', { class: 'fs-g3d-logo', src: '/static/img/google-logo.png', alt: 'Google' }) : null, attribTxt);
   // §10 güç paneli: dört analog kadran (YAKIT · HIZ · MOTOR · BATARYA); uyarı bandı (bitti / düşük)
-  const gauges = MPower.createPowerGauges(stage, { h, tr: trP, getSettings: () => session.power || null, getSummary: () => null, plane: type === 'sabit_kanat' || type === 'vtol', getCollision: () => !crash.hidden,
+  const gauges = MPower.createPowerGauges(stage, { h, tr: trP, getSettings: () => session.power || null, getSummary: () => null, plane: type === 'sabit_kanat' || type === 'vtol', rover, getCollision: () => !crash.hidden,
     gtT: MGt.makeGThemeT(tr, true), onTheme: t => addEvent(tr('gtheme.changed', { t: tr(`gtheme.${t}`) })) });   // HEPGO §27.3 gösterge tasarımı (sihirbaz seçimi / G)
   gauges.el.classList.add('sm-game');   // oyun teması (power.css)
   const pwAlert = h('div', { class: 'sm-pw-alert', hidden: true, role: 'alert' }, h('b'), h('small'));
@@ -363,6 +378,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   // Alt çubuk Kalkış (panel kapalıyken; HEPGO takeoffDialog kalıbı): sabit kanat ailesi → sim yolu takeoff{alt} (düzenek dizisi, ARM dâhil);
   // diğerleri → hub akışı takeoff{alt_rel_m} (GUIDED → ARM → NAV_TAKEOFF; kalp atışı/EKF beklenir) — pilot ayrıca ARM etmez
   const takeoffDialog = () => {
+    if (rover) { toast(LT('rover.no_takeoff', 'Kara aracında kalkış yok; ARM edip sürün (MANUAL) ya da AUTO / GUIDED kipine geçin.'), 'err'); return; }   // §15
     const alt = h('input', { class: 'input', type: 'number', min: 1, max: 500, value: launch ? 80 : 30 });
     const m = launch?.method;
     const hint = m === 'ramp' ? tr('Uçak TAKEOFF moduna alınır ve ARM edilir; 1 sn sonra pnömatik rampa kızağı {a}° açıyla fırlatır (SITL mancınık tetiği).', { a: Math.round(launch.angle_deg) })
@@ -420,7 +436,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     if (realMode) { msg.hidden = false; msg.textContent = tr('Arazi planı alınıyor…'); }
     if (g3dMode) { msg.hidden = false; msg.textContent = tr('Google 3B karoları yükleniyor… %{p}', { p: 0 }); }
     const s3 = await M3D.createFlightSim3D(mount, world, {
-      type, model: session.model, launch, origin: { lat: session.center.lat, lon: session.center.lon, alt: session.center.alt },
+      type, model: session.model, launch, origin: { lat: session.center.lat, lon: session.center.lon, alt: session.center.alt }, ...(rover ? { drive } : {}),   // §15 sürüş biçimi (teker kinematiği)
       camera: cam0, pilotFov: fpvPrefs.fov, fpvAnalog: fpvPrefs.analog, fpvNose: fpvPrefs.nose, onPilotFov: v => { fpvPrefs.setFov(v); drawFpv(); },
       camType: camType0, thermalPalette: camPrefs.palette, onGimbalZoom: () => camPip?.redraw(),
       site: picked.site || start.site || start.session?.site || null,   // HEPGO §26 (dünya kurulurken saha çevresi açık alan)
@@ -625,6 +641,7 @@ export async function openSession(view, start, picked, ctx = {}) {
       return;
     }
     rc = virtualRC({ plane: type === 'sabit_kanat' || type === 'vtol', stickL, stickR, send: ch => socket?.send({ t: 'rc', ch }),
+      rover: rover ? { channels: MRover?.roverRcChannels } : null,   // §15: sol dikey gaz (1500 = dur), sağ yatay direksiyon
       throttle0: last?.armed ? last.throttle : null, shape: (k, v) => rcShape(k, v) });   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000); §27.1 eğri
     sticks.hidden = false; stage.classList.add('rc-on'); rcBtn.classList.add('primary');
     rcWarn.hidden = !last?.gcs_connected;

@@ -7,6 +7,8 @@
 // Saf kısım (tests/test_flightsim_flyui.mjs): RCFEEL_*, normFeel, shapeAxis, makeShaper, curvePoints, presetOf, loadFeel/saveFeel.
 // DOM kısmı: createRcFeelPanel (kendi CSS'ini bir kez ekler). Metinler RCFEEL_TEXTS [anahtar, Türkçe] — HEPGO'da Türkçe metin sözlük anahtarı,
 // SIMUMAV'da `rcfeel.*` (keyed=true; i18n 7 dil; anahtar yoksa Türkçeye düşer).
+// §31 kara aracı (rover: true): yalnız iki eksen — Direksiyon (roll eğrisi; sağ çubuk yatay) ve Gaz (çift yönlü, merkez = dur → eğri uygulanır).
+export const ROVER_FEEL_AXES = [['roll', 'rcfeel.steer'], ['thr', 'rcfeel.thr']];
 
 export const RC_AXES = ['roll', 'pitch', 'yaw', 'thr'];
 export const RCFEEL_LIMITS = { rate: [30, 100], expo: [0, 90], dead: [0, 20] };
@@ -77,7 +79,7 @@ export const RCFEEL_TEXTS = [
   ['rcfeel.btn', 'Hassasiyet'], ['rcfeel.btn_title', 'Kumanda hassasiyeti: eksen başına oran, expo ve ölü bölge (klavye ve sanal çubuk)'],
   ['rcfeel.title', 'Kumanda hassasiyeti'], ['rcfeel.close', 'Kapat'],
   ['rcfeel.p_soft', 'Hassas'], ['rcfeel.p_normal', 'Normal'], ['rcfeel.p_sport', 'Çevik'], ['rcfeel.p_custom', 'Özel'],
-  ['rcfeel.roll', 'Roll'], ['rcfeel.pitch', 'Pitch'], ['rcfeel.yaw', 'Yaw'], ['rcfeel.thr', 'Gaz'],
+  ['rcfeel.roll', 'Roll'], ['rcfeel.pitch', 'Pitch'], ['rcfeel.yaw', 'Yaw'], ['rcfeel.thr', 'Gaz'], ['rcfeel.steer', 'Direksiyon'],
   ['rcfeel.rate', 'Hassasiyet'], ['rcfeel.expo', 'Expo'], ['rcfeel.dead', 'Ölü bölge'],
   ['rcfeel.rate_hint', 'Tam çubukta en çok çıkış'], ['rcfeel.expo_hint', 'Merkezde yumuşaklık'], ['rcfeel.dead_hint', 'Merkezde tepkisiz alan'],
   ['rcfeel.all', 'Roll ve pitch birlikte'], ['rcfeel.reset', 'Varsayılan'],
@@ -151,14 +153,15 @@ const ICO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-w
  * opts { tr, keyed, plane, storage, btnClass, onChange(feel) }. Düğme (el) çağıran tarafından alt çubuğa (🎮 Sanal kumanda yanına) eklenir.
  * Dönüş { el (düğme), pop, feel (güncel), shaper() → makeShaper, open(v), dispose() }.
  */
-export function createRcFeelPanel(stage, { tr = null, keyed = false, plane = false, storage = null, btnClass = 'btn sm', onChange = () => {} } = {}) {
+export function createRcFeelPanel(stage, { tr = null, keyed = false, plane = false, rover = false, storage = null, btnClass = 'btn sm', onChange = () => {} } = {}) {
   ensureRcFeelCss();
   const T = makeRcFeelT(tr, keyed);
-  let feel = loadFeel(storage), axis = 'roll', link = true, disposed = false;
+  if (rover) plane = false;   // §31: kara aracında gaz çift yönlü ve yaylı → eğri gaza da uygulanır
+  let feel = loadFeel(storage), axis = 'roll', link = !rover, disposed = false;
   const btn = el('button', { class: `${btnClass} fs-rcf-btn`, type: 'button', title: T('rcfeel.btn_title'), 'aria-label': T('rcfeel.title'), 'aria-expanded': 'false', onclick: e => { e.stopPropagation(); open(); } }, el('span', { html: ICO }), el('b', { class: 'fs-rcf-lbl' }, T('rcfeel.btn')));   // açık etiket (yalnız ⚙ fark edilmiyordu); dar ekranda yalnız simge + title
   const presetBtns = ['soft', 'normal', 'sport'].map(k => el('button', { type: 'button', 'data-p': k, onclick: () => { feel = normFeel(RCFEEL_PRESETS[k]); commit(); } }, T(`rcfeel.p_${k}`)));
   const customTag = el('button', { type: 'button', 'data-p': 'custom', disabled: true, tabindex: '-1' }, T('rcfeel.p_custom'));
-  const axisBtns = RC_AXES.map(a => el('button', { type: 'button', 'data-a': a, onclick: () => { axis = a; draw(); } }, T(`rcfeel.${a}`)));
+  const axisBtns = (rover ? ROVER_FEEL_AXES : RC_AXES.map(a => [a, `rcfeel.${a}`])).map(([a, k]) => el('button', { type: 'button', 'data-a': a, onclick: () => { axis = a; draw(); } }, T(k)));
   const rows = {};
   const mkRow = key => {
     const [lo, hi] = RCFEEL_LIMITS[key];
@@ -182,7 +185,7 @@ export function createRcFeelPanel(stage, { tr = null, keyed = false, plane = fal
     el('div', { class: 'fs-rcf-seg ax' }, axisBtns),
     el('div', { class: 'fs-rcf-body' }, el('div', { class: 'fs-rcf-sl' }, mkRow('rate'), mkRow('expo'), mkRow('dead')), svgBox),
     planeNote,
-    el('div', { class: 'fs-rcf-foot' }, el('label', null, linkInp, T('rcfeel.all')), el('button', { type: 'button', onclick: () => { feel = normFeel(RCFEEL_DEFAULTS); commit(); } }, T('rcfeel.reset'))),
+    el('div', { class: 'fs-rcf-foot' }, rover ? null : el('label', null, linkInp, T('rcfeel.all')), el('button', { type: 'button', onclick: () => { feel = normFeel(RCFEEL_DEFAULTS); commit(); } }, T('rcfeel.reset'))),
     el('div', { class: 'fs-rcf-note' }, T('rcfeel.note')));
   for (const e of [pop]) for (const t of ['pointerdown', 'keydown', 'wheel']) e.addEventListener(t, ev => ev.stopPropagation());   // panel içi: 3B / kumanda dinleyicilerine gitmesin
   stage.append(pop);

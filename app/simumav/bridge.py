@@ -30,8 +30,13 @@ from . import power as guc  # noqa: E402
 
 # INTERCEPTOR (HEPGO §25): 4 pervaneli tailsitter — çekirdek `interceptor` (ArduPlane quadplane-copter_tailsitter; dikey kalkış, yatay uçuş, ~400 km/h).
 # Eski "interceptor" sabit kanat jetleri (glb:jet, glb:zephyr, proc:interceptor) 'plane' altına taşındı (db göçü v2; docs/simumav.md §11).
-TIP_ESLEME = {'multirotor': 'multirotor', 'fpv': 'multirotor', 'plane': 'sabit_kanat', 'interceptor': 'interceptor', 'heli': 'helikopter', 'vtol': 'vtol'}
+# KARA ARACI (HEPGO §31; docs/simumav.md §15): çekirdek `rover` (ArduRover 4.7 SITL; Ackermann `rover` / paletli-diferansiyel `rover-skid`) — kalkış yok,
+# ARM + MANUAL sürüş; fırlatma/kalkış adımı ve hava hedefi kataloğunda yer almaz.
+TIP_ESLEME = {'multirotor': 'multirotor', 'fpv': 'multirotor', 'plane': 'sabit_kanat', 'interceptor': 'interceptor', 'heli': 'helikopter', 'vtol': 'vtol',
+              'rover': 'rover'}
 TYPES = tuple(TIP_ESLEME)
+ROVER_TYPES = ('rover',)
+DRIVES = flightsim.DRIVES   # ('ackermann', 'skid') — fly/start `drive` (isteğe bağlı; yoksa modelin sürüş biçimi)
 LAUNCHES = ('wheels', 'ramp', 'vehicle', 'hand') + flightsim_launcher.ICEPT_METHODS   # HEPGO §27 INTERCEPTOR fırlatıcıları: pod4 | pod8 | tube | handheld
 LAUNCH_CEKIRDEK = {'wheels': 'wheels', 'ramp': 'ramp', 'vehicle': 'vehicle', 'hand': 'ramp', **{m: m for m in flightsim_launcher.ICEPT_METHODS}}   # elden atış: düşük ivmeli mancınık kalıbı (SITL'de özel model yok)
 # Görsel model anahtarı → çekirdek (flightsim_models) dahili model: prosedürel şablonlar ve gerçekçi GLB'ler (`glb:`) çekirdekte yalnız tip/fizik
@@ -40,7 +45,8 @@ MODEL_ESLEME = {'proc:quad250': 'builtin:quad', 'proc:interceptor': 'builtin:del
                 'glb:iris_fpv': 'builtin:quad', 'glb:iris': 'builtin:quad', 'glb:x500': 'builtin:quad', 'glb:typhoon_h480': 'builtin:quad',
                 'glb:rc_cessna': 'builtin:caymaz', 'glb:believer': 'builtin:caymaz', 'glb:standard_vtol': 'builtin:caymaz', 'glb:talon_vtail': 'builtin:talon',
                 'glb:jet': 'builtin:delta', 'glb:zephyr': 'builtin:delta', 'glb:heli': 'builtin:heli',
-                'glb:icept_x4': 'builtin:icept_x4', 'glb:p1sun': 'builtin:p1sun', 'glb:sting': 'builtin:sting'}
+                'glb:icept_x4': 'builtin:icept_x4', 'glb:p1sun': 'builtin:p1sun', 'glb:sting': 'builtin:sting',
+                'glb:rover_4x4': 'builtin:rover_4x4', 'glb:rover_ugv': 'builtin:rover_ugv', 'glb:rover_bot': 'builtin:rover_bot'}
 # Eski kayıtların model_key'i (prosedürel/dahili) → aynı sınıfın gerçekçi GLB'si: kayıt değişmez, görsel (preview/orient) yükseltilir
 MODEL_YUKSELT = {'proc:quad250': 'glb:iris_fpv', 'proc:interceptor': 'glb:jet', 'builtin:quad': 'glb:iris', 'builtin:hexa': 'glb:typhoon_h480',
                  'builtin:heli': 'glb:heli', 'builtin:delta': 'glb:zephyr'}
@@ -159,7 +165,7 @@ PROC_MODELS = {
                          'defaults': INTERCEPTOR_PARAMS, 'desc': 'Yüksek hızlı önleyici delta kanat: 170 m/s (~610 km/h), tam gaz, sert manevra',
                          'core_model': 'builtin:delta', 'airframe': 'elevon'},
 }
-TYPE_LABELS = {'multirotor': 'Multikopter', 'fpv': 'FPV', 'plane': 'Sabit kanat', 'interceptor': 'INTERCEPTOR', 'heli': 'Helikopter', 'vtol': 'VTOL'}
+TYPE_LABELS = {'multirotor': 'Multikopter', 'fpv': 'FPV', 'plane': 'Sabit kanat', 'interceptor': 'INTERCEPTOR', 'heli': 'Helikopter', 'vtol': 'VTOL', 'rover': 'Kara aracı'}
 # Gerçekçi GLB modeller (static/simumav/models/<ad>.glb; kaynak/lisans: static/simumav/models/LICENSES.md; üretim: tools/simumav_models_build.py).
 # Hepsi glTF Y yukarı, burun +X, sağ +Z, metre; pervaneler `rotor_*`/`propeller` düğümleri (flightsim3d PROP_RE), kontrol yüzeyleri CTRL_RE adlarıyla.
 GLB_URL = '/static/simumav/models/{ad}.glb'
@@ -187,8 +193,17 @@ GLB_MODELS = {
     'glb:p1sun': {'type': 'interceptor', 'label': 'P1-SUN', 'file': 'p1sun', 'defaults': {}, 'desc': 'P1-SUN önleyici (~0,44 m), 4 pervane; dikey kalkış, yatay uçuş'},
     'glb:sting': {'type': 'interceptor', 'label': 'Sting', 'file': 'sting', 'defaults': {}, 'desc': 'Sting önleyici (~0,45 m), 4 pervane; dikey kalkış, yatay uçuş'},
     'glb:heli': {'type': 'heli', 'label': 'Tek rotorlu heli', 'file': 'heli', 'defaults': {}, 'desc': 'Tek ana rotor + kuyruk rotoru helikopter (1,75 m)'},
+    # KARA ARACI kataloğu — HEPGO dahili modelleriyle aynı GLB'ler (flightsim_models.BUILTIN rover_4x4/rover_ugv/rover_bot; tools/rover_models_build.py).
+    # Pervane yok (has_prop False); `drive` = modelin sürüş biçimi (fly/start `drive` verilmezse; SITL ackermann → rover, skid → rover-skid).
+    'glb:rover_4x4': {'type': 'rover', 'label': 'Keşif 4×4', 'file': 'rover_4x4', 'defaults': {}, 'drive': 'ackermann', 'has_prop': False,
+                      'desc': 'Ön tekerden dönen (Ackermann) 4×4 keşif aracı: 2,2 m, sensör direği (EO/IR + LIDAR); azami 72 km/h (SIM_Rover)'},
+    'glb:rover_ugv': {'type': 'rover', 'label': 'Paletli UGV', 'file': 'rover_ugv', 'defaults': {}, 'drive': 'skid', 'has_prop': False,
+                      'desc': 'Paletli insansız kara aracı (2,5 m): yerinde döner (diferansiyel sürüş, SIM_Rover skid ~14 km/h), sensör kulesi'},
+    'glb:rover_bot': {'type': 'rover', 'label': 'Teslimat robotu', 'file': 'rover_bot', 'defaults': {}, 'drive': 'skid', 'has_prop': False,
+                      'desc': '6 tekerli kaldırım teslimat robotu (0,78 m): diferansiyel sürüş (SIM_Rover skid ~14 km/h), bayrak direği'},
 }
-VARSAYILAN_MODEL = {'fpv': 'glb:iris_fpv', 'multirotor': 'glb:iris', 'plane': 'glb:rc_cessna', 'interceptor': 'glb:icept_x4', 'heli': 'glb:heli', 'vtol': 'glb:standard_vtol'}
+VARSAYILAN_MODEL = {'fpv': 'glb:iris_fpv', 'multirotor': 'glb:iris', 'plane': 'glb:rc_cessna', 'interceptor': 'glb:icept_x4', 'heli': 'glb:heli', 'vtol': 'glb:standard_vtol',
+                    'rover': 'glb:rover_4x4'}
 
 
 # ---- HEDEFLER (HEPGO §24; docs/simumav.md §11): SIMUMAV'da seçilebilen hedef modelleri = hedef GLB'leri (tgt:*) + hangar GLB kataloğu (glb:*).
@@ -196,6 +211,9 @@ VARSAYILAN_MODEL = {'fpv': 'glb:iris_fpv', 'multirotor': 'glb:iris', 'plane': 'g
 HEDEF_HIZ = {'glb:iris_fpv': (60, 120), 'glb:iris': (36, 60), 'glb:x500': (36, 65), 'glb:typhoon_h480': (36, 60), 'glb:rc_cessna': (60, 100),
              'glb:believer': (60, 110), 'glb:talon_vtail': (65, 110), 'glb:standard_vtol': (70, 110), 'glb:jet': (300, 610), 'glb:zephyr': (72, 130),
              'glb:heli': (60, 110), 'glb:icept_x4': (216, 400), 'glb:p1sun': (150, 300), 'glb:sting': (150, 315)}
+# Kara araçları hedef kataloğunda yoktur; seyir/azami (km/h) yalnız tanıtım sitesi filosu (site/js/fleet.js) ve hangar bilgisi için:
+# SIM_Rover Ackermann 20 m/s (72 km/h), CRUISE_SPEED 5 m/s; skid 4 m/s (~14 km/h), seyir 3 m/s
+ROVER_HIZ = {'glb:rover_4x4': (18, 72), 'glb:rover_ugv': (11, 14), 'glb:rover_bot': (11, 14)}
 
 
 def hedef_katalogu():
@@ -204,6 +222,8 @@ def hedef_katalogu():
         out.append({'key': k, 'name': m['name'], 'kind': m['kind'], 'type': None, 'glb_url': f"/static/{m['glb']}", 'orient': json.loads(json.dumps(GLB_ORIENT)),
                     'has_prop': True, 'cruise_ms': round(m['cruise_kmh'] / 3.6, 2), 'max_ms': round(m['max_kmh'] / 3.6, 2), 'desc': m['desc'], 'source': 'target'})
     for k, g in GLB_MODELS.items():
+        if g['type'] in ROVER_TYPES:
+            continue   # kara aracı hava hedefi değildir (§15)
         c, x = HEDEF_HIZ.get(k, (60, 100))
         out.append({'key': k, 'name': f"{TYPE_LABELS.get(g['type'], g['type'])} · {g['label']}", 'kind': 'rotor' if g['type'] in ('multirotor', 'fpv', 'heli') else 'plane',
                     'type': g['type'], 'glb_url': GLB_URL.format(ad=g['file']), 'orient': json.loads(json.dumps(GLB_ORIENT)), 'has_prop': True,
@@ -237,7 +257,8 @@ def hedefler_dogrula(t):
 def glb_model_api(key):
     g = GLB_MODELS[key]
     return {'key': key, 'label': g['label'], 'type': g['type'], 'glb': GLB_URL.format(ad=g['file']), 'thumb': None, 'defaults': g['defaults'], 'proc': False,
-            'desc': g['desc'], 'orient': json.loads(json.dumps(GLB_ORIENT)), 'has_prop': True, 'airframe': g.get('airframe')}
+            'desc': g['desc'], 'orient': json.loads(json.dumps(GLB_ORIENT)), 'has_prop': g.get('has_prop', True), 'airframe': g.get('airframe'),
+            'drive': g.get('drive')}
 
 
 def katalog():
@@ -248,7 +269,7 @@ def katalog():
         models = [glb_model_api(k) for k, g in GLB_MODELS.items() if g['type'] == t]
         ctip = TIP_ESLEME[t]
         for key, b in flightsim_models.BUILTIN.items():
-            if ctip in b['types'] and t not in ('fpv', 'interceptor'):
+            if ctip in b['types'] and t not in ('fpv', 'interceptor', 'rover'):   # INTERCEPTOR / kara aracı dahilileri GLB kataloğuyla aynı dosya (çift listelenmez)
                 m = flightsim_models.builtin_api(key, ctip)
                 models.append({'key': m['id'], 'label': m['name'], 'glb': m['glb_url'], 'thumb': None, 'defaults': {}, 'proc': m['format'] != 'glb',
                                'desc': m.get('desc'), 'airframe': m.get('layout'), 'orient': m.get('orient')})
@@ -271,12 +292,36 @@ def model_gorsel(model_key):
     g = key if key in GLB_MODELS else MODEL_YUKSELT.get(key)
     if g in GLB_MODELS:
         m = glb_model_api(g)
-        return {'preview': m['glb'], 'orient': m['orient'], 'has_prop': True, 'label': m['label'], 'proc': False}
+        return {'preview': m['glb'], 'orient': m['orient'], 'has_prop': m['has_prop'], 'label': m['label'], 'proc': False}
     for t in katalog()['types']:
         for m in t['models']:
             if m['key'] == key:
                 return {'preview': m.get('glb'), 'orient': None, 'has_prop': True, 'label': m['label'], 'proc': not m.get('glb')}
     return {'preview': None, 'orient': None, 'has_prop': True, 'label': key, 'proc': True}
+
+
+def model_drive(tip, model_key):
+    """Kara aracı modelinin sürüş biçimi (GLB kataloğu / dahili `drive`); bilinmiyorsa 'ackermann'. Kara aracı dışında None (§15)."""
+    if tip not in ROVER_TYPES:
+        return None
+    key = str(model_key or '')
+    d = (GLB_MODELS.get(key) or {}).get('drive')
+    if d is None:
+        k = flightsim_models.kimlik_coz(_core_model_id(key))
+        if k and k[0] == 'builtin' and k[1] in flightsim_models.BUILTIN:
+            d = flightsim_models.BUILTIN[k[1]].get('drive')
+    return d if d in DRIVES else 'ackermann'
+
+
+def drive_dogrula(tip, drive, model_key=None):
+    """fly/start `drive`: kara aracında ackermann | skid (eksik → modelin sürüş biçimi); diğer tiplerde yok sayılır (None). Bilinmeyen → 422."""
+    if tip not in ROVER_TYPES:
+        return None
+    if drive in (None, ''):
+        return model_drive(tip, model_key)
+    if drive not in DRIVES:
+        raise BridgeHata(422, 'invalid', 'drive ackermann | skid olmalı')
+    return drive
 
 
 AIRFRAMES = flightsim.LAYOUTS   # ('classic', 'elevon', 'vtail') — HEPGO §13.1 kontrol düzeni; drones.airframe
@@ -582,12 +627,17 @@ def speedup_dogrula(f):
     return int(f)
 
 
-async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None, power=None, speedup=None, camera=None, targets=None, site=None, defend=None):
+async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None, power=None, speedup=None, camera=None, targets=None, site=None, defend=None,
+                      drive=None):
     """Kotalar → çekirdek oturum → flights satırı → MP köprüsü. Dönüş: {flight_id, sim_id, mp, ws, power, speedup}. Hatalar BridgeHata.
     `power` (§10): sihirbaz gövdesi — hangar ayarının üstüne power.dogrula ile (sınırlar, yakıt yalnız uçakta); çekirdeğe TAM power sözlüğü gider.
     `speedup`: başlangıç simülasyon hızı (≤ MAX_SPEEDUP); SITL hazır olunca `speed` komutuyla yazılır.
-    `camera` (HEPGO §22.3): day | thermal | night — çekirdek oturuma ve flights.snapshot'a."""
+    `camera` (HEPGO §22.3): day | thermal | night — çekirdek oturuma ve flights.snapshot'a.
+    `drive` (§15 kara aracı): ackermann | skid; yoksa modelin sürüş biçimi. Kara aracında kalkış yöntemi yok → launch nötr 'wheels'."""
+    if drone.get('type') in ROVER_TYPES:
+        launch = {'method': 'wheels'}   # kara aracı kalkmaz: fırlatıcı/kalkış alanları yok sayılır (flights.launch nötr değer)
     launch = launch_dogrula(launch)
+    drive = drive_dogrula(drone.get('type'), drive, drone.get('model_key'))
     hedefler = hedefler_dogrula(targets)   # HEPGO §24 hedefler (isteğe bağlı)
     site, defend = saha_dogrula(site, defend, drone['type'], mission)   # HEPGO §26 yer kontrol sahası + görev (isteğe bağlı)
     try:
@@ -639,12 +689,14 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         core_drone = {'id': drone['id'], 'code': drone['name'], 'name': drone['name'], 'model': drone['model_key'], 'protocol': 'sanal'}
         try:
             s = await flightsim.MANAGER.ac(ctip, center, world, owner, None, mdl, core_drone, {'bin': bool((record or {}).get('bin', True))}, power=core_power,
-                                          layout=drone_airframe(drone), camera=camera, targets=hedefler, targets_katalog=hedef_katalogu(), site=site, defend=defend)
+                                          layout=drone_airframe(drone), camera=camera, targets=hedefler, targets_katalog=hedef_katalogu(), site=site, defend=defend,
+                                          drive=drive)
         except flightsim.SimHata as e:
             kod = {'invalid': 422, 'limit': 429, 'sitl': 503}.get(e.kod, 400)
             raise BridgeHata(kod, e.kod, str(e))
         t = db.now()
-        snap = {'drone': {'id': drone['id'], 'name': drone['name'], 'type': drone['type'], 'model_key': drone['model_key'], 'color': drone.get('color'), 'airframe': drone_airframe(drone)},
+        snap = {'drone': {'id': drone['id'], 'name': drone['name'], 'type': drone['type'], 'model_key': drone['model_key'], 'color': drone.get('color'), 'airframe': drone_airframe(drone),
+                          'drive': getattr(s, 'drive', None) or drive},   # §15 kara aracı sürüş biçimi (çekirdek oturumun etkin değeri)
                 'pilot': {'id': pilot['id'], 'name': pilot['name'], 'character': pilot['character']},
                 'track': {'id': track['id'], 'name': track['name'], 'lat': track['lat'], 'lon': track['lon'], 'radius_m': track.get('radius_m'), 'world_mode': track.get('world_mode'),
                           'world': db.j(track.get('world')) if isinstance(track.get('world'), str) else (track.get('world') or {}),
@@ -678,7 +730,7 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
     if mission and mission.get('plan') and mission.get('kind') != 'defend':
         loop.create_task(_gorev_yukle(s, mission))
     return {'flight_id': fid, 'sim_id': s.id, 'mp': {'host': host_adi(request), 'port': port, 'proto': 'tcp'} if mp else None,
-            'ws': f'/ws/fly/{s.id}', 'state': s.state, 'power': power_ayar, 'speedup': speedup,
+            'ws': f'/ws/fly/{s.id}', 'state': s.state, 'power': power_ayar, 'speedup': speedup, 'drive': getattr(s, 'drive', None) or drive,
             'site': {**s.gcs, 'layout': s.gcs_yer} if s.gcs else None}   # HEPGO §26: sahne kurulurken saha çevresi açık alan (oturumun tamamı hello'da)
 
 

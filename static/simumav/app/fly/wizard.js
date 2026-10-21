@@ -8,14 +8,28 @@
 // (4 pervaneli tailsitter, HEPGO §25: dikey kalkış, ~400 km/h; §27 fırlatıcı adımı), heli → helikopter, fpv/multirotor → multirotor, vtol → vtol.
 // Eski sabit kanat jetleri (glb:jet / glb:zephyr / proc:interceptor) artık 'plane' tipindedir (sunucu göçü v2): hız ölçeği 600 km/h ve jet sesi model
 // anahtarına göre (speedScale / audioTypeFor ikinci argümanı). FPV: başlangıç kamerası FPV.
+// KARA ARACI (rover → çekirdek `rover`, ArduRover; HEPGO §31 / docs/simumav.md §15): kalkış adımı yok, sürüş biçimi (Ackermann | paletli-diferansiyel)
+// dron adımında seçilir → start gövdesi `drive` (seçilmezse modelin); güç adımı elektrik varsayılan + isteğe bağlı yakıt; hız ölçeği 80 / 20 km/h.
 
 export const STEPS = ['drone', 'track', 'launch', 'power', 'mission', 'site', 'targets', 'pilot'];
 export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', site: 'site.step', targets: 'targets.step', pilot: 'Pilot ve kayıt' };
 
 // SIMUMAV türü → HEPGO simülatör tipi
-export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'interceptor', vtol: 'vtol' };
-export const TYPE_LABEL = { multirotor: 'Multikopter', fpv: 'FPV dron', heli: 'Helikopter', plane: 'Sabit kanat', interceptor: 'INTERCEPTOR', vtol: 'VTOL' };
+export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'interceptor', vtol: 'vtol', rover: 'rover' };
+export const TYPE_LABEL = { multirotor: 'Multikopter', fpv: 'FPV dron', heli: 'Helikopter', plane: 'Sabit kanat', interceptor: 'INTERCEPTOR', vtol: 'VTOL', rover: 'Kara aracı' };
 export const simType = t => TYPE_MAP[t] || 'multirotor';
+// ---------- KARA ARACI (§15) ----------
+export const isRover = t => t === 'rover';
+export const DRIVES = ['ackermann', 'skid'];
+// [anahtar, i18n anahtarı, Türkçe ad, i18n açıklama, Türkçe açıklama]
+export const DRIVE_SM = [
+  ['ackermann', 'drive.ackermann', 'Ackermann (ön teker direksiyonu)', 'drive.ackermann_desc', 'Otomobil gibi ön tekerden döner; azami ~72 km/h (SIM_Rover). Yerinde dönemez.'],
+  ['skid', 'drive.skid', 'Paletli / diferansiyel', 'drive.skid_desc', 'Sol-sağ teker ya da palet hız farkıyla döner; yerinde döner, azami ~14 km/h (SIM_Rover skid).'],
+];
+// Modelin sürüş biçimi: sunucunun `drive`'ı (hangar kaydı), yoksa model anahtarından (paletli UGV / teslimat robotu → skid), yoksa ackermann
+export const SKID_MODELS = ['glb:rover_ugv', 'glb:rover_bot', 'builtin:rover_ugv', 'builtin:rover_bot'];
+export const driveForModel = (key, drive = null) => (DRIVES.includes(drive) ? drive : SKID_MODELS.includes(String(key || '')) ? 'skid' : 'ackermann');
+export const driveOf = (drone, chosen = null) => (!drone || !isRover(drone.type) ? null : DRIVES.includes(chosen) ? chosen : driveForModel(drone.model_key, drone.drive));
 // Kalkış yöntemi (sabit kanat düzeneği) yalnız sabit kanat / VTOL'de: rampa, araç, tekerlek, ELDEN ATIŞ. INTERCEPTOR'da aynı adımda FIRLATICI seçilir
 // (HEPGO §27: 4'lü / 8'li kutu, yerden tekli tüp, el fırlatıcısı) — durum ayrı (`ilaunch`), kalkış yine kuyruk üstünden dikey.
 export const needsLaunch = t => t === 'plane' || t === 'vtol';
@@ -95,9 +109,10 @@ export const airframeLabel = (a, tr = s => s) => (a && AIRFRAME_LABEL[a] ? tr(AI
 
 // Hız göstergesi ölçeği (km/h): INTERCEPTOR 450 (azami 400 km/h), sabit kanat / VTOL 200 (jet modeli 600: AIRSPEED_MAX 170 m/s ≈ 612 km/h),
 // helikopter 120, kopter / FPV 150
-export const SPEED_SCALE = { interceptor: 450, plane: 200, vtol: 200, heli: 120, fpv: 150, multirotor: 100 };
-export const speedScale = (t, modelKey = null) => (t === 'plane' && isJetModel(modelKey) ? 600 : SPEED_SCALE[t] || 100);
-export const speedTicks = max => { const step = max >= 400 ? 100 : max >= 150 ? 50 : 20; const out = []; for (let v = 0; v <= max; v += step) out.push(v); return out; };
+// Kara aracı: Ackermann 80 (SIM_Rover 20 m/s = 72 km/h), paletli/diferansiyel 20 (4 m/s ≈ 14 km/h); üçüncü argüman seçilen sürüş biçimi
+export const SPEED_SCALE = { interceptor: 450, plane: 200, vtol: 200, heli: 120, fpv: 150, multirotor: 100, rover: 80 };
+export const speedScale = (t, modelKey = null, drive = null) => (t === 'plane' && isJetModel(modelKey) ? 600 : isRover(t) ? (driveForModel(modelKey, drive) === 'skid' ? 20 : 80) : SPEED_SCALE[t] || 100);
+export const speedTicks = max => { const step = max >= 400 ? 100 : max >= 150 ? 50 : max >= 60 ? 20 : 5; const out = []; for (let v = 0; v <= max; v += step) out.push(v); return out; };
 // Gösterge iğnesi açısı: 0 → −120°, max → +120° (240° yay)
 export const speedAngle = (kmh, max) => -120 + 240 * clamp((Number(kmh) || 0) / max, 0, 1);
 // Başlangıç kamerası: FPV dron → 'fpv' (gimbal), diğerleri takip
@@ -118,7 +133,7 @@ export function modelFor(drone) {
   if (drone?.preview && drone?.orient) return { id: key || 'glb', glb_url: drone.preview, orient: drone.orient, has_prop: drone.has_prop !== false };
   if (key.startsWith('proc:')) return { id: PROC_MAP[key.slice(5)] || (needsLaunch(drone?.type) ? 'builtin:caymaz' : drone?.type === 'heli' ? 'builtin:heli' : 'builtin:quad') };
   if (key && drone?.preview) return { id: key, glb_url: drone.preview, orient: drone?.orient || undefined };
-  return { id: drone?.type === 'heli' ? 'builtin:heli' : drone?.type === 'interceptor' ? 'builtin:icept_x4' : needsLaunch(drone?.type) ? 'builtin:caymaz' : 'builtin:quad' };
+  return { id: drone?.type === 'heli' ? 'builtin:heli' : drone?.type === 'interceptor' ? 'builtin:icept_x4' : isRover(drone?.type) ? 'builtin:rover_4x4' : needsLaunch(drone?.type) ? 'builtin:caymaz' : 'builtin:quad' };
 }
 // Parkur `world` JSON (§3: size_m, trees_pct, extra_buildings, fog_pct, runway_deg, runway, time_of_day) → HEPGO WORLD_DEFAULTS anahtarları
 // (size_m, tree_density 0…1, building_count, fog 0…1, runway_heading, runway, time 'day'|'dusk'|'night'); HEPGO adları da olduğu gibi kabul edilir.
@@ -159,6 +174,7 @@ export function createWizard(data = {}, init = {}) {
     targets: init.targets ?? null,      // HEPGO §24 hedefler: {items, radius_m} | null (targets.js)
     site: init.site ?? null,            // HEPGO §26 yer kontrol sahası: {station, radar, radar_km, eo, eo_km} | null (flightsim_gcs_ui createSiteSection)
     defend: init.defend ?? null,        // HEPGO §26 "Yer kontrolünü koru" (sihirbazdan; yalnız INTERCEPTOR) | null — görev kaydı kind='defend' ise sunucu plandan alır
+    drive: DRIVES.includes(init.drive) ? init.drive : null,   // §15 kara aracı sürüş biçimi (null → modelin); dron değişince sıfırlanır
   };
   let i = 0;
   const drone = () => (data.drones || []).find(d => d.id === S.drone_id) || null;
@@ -180,7 +196,8 @@ export function createWizard(data = {}, init = {}) {
     if (k === 'launch') S.launch = normLaunch({ ...S.launch, ...(v || {}) });
     else if (k === 'ilaunch') S.ilaunch = normIceptLaunch({ ...S.ilaunch, ...(v || {}), ...(v?.method && v.method !== S.ilaunch.method && v.loaded == null ? { loaded: ICEPT_CELLS[v.method] } : {}) });
     else if (k === 'record') S.record = { ...S.record, ...(v || {}) };
-    else if (k === 'drone_id') { if (v !== S.drone_id) S.power = null; S.drone_id = v; if (type() !== 'interceptor') S.defend = null; i = Math.min(i, steps().length - 1); if (S.mission_id != null) { /* görev parkura bağlı; dron değişince korunur */ } }
+    else if (k === 'drive') S.drive = DRIVES.includes(v) ? v : null;
+    else if (k === 'drone_id') { if (v !== S.drone_id) { S.power = null; S.drive = null; } S.drone_id = v; if (type() !== 'interceptor') S.defend = null; i = Math.min(i, steps().length - 1); if (S.mission_id != null) { /* görev parkura bağlı; dron değişince korunur */ } }
     else if (k === 'speedup') S.speedup = [1, 2, 4, 8].includes(Number(v)) ? Number(v) : 1;
     else if (k === 'track_id') { if (v !== S.track_id) S.mission_id = null; S.track_id = v; }   // parkur değişti → görev sıfırlanır (§3 missions.track_id)
     else if (k in S) S[k] = v;
@@ -190,7 +207,8 @@ export function createWizard(data = {}, init = {}) {
     if (!ready()) return null;
     const body = { drone_id: S.drone_id, pilot_id: S.pilot_id, track_id: S.track_id, record: { video: !!S.record.video, bin: !!S.record.bin } };
     if (S.mission_id != null) body.mission_id = S.mission_id;
-    body.launch = needsLaunch(type()) ? launchBody(S.launch) : type() === 'interceptor' ? iceptLaunchBody(S.ilaunch) : { method: 'wheels' };   // kopter/heli: alan zorunlu; `wheels` nötr değer; INTERCEPTOR: §27 fırlatıcı
+    body.launch = needsLaunch(type()) ? launchBody(S.launch) : type() === 'interceptor' ? iceptLaunchBody(S.ilaunch) : { method: 'wheels' };   // kopter/heli/kara aracı: alan zorunlu; `wheels` nötr değer; INTERCEPTOR: §27 fırlatıcı
+    if (isRover(type())) body.drive = driveOf(drone(), S.drive);   // §15 kara aracı sürüş biçimi (sunucu: çekirdek SITL rover | rover-skid)
     if (S.power) body.power = { ...S.power };
     if (S.speedup > 1) body.speedup = S.speedup;
     if (S.targets?.items?.length) body.targets = { items: S.targets.items.map(x => ({ ...x })), radius_m: S.targets.radius_m };
@@ -201,7 +219,7 @@ export function createWizard(data = {}, init = {}) {
   };
   const missionsFor = () => (data.missions || []).filter(m => S.track_id == null || m.track_id === S.track_id);
   return {
-    state: S, steps, index: () => i, step, canNext, isLast, next, prev, goto, set, ready, payload, type, drone, missionsFor,
+    state: S, steps, index: () => i, step, canNext, isLast, next, prev, goto, set, ready, payload, type, drone, missionsFor, drive: () => driveOf(drone(), S.drive),
     track: () => (data.tracks || []).find(t => t.id === S.track_id) || null,
     pilot: () => (data.pilots || []).find(p => p.id === S.pilot_id) || null,
     mission: () => (data.missions || []).find(m => m.id === S.mission_id) || null,

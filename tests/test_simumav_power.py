@@ -81,7 +81,11 @@ def main():
         # ---- katalog + meta: model başına varsayılan, sınırlar, hız seçenekleri sunucu üst sınırıyla
         cat = c.get('/api/hangar/catalog').json()
         assert cat['power']['limits']['max_speed_ms'] == [5.0, 150.0] and cat['power']['speedups'] == [1, 2, 4] and cat['power']['max_speedup'] == 4
-        assert cat['power']['fuel_types'] == ['plane', 'interceptor', 'vtol'] and cat['power']['stock_max_ms'] == 31.8
+        assert cat['power']['fuel_types'] == ['plane', 'interceptor', 'vtol', 'rover'] and cat['power']['speed_types'] == ['plane', 'interceptor', 'vtol'] and cat['power']['stock_max_ms'] == 31.8
+        # §15 kara aracı: elektrik varsayılan (çekirdek ROVER_VARSAYILAN ile aynı 4×4), azami hız yok
+        r4 = next(m for t in cat['types'] if t['key'] == 'rover' for m in t['models'] if m['key'] == 'glb:rover_4x4')['power']
+        assert r4['engine'] == 'electric' and r4['max_speed_ms'] is None and r4['fuel_l'] == 0.0
+        assert {k: r4[k] for k in ('fuel_km_per_l', 'elec_cells', 'elec_mah', 'elec_w')} == {k: v for k, v in flightsim_power.ROVER_VARSAYILAN.items() if k in ('fuel_km_per_l', 'elec_cells', 'elec_mah', 'elec_w')}, r4
         mods = {m['key']: m for t in cat['types'] for m in t['models']}
         assert mods['glb:jet']['power']['engine'] == 'fuel' and mods['glb:jet']['power']['max_speed_ms'] == 150.0
         assert mods['glb:iris']['power']['engine'] == 'electric' and mods['glb:iris']['power']['max_speed_ms'] is None
@@ -228,9 +232,20 @@ def main():
         s2 = bridge.oturum(r.json()['sim_id'])
         assert s2.power['max_speed_ms'] is None and s2.power['fuel_l'] == 0.0 and s2.power['elec_mah'] == 1300.0 and s2.guc.fuel_on is False and s2.guc.elec_on
         assert c.post(f"/api/fly/{r.json()['flight_id']}/stop", json={}, headers=H).status_code == 200
+        # §15 kara aracı: hangarda elektrikli varsayılan; yakıt seçilebilir (azami hız yok sayılır), elektrikliden yakıta geçişte 20 L depo
+        r = c.post('/api/hangar', json={'name': 'R4', 'type': 'rover', 'model_key': 'glb:rover_4x4'}, headers=H); assert r.status_code == 201, r.text
+        rv = r.json(); assert rv['power']['engine'] == 'electric' and rv['power']['defaults'] is True and rv['drive'] == 'ackermann'
+        r = c.put(f"/api/hangar/{rv['id']}", json={'power': {'engine': 'fuel', 'max_speed_ms': 40}}, headers=H); assert r.status_code == 200, r.text
+        assert r.json()['power']['engine'] == 'fuel' and r.json()['power']['fuel_l'] == power.ROVER_YAKIT_L and r.json()['power']['max_speed_ms'] is None
+        rv_body = {'drone_id': rv['id'], 'pilot_id': pid, 'track_id': tid, 'record': {'bin': False}}
+        r = c.post('/api/fly/start', json={**rv_body, 'power': {'fuel_l': 8, 'fuel_km_per_l': 10}}, headers=H); assert r.status_code == 201, r.text
+        s3 = bridge.oturum(r.json()['sim_id'])
+        assert s3.type == 'rover' and s3.power['max_speed_ms'] is None and s3.power['fuel_l'] == 8.0 and s3.guc.fuel_on and r.json()['power']['engine'] == 'fuel'
+        assert c.post(f"/api/fly/{r.json()['flight_id']}/stop", json={}, headers=H).status_code == 200
     # saf: HEPGO çekirdeği doğrulaması değişmedi (SIMUMAV yalnız kullanır)
     assert flightsim_power.dogrula({'max_speed_ms': 60}, 'multirotor')['max_speed_ms'] is None
     assert power.varsayilan('vtol', 'glb:standard_vtol')['engine'] == 'fuel' and power.varsayilan('heli')['engine'] == 'electric'
+    assert power.varsayilan('rover')['engine'] == 'electric' and power.varsayilan('rover', 'glb:rover_ugv')['elec_cells'] == 6 and power.dogrula('rover', {'engine': 'electric', 'fuel_l': 3})['fuel_l'] == 0.0
     assert 'speed' in flightsim.KOMUTLAR and 'camera' in flightsim.KOMUTLAR
     print('test_simumav_power: TAMAM')
 

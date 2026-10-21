@@ -84,6 +84,7 @@ class StartIn(BaseModel):
     targets: Optional[TargetsIn] = None             # HEPGO §24 hedefler: {items ≤ 8, radius_m}; içerik bridge.hedefler_dogrula
     site: Optional[SiteIn] = None                   # HEPGO §26 yer kontrol sahası (istasyon + EO/radar kulesi)
     defend: Optional[DefendIn] = None               # HEPGO §26 "Yer kontrolünü koru" (sihirbazdan; görev kaydı kind='defend' ise plandan)
+    drive: Optional[str] = Field(None, max_length=10)   # §15 kara aracı sürüş biçimi: ackermann | skid (yoksa modelin; diğer tiplerde yok sayılır)
 
 
 class RecStartIn(BaseModel):
@@ -122,7 +123,7 @@ async def start(body: StartIn, request: Request, user=User):
                                        power=body.power, speedup=body.speedup, camera=body.camera,
                                        targets=body.targets.model_dump(exclude_none=True) if body.targets else None,
                                        site=body.site.model_dump(exclude_none=True) if body.site else None,
-                                       defend=body.defend.model_dump(exclude_none=True) if body.defend else None)
+                                       defend=body.defend.model_dump(exclude_none=True) if body.defend else None, drive=body.drive)
     except bridge.BridgeHata as e:
         if e.error == 'invalid' and str(e.message).startswith(('power', 'Yakıt')):
             db.audit_bagimsiz('power_reject', user['id'], auth.client_ip(request), e.message[:200])
@@ -588,7 +589,7 @@ async def _sim_ws(ws, sid):
                 if sim_yolu:
                     async def run_sim(rid=rid, name=name, params=params):
                         try:
-                            if name == 'takeoff' and s.state == 'HAZIR':
+                            if name == 'takeoff' and s.state == 'HAZIR' and s.type not in flightsim.ROVER_TIPLERI:   # §15 kara aracı: beklemeden çekirdek reddeder
                                 await bridge.kalp_atisi_bekle(s)   # HAZIR = TCP bağlandı; kalp atışı gelmeden kalkış dizisi reddedilirdi (ARM'siz kalkış paritesi)
                             if name == 'takeoff' and params.get('launch') == 'hand':
                                 bridge.elden_atis_ayarla(s, params)

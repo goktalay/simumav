@@ -42,7 +42,7 @@ const pad3 = v => String(Math.round(((v % 360) + 360) % 360)).padStart(3, '0');
 const f0 = v => (v == null || Number.isNaN(Number(v)) ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(1));
 const CARD = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' };
-const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
+const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR', rover: 'Kara Aracı' };   // §31 rover
 const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış', pod4: 'Fırlat', pod8: 'Fırlat', tube: 'Fırlat', handheld: 'Fırlat' };   // §27 fırlatıcılar
 const SEV_CLASS = { hata: 'err', uyari: 'warn', basari: 'ok', bilgi: '' };
 // GÖKTUNGU kalkış kontrol listesi (kalkis_kontrol.js) — simülatörde zorunlu maddeler; sunucu drone_takeoff_checks'e kaydeder (hub takeoff{kontrol})
@@ -94,7 +94,8 @@ export function createOpsPanel(stage, opts = {}) {
   const pending = new Map();   // rid → {resolve, timer, name}
   const fold = lsGet(KEY_FOLD, { ops: true });   // İŞLEMLER varsayılan katlı (GÖKTUNGU'da İŞLEMLER düğmesi açar)
   const isPlane = type === 'sabit_kanat' || type === 'vtol' || type === 'interceptor';
-  const launchBtnText = () => (tele?.armed && (num(tele.alt_rel, 0) > 2 || (launch && launch.phase && launch.phase !== 'armed')) ? 'İniş' : (LAUNCH_BTN[launch?.method] || 'Kalkış'));
+  const rover = type === 'rover';   // §31 kara aracı: kalkış / iniş / irtifa yok; KOMUT karosu "Dur" (HOLD), İRTİFA karosu yerine EĞİM
+  const launchBtnText = () => (rover ? 'Dur' : tele?.armed && (num(tele.alt_rel, 0) > 2 || (launch && launch.phase && launch.phase !== 'armed')) ? 'İniş' : (LAUNCH_BTN[launch?.method] || 'Kalkış'));
   const canCmd = () => canWrite && hub && hubOnline && hubCan !== false && state === 'HAZIR';
   const ico = (k, cls = '') => h('i', { class: `fs-pn-ico ${cls}`, html: ICO[k] });
 
@@ -130,7 +131,7 @@ export function createOpsPanel(stage, opts = {}) {
   // --- UÇUŞ GÖSTERGESİ (PFD) ---
   const canvas = h('canvas', { class: 'fs-pn-pfd' });
   const g = canvas.getContext('2d');
-  const pfdBolum = bolum('pfd', 'UÇUŞ GÖSTERGESİ', h('div', { class: 'fs-pn-pfd-wrap' }, canvas));
+  const pfdBolum = bolum('pfd', rover ? 'SÜRÜŞ GÖSTERGESİ' : 'UÇUŞ GÖSTERGESİ', h('div', { class: 'fs-pn-pfd-wrap' }, canvas));
 
   // --- TELEMETRİ karoları 4×2 (.dk-tel-hucre: ikon · değer · etiket) ---
   const tile = (key, label, icon, { click = null, title = null } = {}) => {
@@ -141,11 +142,11 @@ export function createOpsPanel(stage, opts = {}) {
     return Object.assign(el, { v, sub, i });
   };
   const T = {
-    alt: tile('alt', 'İRTİFA', 'alt'), spd: tile('spd', 'HIZ', 'spd'), bat: tile('bat', 'BATARYA', 'bat'), gps: tile('gps', 'GPS', 'gps'),
+    alt: tile('alt', rover ? 'EĞİM' : 'İRTİFA', 'alt'), spd: tile('spd', 'HIZ', 'spd'), bat: tile('bat', 'BATARYA', 'bat'), gps: tile('gps', 'GPS', 'gps'),
     arm: tile('arm', 'DURUM', 'lock', { click: () => armToggle(), title: tr('ARM / DISARM (onaylı)') }),
     mode: tile('mode', 'MOD', 'mode', { click: el => modeMenu(el), title: tr('Uçuş modu seç') }),
     type: tile('type', 'TİP', 'fan'),
-    cmd: tile('cmd', 'KOMUT', 'takeoff', { click: () => (launchBtnText() === 'İniş' ? land() : takeoffDialog()), title: tr('Kalkış / iniş') }),
+    cmd: tile('cmd', 'KOMUT', 'takeoff', { click: () => (rover ? hubCmd('set_mode', { mode: 'HOLD' }) : launchBtnText() === 'İniş' ? land() : takeoffDialog()), title: tr(rover ? 'Dur (HOLD)' : 'Kalkış / iniş') }),
     fuel: tile('fuel', 'YAKIT', 'fuel', { title: tr('Yakıt: kalan litre, yüzde, kalan menzil (§23)') }),   // §23: yalnız tele.fuel varsa görünür
   };
   T.fuel.hidden = true;
@@ -161,12 +162,13 @@ export function createOpsPanel(stage, opts = {}) {
   const routeInfo = h('div', { class: 'fs-pn-not fs-pn-route-info' }, '');
   const altInp = h('input', { class: 'fs-pn-girdi fs-pn-num', type: 'number', min: 1, max: 500, value: isPlane ? 80 : 30, title: tr('Hedef irtifa (m, AGL)') });
   const opsBody = h('div', { class: 'fs-pn-izgara fs-pn-ops-body' },
-    grup('Uçuş'),
-    hucre(LAUNCH_BTN[launch?.method] || 'Kalkış', 'takeoff', () => takeoffDialog(), 'fs-pn-takeoff'), hucre('İniş', 'land', () => land()), hucre('RTL', 'rtl', () => hubCmd('rtl')),   // akıllı Kalkış/İniş KOMUT karosunda; burada sabit
+    grup(rover ? 'Sürüş' : 'Uçuş'),
+    rover ? [hucre('Dur (HOLD)', 'pause', () => hubCmd('set_mode', { mode: 'HOLD' }), 'fs-pn-hold'), hucre('RTL', 'rtl', () => hubCmd('rtl'))]   // §31 kara aracı: kalkış / iniş yok
+      : [hucre(LAUNCH_BTN[launch?.method] || 'Kalkış', 'takeoff', () => takeoffDialog(), 'fs-pn-takeoff'), hucre('İniş', 'land', () => land()), hucre('RTL', 'rtl', () => hubCmd('rtl'))],   // akıllı Kalkış/İniş KOMUT karosunda; burada sabit
     hucre('Ev konumu', 'home', () => setHome()),
     grup('Hedef'),
-    h('label', { class: 'fs-pn-hucre fs-pn-hucre-girdi', title: tr('Hedef irtifa (m, AGL)') }, altInp, h('span', { class: 'fs-pn-hucre-metin' }, 'm AGL')),
-    hucre('İrtifa', 'alt', () => hubCmd('altitude_change', { alt_rel_m: Number(altInp.value) || 30 })), hucre('Hedefe git', 'goto', () => gotoDialog()),
+    rover ? null : h('label', { class: 'fs-pn-hucre fs-pn-hucre-girdi', title: tr('Hedef irtifa (m, AGL)') }, altInp, h('span', { class: 'fs-pn-hucre-metin' }, 'm AGL')),
+    rover ? null : hucre('İrtifa', 'alt', () => hubCmd('altitude_change', { alt_rel_m: Number(altInp.value) || 30 })), hucre('Hedefe git', 'goto', () => gotoDialog()),
     grup('Rota'),
     h('div', { class: 'fs-pn-tam' }, routeSel),
     hucre('Yükle', 'upload', () => routeUpload(), 'fs-pn-route-up'), hucre('Başlat', 'play', () => hubCmd('mission_start', { rota: routeName() }), 'fs-pn-route-start'),
@@ -282,9 +284,9 @@ export function createOpsPanel(stage, opts = {}) {
   // ---------- komut diyalogları (ui.js modal → body; tam ekranda görünür: flightsim.js documentElement.requestFullscreen) ----------
   const armToggle = async () => {
     if (!canCmd()) return hubCmd('arm');
-    if (tele?.armed) { if (await confirmDialog('DISARM', tr('Motorlar durdurulsun mu? Havadaysa dron düşer.'), { okLabel: 'DISARM', danger: true })) hubCmd('disarm'); return; }
+    if (tele?.armed) { if (await confirmDialog('DISARM', tr(rover ? 'Motorlar durdurulsun mu? Araç durur.' : 'Motorlar durdurulsun mu? Havadaysa dron düşer.'), { okLabel: 'DISARM', danger: true })) hubCmd('disarm'); return; }
     const force = h('input', { type: 'checkbox' });
-    modal({ title: 'ARM', body: h('div', null, h('p', null, tr('Motorlar ARM edilsin mi? Pervanelerin çevresi boş olmalı.')), h('label', { class: 'check' }, force, ' ', tr('Zorla (pre-arm denetimlerini atla)'))),
+    modal({ title: 'ARM', body: h('div', null, h('p', null, tr(rover ? 'Motorlar ARM edilsin mi? Aracın çevresi boş olmalı.' : 'Motorlar ARM edilsin mi? Pervanelerin çevresi boş olmalı.')), h('label', { class: 'check' }, force, ' ', tr('Zorla (pre-arm denetimlerini atla)'))),
       actions: [{ label: 'Vazgeç' }, { label: 'ARM', class: 'danger', onClick: () => { hubCmd('arm', force.checked ? { force: true } : {}); } }] });
   };
   let menuEl = null;
@@ -329,8 +331,8 @@ export function createOpsPanel(stage, opts = {}) {
     if (!canCmd()) { hubCmd('goto'); return; }
     const lat = h('input', { class: 'input mono', value: tele?.lat != null ? Number(tele.lat).toFixed(6) : '' }), lon = h('input', { class: 'input mono', value: tele?.lon != null ? Number(tele.lon).toFixed(6) : '' });
     const alt = h('input', { class: 'input', type: 'number', min: 1, max: 500, value: Math.max(5, Math.round(num(tele?.alt_rel, 0)) || Number(altInp.value) || 30) });
-    modal({ title: 'Hedefe git', body: h('div', null, field('Enlem', lat), field('Boylam', lon), field('İrtifa (m, AGL)', alt, tr('GUIDED modda belirtilen konuma gider (sabit kanatta GUIDED hedef noktası).'))),
-      actions: [{ label: 'Vazgeç' }, { label: 'Git', class: 'primary', onClick: () => { const la = Number(lat.value), lo = Number(lon.value); if (!Number.isFinite(la) || !Number.isFinite(lo)) { toast(tr('Geçersiz koordinat'), 'err'); return true; } hubCmd('goto', { lat: la, lon: lo, alt_rel_m: Number(alt.value) || 30 }); } }] });
+    modal({ title: 'Hedefe git', body: h('div', null, field('Enlem', lat), field('Boylam', lon), rover ? h('p', { class: 'small muted' }, tr('GUIDED modda araç belirtilen konuma sürer.')) : field('İrtifa (m, AGL)', alt, tr('GUIDED modda belirtilen konuma gider (sabit kanatta GUIDED hedef noktası).'))),
+      actions: [{ label: 'Vazgeç' }, { label: 'Git', class: 'primary', onClick: () => { const la = Number(lat.value), lo = Number(lon.value); if (!Number.isFinite(la) || !Number.isFinite(lo)) { toast(tr('Geçersiz koordinat'), 'err'); return true; } hubCmd('goto', { lat: la, lon: lo, alt_rel_m: rover ? 0 : (Number(alt.value) || 30) }); } }] });
   };
 
   // ---------- rotalar (Dron Yönetimi › Rotalar) ----------
@@ -385,18 +387,19 @@ export function createOpsPanel(stage, opts = {}) {
     else if (state === 'HATA') { cls = 'hazir-degil'; txt = tr('SITL HATASI'); }
     else if (state === 'KAPANDI') { cls = 'bilinmiyor'; txt = tr('OTURUM KAPANDI'); }
     else if (state !== 'HAZIR') { cls = 'bilinmiyor'; txt = tr('SITL BAŞLIYOR…'); }
-    else if (armed) { cls = 'ucusta'; txt = `ARMED · ${tr('UÇUŞTA')}`; }
+    else if (armed) { cls = 'ucusta'; txt = `ARMED · ${tr(rover ? 'SÜRÜŞTE' : 'UÇUŞTA')}`; }
     else if (hubState.prearm?.length) { cls = 'hazir-uyari'; txt = `DISARMED · ${tr('PREARM UYARISI')}`; }
-    else { cls = 'hazir'; txt = `DISARMED · ${tr('UÇUŞA HAZIR')}`; }
+    else { cls = 'hazir'; txt = `DISARMED · ${tr(rover ? 'SÜRÜŞE HAZIR' : 'UÇUŞA HAZIR')}`; }
     hazirBtn.className = `fs-pn-hazir ${cls} ${hazirBtn.classList.contains('off') ? 'off' : ''}`; hazirMetin.textContent = txt;
     B.nokta.className = `fs-pn-nokta ${hub ? (STATE_TONE[state] || 'yok') : 'sanal'}`;
   };
   const drawTiles = () => {
     const t = tele || {};
     const armed = !!t.armed, mode = t.mode || hubState.mode || '—';
-    B.irt.textContent = t.alt_rel != null ? `${f0(t.alt_rel)} m` : ''; B.kip.textContent = mode === '—' ? '' : mode;
+    B.irt.textContent = rover ? (t.groundspeed != null ? `${f0(Number(t.groundspeed) * 3.6)} km/h` : '') : t.alt_rel != null ? `${f0(t.alt_rel)} m` : ''; B.kip.textContent = mode === '—' ? '' : mode;
     B.arm.textContent = armed ? 'ARMED' : 'DISARMED'; B.arm.className = `fs-pn-rozet ${armed ? 'kotu' : 'yok'}`;
-    T.alt.v.textContent = `${f1(t.alt_rel)} m`; T.alt.sub.textContent = `MSL ${f0(t.alt_msl)} m`;
+    if (rover) { const ps = getSim()?.getPose?.() || t; T.alt.v.textContent = `${f1(num(ps.pitch, 0) / DEG)}°`; T.alt.sub.textContent = `${tr('Yatış')} ${f1(num(ps.roll, 0) / DEG)}°`; }   // 3B zemine oturmuş gövde (PFD ile aynı)   // §31 eğim (burun yukarı +) / yatış
+    else { T.alt.v.textContent = `${f1(t.alt_rel)} m`; T.alt.sub.textContent = `MSL ${f0(t.alt_msl)} m`; }
     T.spd.v.textContent = `${f1(t.groundspeed)} m/s`; T.spd.sub.textContent = t.groundspeed != null ? `${(Number(t.groundspeed) * 3.6).toFixed(1)} km/h` : '';   // GÖKTUNGU: m/s + km/h (hava hızı PFD'de IAS)
     // §23: elektronik batarya (tele.elec) varsa BATARYA karosu ondan (%, kestirilen V, kalan süre); yoksa SITL pili
     const el_ = t.elec || null;
@@ -416,12 +419,12 @@ export function createOpsPanel(stage, opts = {}) {
     if (speedPill && t.speedup != null) speedPill.set(t.speedup);
     T.gps.v.textContent = `${gpsText(t.gps_fix)} · ${f0(t.sats)}`; T.gps.sub.textContent = tr('{n} uydu', { n: f0(t.sats) }) + (gcs ? ' · MP' : '');   // MP: Mission Planner (UDP) bağlı
     T.gps.className = `fs-pn-tile ${t.gps_fix >= 3 ? 'iyi' : t.gps_fix === 2 ? 'warn' : 'kotu'}`;
-    T.arm.v.textContent = armed ? 'ARMED' : 'DISARM'; T.arm.classList.toggle('iyi', armed); T.arm.sub.textContent = hubState.prearm?.length && !armed ? tr('PreArm uyarısı') : armed ? tr('uçuşta') : tr('hazır');
+    T.arm.v.textContent = armed ? 'ARMED' : 'DISARM'; T.arm.classList.toggle('iyi', armed); T.arm.sub.textContent = hubState.prearm?.length && !armed ? tr('PreArm uyarısı') : armed ? tr(rover ? 'sürüşte' : 'uçuşta') : tr('hazır');
     T.arm.i.innerHTML = armed ? ICO.unlock : ICO.lock;
     T.mode.v.textContent = mode; T.mode.sub.textContent = tr('değiştir');
     const cmdTxt = launchBtnText();
-    T.cmd.v.textContent = tr(cmdTxt); T.cmd.sub.textContent = cmdTxt === 'İniş' ? 'LAND' : (launch ? tr('düzenek') : 'TAKEOFF');
-    T.cmd.classList.toggle('land', cmdTxt === 'İniş'); T.cmd.classList.toggle('takeoff', cmdTxt !== 'İniş'); T.cmd.i.innerHTML = cmdTxt === 'İniş' ? ICO.land : ICO.takeoff;
+    T.cmd.v.textContent = tr(cmdTxt); T.cmd.sub.textContent = rover ? 'HOLD' : cmdTxt === 'İniş' ? 'LAND' : (launch ? tr('düzenek') : 'TAKEOFF');
+    T.cmd.classList.toggle('land', cmdTxt === 'İniş' || rover); T.cmd.classList.toggle('takeoff', cmdTxt !== 'İniş' && !rover); T.cmd.i.innerHTML = rover ? ICO.pause : cmdTxt === 'İniş' ? ICO.land : ICO.takeoff;
     if (t.mode !== lastMode) { lastMode = t.mode; drawRoute(); }
     drawHazir();
   };
@@ -460,7 +463,7 @@ export function createOpsPanel(stage, opts = {}) {
     const roll = num(pose?.roll, num(t.roll, 0)), pitch = num(pose?.pitch, num(t.pitch, 0)), pitchDeg = pitch / DEG;
     const yawRad = num(pose?.yaw, num(t.yaw, null));
     const hdg = num(t.heading, yawRad != null ? ((yawRad / DEG) + 360) % 360 : 0);
-    const gs = num(t.groundspeed, 0), air = num(t.airspeed, gs), agl = num(t.alt_rel, 0), msl = num(t.alt_msl, null), climb = num(t.climb, t.vd != null ? -t.vd : 0);
+    const gs = num(t.groundspeed, 0) * (rover ? 3.6 : 1), air = num(t.airspeed, gs), agl = rover ? pitchDeg : num(t.alt_rel, 0), msl = num(t.alt_msl, null), climb = num(t.climb, t.vd != null ? -t.vd : 0);   // §31 kara aracı: sol bant km/h, sağ bant eğim (°)
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, W, H);
     const bandW = Math.round(W * 0.14), hsH = 22, cx = W / 2, cy = (H - hsH) / 2, ppd = (H - hsH) / 50;   // ±25° görünür
@@ -502,8 +505,8 @@ export function createOpsPanel(stage, opts = {}) {
     g.restore();
     g.fillStyle = 'rgba(0,0,0,.8)'; g.fillRect(2, cy - 12, bandW - 6, 24); g.strokeStyle = '#f1f5f9'; g.lineWidth = 1; g.strokeRect(2.5, cy - 11.5, bandW - 6, 23);
     txt(gs.toFixed(gs < 10 ? 1 : 0), bandW - 8, cy, { align: 'right', px: 15, bold: true });
-    txt('GS m/s', 4, 9, { px: 9, color: '#cbd5e1' });
-    txt(`IAS ${air.toFixed(air < 10 ? 1 : 0)}`, 4, ah - 9, { px: 9.5, color: '#cbd5e1' });
+    txt(rover ? 'km/h' : 'GS m/s', 4, 9, { px: 9, color: '#cbd5e1' });
+    if (!rover) txt(`IAS ${air.toFixed(air < 10 ? 1 : 0)}`, 4, ah - 9, { px: 9.5, color: '#cbd5e1' });
     // --- sağ: irtifa bandı (AGL) + dikey hız ---
     const rx = W - bandW, ppm = bh / 60;   // ±30 m
     g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(rx, 0, bandW, ah);
@@ -512,9 +515,9 @@ export function createOpsPanel(stage, opts = {}) {
     g.restore();
     g.fillStyle = 'rgba(0,0,0,.8)'; g.fillRect(rx + 4, cy - 12, bandW - 6, 24); g.strokeStyle = '#f1f5f9'; g.strokeRect(rx + 3.5, cy - 11.5, bandW - 6, 23);
     txt(agl.toFixed(agl < 10 ? 1 : 0), rx + 8, cy, { align: 'left', px: 15, bold: true });
-    txt('AGL m', W - 4, 9, { align: 'right', px: 9, color: '#cbd5e1' });
+    txt(rover ? `${tr('Eğim')} °` : 'AGL m', W - 4, 9, { align: 'right', px: 9, color: '#cbd5e1' });
     txt(msl != null ? `MSL ${msl.toFixed(0)}` : '', W - 4, ah - 9, { align: 'right', px: 9.5, color: '#cbd5e1' });
-    txt(`VS ${climb > 0.05 ? '+' : ''}${climb.toFixed(1)}`, rx - 6, ah - 24, { align: 'right', px: 9.5, color: climb < -3 ? '#fbbf24' : '#cbd5e1' });   // dikey hız: ufuk alanı sağ alt, BAT'ın üstü (bant tick etiketleriyle çakışmaz)
+    if (!rover) txt(`VS ${climb > 0.05 ? '+' : ''}${climb.toFixed(1)}`, rx - 6, ah - 24, { align: 'right', px: 9.5, color: climb < -3 ? '#fbbf24' : '#cbd5e1' });   // dikey hız: ufuk alanı sağ alt, BAT'ın üstü (bant tick etiketleriyle çakışmaz)
     // --- alt: yön şeridi ---
     const hsY = ah, hpd = aw / 90;   // ±45°
     g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(0, hsY, W, hsH);
