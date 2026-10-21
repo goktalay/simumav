@@ -134,7 +134,7 @@ const fixUp = o => { if (o.forward[1] === o.up[1]) o.up = AXES.find(a => a[1] !=
 // Kart ızgarası + yönelim paneli
 // ======================================================================
 export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false, getLayout = null }) {   // getLayout (§13.1): seçili kontrol düzeni → uyan modeller öne + "Önerilen" rozeti
-  const S = { type: getType(), list: [], meta: {}, sel: {}, busy: new Set() };   // sel: tip → model (seçim tipe göre hatırlanır)
+  const S = { type: getType(), list: [], meta: {}, sel: {}, busy: new Set(), want: {} };   // sel: tip → model (seçim tipe göre hatırlanır)
   const grid = h('div', { class: 'fs-models' });
   const info = h('div', { class: 'small muted fs-models-info' });
   const panel = h('div', { class: 'fs-orient', hidden: true });
@@ -341,6 +341,8 @@ export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false,
       const r = await be.list(S.type);
       S.meta = r; S.list = r.models || [];
       designBtn.hidden = !(canWrite && r.design_allowed);
+      const want = S.want[S.type];   // §27 kayıtlı simülasyon: istenen model (listede varsa) bir kez seçilir
+      if (want) { delete S.want[S.type]; const wm = S.list.find(m => String(m.id) === String(want.id)); if (wm) { S.sel[S.type] = want.orient && wm.source !== 'builtin' ? { ...wm, orient: want.orient } : wm; } }
       const cur = S.sel[S.type];
       S.sel[S.type] = (cur && S.list.find(m => m.id === cur.id)) || S.list.find(m => m.id === (r.defaults || {})[S.type]) || S.list[0] || null;
       if (S.sel[S.type] && cur && S.sel[S.type].id === cur.id) Object.assign(S.sel[S.type], { orient: cur.orient, has_prop: cur.has_prop });   // kaydedilmemiş yönelim korunur
@@ -349,7 +351,8 @@ export function modelPicker({ getType, canWrite, getSim, onSelect, mock = false,
     ensureThumbs();
     return selected();
   }
-  return { el, refresh, get selected() { return selected(); }, selectionFor: type => S.sel[type] || null, redraw: draw, drawInfo, ensureThumbs };
+  // prefer(type, {id, orient?}): §27 kayıtlı simülasyonun modeli — sonraki refresh(type) listede bulursa seçer
+  return { el, refresh, get selected() { return selected(); }, selectionFor: type => S.sel[type] || null, prefer: (type, m) => { if (m?.id != null) S.want[type] = typeof m === 'object' ? m : { id: m }; }, redraw: draw, drawInfo, ensureThumbs };
 }
 
 // ======================================================================

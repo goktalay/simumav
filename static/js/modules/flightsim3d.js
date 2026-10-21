@@ -41,6 +41,7 @@ import { boxCorners, selectTarget, lockedIndex, symbology, drawSymbology } from 
 import { EO_FOV_MAX, EO_FOV_MIN, STATION_Z, SWEEP_S, TOWER_EO_Z, TOWER_RADAR_Z, autoRadarRange, bearingFrom, eoLook, eoStatus, eoZoom, fallState, radarCovers, siteLayout, sweepAngle, sweepGlow, threatGeometry, threatPhase, threatState } from './flightsim_gcs.js';   // §26 yer kontrol sahası + görev (saf)
 import { EO_POST, buildRackPad, buildRadarPrism, buildRangeRings, buildStation, buildSweep, buildTower } from './flightsim_gcs3d.js';   // §26 prosedürel modeller + radar katmanı
 import { attitudeQuat } from './flightsim_interp.js';
+import { introEase, introPose } from './flightsim_intro.js';   // §27.2 giriş sekansı: 100 m'den sinematik iniş (saf poz eğrisi)
 import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
 
 const LIB = '/static/vendor/three/';
@@ -1228,6 +1229,52 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const camSpring = { pos: new T.Vector3(0, 0, 0.6), vel: new T.Vector3(), w: 2 * Math.PI * 1.5 };
   let camSnap = false;   // sonraki karede takip yayı dronun üstüne oturur (kayıtta atlama; kullanıcının bakış açısı/mesafesi korunur)
   const snapCamera = () => { camSnap = true; };
+  // §27.2 giriş sekansı (flightsim_intro.js createIntro → playIntro): kamera kipi DEĞİŞMEZ; her karede normal kip hesaplanır, sonra poz introPose ile
+  // ezilir (hedef = dronun çizilen konumu) ve render SONRASI geri yüklenir (takip yörünge ofseti / serbest konum bozulmaz). dur sonrası blend süresince
+  // son giriş pozundan normal poza konum lerp + yönelim slerp + FOV geçişi. endIntro(s): kalan inişi kısaltıp s sn'de normale geçer (atla).
+  const intro = { on: false, t0: 0, dur: 0, blend: 0, opt: null, save: { p: null, q: null, fov: 60 }, pos: null, q: null };
+  function playIntro(o = {}) {
+    intro.on = true; intro.t0 = performance.now(); intro.dur = Math.max(0.2, num(o.dur, 3.7)) * 1000; intro.blend = Math.max(0.1, num(o.blend, 1.4)) * 1000;
+    intro.opt = { h0: num(o.height, 100), r0: num(o.radius, 80), turnDeg: num(o.turnDeg, 110) };
+    intro.save.p = intro.save.p || new T.Vector3(); intro.save.q = intro.save.q || new T.Quaternion(); intro.pos = intro.pos || new T.Vector3(); intro.q = intro.q || new T.Quaternion();
+    intro.hasPose = false;
+  }
+  function endIntro(blendS = 0.6) {
+    if (!intro.on) return;
+    const el = performance.now() - intro.t0;
+    if (el < intro.dur && intro.hasPose) { intro.dur = el; intro.blend = Math.max(0.1, num(blendS, 0.6)) * 1000; }
+    else if (!intro.hasPose) intro.on = false;
+  }
+  const introV = new T.Vector3(), introT = new T.Vector3();
+  function applyIntro(now) {
+    if (!intro.on || preview) return null;
+    const hold = globalThis.__fsIntroHold;   // teşhis: sabit sekans zamanı (flightsim_intro.js)
+    const el = hold != null ? Number(hold) * 1000 : now - intro.t0;
+    if (el >= intro.dur + intro.blend) { intro.on = false; return null; }
+    intro.save.p.copy(camera.position); intro.save.q.copy(camera.quaternion); intro.save.fov = camera.fov;
+    introT.copy(drone.group.position); introT.z += Math.max(0.3, (drone.radius || 1) * 0.3);
+    if (el < intro.dur) {
+      const end = camMode === 'follow' ? introV.copy(camera.position).sub(introT) : introV.copy(followOff).multiplyScalar(Math.max(2, drone.radius || 1));
+      const o = introPose(el / intro.dur, { ...intro.opt, end: { x: end.x, y: end.y, z: end.z } });
+      const x = introT.x + o.x, y = introT.y + o.y;
+      camera.position.set(x, y, Math.max(introT.z + o.z, terrainHeight(x, y) + 2));
+      camera.lookAt(introT);
+      if (camera.fov !== 60) { camera.fov = 60; camera.updateProjectionMatrix(); }
+      intro.pos.copy(camera.position); intro.q.copy(camera.quaternion); intro.hasPose = true;
+      return 'fly';
+    }
+    if (!intro.hasPose) { intro.on = false; return null; }
+    const k = introEase((el - intro.dur) / intro.blend);
+    camera.position.lerpVectors(intro.pos, intro.save.p, k);
+    camera.quaternion.slerpQuaternions(intro.q, intro.save.q, k);
+    const f = 60 + (intro.save.fov - 60) * k;
+    if (Math.abs(camera.fov - f) > 1e-3) { camera.fov = f; camera.updateProjectionMatrix(); }
+    return 'blend';
+  }
+  function restoreIntro() {
+    camera.position.copy(intro.save.p); camera.quaternion.copy(intro.save.q);
+    if (camera.fov !== intro.save.fov) { camera.fov = intro.save.fov; camera.updateProjectionMatrix(); }
+  }
 
   // ---------- kameralar ----------
   let camMode = 'follow', gimbal = -10;   // derece; 0 = burun hizası, eksi = aşağı (gimbal kamerası 'fpv')
@@ -1894,8 +1941,9 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       camera.updateProjectionMatrix();
     }
     frameMs += (Math.min(200, rawDt * 1000) - frameMs) * 0.1;   // ortalama kare süresi (PiP yarı hız kararı)
-    const fxType = camFxApplies(camMode) ? camFx.type : 'day';
-    if (!preview && (camMode === 'pilot' || fxType !== 'day')) {
+    const introOn = applyIntro(now);   // §27.2: giriş pozu (render sonrası geri yüklenir)
+    const fxType = camFxApplies(camMode) && introOn !== 'fly' ? camFx.type : 'day';
+    if (!preview && introOn !== 'fly' && (camMode === 'pilot' || fxType !== 'day')) {
       // Araç kamerası (§22/§22.3): sahne → render hedefi (termalde ısı malzemeleriyle) → CAM_FRAG (FPV balıkgözü/vinyet/analog · termal · gece görüşü)
       const rt = ensurePostTarget();
       withHeat(fxType === 'thermal', now, () => { renderer.setRenderTarget(rt); renderer.render(scene, camera); renderer.setRenderTarget(null); });
@@ -1905,10 +1953,11 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     } else {
       renderer.render(scene, camera);
     }
-    if (pip.on && !preview) renderPip(now);
+    if (pip.on && !preview && introOn !== 'fly') renderPip(now);   // §27.2: giriş sırasında PiP çizilmez (çerçevesi de gizli)
     if (!preview && site.cfg) { renderRadarView(now); renderEoView(now); }   // §26 radar + EO ekranları (aynı bağlam; viewport kopyası)
     if (rig?.hasScope) renderScope(now);   // §27 el fırlatıcısı nişangâhı: 3B ekran dokusu + (açıksa) nişangâh penceresi (aynı bağlam)
     if (frameHooks.size) frameHooks.forEach(fn => { try { fn(canvas); } catch { /* kanca hatası kareyi bozmaz */ } });   // §17: render SONRASI (aynı rAF turu; preserveDrawingBuffer gerekmez)
+    if (introOn) restoreIntro();
   }
   // Araç kamera pozları (ana kamera ve PiP aynı fonksiyonlar)
   // Gimbal kamerası — burun konumu: gövde +Y yönünde model yarıçapı kadar ileri, biraz yukarı; bakış: gövde yönelimi × (90° + gimbal) X dönüşü
@@ -2407,6 +2456,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
 
   return {
     setTelemetry, setCamera, getCamera: () => camMode, setGimbal, getGimbal: () => gimbal, resetCamera, snapCamera, terrainHeight, toLocal,
+    playIntro, endIntro, introActive: () => intro.on,   // §27.2 giriş sekansı
     // FPV (pilot) kipi (§22): görüş açısı 90–150 (tekerlek), analog efekt (gölgelendirici doygunluğu), burun görünür, PiP (takip kamerası sağ üst, 20 fps)
     setPilotFov, getPilotFov: () => fpv.fov, setFpvAnalog: v => { fpv.analog = !!v; }, getFpvAnalog: () => fpv.analog, setFpvNose: v => { fpv.nose = !!v; }, getFpvNose: () => fpv.nose,
     setPip: v => { pip.on = !!v; }, getPip: () => pip.on, pipRect, pipStats: () => ({ ...pipStats, interval: pipInterval(frameMs), frameMs, rt: pip.rt ? [pip.rt.width, pip.rt.height] : null }),

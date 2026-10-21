@@ -64,8 +64,8 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
 // HEPGO §27: INTERCEPTOR + fırlatıcı (pod4 | pod8 | tube | handheld) → {method, loaded? | aim_*?}; fırlatıcısız INTERCEPTOR → null (pad, eski davranış)
@@ -185,7 +185,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro } = await loadSim();
   MSiteRef = MSite;
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
   const drone = picked.drone || start.drone || { name: 'Dron', type: 'multirotor' }, track = picked.track || start.track || {}, pilot = picked.pilot || start.pilot || null, mission = picked.mission || start.mission || null;
@@ -274,11 +274,14 @@ export async function openSession(view, start, picked, ctx = {}) {
   const modeSel = h('select', { class: 'input sm fs-modesel', onchange: () => { if (modeSel.value) cmd('mode', { mode: modeSel.value }); } },
     h('option', { value: '' }, 'Mod…'), modes.map(mm => h('option', { value: mm }, mm)));
   const LAUNCH_BTN = { ramp: 'Fırlat', vehicle: 'Aracı sür', wheels: 'Kalkış', hand: 'Elden at', pod4: 'Fırlat', pod8: 'Fırlat', tube: 'Fırlat', handheld: 'Fırlat' };
+  // HEPGO §27.1 kumanda hassasiyeti (⚙ panel: eksen başına oran / expo / ölü bölge; localStorage fs.rc.feel; rcfeel.* i18n)
+  const rcFeel = MFeel.createRcFeelPanel(stage, { tr, keyed: true, plane: type === 'sabit_kanat' || type === 'vtol', onChange: () => { rcShape = rcFeel.shaper(); } });
+  let rcShape = rcFeel.shaper();
   const bar = h('div', { class: 'fs-bar' }, h('div', { class: 'pill-group' }, camBtns), gimbalLbl, mhudBtn, fpvCtl, camCtl.el, opsBtn, h('span', { class: 'spacer' }),
     h('div', { class: 'pill-group fs-cmds' }, armBtn, modeSel,
       h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
       h('button', { class: 'btn sm', type: 'button', onclick: () => cmd('rtl') }, 'RTL')),
-    h('div', { class: 'pill-group' }, rcBtn),
+    h('div', { class: 'pill-group' }, rcBtn, rcFeel.el),   // HEPGO §27.1 ⚙ hassasiyet
     h('div', { class: 'pill-group' }, h('button', { class: 'btn sm', type: 'button', title: 'SITL aynı ayarlarla yeniden başlar; çarpışma kaldırılır', onclick: () => reset() }, '↺ Sıfırla'), endBtn));
   // Sanal kumanda katmanı (HEPGO birebir): sol çubuk gaz/yaw, sağ çubuk pitch/roll (Mode 2); klavye ipucu; Mission Planner joystick uyarısı
   const stickL = h('div', { class: 'fs-stick', 'data-side': 'l' }, h('i', { class: 'fs-stick-knob' }), h('small', null, 'Gaz / Yaw'));
@@ -295,7 +298,8 @@ export async function openSession(view, start, picked, ctx = {}) {
   const attribTxt = h('span', null, g3dMode ? 'Google' : M3D.ATTRIBUTION);
   const attrib = h('div', { class: `fs-attrib ${g3dMode ? 'fs-attrib-g3d' : ''}`, hidden: !(g3dMode || realMode) }, g3dMode ? h('img', { class: 'fs-g3d-logo', src: '/static/img/google-logo.png', alt: 'Google' }) : null, attribTxt);
   // §10 güç paneli: dört analog kadran (YAKIT · HIZ · MOTOR · BATARYA); uyarı bandı (bitti / düşük)
-  const gauges = MPower.createPowerGauges(stage, { h, tr: trP, getSettings: () => session.power || null, getSummary: () => null, plane: type === 'sabit_kanat' || type === 'vtol', getCollision: () => !crash.hidden });
+  const gauges = MPower.createPowerGauges(stage, { h, tr: trP, getSettings: () => session.power || null, getSummary: () => null, plane: type === 'sabit_kanat' || type === 'vtol', getCollision: () => !crash.hidden,
+    gtT: MGt.makeGThemeT(tr, true), onTheme: t => addEvent(tr('gtheme.changed', { t: tr(`gtheme.${t}`) })) });   // HEPGO §27.3 gösterge tasarımı (sihirbaz seçimi / G)
   gauges.el.classList.add('sm-game');   // oyun teması (power.css)
   const pwAlert = h('div', { class: 'sm-pw-alert', hidden: true, role: 'alert' }, h('b'), h('small'));
   stage.append(mount, msg, crash, events, sticks, bar, nav, ended, countdown, gauge.el, gauges.el, pwAlert, attrib, netLbl);
@@ -612,12 +616,18 @@ export async function openSession(view, start, picked, ctx = {}) {
       return;
     }
     rc = virtualRC({ plane: type === 'sabit_kanat' || type === 'vtol', stickL, stickR, send: ch => socket?.send({ t: 'rc', ch }),
-      throttle0: last?.armed ? last.throttle : null });   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000)
+      throttle0: last?.armed ? last.throttle : null, shape: (k, v) => rcShape(k, v) });   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000); §27.1 eğri
     sticks.hidden = false; stage.classList.add('rc-on'); rcBtn.classList.add('primary');
     rcWarn.hidden = !last?.gcs_connected;
     sim?.setKeyboardLock?.(true);
     addEvent(tr('Sanal kumanda açık (RC override)'));
   };
+  // HEPGO §27.2 giriş sekansı (eski sihirbaz COUNTDOWN_S geri sayımı burada): sahne + SITL hazır ve perde kalkınca bir kez — 100 m'den sinematik
+  // iniş, büyük 3-2-1 + "dıt dıt dıt … diiit" (ayarlar › ses kapalıysa sessiz), sonra seçili kamera kipine yumuşak geçiş
+  const intro = MIntro.createIntro(stage, { getSim: () => sim, tr, keyed: true, sound: () => { const c = sfx.config?.() || {}; return { on: c.sound !== false, vol: c.volume ?? 0.8 }; }, sub: track.name || null });
+  let introStarted = false;
+  const maybeIntro = () => { if (introStarted || destroyed || !sim || !msg.hidden || session.state !== 'HAZIR') return; introStarted = true; intro.start(); };
+  const introTick = setInterval(maybeIntro, 250);
   const netTick = setInterval(() => {
     if (!sim?.netStats) { netLbl.hidden = true; return; }
     const n = sim.netStats();
@@ -638,8 +648,8 @@ export async function openSession(view, start, picked, ctx = {}) {
   // Çıkış zinciri (her adım ayrı korunur; biri fırlatsa da sim.dispose → forceContextLoss kesin çağrılır): WS, panel, HUD, OSD, kayıt, ses, kaplama, sahne
   const dispose = () => {
     if (destroyed) return; destroyed = true;
-    clearInterval(netTick); clearTimeout(alertTimer);
-    safe(() => gauges.dispose());
+    clearInterval(netTick); clearInterval(introTick); clearTimeout(alertTimer);
+    safe(() => gauges.dispose()); safe(() => rcFeel.dispose()); safe(() => intro.dispose());
     safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();

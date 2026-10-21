@@ -328,3 +328,67 @@ def drona_yazilacaklar(ozet):
     if e.get('w_avg'):
         out['elec_w_last'] = float(e['w_avg'])
     return out
+
+
+# ---------------- §27 sihirbaz özeti: azami uçuş süresi ve azami menzil (saf; istemci eşleniği flightsim_power.js `flightBudget`) ----------------
+# Aynı model (yukarıdaki yakıt L/dk ve batarya Wh / W) SEYİR koşulunda çözülür:
+#   seyir hızı  = uçakta AIRSPEED_CRUISE oranı (hiz_parametreleri: 12/22; INTERCEPTOR 0,8) × azami hız · kopterde KOPTER_SEYIR_MS (ArduCopter WPNAV_SPEED 10 m/s)
+#   seyir gazı  = uçakta (v_seyir / v_azami)² (sürükleme ∝ V², tam gaz = azami hız) · kopterde KOPTER_ASKI_GAZ (askı gazı)
+#   yakıt       : menzil = L × km/L ÷ (0,5 + 0,5·gaz), süre = menzil ÷ v_seyir  (yakit_lpm'in tersi)
+#   batarya     : süre = Wh ÷ W (servo ek yükü hariç — ölçüm biraz daha kısa verir), menzil = süre × v_seyir
+#   sınırlayan  : süresi kısa olan enerji kaynağı ('fuel' | 'elec'); yalnız biri varsa o. Azami hızda (gaz 1) aynı hesap ayrıca verilir.
+# Yuvarlama iki tarafta aynı: yuvarla(x, n) = floor(x·10ⁿ + 0,5) / 10ⁿ (Python round'un banker yuvarlaması JS ile ayrışmasın).
+KOPTER_SEYIR_MS = 10.0       # ArduCopter WPNAV_SPEED varsayılanı 1000 cm/s
+KOPTER_AZAMI_MS = 12.5       # ArduCopter LOIT_SPEED varsayılanı 1250 cm/s
+KOPTER_ASKI_GAZ = 0.5        # MOT_THST_HOVER ≈ 0,5
+SEYIR_ORAN = 12.0 / 22.0     # ArduPlane AIRSPEED_CRUISE / AIRSPEED_MAX varsayılanı (hiz_parametreleri ile aynı)
+ICEPT_SEYIR_ORAN = 0.8       # flightsim_icept.CRUISE_ORAN (döngüsel içe aktarma yerine sabit; tests.test_flightsim eşitliği denetler)
+
+
+def yuvarla(x, n=1):
+    if x is None:
+        return None
+    k = 10 ** n
+    return math.floor(float(x) * k + 0.5) / k
+
+
+def _sayi(v, d=0.0):
+    try:
+        f = float(v)
+        return f if math.isfinite(f) else d
+    except (TypeError, ValueError):
+        return d
+
+
+def menzil_sure(p, tip):
+    """`power` ayarları (eksikler tip varsayılanı) → {speed:{cruise_ms, max_ms, cruise_thr}, fuel|None, elec|None, limit, time_min, range_km,
+    time_min_max, range_km_max}. fuel/elec: {time_min, range_km, time_min_max, range_km_max} (+ elec.wh). Kaynak yoksa time/range None."""
+    a = varsayilanlar(tip)
+    for k, v in (p or {}).items():
+        if k in a and v is not None:
+            a[k] = v
+    if tip in PLANE_TIPLERI:
+        vmax = _sayi(a.get('max_speed_ms')) or varsayilanlar(tip)['max_speed_ms']
+        vc = vmax * (ICEPT_SEYIR_ORAN if tip == 'interceptor' else SEYIR_ORAN)
+        thr = min(1.0, max(0.0, (vc / vmax) ** 2))
+    else:
+        vmax, vc, thr = KOPTER_AZAMI_MS, KOPTER_SEYIR_MS, KOPTER_ASKI_GAZ
+    kmh_c, kmh_m = vc * 3.6, vmax * 3.6
+    fl, kml = _sayi(a.get('fuel_l')), _sayi(a.get('fuel_km_per_l'))
+    fuel = None
+    if fl > 0 and kml > 0:
+        r_c = fl * kml / (0.5 + 0.5 * thr)
+        r_m = fl * kml   # gaz 1 → çarpan 1
+        fuel = {'range_km': yuvarla(r_c, 1), 'time_min': yuvarla(r_c / kmh_c * 60.0, 1), 'range_km_max': yuvarla(r_m, 1), 'time_min_max': yuvarla(r_m / kmh_m * 60.0, 1)}
+    wh, w = batarya_wh(a.get('elec_mah'), a.get('elec_cells')), _sayi(a.get('elec_w'))
+    elec = None
+    if wh > 0 and w > 0:
+        t_h = wh / w
+        elec = {'wh': yuvarla(wh, 1), 'time_min': yuvarla(t_h * 60.0, 1), 'range_km': yuvarla(t_h * kmh_c, 1), 'time_min_max': yuvarla(t_h * 60.0, 1), 'range_km_max': yuvarla(t_h * kmh_m, 1)}
+    kaynak = [(k, v) for k, v in (('fuel', fuel), ('elec', elec)) if v]
+    limit = min(kaynak, key=lambda kv: kv[1]['time_min'])[0] if kaynak else None
+    sec = fuel if limit == 'fuel' else elec if limit == 'elec' else None
+    sec_m = min((v for _, v in kaynak), key=lambda v: v['time_min_max']) if kaynak else None
+    return {'speed': {'cruise_ms': yuvarla(vc, 1), 'max_ms': yuvarla(vmax, 1), 'cruise_thr': yuvarla(thr, 2)}, 'fuel': fuel, 'elec': elec, 'limit': limit,
+            'time_min': sec['time_min'] if sec else None, 'range_km': sec['range_km'] if sec else None,
+            'time_min_max': sec_m['time_min_max'] if sec_m else None, 'range_km_max': sec_m['range_km_max'] if sec_m else None}

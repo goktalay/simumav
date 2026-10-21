@@ -417,5 +417,5 @@ export function recOptionsBox(tr, { getMode = () => 'sitl' } = {}) {
     shareRow, binRow);
   const sync = () => { shareCb.disabled = !videoCb.checked; shareRow.classList.toggle('off', !videoCb.checked); binRow.hidden = getMode() === 'replay'; };
   sync();
-  return { el, sync, get video() { return recPrefs.on; }, get share() { return recPrefs.share; }, get bin() { return recPrefs.bin && getMode() !== 'replay'; } };
+  return { el, sync, setBin: v => { binCb.checked = !!v; recPrefs.bin = !!v; sync(); }, get video() { return recPrefs.on; }, get share() { return recPrefs.share; }, get bin() { return recPrefs.bin && getMode() !== 'replay'; } };   // setBin: §27 kayıtlı ayar
 }

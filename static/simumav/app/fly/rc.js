@@ -10,7 +10,8 @@ export const RC_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ', 'arrowup', 'a
 export const RC_HZ = 20;
 export const pwm = v => Math.round(clamp(1500 + v * 500, 1000, 2000));
 // ArduPilot RC: ch1 roll, ch2 pitch (ileri = burun aşağı = düşük PWM), ch3 gaz, ch4 yaw, ch5 mod anahtarı; 6–8: 0 = o kanala dokunma
-export const channelsOf = (ax, ch5) => [pwm(ax.roll), pwm(-ax.pitch), pwm(ax.thr), pwm(ax.yaw), ch5, 0, 0, 0];
+// shape(eksen, v): HEPGO §27.1 hassasiyet eğrisi (/sim/flightsim_rcfeel.js makeShaper) — çubuk ve klavye aynı eğriden; yoksa doğrusal
+export const channelsOf = (ax, ch5, shape = null) => { const S = (k, v) => (shape ? shape(k, v) : v); return [pwm(S('roll', ax.roll)), pwm(-S('pitch', ax.pitch)), pwm(S('thr', ax.thr)), pwm(S('yaw', ax.yaw)), ch5, 0, 0, 0]; };
 
 // ======================================================================
 // Sanal kumanda: iki sanal çubuk (Mode 2: sol gaz/yaw, sağ pitch/roll; dokunmatik + fare, pointer events) + klavye.
@@ -19,7 +20,7 @@ export const channelsOf = (ax, ch5) => [pwm(ax.roll), pwm(-ax.pitch), pwm(ax.thr
 // (1500 ≈ askı); uçakta gaz tutmalıdır (W/S kaydırır, çubuk bırakıldığı yerde kalır). Boşluk = gaz 1500. Q/E = ch5 1000/1500/2000.
 // 20 Hz: tick (klavye entegrasyonu + çizim) → send(channels()). dispose(): zamanlayıcı/dinleyiciler kalkar, 8×0 (override serbest) gönderilir.
 // ======================================================================
-export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, env = null }) {
+export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, env = null, shape = null }) {
   const win = env?.window || globalThis.window, doc = env?.document || globalThis.document;
   const nowMs = env?.now || (() => performance.now());
   const setIv = env?.setInterval || ((fn, ms) => setInterval(fn, ms)), clearIv = env?.clearInterval || (id => clearInterval(id));
@@ -32,7 +33,7 @@ export function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = n
   const drag = { l: null, r: null };          // sürüklenen çubuk: {id, x0, y0, r}
   const KEY_RATE = 3.5, SPRING = 9, THR_RATE = 0.7;
   const editable = el => el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
-  const channels = () => channelsOf(ax, ch5);
+  const channels = () => channelsOf(ax, ch5, shape);
 
   // --- klavye ---
   const onKeyDown = e => {

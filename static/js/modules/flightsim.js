@@ -35,9 +35,15 @@ import { createDefendHud, createSiteScreens, createSiteSection, defendReportBody
 import { aimWaypoint, isIceptLauncher, rackCountFor } from './flightsim_launcher.js';   // §27 INTERCEPTOR fırlatıcıları (saf)
 import { createLauncherUi } from './flightsim_scope_ui.js';   // §27 hücre envanteri + el fırlatıcısı nişangâh penceresi   // §26 yer kontrol sahası: sihirbaz, radar/EO ekranları, görev şeridi, rapor
 import { defendStateAt } from './flightsim_gcs.js';   // §26 kayıtta görev şeridi durumu
+import { createRcFeelPanel } from './flightsim_rcfeel.js';   // §27.1 sanal kumanda hassasiyeti (oran / expo / ölü bölge)
+import { createGaugeThemePicker, gaugeThemeLabel } from './flightsim_gtheme.js';   // §27.3 gösterge tasarımı (sihirbaz kartları; uçuşta createPowerGauges)
+import { createIntro, hepgoSound } from './flightsim_intro.js';   // §27.2 giriş sekansı: 100 m bakış + 3-2-1 geri sayım + bip
 import { createPowerGauges, createPowerSection, createPowerSim, createSpeedPill, elecText, fuelText, rangeText } from './flightsim_power.js';   // §23: güç ve yakıt (sihirbaz bölümü, göstergeler, güç paneli kadranları §23.6, kayıtta istemci modeli, hız kapsülü)
 import { LAUNCH_OPTIONS, LAUNCH_PARAM_DEFS, createStepper, firstInvalid, launchOptionsFor, launchStepDesc, normLaunchMethod, paramField, stepDef, wizardSteps } from './flightsim_wizard.js';   // §6 adım adım sihirbaz (saf: adım listesi, doğrulama geçişleri, veriden kalkış seçenekleri)
 import { numSlider } from './fs_inputs.js';   // §6.1 görsel giriş: kaydırıcı + düzenlenebilir değer kutusu + birim
+import { askPresetName, budgetBox, countdown, ensureSavedCss, pilotPicker, savedScreen } from './flightsim_saved.js';   // §27 Kayıtlı Simülasyonlar: üç sütunlu ekran, Uç/Kaydet, pilot, ad sorma, geri sayım
+import { presetBodyFromSession } from './flightsim_presets.js';
+import { flightBudget } from './flightsim_power.js';   // §27 sihirbaz özeti: azami süre / menzil (sunucu flightsim_power.menzil_sure ile aynı)
 
 const API = '/api/drone/sim';
 // §8 ön hazırlık: sihirbazın hazırlık kartında indirilen kayıt kareleri oturum ekranına devredilir (aynı belge; be.replay yeniden çekilmez)
@@ -129,7 +135,7 @@ export async function render(view, params, ctx, extra = {}) {
   const backend = mock ? mockBackend(ctx) : restBackend();
   const head = extra.head || (sub => h('div', { class: 'page-head' }, h('div', { class: 'page-head-t' }, h('h1', null, 'Uçuş Simülatörü'), sub ? h('div', { class: 'sub' }, sub) : null)));
   if (sid) return renderSession(view, ctx, backend, sid, { mock, canWrite, netsim: parseNetsim(sp.get('netsim')), rigdiag: sp.get('rigdiag') === '1' });   // ?rigdiag=1: düzenek yüzey teşhis kutusu (§13; konsolda her zaman window.__fsRig())
-  return renderWizard(view, ctx, backend, head, { mock, canWrite, openNew: sp.get('new') === '1', tab: sp.get('tab') });   // ?new=1: "Yeni Simülasyon Başlat" penceresi açık gelir · ?tab=runs|open|clients
+  return renderWizard(view, ctx, backend, head, { mock, canWrite, openNew: sp.get('new') === '1', tab: sp.get('tab'), preset: sp.get('preset') });   // ?new=1: "Yeni Simülasyon Başlat" penceresi açık gelir · ?tab=saved|runs|open|clients · ?preset=free|<id> (§27)
 }
 
 // Ağ bozulması test kipi (§5 titreme teşhisi): #/drone/sim/<id>?netsim=jitter30,loss5,delay40 — gelen her `tele` karesi delay + U(0, 2·jitter) ms
@@ -167,6 +173,13 @@ function restBackend() {
     runs: F => api.get(`${API}/runs${runsQuery(F) ? `?${runsQuery(F)}` : ''}`),
     runStats: (days = 30) => api.get(`${API}/runs/stats?days=${days}`),   // sayfa üstü 4 bilgi kutusu
     runDelete: id => api.del(`${API}/runs/${encodeURIComponent(id)}`),
+    // §27 kayıtlı simülasyonlar: liste, pilotlar, oluştur/güncelle/sil, kayıtlı ayarla başlat (sihirbazsız)
+    presets: () => api.get(`${API}/presets`),
+    presetPilots: () => api.get(`${API}/presets/pilots`),
+    presetCreate: body => api.post(`${API}/presets`, body),
+    presetUpdate: (id, body) => api.put(`${API}/presets/${encodeURIComponent(id)}`, body),
+    presetDelete: id => api.del(`${API}/presets/${encodeURIComponent(id)}`),
+    presetStart: (id, body = {}) => api.post(`${API}/presets/${encodeURIComponent(id)}/start`, body),
     socket: (id, handlers) => wsClient(id, handlers),
     href: id => `#/drone/sim${id ? `/${id}` : ''}`,
   };
@@ -205,7 +218,8 @@ function wsClient(id, handlers) {
 // Sekme seçimi `#/drone/sim?tab=runs|open|clients` ile gelir ya da localStorage (caymaz.fs.tab) ile hatırlanır (hash'e yazılmaz: yeniden çizim yok).
 // Sihirbaz (Kip, tip, kalkış, model, merkez, dron kaydı, dünya, kayıt seçenekleri) ayrı pencerede: wizardModal.
 // ======================================================================
-const SIM_TABS = [['runs', 'Simülasyon Kayıtları'], ['open', 'Açık Oturumlar'], ['clients', 'CAYSIM İstemcileri']];
+// §27: ilk sekme "Kayıtlı Simülasyonlar" (üç sütunlu ekran: Serbest Uçuş + kayıtlılar · uçuş kartları · özet + dönen 3B model); tablo ikinci sekmede
+const SIM_TABS = [['saved', 'Kayıtlı Simülasyonlar'], ['runs', 'Simülasyon Kayıtları'], ['open', 'Açık Oturumlar'], ['clients', 'CAYSIM İstemcileri']];
 // Sayaç rozetli sekme çubuğu (ui.js segmented({tabs:true}) ile aynı sınıflar; rozet için el yapımı). → { el, set(key), count(key, n) }
 function simTabBar(options, active, onChange) {
   const badges = {};
@@ -219,7 +233,7 @@ function simTabBar(options, active, onChange) {
   return { el: h('div', { class: 'module-tabs fs-tabs' }, h('div', { class: 'seg seg-tabs', role: 'tablist' }, btns)), set, count };
 }
 
-async function renderWizard(view, ctx, be, head, { mock, canWrite, openNew = false, tab = null }) {
+async function renderWizard(view, ctx, be, head, { mock, canWrite, openNew = false, tab = null, preset = null }) {
   let meta;
   try { meta = await be.meta(); } catch (err) {
     clear(view, head('Uçuş Simülatörü'), h('div', { class: 'card empty' }, h('p', null, h('b', null, 'Simülatör servisi yanıt vermedi.')), h('p', { class: 'small muted' }, err.message),
@@ -231,9 +245,10 @@ async function renderWizard(view, ctx, be, head, { mock, canWrite, openNew = fal
 
   // ---------- sekmeler ----------
   const tabKeys = SIM_TABS.map(([k]) => k);
-  let active = tabKeys.includes(tab) ? tab : (tabKeys.includes(pref('fs.tab', 'runs')) ? pref('fs.tab', 'runs') : 'runs');
-  const panes = { runs: h('div', { class: 'fs-pane', 'data-pane': 'runs', role: 'tabpanel' }), open: h('div', { class: 'fs-pane', 'data-pane': 'open', role: 'tabpanel' }), clients: h('div', { class: 'fs-pane', 'data-pane': 'clients', role: 'tabpanel' }) };
-  const showPane = key => { active = key; Object.entries(panes).forEach(([k, p]) => { p.hidden = k !== key; }); setPref('fs.tab', key); };
+  // Sekme tercihi §27 ile yeni anahtarda (fs.tab2): yeni ekran herkese bir kez varsayılan gelir
+  let active = tabKeys.includes(tab) ? tab : (tabKeys.includes(pref('fs.tab2', 'saved')) ? pref('fs.tab2', 'saved') : 'saved');
+  const panes = Object.fromEntries(tabKeys.map(k => [k, h('div', { class: 'fs-pane', 'data-pane': k, role: 'tabpanel' })]));
+  const showPane = key => { active = key; Object.entries(panes).forEach(([k, p]) => { p.hidden = k !== key; }); setPref('fs.tab2', key); };
   const tabs = simTabBar(SIM_TABS, active, showPane);
 
   // ---------- açık oturumlar (sekme: Açık Oturumlar; rozet = açık oturum sayısı) ----------
@@ -258,20 +273,30 @@ async function renderWizard(view, ctx, be, head, { mock, canWrite, openNew = fal
   };
 
   // ---------- sayfa: Yeni Simülasyon + sekmeler ----------
-  let wizardOpen = false;
+  let wizardOpen = false, savedSel = null;
+  // preset: {} yeni · { mode:'replay', log } Oynat · { edit: kayıtlı } Düzenle · { quick: kayıtlı } Başlat (§27; yalnız özet + geri sayım)
   const openWizard = async (preset = {}) => {
     if (wizardOpen) return;
     wizardOpen = true;
+    saved?.suspend3d();   // §27 tek WebGL bağlamı: sihirbaz önizlemesi açılırken dönen modelin stüdyo bağlamı bırakılır
     try {
-      await wizardModal({ be, meta, mock, canWrite, preset, onClosed: () => { wizardOpen = false; wizardOnClosed(); } });
-    } catch (err) { wizardOpen = false; toastError(err); }
+      await wizardModal({ be, meta, mock, canWrite, preset, user: ctx.user, onClosed: () => { wizardOpen = false; wizardOnClosed(); },
+        onSaved: p => { if (p?.id != null) { savedSel = p.id; tabs.set('saved'); showPane('saved'); } } });   // kapanışta (wizardOnClosed) yeni/güncellenen kayıt seçili gelir
+    } catch (err) { wizardOpen = false; saved?.resume3d(); toastError(err); }
   };
   const pending = mock || !canWrite ? null : pendingCard(tr);   // §17: yarım ekran kayıtları → Paylaş / Sil ("Açık Oturumlar" sekmesinde, listenin altında)
   const runs = mock ? null : runsTable({ be, tr, canWrite, user: ctx.user,
     onPlay: r => openWizard({ mode: 'replay', log: r.play_log_id }),   // kayıttan oynat kipinde sihirbaz (dünya seçimi + Başlat → mevcut replay akışı)
     onReport: async r => { const sum = await be.report(r.summary_event_id); await showReport(sum, { tr, be, canWrite }); } });
   const clients = mock ? null : clientsCard({ canWrite, onCount: n => tabs.count('clients', n) });   // CAYSIM istemcileri (docs/caysim-api.md)
+  // §27 Kayıtlı Simülasyonlar: [Serbest Uçuş + kayıtlılar] · [uçuş kartları] · [özet + dönen 3B model]
+  const saved = mock ? null : savedScreen({ be, tr, user: ctx.user, canWrite, initial: preset,
+    onStart: p => openWizard({ quick: p }), onEdit: p => openWizard({ edit: p }), onNew: () => openWizard(),
+    onPlay: r => openWizard({ mode: 'replay', log: r.play_log_id }),
+    onReport: async r => { const sum = await be.report(r.summary_event_id); await showReport(sum, { tr, be, canWrite }); },
+    onTable: () => { tabs.set('runs'); showPane('runs'); } });
   const mockNote = what => h('div', { class: 'card empty' }, h('p', { class: 'small muted' }, tr('Sahte veri kipinde {what} yok.', { what })));
+  clear(panes.saved, saved ? saved.el : mockNote('kayıtlı simülasyonlar'));
   clear(panes.runs, runs ? runs.el : mockNote('simülasyon kayıtları tablosu'));
   clear(panes.open, openBox, pending ? pending.el : null);
   clear(panes.clients, clients ? clients.el : mockNote('CAYSIM istemci listesi'));
@@ -308,11 +333,11 @@ async function renderWizard(view, ctx, be, head, { mock, canWrite, openNew = fal
     mock ? h('div', { class: 'alert warn fs-mock-note' }, 'Sahte veri kipi: oturum sunucuda açılmaz; telemetri tarayıcıda üretilir. Gerçek kullanım için adresten ?mock=1 kaldırın.') : null,
     stats,
     h('div', { class: 'fs-tabs-row' }, tabs.el, actions),
-    panes.runs, panes.open, panes.clients);
+    Object.values(panes));
   showPane(active);
   drawOpen();
   drawStats();
-  const wizardOnClosed = () => { drawOpen(); runs?.refresh(); pending?.refresh(); drawStats(); };
+  const wizardOnClosed = () => { drawOpen(); runs?.refresh(); pending?.refresh(); drawStats(); saved?.resume3d(); saved?.refresh(savedSel); savedSel = null; };
   if (openNew && canWrite) openWizard();
   if (mock && !centers.length) toast('Sahte kipte merkez yok', 'err');
 }
@@ -322,7 +347,10 @@ async function renderWizard(view, ctx, be, head, { mock, canWrite, openNew = fal
 // Başlat → mevcut prepareSession akışı (hazırlık kartı; pencere bu sırada gizlenir) → oturum ekranı (hash değişimi pencereyi kapatır).
 // preset: { mode: 'replay', log } (kayıt tablosundan Oynat).
 // ======================================================================
-async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) {
+async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, user = null, onSaved = null }) {
+  ensureSavedCss();
+  // §27 kayıtlı simülasyon: edit → sihirbaz kayıtlı ayarlarla açılır, Kaydet aynı kaydı günceller · quick → yalnız özet adımı + Uç (geri sayım; sihirbaz atlanır)
+  const edit = preset.edit || null, quick = preset.quick || null, P0 = (edit || quick)?.settings || null;
   const types = (meta.types?.length ? meta.types : TYPES.map(([key, name]) => ({ key, name }))).map(t => {
     const d = TYPES.find(x => x[0] === t.key) || [t.key, t.name, '', 'quad'];
     return { key: t.key, name: t.name || d[1], desc: d[2], icon: d[3], binary: t.binary };
@@ -332,9 +360,10 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const logsAllowed = meta.replay ? meta.replay.logs_allowed !== false : true;
   // Son seçimler (§6): tip, merkez ve kalkış yöntemi/ayarları Başlat'ta `caymaz.fs.wz.last`a yazılır, sonraki açılışta önerilir (yoksa ilk tip / ilk merkez)
   let last = {}; try { last = JSON.parse(pref('fs.wz.last', '{}')) || {}; } catch { last = {}; }
-  const S = { mode: preset.mode === 'replay' ? 'replay' : 'sitl', type: types.some(t => t.key === last.type) ? last.type : (types[0]?.key || 'multirotor'), center: centers.some(c => c.id === last.center) ? last.center : (centers[0]?.id ?? null), log: preset.log ?? null, logs: null, q: '', drone: null,
+  if (P0) last = { type: P0.type, center: P0.center_id, launch: P0.world?.launch };   // §27: kayıtlı ayarlar önerinin yerine
+  const S = { mode: preset.mode === 'replay' ? 'replay' : 'sitl', type: types.some(t => t.key === last.type) ? last.type : (types[0]?.key || 'multirotor'), center: centers.some(c => c.id === last.center) ? last.center : (P0 ? null : (centers[0]?.id ?? null)), log: preset.log ?? null, logs: null, q: '', drone: P0?.drone_id ?? null,
     origin: ['', 'REAL', 'SIM'].includes(pref('fs.logOrigin', '')) ? pref('fs.logOrigin', '') : '', sort: LOG_SORTS.some(x => x[0] === pref('fs.logSort', '')) ? pref('fs.logSort', '') : 'new',
-    world: { ...defaults, seed: randomSeed(), launch: { ...LAUNCH_DEFAULTS, ...(defaults.launch || {}), ...(last.launch && typeof last.launch === 'object' ? pickLaunch(last.launch) : {}) } }, layout: 'elevon' };   // §13.1 kontrol düzeni; varsayılan model Caymaz → elevon (model seçilince modelin düzeni)
+    world: { ...defaults, ...(P0?.world || {}), seed: P0?.world?.seed ?? randomSeed(), launch: { ...LAUNCH_DEFAULTS, ...(defaults.launch || {}), ...(last.launch && typeof last.launch === 'object' ? pickLaunch(last.launch) : {}) } }, layout: P0?.layout || 'elevon' };   // §13.1 kontrol düzeni; varsayılan model Caymaz → elevon (model seçilince modelin düzeni)
   // Etkin dron tipi: canlı kipte seçilen kart, kayıt kipinde seçili logun araç tipi (model kütüphanesi bu tipe göre listelenir)
   const activeType = () => (S.mode === 'replay' ? ((S.logs || []).find(x => x.id === S.log)?.type || 'multirotor') : S.type);
 
@@ -344,7 +373,8 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const picker = modelPicker({ getType: activeType, canWrite, mock, getSim: () => preview, getLayout: () => (activeType() === 'sabit_kanat' ? S.layout : null),
     onSelect: m => { const l = layoutForModel(m); if (l) { S.layout = l; drawLayout?.(); } preview?.setType(activeType(), m).then(() => { if (!l) { const d = preview?.ctrlLayout?.(); if (d) { S.layout = d; drawLayout?.(); } } }); } });   // §13.1: model seçilince düzen modelin düzeni (Caymaz → elevon, Talon → V-kuyruk, Cessna → klasik); kullanıcı sonra değiştirebilir
   const modelBox = h('div', { class: 'fs-model-step' }, h('h4', { class: 'fs-wz-sec-h' }, 'Görsel model'), h('p', { class: 'small muted' }, 'Dron tipi için görsel gövde: dahili modeller her zaman vardır; sistemdeki STEP/GLB/OBJ dosyaları ya da yüklediğiniz model seçilince tarayıcıda GLB\'ye dönüştürülür.'), picker.el);
-  const refreshModels = () => picker.refresh(activeType()).then(m => { if (m) preview?.setType(activeType(), m); });
+  if (P0?.model) picker.prefer(P0.type, typeof P0.model === 'object' ? P0.model : { id: P0.model });   // §27 kayıtlı model
+  const refreshModels = () => picker.refresh(activeType()).then(m => { if (m) preview?.setType(activeType(), m); if (W?.step === 'summary') drawSummary(); });   // özet açıksa model adı güncellensin (§27 hızlı başlat)
   const drawTypes = () => clear(typeCards, types.map(t => h('button', { type: 'button', class: `fs-type ${S.type === t.key ? 'on' : ''}`, onclick: () => { S.type = t.key; drawTypes(); drawLaunch(); drawLayout(); refreshModels(); powerSec?.refresh(); siteSec?.refresh(); } },
     h('span', { class: 'fs-type-ico', html: TYPE_ICON[t.icon] || TYPE_ICON.quad }),
     h('b', null, t.name), h('span', { class: 'small muted' }, t.desc || ''))));
@@ -443,7 +473,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const droneBox = h('div', { class: 'fs-drone-step' },
     h('p', { class: 'small muted' }, 'Dron Envanteri\'nden bir kayıt seçilirse harekât panelinde dron o adla görünür; seçilmezse oturuma özel "Simülatör #N" sanal dronu kullanılır. Simülatör her durumda SITL\'dir; kayıt yalnız kimliktir.'),
     h('label', { class: 'fs-drone-row' }, h('span', { class: 'small muted' }, 'Dron kaydı'), droneSel));
-  (be.drones ? be.drones() : Promise.resolve([])).then(rows => { (rows || []).forEach(d => { if (isCamType(d.camera)) droneCam.set(d.id, d.camera); }); (rows || []).forEach(d => droneSel.append(h('option', { value: d.id }, `${d.code || ''} · ${d.name || ''}${d.model ? ` (${d.model})` : ''}`))); }).catch(() => {});
+  (be.drones ? be.drones() : Promise.resolve([])).then(rows => { (rows || []).forEach(d => { if (isCamType(d.camera)) droneCam.set(d.id, d.camera); }); (rows || []).forEach(d => droneSel.append(h('option', { value: d.id }, `${d.code || ''} · ${d.name || ''}${d.model ? ` (${d.model})` : ''}`))); if (S.drone != null) droneSel.value = String(S.drone); }).catch(() => {});   // §27: kayıtlı dron kaydı seçili
 
   // ---------- 1R. kayıttan oynat: uçuş logu listesi (ad, tarih, dron, süre, boyut; arama) ----------
   const logList = h('div', { class: 'fs-logs' });
@@ -586,7 +616,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
 
   // ---------- 3a. güç ve yakıt (§23): azami hız · yakıt L + km/L · batarya S/mAh/W — varsayılanlar dron kaydından (son ölçümler), yoksa tip varsayılanı ----------
   const powerSec = createPowerSection({ h, tr, api, getType: activeType, getDroneId: () => S.drone, mock });
-  powerSec.refresh();
+  powerSec.refresh().then(() => { if (P0?.power) { powerSec.set(P0.power); if (W.step === 'summary') drawSummary(); } });   // §27: kayıtlı güç ayarları önerinin üstüne
   // ---------- 3a''. hedefler (§24; isteğe bağlı, yalnız canlı kip): dairesel yörüngede sürekli uçan hedefler → önizlemede de çizilir ----------
   const tgMeta = meta.targets || { models: [] };
   let tgPrevT = 0;
@@ -596,18 +626,21 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   // ---------- 3a'''. yer kontrol sahası (§26; isteğe bağlı, yalnız canlı kip): radar / istasyon / EO + "Yer kontrolünü koru" (yalnız INTERCEPTOR) ----------
   // eslint-disable-next-line prefer-const
   let siteSec = null;
-  siteSec = createSiteSection({ tr, getType: activeType, limits: meta.site || {} });
+  siteSec = createSiteSection({ tr, getType: activeType, limits: meta.site || {}, initial: P0 ? { site: P0.site || { station: false, radar: false, eo: false }, defend: P0.defend || null } : null });   // §27: kayıtlı saha (yoksa kapalı)
   const targetsSec = createTargetsSection({ h, tr, catalog: tgMeta.models || [], limits: tgMeta, previews: tgPreviews, onChange: () => { clearTimeout(tgPrevT); tgPrevT = setTimeout(() => preview?.setTargets?.(targetsSec.enriched()), 250); } });
+  if (P0?.targets) targetsSec.set(P0.targets);   // §27 kayıtlı hedefler
   // ---------- 3a'. kamera (§22.3): gündüz / termal / gece görüşü — önizlemeli kartlar (aynı formüllerle 2B tuvalde; ek WebGL bağlamı yok). Varsayılan:
   // dron kaydının son türü (sunucu) → bu dron için yerel son seçim → son tercih → gündüz. Seçim oturuma (`camera`), tercihe ve dron kaydına kalıcı.
   const camPrefs = createCamPrefs();
-  let camTouched = false;
-  const camCards = createCameraCards({ tr, value: camPrefs.type, palette: camPrefs.palette, onChange: t => { camTouched = true; camPrefs.setType(t); if (S.drone != null) camPrefs.rememberDrone(S.drone, t); }, onPalette: p => camPrefs.setPalette(p) });
+  let camTouched = !!P0?.camera;   // §27: kayıtlı kamera türü dron önerisine ezilmesin
+  const camCards = createCameraCards({ tr, value: P0?.camera || camPrefs.type, palette: camPrefs.palette, onChange: t => { camTouched = true; camPrefs.setType(t); if (S.drone != null) camPrefs.rememberDrone(S.drone, t); }, onPalette: p => camPrefs.setPalette(p) });
   function camForDrone() { if (camTouched) return; const t = (S.drone != null && (droneCam.get(S.drone) || camPrefs.typeForDrone(S.drone))) || camPrefs.type; camCards.set(t); }
   const camNote = h('p', { class: 'small muted' }, '');
-  const stepCam = h('div', { class: 'fs-cam-step' }, camNote, camCards.el);
+  const gtPick = createGaugeThemePicker({ tr });   // §27.3 gösterge tasarımı (önizlemeli kartlar; kalıcı tercih fs.gauge.theme — uçuşta G / kadran kutusu)
+  const stepCam = h('div', { class: 'fs-cam-step' }, camNote, camCards.el, h('div', { class: 'fs-gt-wiz' }, gtPick.el));
   // ---------- 3b. kayıt seçenekleri (§17/§19): ☐ ekran kaydı (video) › ☐ Şirketten Haberler'de paylaş · ☐ uçuş logu (.bin; yalnız canlı) ----------
   const recOpts = recOptionsBox(tr, { getMode: () => S.mode });
+  if (P0?.rec && typeof P0.rec.bin === 'boolean') recOpts.setBin(P0.rec.bin);   // §27 kayıtlı .bin seçimi
 
   // ---------- 3c. ön hazırlık kartı (§8): oturum ekranına geçmeden ÖNCE sunucu HAZIR (log ayrıştırma % / SITL) → kareler indirilir → dünya verisi
   // (arazi/Google karoları) sihirbaz önizleme örneğiyle ön yüklenir (aynı /terrain + /osm + karolar; Google kök tileset havuzda) → hash. İptal oturumu kapatır.
@@ -692,25 +725,49 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
 
   // ---------- 4. başlat (pencere altbilgisindeki "Başlat"; startBtn modal kurulduktan sonra atanır) ----------
   const goStep = k => { W.goto(k, { force: true }); draw(true); };   // doğrulama hatasında ilgili adıma dön
+  // Canlı oturum gövdesi (Başlat ve §27 Kaydet ortak; kayıtlı simülasyonun `settings`i bunun aynısıdır)
+  const sitlBody = () => ({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model: modelBody(picker.selectionFor(activeType()), mock), drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values(), layout: S.type === 'sabit_kanat' ? S.layout : undefined, camera: camCards.value,
+    targets: targetsSec.values(), site: siteSec.values().site || undefined, defend: siteSec.values().defend || undefined });   // §23 güç ve yakıt · §13.1 kontrol düzeni · §22.3 kamera türü · §24 hedefler · §26 yer kontrol sahası + görev
+  const preCheck = () => {   // Başlat / Kaydet öncesi: ilgili adıma dön
+    if (S.mode === 'replay' && S.log == null) { toast('Önce bir uçuş logu seçin', 'err'); goStep('log'); return false; }
+    if (S.mode === 'sitl' && S.center == null) { toast('Önce bir merkez seçin', 'err'); goStep('world'); return false; }
+    if (S.mode === 'sitl' && targetsSec.error()) { toast(`${tr('Hedefler')}: ${targetsSec.error()}`, 'err'); goStep('targets'); return false; }
+    if (S.mode === 'sitl' && siteSec.error()) { toast(`${tr('Yer Kontrol Merkezi')}: ${siteSec.error()}`, 'err'); goStep('site'); return false; }
+    return true;
+  };
+  // §27 Kaydet: ad sorulur (benzersiz; açıklama isteğe bağlı) → POST /presets (düzenlemede PUT) → pencere kapanır, kayıt listede seçili gelir
+  const savePreset = async () => {
+    if (mock) { toast(tr('Sahte veri kipinde kayıtlı simülasyon yok.'), 'err'); return; }
+    if (!preCheck()) return;
+    const settings = presetBodyFromSession(sitlBody());
+    let list = [];
+    try { list = await be.presets(); } catch { list = []; }
+    let savedRow = null;
+    const v = await askPresetName({ tr, list, initial: edit ? { name: edit.name, description: edit.description } : {}, excludeId: edit?.id ?? null, pilotName: pilotSel?.name || null,
+      title: edit ? 'Kayıtlı simülasyonu güncelle' : 'Simülasyonu kaydet',
+      save: async val => { const body = { ...val, pilot_id: pilotSel?.value ?? null, settings }; savedRow = edit ? await be.presetUpdate(edit.id, body) : await be.presetCreate(body); } });
+    if (!v || !savedRow) return;
+    toast(edit ? tr('Kayıtlı simülasyon güncellendi: {n}', { n: savedRow.name }) : tr('Simülasyon kaydedildi: {n}', { n: savedRow.name }));
+    onSaved?.(savedRow);
+    m.close();
+  };
   const start = async () => {
-    if (S.mode === 'replay' && S.log == null) { toast('Önce bir uçuş logu seçin', 'err'); goStep('log'); return true; }
-    if (S.mode === 'sitl' && S.center == null) { toast('Önce bir merkez seçin', 'err'); goStep('world'); return true; }
-    if (S.mode === 'sitl' && targetsSec.error()) { toast(`${tr('Hedefler')}: ${targetsSec.error()}`, 'err'); goStep('targets'); return true; }
-    if (S.mode === 'sitl' && siteSec.error()) { toast(`${tr('Yer Kontrol Merkezi')}: ${siteSec.error()}`, 'err'); goStep('site'); return true; }
-    if (S.mode === 'sitl') setPref('fs.wz.last', JSON.stringify({ type: S.type, center: S.center, launch: { method: L.method, angle_deg: L.angle_deg, release_kmh: L.release_kmh, loaded: L.loaded, aim_az_deg: L.aim_az_deg, aim_el_deg: L.aim_el_deg } }));   // §6 son seçimler (§27 fırlatıcı alanları dahil)
+    if (!preCheck()) return true;
+    if (S.mode === 'sitl' && !P0) setPref('fs.wz.last', JSON.stringify({ type: S.type, center: S.center, launch: { method: L.method, angle_deg: L.angle_deg, release_kmh: L.release_kmh, loaded: L.loaded, aim_az_deg: L.aim_az_deg, aim_el_deg: L.aim_el_deg } }));   // §6 son seçimler (§27 fırlatıcı alanları dahil)
     // §17: otomatik tam ekran (kullanıcı etkinleştirmesi içinde; reddedilirse sessiz) + kayıt açıksa ekran paylaşımı izni BİR KEZ, oturum açılmadan önce
     enterFullscreen();
     if (!mock && recPrefs.on) { const { stream, reason } = await acquireDisplayStream(); stashStream(stream); if (!stream && reason === 'denied') toast(tr('Ekran paylaşımı reddedildi; 3B sahne + HUD kaydedilecek (panel kayda girmez)')); }
     const geriAl = () => { takeStashedStream()?.getTracks().forEach(t => t.stop()); exitFullscreen(); if (back) back.hidden = false; };   // §17: oturum açılamadı/iptal → paylaşım akışı ve tam ekran bırakılır, pencere geri gelir
+    // §28 kayıtlı simülasyon: ayrı başlatma geri sayımı yok — §29 oturum girişi (100 m bakış + 3-2-1 + sesli bip) her başlatmada çalışır (çift sayım olmasın)
     let s;
     try {
       const model = modelBody(picker.selectionFor(activeType()), mock);
       s = S.mode === 'replay'
         ? await be.create({ mode: 'replay', log_id: S.log, world: { ...S.world }, model, camera: camCards.value })   // §22.3: kayıt bu simülatörden ise kaydın türü önceliklidir
-        : await be.create({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model, drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values(), layout: S.type === 'sabit_kanat' ? S.layout : undefined, camera: camCards.value,
-          targets: targetsSec.values(), site: siteSec.values().site || undefined, defend: siteSec.values().defend || undefined });   // §23 güç ve yakıt · §13.1 kontrol düzeni · §22.3 kamera türü · §24 hedefler · §26 yer kontrol sahası + görev
+        : quick && !mock ? await be.presetStart(quick.id, { rec: { bin: recOpts.bin } })   // §27: sunucu kayıtlı gövdeyi kullanır (uçuş kaydı preset_id ile bağlanır)
+          : await be.create(sitlBody());
     } catch (err) {
-      const msg = { 400: S.mode === 'replay' ? 'Log açılamadı; analizi tamamlanmış bir .bin/.tlog seçin' : 'Geçersiz ayar; dünya değerlerini ve merkezi kontrol edin', 409: 'Oturum sınırı doldu; açık bir oturumu bitirin', 503: 'SITL hazır değil (ikili ya da boş port yok)' }[err?.status];
+      const msg = quick ? null : { 400: S.mode === 'replay' ? 'Log açılamadı; analizi tamamlanmış bir .bin/.tlog seçin' : 'Geçersiz ayar; dünya değerlerini ve merkezi kontrol edin', 409: 'Oturum sınırı doldu; açık bir oturumu bitirin', 503: 'SITL hazır değil (ikili ya da boş port yok)' }[err?.status];
       toast(msg || err.message, 'err');
       geriAl();
       return true;
@@ -742,6 +799,9 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const centerSec = sec('Merkez', h('p', { class: 'small muted' }, 'Sanal dünyanın merkezi ve kalkış noktası. Mission Planner haritası bu koordinatı gösterir.'), centerList);
   const worldHint = h('p', { class: 'small muted', hidden: true }, 'Dünya kaydın kalkış noktası etrafında kurulur (pist seviyesi = kalkış irtifası); çarpışma denetimi kapalıdır. Prosedürel kipte arazi gerçek araziyle örtüşmez; gerçek kipte kalkış noktasının çevresi gerçek yükseklik ve uydu görüntüsüyle kurulur.');
   const summaryBox = h('div', { class: 'fs-wz-sum' });
+  // §27 özet adımı üstü: (kayıtlı başlatmada) kayıt başlığı · azami süre/menzil kutusu · pilot ataması (Kaydet ile)
+  const sumExtra = h('div', { class: 'fs-wz-sumx' });
+  const pilotSel = canWrite && !quick && !mock ? pilotPicker({ tr, be, me: user?.id ?? null, value: edit ? edit.pilot_id : null }) : null;
   const startNote = h('div', { class: 'small muted fs-wz-note' });
   const panel = (key, ...kids) => h('section', { class: 'fs-wz-panel', 'data-step': key, hidden: true }, ...kids);
   const panels = {
@@ -753,7 +813,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     camera: panel('camera', stepCam),
     targets: panel('targets', targetsSec.el),
     site: panel('site', siteSec.el),
-    summary: panel('summary', summaryBox, canWrite ? recOpts.el : null, startNote),
+    summary: panel('summary', sumExtra, summaryBox, canWrite ? recOpts.el : null, startNote),
   };
   const strip = h('ol', { class: 'fs-wz-strip', role: 'list' });
   const phNo = h('span', { class: 'fs-wz-ph-n' }), phTitle = h('h3', { class: 'fs-wz-ph-t' }), phDesc = h('p', { class: 'small muted fs-wz-ph-d' });
@@ -764,6 +824,9 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   const nextBtn = h('button', { type: 'button', class: 'btn primary fs-wz-next', onclick: () => goNext() }, 'İleri ›');
   let startBtn = null, back = null;
   startBtn = h('button', { type: 'button', class: 'btn primary fs-start', onclick: async () => { startBtn.disabled = true; try { await start(); } catch (err) { toastError(err); } finally { if (startBtn.isConnected) drawFoot(); } } }, '▶ Başlat');
+  // §27: son adımda "Uç" (nabız animasyonu; prefers-reduced-motion'da sakin halka) + yanında "Kaydet" (ad sorar; düzenlemede aynı kaydı günceller)
+  const FLY_ICO = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 13.5 21 6l-4.5 14-4-6.5z"/><path d="m12.5 13.5 8.5-7.5"/></svg>';
+  const saveBtn = h('button', { type: 'button', class: 'btn fs-wz-save', 'data-act': 'save', onclick: async () => { saveBtn.disabled = true; try { await savePreset(); } catch (err) { toastError(err); } finally { if (saveBtn.isConnected) drawFoot(); } } }, 'Kaydet');
   const goNext = () => { if (W.next()) draw(true); else drawFoot(); };
   const ICON_OK = '✓', ICON_ERR = '!';
   const drawStrip = () => clear(strip, W.states().map(st => {
@@ -776,13 +839,21 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
   }));
   const drawFoot = () => {
     const steps = W.steps, err = W.error(), lastStep = W.isLast();
-    backBtn.hidden = W.isFirst();
+    backBtn.hidden = W.isFirst() || !!quick;
     phNo.textContent = tr('Adım {i} / {n}', { i: steps.indexOf(W.step) + 1, n: steps.length });
     nextBtn.hidden = lastStep; nextBtn.disabled = !!err;
     const bad = firstInvalid(steps, valid);
-    startBtn.hidden = !lastStep;
+    startBtn.hidden = !lastStep || !!edit;   // düzenlemede yalnız Kaydet
     startBtn.disabled = !canWrite || !!bad;
-    startBtn.textContent = tr(S.mode === 'replay' ? '▶ Oynat' : '▶ Başlat');
+    const fly = S.mode === 'sitl';
+    startBtn.classList.toggle('fs-wz-fly', fly);
+    if (fly) { if (startBtn.dataset.lbl !== 'fly') { startBtn.innerHTML = `${FLY_ICO}<span>${tr('Uç')}</span>`; startBtn.dataset.lbl = 'fly'; startBtn.title = quick ? tr('Kayıtlı ayarlarla başlat (3 sn geri sayım)') : tr('Bu ayarlarla şimdi uç (kaydetmeden)'); } }
+    else { startBtn.textContent = tr('▶ Oynat'); startBtn.dataset.lbl = 'play'; startBtn.title = ''; }
+    saveBtn.hidden = !lastStep || !fly || !!quick;
+    saveBtn.disabled = !canWrite || !!bad || mock;
+    saveBtn.classList.toggle('primary', !!edit);
+    saveBtn.textContent = tr(edit ? 'Kaydet (güncelle)' : 'Kaydet');
+    saveBtn.title = mock ? tr('Sahte veri kipinde kayıtlı simülasyon yok.') : tr(edit ? 'Değişiklikleri bu kayıtlı simülasyona yaz' : 'Ayarları adla kaydet: atanan pilot Kayıtlı Simülasyonlar\'dan defalarca başlatır');
     why.textContent = err || (lastStep && bad ? `${tr(stepDef(bad).title)}: ${valid(bad)}` : '');
     why.classList.toggle('err', !!(err || (lastStep && bad)));
     body.style.setProperty('--wz-prog', `${steps.length > 1 ? Math.round(steps.indexOf(W.step) / (steps.length - 1) * 100) : 100}%`);
@@ -807,18 +878,24 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
       power: [isPlane(t) && pv.max_speed_ms ? ['Azami hız', `${pv.max_speed_ms} m/s (${Math.round(pv.max_speed_ms * 3.6)} km/h)`] : null,
         ['Yakıt', pv.fuel_l > 0 ? `${pv.fuel_l} L · ${pv.fuel_km_per_l} km/L` : tr('Yok')],
         ['Batarya', pv.elec_mah ? `${pv.elec_cells}S · ${pv.elec_mah} mAh · ${pv.elec_w} W` : '—']],
-      camera: [['Kamera türü', camTypeLabel(camCards.value, tr)]],
+      camera: [['Kamera türü', camTypeLabel(camCards.value, tr)], ['Gösterge tasarımı', tr(gaugeThemeLabel(gtPick.value))]],
       targets: [['Hedefler', tg?.items?.length ? tr('{n} hedef', { n: tg.items.length }) : tr('Hedef yok')], tg?.items?.length ? ['Modeller', tg.items.map(x => x.model_name || x.model).join(', ')] : null,
         tg?.items?.length ? ['Önleme yarıçapı', `${tg.radius_m} m`] : null],
       site: [['Saha', sv.site ? [sv.site.radar ? `${tr('Radar')} ${sv.site.radar_km} km` : null, sv.site.station ? tr('İstasyon') : null, sv.site.eo ? `EO ${sv.site.eo_km} km` : null].filter(Boolean).join(' · ') : tr('Yok')],
         ['Görev', sv.defend ? tr('Yer kontrolünü koru · {w} dalga · {i} önleyici', { w: sv.defend.waves, i: sv.defend.interceptors }) : tr('Serbest uçuş')]],
     };
+    // §27: azami süre / menzil (yalnız canlı) + kayıtlı başlatmada başlık + pilot ataması
+    clear(sumExtra,
+      quick ? h('div', { class: 'fs-wz-quick-h' }, h('span', { html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg>' }),
+        h('div', null, h('b', null, quick.name), h('small', null, [quick.description, quick.pilot_name ? tr('Pilot: {p}', { p: quick.pilot_name }) : null, quick.created_by_name ? tr('Tasarlayan: {p}', { p: quick.created_by_name }) : null].filter(Boolean).join(' · ')))) : null,
+      S.mode === 'sitl' ? budgetBox({ tr, budget: flightBudget(pv, t) }) : null,
+      S.mode === 'sitl' && pilotSel ? pilotSel.el : null);
     const steps = W.steps.filter(k => k !== 'summary');
     clear(summaryBox, h('div', { class: 'fs-wz-sum-grid' }, steps.map(k => {
       const e = valid(k), d = stepDef(k);
       return h('div', { class: `fs-wz-sum-card ${e ? 'err' : ''}`, 'data-step': k },
         h('div', { class: 'fs-wz-sum-h' }, h('span', { class: 'fs-wz-dot' }, String(W.steps.indexOf(k) + 1)), h('b', null, d.title),
-          h('button', { type: 'button', class: 'btn sm ghost fs-wz-edit', onclick: () => { W.goto(k, { force: true }); draw(true); } }, 'Düzenle')),
+          quick ? null : h('button', { type: 'button', class: 'btn sm ghost fs-wz-edit', onclick: () => { W.goto(k, { force: true }); draw(true); } }, 'Düzenle')),
         h('dl', null, (rows[k] || []).filter(Boolean).map(([a, b]) => [h('dt', null, a), h('dd', null, b)])),
         e ? h('div', { class: 'small fs-wz-sum-err' }, e) : null);
     })));
@@ -833,7 +910,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     clear(phTitle, d.title, d.optional ? h('span', { class: 'badge gray' }, 'isteğe bağlı') : null);
     phDesc.textContent = tr(d.desc);
     if (cur === 'summary') drawSummary();
-    if (cur === 'camera') camCards.redraw?.();
+    if (cur === 'camera') { camCards.redraw?.(); gtPick.redraw(); }
     if (cur === 'site') siteSec.refresh();
     preview?.setPreviewFocus?.(cur === 'launch' ? 'rig' : null);   // Kalkış adımı: önizleme kamerası düzeneğe yakın tur atar
     drawFoot();
@@ -868,18 +945,19 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed }) 
     const tg = e.target instanceof Element ? e.target : null;
     if (tg && (tg.closest('textarea, select, a[href], [contenteditable="true"], .modal-foot, .fs-wz-strip, .x-btn') || (tg.closest('.modal-back') && tg.closest('.modal-back') !== back))) return;
     e.preventDefault();
-    if (W.isLast()) { if (!startBtn.disabled && !startBtn.hidden) startBtn.click(); } else if (!nextBtn.disabled) goNext(); else drawFoot();
+    if (W.isLast()) { if (!startBtn.disabled && !startBtn.hidden) startBtn.click(); else if (!saveBtn.disabled && !saveBtn.hidden) saveBtn.click(); } else if (!nextBtn.disabled) goNext(); else drawFoot();
   };
   document.addEventListener('keydown', onKey);
-  const m = modal({ title: tr('Yeni Simülasyon Başlat'), body, wide: true,
+  const m = modal({ title: quick ? tr('Kayıtlı simülasyon: {n}', { n: quick.name }) : edit ? tr('Kayıtlı simülasyonu düzenle: {n}', { n: edit.name }) : tr('Yeni Simülasyon Başlat'), body, wide: true,
     actions: [{ label: tr('İptal et'), class: 'ghost fs-wizard-cancel' }],
     onClose: () => { disposed = true; document.removeEventListener('keydown', onKey); cancelAnimationFrame(footRaf); clearTimeout(rebuildT); tgPreviews.dispose(); preview?.dispose(); preview = null; if (typeof window !== 'undefined' && window.__fsWz?.W === W) delete window.__fsWz; onClosed?.(); } });
   m.el.classList.add('fs-wizard-modal');
   back = m.el.parentElement;
-  m.el.querySelector('.modal-foot')?.append(h('span', { class: 'spacer' }), why, backBtn, nextBtn, startBtn);
+  m.el.querySelector('.modal-foot')?.append(h('span', { class: 'spacer' }), why, backBtn, nextBtn, saveBtn, startBtn);
   // Testler / görsel betikler: window.__fsWz.goto('targets') (doğrulamasız atlama), .steps, .step
   window.__fsWz = { W, goto: k => { const ok = W.goto(k, { force: true }); draw(true); return ok; }, get steps() { return W.steps; }, get step() { return W.step; } };
   drawMode();
+  if (quick) { body.classList.add('fs-wz-quick'); body.querySelector('.fs-wz-top').hidden = true; W.goto('summary', { force: true }); }   // §27: yalnız özet + Uç
   draw();
 
   // 3B önizleme (küçük, kendi etrafında dönen kamera); pencere kapanınca serbest bırakılır (sayfa değişiminde de)
@@ -1082,6 +1160,9 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     h('div', { class: 'pill-group fs-speeds' }, speedBtns),
     h('div', { class: 'fs-seek-wrap' }, seek, h('i', { class: 'fs-seek-marks' })),
     timeLbl, clockLbl, lodLbl) : null;
+  // §27.1 kumanda hassasiyeti: ⚙ düğmesi alt çubukta (🎮 yanında), küçük açılır panel (oran / expo / ölü bölge, eksen başına; localStorage fs.rc.feel)
+  const rcFeel = createRcFeelPanel(stage, { tr, plane: isPlane(type), onChange: () => { rcShape = rcFeel.shaper(); } });
+  let rcShape = rcFeel.shaper();
   const bar = h('div', { class: 'fs-bar' },
     h('div', { class: 'pill-group' }, camBtns),
     gimbalLbl, mhudBtn, fpvCtl, camCtl.el, opsBtn,
@@ -1090,7 +1171,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       armBtn, modeSel,
       h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
       h('button', { class: 'btn sm', type: 'button', onclick: () => cmd('rtl') }, 'RTL')) : null,
-    canWrite && !replay ? h('div', { class: 'pill-group' }, rcBtn) : null,
+    canWrite && !replay ? h('div', { class: 'pill-group' }, rcBtn, rcFeel.el) : null,   // §27.1 ⚙ hassasiyet
     h('div', { class: 'pill-group' },
       replay ? null : h('button', { class: 'btn sm', type: 'button', title: 'SITL aynı ayarlarla yeniden başlar; çarpışma kaldırılır', onclick: () => reset() }, '↺ Sıfırla'),
       h('button', { class: 'btn sm danger', type: 'button', onclick: () => endSession() }, 'Bitir')));
@@ -1108,7 +1189,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // §23.6 güç paneli: alt çubuğun üstünde ortada dört otomobil tarzı kadran (YAKIT · HIZ · MOTOR · BATARYA), takip/serbest/yer kiplerinde ve panelden bağımsız;
   // FPV OSD / gimbal HUD açıkken onlar çizer (CSS gizler). Hız kadranı azami hızı session.power'dan; uyarı üçgeni çarpışma bandından (getCollision).
   // Ayrıntı kutusu kayıt/sahte kipte istemci modelinin özetinden (mesafe, harcanan, ölçülen), canlıda kendi mesafe toplayıcısından.
-  const gauges = createPowerGauges(stage, { h, tr, getSettings: () => session.power || null, getSummary: () => clientPower?.summary() || null, plane: isPlane(type), getCollision: () => !crash.hidden });
+  const gauges = createPowerGauges(stage, { h, tr, getSettings: () => session.power || null, getSummary: () => clientPower?.summary() || null, plane: isPlane(type), getCollision: () => !crash.hidden,
+    onTheme: t => addEvent(tr('Gösterge tasarımı: {t}', { t: tr(gaugeThemeLabel(t)) })) });   // §27.3 tasarım (sihirbaz seçimi; uçuşta G / kadran kutusu)
   stage.append(mount, msg, crash, hud, ...(mp ? [mp] : []), events, sticks, gauges.el, bar, nav, ended);
   if (attrib) stage.append(attrib);
   // §13 düzenek yüzey teşhisi: ?rigdiag=1 → sol üstte canlı kutu (h, eğim, kilit, karo inceliği/geometricError, örnekler); window.__fsRig() her oturumda
@@ -1306,7 +1388,12 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   };
   if (replay && session.state === 'HAZIR') prefetchReplay()?.catch(() => {});   // önbellekli / sihirbazdan gelen kayıt: kareler 3B ile paralel
   await buildSim();
+  // §27.2 giriş sekansı (tüm başlatmalar: canlı, sahte, kayıt): 3B hazır + perde kalkınca bir kez — 100 m'den sinematik iniş, 3-2-1 + bip, sonra son kamera kipi
+  const intro = createIntro(stage, { getSim: () => sim, tr, sound: () => hepgoSound(), sub: session.center?.name || null });
+  let introStarted = false;
+  const maybeIntro = () => { if (introStarted || destroyed || !sim || !msg.hidden || !(session.state === 'HAZIR' || mock)) return; introStarted = true; intro.start(); };
   const gimbalTick = setInterval(() => {
+    maybeIntro();
     if (!gimbalLbl.hidden && sim) gimbalLbl.textContent = tr('Gimbal {d}° (↑↓ / tekerlek)', { d: sim.getGimbal() });
     if (g3dMode && sim?.google) {   // Google atfı canlı (görünür karoların veri sağlayıcıları) + yükleme yüzdesi
       const a = sim.g3dAttribution();
@@ -1599,7 +1686,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       return;
     }
     rc = virtualRC({ plane: isPlane(type), stickL, stickR, send: ch => socket?.send({ t: 'rc', ch }), onChange: () => drawRcBars(last?.rc),
-      throttle0: last?.armed ? last.throttle : null });   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000)
+      throttle0: last?.armed ? last.throttle : null, shape: (k, v) => rcShape(k, v) });   // §27.1 hassasiyet (⚙ panel; değişiklik anında)   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000)
     sticks.hidden = false; stage.classList.add('rc-on'); rcBtn.classList.add('primary');
     rcWarn.hidden = !last?.gcs_connected;
     sim?.setKeyboardLock(true);
@@ -1626,7 +1713,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     socket?.close();
     milHud?.dispose(); osd?.dispose(); camPip?.dispose(); camCtl.dispose(); siteUi?.dispose(); defHud?.dispose(); launcherUi?.dispose();   // §26 + §27
     if (rec) { rec.abandon(); rec.dispose(); }   // §17: Bitir'siz çıkış → kayıt durur, parçalar akıtılır, sunucuda yarım kayıt (24 sa)
-    audio.dispose(); ops?.dispose(); gauges.dispose();
+    audio.dispose(); ops?.dispose(); gauges.dispose(); rcFeel.dispose(); intro.dispose();
     sim?.dispose();
     if (window.__fsSim === sim) delete window.__fsSim;
     if (player && window.__fsPlayer === player) delete window.__fsPlayer;
@@ -1648,7 +1735,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
 // 20 Hz: tick (klavye entegrasyonu + çizim) → send(channels()). dispose(): zamanlayıcı/dinleyiciler kalkar, 8×0 (override serbest) gönderilir.
 // ======================================================================
 const RC_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
-function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null }) {
+function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null, shape = null }) {   // shape(eksen, v): §27.1 hassasiyet eğrisi (flightsim_rcfeel.js) — çıkışa uygulanır
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   // thr: −1 = 1000 (uçak boşta), 0 = 1500 (kopter askı). Uçakta kumanda uçuş sırasında açılırsa (throttle0: telemetri gazı %) çubuk o gazda başlar:
   // ArduPlane TAKEOFF/AUTO'da gazı RC'den bağımsız verir; çubuk altta (1000) iken HUD %100 "ters" görünmesin, FBWA'ya geçişte gaz aniden kesilmesin.
@@ -1660,7 +1747,8 @@ function virtualRC({ plane, stickL, stickR, send, onChange, throttle0 = null }) 
   const KEY_RATE = 3.5, SPRING = 9, THR_RATE = 0.7;
   const editable = el => el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
   const pwm = v => Math.round(clamp(1500 + v * 500, 1000, 2000));
-  const channels = () => [pwm(ax.roll), pwm(-ax.pitch), pwm(ax.thr), pwm(ax.yaw), ch5, 0, 0, 0];   // 6–8: 0 = o kanala dokunma
+  const S = (k, v) => (shape ? shape(k, v) : v);
+  const channels = () => [pwm(S('roll', ax.roll)), pwm(-S('pitch', ax.pitch)), pwm(S('thr', ax.thr)), pwm(S('yaw', ax.yaw)), ch5, 0, 0, 0];   // 6–8: 0 = o kanala dokunma
 
   // --- klavye ---
   const onKeyDown = e => {

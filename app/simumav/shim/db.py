@@ -73,7 +73,8 @@ def connect():
 # flightsim_runs.kaydet INSERT'i düşüyordu ("Simülasyon kaydı yazılamadı" → uçuşun .param dökümü / run satırı yok) — eski core.db'ye ALTER.
 RUN_EK_SUTUNLAR = (('power', 'TEXT'), ('fuel_used_l', 'REAL'), ('fuel_km_per_l', 'REAL'), ('elec_wh', 'REAL'), ('elec_w_avg', 'REAL'), ('speedup_max', 'REAL'),
                    ('layout', 'TEXT'), ('camera', 'TEXT'),   # + §22.3 kamera türü
-                   ('targets', 'TEXT'), ('intercept_count', 'INTEGER'))   # + §24 hedefler (yapılandırma + önleme sonucu)
+                   ('targets', 'TEXT'), ('intercept_count', 'INTEGER'),   # + §24 hedefler (yapılandırma + önleme sonucu)
+                   ('preset_id', 'INTEGER'))   # + HEPGO §27 kayıtlı simülasyon bağı (SIMUMAV'da hep NULL; çekirdek INSERT'i sütunu yalnız doluyken yazar)
 
 
 def init():

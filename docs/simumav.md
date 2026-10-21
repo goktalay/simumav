@@ -558,3 +558,14 @@ doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
 - **Testler**: `tests/test_simumav_gcs.py` (katı 422'ler, INTERCEPTOR dışı 422, defend görevi CRUD + tohum sabitliği + kötü plan, görev + saha ile uçuş → çekirdek
   oturum (görev tohumu öncelikli), başlatma yanıtı yerleşimi, snapshot, GET oturumu, WS hello, WS `defend next`, dalga olayı, stop → summary.defend/site; sihirbaz
   görevi), `tests/test_simumav_fly.mjs` (site adımı + gövde). Görsel: `tests/gcs_shots_simumav.py` → /tmp/gcs-shots/sm-*.png.
+
+## 13. Uçuş arayüzü kişiselleştirme — HEPGO docs/ucus-simulatoru.md §27'nin SIMUMAV'daki karşılığı
+- **Kumanda hassasiyeti** (§27.1): `fly/rc.js` `virtualRC({ shape })` / `channelsOf(ax, ch5, shape)`; şekillendirici `/sim/flightsim_rcfeel.js` (oturum
+  sahnesi `loadSim` listesinde). Alt çubukta 🎮 yanında ⚙ paneli; `rcfeel.*` anahtarları (7 dil). Tercih `fs.rc.feel` (HEPGO ile aynı anahtar, ayrı köken).
+- **Giriş sekansı** (§27.2): eski sihirbaz geri sayımı (`wizard.js COUNTDOWN_S` / `countdownAt` — saf fonksiyonlar korunur, testli) KALDIRILDI; BAŞLA'da yalnız
+  "Hazır ol…" perdesi, 3‑2‑1 + "dıt dıt dıt … diiit" + 100 m sinematik iniş sahnede (`/sim/flightsim_intro.js`, `session.js maybeIntro`). Ses Ayarlar › Ses
+  (`sfx.config().sound/volume`) tercihine uyar. Elden atıştaki kalkış geri sayımı (`hand_launch.js HAND.countdown_s`) ayrıdır, değişmedi. `intro.*` anahtarları.
+- **Gösterge tasarımı** (§27.3): "Pilot" adımında kamera kartlarının altında önizlemeli kartlar (`/sim/flightsim_gtheme.js createGaugeThemePicker`, oyun teması
+  önizlemesi); uçuşta kadran kutusu / G. `classic` = oyun teması (`.sm-game`). `gtheme.*` anahtarları. Tercih yalnız tarayıcıda (`fs.gauge.theme`).
+- **Radar/EO pencereleri** (§27.4): HEPGO `createSiteScreens` aynen (sürükle, oranlı boyut, yapışma, engelden kaçınma, `fs.site.win`, ⟲); `site.win_*` anahtarları.
+- Dışa aktarma: yeni modüller (`flightsim_rcfeel.js`, `flightsim_gtheme.js`, `flightsim_intro.js`, `flightsim_dock.js`) `flightsim*.js` kalıbıyla gelir.

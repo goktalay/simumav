@@ -95,5 +95,5 @@ export function createTargetsSection({ h, tr, catalog = [], limits = {}, onChang
     if (!v) return null;
     return { radius_m: v.radius_m, items: v.items.map((it, i) => { const m = modelOf(it.model) || {}; return { ...it, i, name: `${m.name || it.model} #${i + 1}`, model_name: m.name, glb_url: m.glb_url, orient: m.orient, has_prop: m.has_prop, kind: m.kind, type: m.type }; }) };
   };
-  return { el, values, enriched, error: () => (S.items.length ? validateTargets(S.items, catalog, tr) : null), set: arr => { S.items = (arr || []).map(x => ({ ...x })); draw(); changed(); } };
+  return { el, values, enriched, error: () => (S.items.length ? validateTargets(S.items, catalog, tr) : null), set: v => { const arr = Array.isArray(v) ? v : (v?.items || []); S.items = arr.map(x => ({ ...x })); if (v && !Array.isArray(v) && v.radius_m != null) { S.radius = num(v.radius_m, S.radius); radSl.set(S.radius); } draw(); changed(); } };   // §27: dizi ya da {items, radius_m}
 }

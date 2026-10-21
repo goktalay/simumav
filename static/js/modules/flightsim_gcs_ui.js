@@ -4,9 +4,14 @@
 //  • createSiteScreens: uçuşta SOL ALTTA radar ekranı, hemen yanında EO ekranı (görüntü 3B tuvalinde — aynı WebGL bağlamı, sim.setRadarRect/setEoRect;
 //    burada yalnız çerçeve + 2B katman: menzil etiketleri, hedef numaraları, EO OSD'si); ayrı ayrı aç/kapa (düğme + Y / U; localStorage fs.site).
 //    Radar ekranına tıklama hedef seçer (sim.lockTarget; Tab kilidiyle aynı durum) → EO o hedefi izler.
+//    §27.4 pencereler taşınabilir/boyutlandırılabilir: başlık çubuğundan sürükle (fare/dokunmatik) → yüzen pencere; sağ alt köşe tutamacı → en/boy
+//    oranı korunarak boyut; bırakınca kenar/köşeye yapışma + engellerden (PiP, kadranlar, MP kutusu, harekât kartı, diğer pencere) kaçınma; yerleşim
+//    ekran boyutuna oranlı localStorage fs.site.win; başlıktaki ⟲ (ya da başlığa çift tık) varsayılan dok yerleşimine döndürür. Görüntü yine tek
+//    paylaşılan WebGL renderer'da (viewport/scissor) çizilir; boyut değişince sync() yeni dikdörtgeni verir, render hedefi 3B'de yeniden kurulur.
 //  • createDefendHud: görev şeridi (dalga, geri sayım, istasyon sağlığı, interceptor rafı, önlenen/sızan) + orta bant bildirimleri + "Sıradaki interceptor" (N).
 //  • defendReportBody / showDefendReport: görev sonu başarı raporu (sonuç, puan, rütbe, isabet, önleme süreleri, zaman çizelgesi, önleme tablosu).
 // Metinler: SITE_TEXTS [anahtar, Türkçe] — HEPGO'da Türkçe metin sözlük anahtarıdır (tr(metin)); SIMUMAV'da `site.*` anahtarları (keyed=true; i18n 7 dil).
+import { WIN_MARGIN, avoidRects, boundsOf, clampRect, fromFrac, normWin, resizeW, sizeFor, snapRect, toFrac } from './flightsim_dock.js';   // §27.4 yüzen pencere yerleşimi (saf)
 import { DEFEND_DEFAULTS, DEFEND_LIMITS, DIFFICULTIES, THREAT_MODELS, EO_KM, EO_KM_DEFAULT, RADAR_KM, RADAR_KM_DEFAULT, fmtClock, fmtKm, nextWave, radarSteps, randomSeed, siteBody, siteLayout, validateDefend, validateSite } from './flightsim_gcs.js';
 
 export const SITE_TEXTS = [
@@ -47,6 +52,7 @@ export const SITE_TEXTS = [
   ['site.continue', 'Devam'], ['site.report_btn', 'Rapor'], ['site.reason_station', 'istasyon yok edildi'], ['site.reason_all', 'tüm tehditler çözüldü'],
   ['site.rk_colonel', 'Albay'], ['site.rk_major', 'Binbaşı'], ['site.rk_captain', 'Yüzbaşı'], ['site.rk_lieutenant', 'Teğmen'], ['site.rk_sergeant', 'Çavuş'], ['site.rk_corporal', 'Onbaşı'], ['site.rk_private', 'Er'],
   ['site.from_mission', 'Görev kaydından: {name} — tohum ve dalgalar kayıtta sabit'], ['site.step', 'Yer kontrol'],
+  ['site.win_reset', 'Varsayılan yerleşime dön'], ['site.win_move', 'Sürükle: taşı · köşe: boyutlandır · çift tık: varsayılan yerleşim'], ['site.win_size', 'Boyutlandır (oran korunur)'],
   ['site.err_radar', 'Radar menzili {a}–{b} km olmalı'], ['site.err_eo', 'EO menzili {a}–{b} km olmalı'],
 ];
 const TXT = Object.fromEntries(SITE_TEXTS);
@@ -122,9 +128,9 @@ const CSS = `
 .fs-site-striph:empty{display:none}
 .fs-stage.rc-on .fs-site-dock{bottom:calc(var(--fs-bar-h, 54px) + 176px)}
 .fs-site-row{display:flex;gap:8px;align-items:flex-end}
-.fs-site-scr{pointer-events:auto;border-radius:10px;overflow:hidden;border:1px solid rgba(90,255,170,.32);box-shadow:0 10px 30px rgba(0,0,0,.5),inset 0 0 0 1px rgba(0,0,0,.4);background:transparent}
+.fs-site-scr{position:relative;pointer-events:auto;border-radius:10px;overflow:hidden;border:1px solid rgba(90,255,170,.32);box-shadow:0 10px 30px rgba(0,0,0,.5),inset 0 0 0 1px rgba(0,0,0,.4);background:transparent}
 .fs-site-scr.eo{border-color:rgba(140,200,255,.35)}
-.fs-site-hd{display:flex;align-items:center;gap:6px;height:24px;padding:0 4px 0 9px;font:700 10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em;color:#a6ffd4;background:linear-gradient(180deg,rgba(16,44,34,.95),rgba(8,24,18,.95));border-bottom:1px solid rgba(90,255,170,.22);white-space:nowrap}
+.fs-site-hd{cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;display:flex;align-items:center;gap:6px;height:24px;padding:0 4px 0 9px;font:700 10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em;color:#a6ffd4;background:linear-gradient(180deg,rgba(16,44,34,.95),rgba(8,24,18,.95));border-bottom:1px solid rgba(90,255,170,.22);white-space:nowrap}
 .fs-site-scr.eo .fs-site-hd{color:#cfe6ff;background:linear-gradient(180deg,rgba(18,30,46,.95),rgba(10,18,30,.95));border-bottom-color:rgba(140,200,255,.22)}
 .fs-site-hd .fs-site-hdt{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .fs-site-hd .fs-site-hdx{display:flex;gap:3px;flex:none}
@@ -134,6 +140,16 @@ const CSS = `
 .fs-site-hd button:hover{background:rgba(255,255,255,.16)}
 .fs-site-hd button.on{background:rgba(90,255,170,.22);border-color:rgba(90,255,170,.5)}
 .fs-site-bd{position:relative;cursor:crosshair}
+.fs-site-scr.fs-float{position:absolute;z-index:7;margin:0}
+.fs-site-scr.dragging{box-shadow:0 18px 44px rgba(0,0,0,.6),0 0 0 2px rgba(90,255,170,.55);transition:none}
+.fs-site-scr.eo.dragging{box-shadow:0 18px 44px rgba(0,0,0,.6),0 0 0 2px rgba(140,200,255,.6)}
+.fs-site-scr.dragging .fs-site-hd{cursor:grabbing}
+.fs-site-scr.settle{transition:left .18s ease-out,top .18s ease-out}
+.fs-site-grip{position:absolute;right:0;bottom:0;width:22px;height:22px;z-index:2;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 55%,rgba(90,255,170,.6) 55%,rgba(90,255,170,.6) 62%,transparent 62%,transparent 72%,rgba(90,255,170,.6) 72%,rgba(90,255,170,.6) 79%,transparent 79%);opacity:.75}
+.fs-site-scr.eo .fs-site-grip{background:linear-gradient(135deg,transparent 55%,rgba(140,200,255,.65) 55%,rgba(140,200,255,.65) 62%,transparent 62%,transparent 72%,rgba(140,200,255,.65) 72%,rgba(140,200,255,.65) 79%,transparent 79%)}
+.fs-site-grip:hover,.fs-site-scr.dragging .fs-site-grip{opacity:1}
+@media (pointer:coarse){.fs-site-grip{width:30px;height:30px}}
+.fs-site-hd button.fs-site-rst[hidden]{display:none}
 .fs-site-bd canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .fs-site-btn{display:inline-flex;align-items:center;gap:5px}
 .fs-site-bico{display:inline-grid;place-items:center;width:15px;height:15px}
@@ -327,7 +343,7 @@ export function createSiteSection({ tr, keyed = false, getType = () => null, onC
 }
 
 // ---------- uçuşta: radar + EO ekranları (sol alt dok) ----------
-const SCR_PREF = 'fs.site';
+const SCR_PREF = 'fs.site', WIN_PREF = 'fs.site.win';
 const scrSize = W => (W < 900 ? { w: 230, h: 158 } : W < 1280 ? { w: 268, h: 182 } : { w: 304, h: 204 });
 /** createSiteScreens(stage, { tr, keyed, getSim, site, mount, onToggle }) → { el, buttons, strip(holder), layout(), sync(), dispose() } */
 export function createSiteScreens(stage, { tr, keyed = false, getSim, site, mount, onToggle = () => {}, btnClass = 'btn sm' } = {}) {
@@ -339,10 +355,13 @@ export function createSiteScreens(stage, { tr, keyed = false, getSim, site, moun
     const title = el('span', { class: 'fs-site-hdt' }, '');
     const extra = el('span', { class: 'fs-site-hdx' });
     const close = el('button', { type: 'button', title: T('site.close'), onclick: () => toggle(kind, false) }, '×');
+    const rst = el('button', { type: 'button', class: 'fs-site-rst', title: T('site.win_reset'), hidden: true, onclick: e => { e.stopPropagation(); resetWins(); } }, '⟲');
     const cv = el('canvas');
     const body = el('div', { class: 'fs-site-bd' }, cv);
-    const box = el('div', { class: `fs-site-scr ${kind}` }, el('div', { class: 'fs-site-hd' }, el('span', { class: 'fs-site-hico', html: ICO[kind === 'radar' ? 'radar' : 'eo'] }), title, extra, close), body);
-    return { box, body, cv, title, extra };
+    const grip = el('i', { class: 'fs-site-grip', title: T('site.win_size'), 'aria-hidden': 'true' });
+    const hd = el('div', { class: 'fs-site-hd', title: T('site.win_move') }, el('span', { class: 'fs-site-hico', html: ICO[kind === 'radar' ? 'radar' : 'eo'] }), title, extra, rst, close);
+    const box = el('div', { class: `fs-site-scr ${kind}`, 'data-kind': kind }, hd, body, grip);
+    return { kind, box, body, cv, title, extra, hd, grip, rst };
   };
   const R = mkScreen('radar'), E = mkScreen('eo');
   // radar menzil düğmeleri: − / OTO / +
@@ -379,27 +398,131 @@ export function createSiteScreens(stage, { tr, keyed = false, getSim, site, moun
   }
   const rectOf = body => { const m = (mount || stage).getBoundingClientRect(), r = body.getBoundingClientRect(); return { x: r.left - m.left, y: r.top - m.top, w: r.width, h: r.height }; };
   let lastKey = '';
-  const varKey = { r: '', t: '' };
+  const varKey = { r: '', t: '', g: null };
+  // ---- §27.4 yüzen pencereler: yerleşim kaydı (ekran boyutuna oranlı), sınırlar, engeller, sürükle / boyutlandır ----
+  const HDR = 24, ASPECT = 304 / 204;   // gövde en/boy oranı (varsayılan dok ölçüsü); başlık sabit
+  const savedWin = lsGet(WIN_PREF, {}) || {};
+  const win = { radar: normWin(savedWin.radar), eo: normWin(savedWin.eo) };
+  const saveWin = () => lsSet(WIN_PREF, { radar: win.radar, eo: win.eo });
+  const SC = { radar: R, eo: E };
+  const relRect = e => { const m = stage.getBoundingClientRect(), r = e.getBoundingClientRect(); return { x: r.left - m.left, y: r.top - m.top, w: r.width, h: r.height }; };
+  const visible = e => !!e && !e.hidden && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0 && getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden';
+  // Sınırlar: üst gezinti şeridinin altı, alt çubuğun üstü (sahne koordinatı)
+  function winBounds() {
+    const W = stage.clientWidth || 1200, H = stage.clientHeight || 800;
+    const nav = stage.querySelector('.fs-nav'), bar = stage.querySelector('.fs-bar');
+    const top = visible(nav) ? Math.max(WIN_MARGIN, Math.round(relRect(nav).y + relRect(nav).h + 8)) : WIN_MARGIN;
+    const bot = visible(bar) ? Math.max(WIN_MARGIN, Math.round(H - relRect(bar).y + 8)) : WIN_MARGIN;
+    return { W, H, B: boundsOf(W, H, { top, bottom: bot }) };
+  }
+  // Engeller: kamera PiP'i, kadranlar (+ SIMUMAV hız kadranı ve net etiketi), MP kutusu, harekât kartı / yüzen panel, sanal kumanda çubukları, dok (doluysa), diğer yüzen pencere
+  const OBST = '.fs-pip, .fs-gauges, .fs-speed-gauge, .fs-mp, .fs-pn-yuzen, .fs-pn-kart, .fs-stick, .fs-rcf-pop, .sm-fly-stage .fs-net';
+  function obstacles(kind) {
+    const out = [];
+    for (const e of stage.querySelectorAll(OBST)) if (visible(e)) out.push(relRect(e));
+    if (!dock.hidden && row.childElementCount + (stripHolder.firstChild ? 1 : 0) > 0) out.push(relRect(dock));
+    for (const k of ['radar', 'eo']) if (k !== kind && win[k] && has[k] && pref[k] && visible(SC[k].box)) out.push(relRect(SC[k].box));
+    return out;
+  }
+  const placeBox = (s, r) => { s.box.style.left = `${r.x}px`; s.box.style.top = `${r.y}px`; s.box.style.width = `${r.w}px`; s.body.style.height = `${Math.max(40, r.h - HDR)}px`; };
+  const floatRect = kind => { const { W, H, B } = winBounds(); return fromFrac(win[kind], W, H, ASPECT, { hdr: HDR, bounds: B }); };
+  function dockBack(s) {   // varsayılan yerine (dok satırı; radar önce)
+    s.box.classList.remove('fs-float', 'dragging', 'settle');
+    s.box.style.left = s.box.style.top = '';
+    if (s.box.parentNode !== row) { if (s === R) row.prepend(s.box); else row.append(s.box); }
+    s.rst.hidden = true;
+  }
+  function resetWins() { win.radar = null; win.eo = null; saveWin(); dockBack(R); dockBack(E); layout(); onToggle('layout', true); }
+  let drag = null;
   function layout() {
     const W = stage.clientWidth || 1200, sz = scrSize(W);
     for (const [k, s] of [['radar', R], ['eo', E]]) {
       s.box.hidden = !(has[k] && pref[k]);
-      s.box.style.width = `${sz.w}px`; s.body.style.height = `${sz.h}px`;
+      if (drag && drag.s === s) continue;   // sürüklenirken dokunma
+      if (win[k]) {
+        if (s.box.parentNode !== stage) stage.append(s.box);
+        s.box.classList.add('fs-float'); s.rst.hidden = false;
+      } else {
+        dockBack(s);
+        s.box.style.width = `${sz.w}px`; s.body.style.height = `${sz.h}px`;
+      }
     }
     bRadar?.classList.toggle('primary', !!pref.radar); bEo?.classList.toggle('primary', !!pref.eo);
-    const anyScr = (has.radar && pref.radar) || (has.eo && pref.eo), anyStrip = !!stripHolder.firstChild;
+    const anyScr = (has.radar && pref.radar && !win.radar) || (has.eo && pref.eo && !win.eo), anyStrip = !!stripHolder.firstChild;
     dock.hidden = !(anyScr || anyStrip);
     stage.classList.toggle('fs-site-on', !dock.hidden);
+    // yüzenler: oranlı kayıttan → engellerden kaçınarak (ekran boyutu değişince kenara yapışık kalır)
+    for (const k of ['radar', 'eo']) {
+      const s = SC[k];
+      if (!win[k] || s.box.hidden || (drag && drag.s === s)) continue;
+      const { B } = winBounds();
+      const r0 = floatRect(k); if (!r0) { win[k] = null; dockBack(s); continue; }
+      const { W: W1, H: H1 } = winBounds();
+      placeBox(s, avoidRects(r0, obstacles(k), B, 8, 4, Math.max(220, Math.hypot(W1, H1) * 0.4)));
+    }
     sync();
+  }
+  // Sürükle (başlık) / boyutlandır (köşe tutamacı): pointer olayları (fare, dokunmatik, kalem); dokta ise önce yerinde yüzen pencereye çevrilir
+  function startDrag(s, e, resize) {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    if (!resize && e.target.closest?.('button')) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = relRect(s.box);
+    drag = { s, id: e.pointerId, sx: e.clientX, sy: e.clientY, x: r.x, y: r.y, w: r.w, resize, moved: false };
+    // pencere düzeyinde dinleyiciler (setPointerCapture değil): ilk harekette kutu doktan sahneye taşınınca öğe yakalaması düşer
+    window.addEventListener('pointermove', moveDrag); window.addEventListener('pointerup', endDrag); window.addEventListener('pointercancel', endDrag);
+  }
+  function moveDrag(e) {
+    const d = drag; if (!d || e.pointerId !== d.id) return;
+    const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+    if (!d.moved && Math.hypot(dx, dy) < 4) return;
+    const { W, H, B } = winBounds();
+    if (!d.moved) {   // ilk hareket: yüzen pencereye çevir (aynı yerde)
+      d.moved = true;
+      if (d.s.box.parentNode !== stage) stage.append(d.s.box);
+      d.s.box.classList.add('fs-float', 'dragging'); d.s.box.classList.remove('settle'); d.s.rst.hidden = false;
+      placeBox(d.s, { x: d.x, y: d.y, w: d.w, h: d.w / ASPECT + HDR });
+      if (!win[d.s.kind]) { win[d.s.kind] = toFrac({ x: d.x, y: d.y, w: d.w }, W, H); const anyDock = ['radar', 'eo'].some(k => has[k] && pref[k] && !win[k]); if (!anyDock && !stripHolder.firstChild) { dock.hidden = true; stage.classList.remove('fs-site-on'); } }
+    }
+    let r;
+    if (d.resize) { const sz = sizeFor(resizeW(d.w, dx, dy, ASPECT), ASPECT, { W, H, hdr: HDR, bounds: B }); r = clampRect({ x: d.x, y: d.y, w: sz.w, h: sz.h }, B); }
+    else r = clampRect({ x: d.x + dx, y: d.y + dy, w: d.w, h: d.w / ASPECT + HDR }, B);
+    d.last = r; placeBox(d.s, r);
+    lastKey = ''; sync();   // 3B görüntü pencereyle birlikte (render hedefi yeni boyutta)
+  }
+  function endDrag(e) {
+    const d = drag; if (!d || (e && e.pointerId !== d.id)) return;
+    drag = null;
+    window.removeEventListener('pointermove', moveDrag); window.removeEventListener('pointerup', endDrag); window.removeEventListener('pointercancel', endDrag);
+    d.s.box.classList.remove('dragging');
+    if (!d.moved) return;
+    const { W, H, B } = winBounds();
+    let r = snapRect(d.last || relRect(d.s.box), B);
+    const av = avoidRects(r, obstacles(d.s.kind), B, 8, 4, Math.max(220, Math.hypot(W, H) * 0.4));   // uzak boş yere ışınlama yok
+    if (av.x !== r.x || av.y !== r.y) r = { ...snapRect(av, B, 2) };
+    d.s.box.classList.add('settle'); setTimeout(() => d.s.box.classList.remove('settle'), 220);
+    placeBox(d.s, r);
+    win[d.s.kind] = toFrac(r, W, H); saveWin();
+    lastKey = ''; layout(); onToggle('layout', true);
+  }
+  for (const s of [R, E]) {
+    s.hd.addEventListener('pointerdown', e => startDrag(s, e, false));
+    s.grip.addEventListener('pointerdown', e => startDrag(s, e, true));
+    s.hd.addEventListener('dblclick', e => { if (e.target.closest?.('button')) return; e.preventDefault(); if (win[s.kind]) resetWins(); });
   }
   // dikdörtgenler 3B'ye (her tikte; çubuk sarınca / pencere boyutu değişince yerinde kalsın)
   function sync() {
     const s = getSim();
-    const rv = !dock.hidden && !R.box.hidden && has.radar, evv = !dock.hidden && !E.box.hidden && has.eo;
+    const rv = (win.radar || !dock.hidden) && !R.box.hidden && has.radar, evv = (win.eo || !dock.hidden) && !E.box.hidden && has.eo;   // §27.4 yüzen pencere dok gizliyken de çizilir
     const rr = rv ? rectOf(R.body) : null, er = evv ? rectOf(E.body) : null;
     const key = JSON.stringify([rr, er]);
     if (s && key !== lastKey) { lastKey = key; s.setRadarRect?.(rr); s.setEoRect?.(er); }
-    if (!dock.hidden) {
+    // kadranlar ilk telemetriyle görünür olur / yer değiştirir → PiP yeniden yerleşsin (yüzen pencerelerde dok değişkeni tetiklemez)
+    const gEl = stage.querySelector('.fs-gauges'), gk = gEl && !gEl.hidden ? Math.round(gEl.getBoundingClientRect().top) : -1;
+    if (gk !== varKey.g) { varKey.g = gk; requestAnimationFrame(() => onToggle('layout', true)); }
+    if (dock.hidden) {   // dok boş (pencereler yüzen): kadran/olay şeridi kayması sıfırlanır
+      if (varKey.r !== '0px') { varKey.r = '0px'; varKey.t = '0px'; stage.style.setProperty('--fs-site-r', '0px'); stage.style.setProperty('--fs-site-top', '0px'); requestAnimationFrame(() => onToggle('layout', true)); }
+    } else {
       const m = (mount || stage).getBoundingClientRect(), d = dock.getBoundingClientRect();
       const vr = `${Math.round(d.right - m.left + 12)}px`, vt = `${Math.round(m.bottom - d.top)}px`;
       if (vr !== varKey.r || vt !== varKey.t) {   // kadranlar / MP kutusu kaydı → PiP yeniden yerleşsin
@@ -495,9 +618,9 @@ export function createSiteScreens(stage, { tr, keyed = false, getSim, site, moun
   layout();
   return {
     el: dock, buttons: [bRadar, bEo].filter(Boolean), stripHolder,
-    layout, sync, toggle, get prefs() { return { ...pref }; },
+    layout, sync, toggle, resetWins, get prefs() { return { ...pref }; }, get wins() { return { radar: win.radar, eo: win.eo }; },
     applyPrefs() { if (!typeApplied && savedType && getSim()) { getSim().setEoType(savedType); typeApplied = true; } lastKey = ''; sync(); },
-    dispose() { clearInterval(tick); ro?.disconnect(); window.removeEventListener('keydown', onKey); dock.remove(); stage.classList.remove('fs-site-on'); getSim()?.setRadarRect?.(null); getSim()?.setEoRect?.(null); },
+    dispose() { clearInterval(tick); ro?.disconnect(); window.removeEventListener('keydown', onKey); window.removeEventListener('pointermove', moveDrag); window.removeEventListener('pointerup', endDrag); window.removeEventListener('pointercancel', endDrag); dock.remove(); R.box.remove(); E.box.remove(); stage.classList.remove('fs-site-on'); getSim()?.setRadarRect?.(null); getSim()?.setEoRect?.(null); },
   };
 }
 

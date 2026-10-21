@@ -83,6 +83,28 @@ export function popover(anchor, content, { cls = '', align = 'left', width } = {
   return OPEN_POP;
 }
 
+// Ekran kaydı penceresi ve MASTER Download menüsü — tablo ve §27 üç sütunlu "Kayıtlı Simülasyonlar" ekranı (flightsim_saved.js) ortak kullanır
+export function runVideoDialog(r, tr = s => s) {
+  const src = `${API}/${r.id}/video`;
+  const v = h('video', { class: 'fs-runs-video', src, controls: true, preload: 'metadata', playsinline: true });
+  modal({ title: tr('Ekran kaydı'), body: h('div', null, h('div', { class: 'small muted', style: { marginBottom: '8px' } }, [fmtDateTime(r.started_at), r.center_name, r.owner_name].filter(Boolean).join(' · ')), v),
+    wide: true, actions: [{ label: tr('İndir'), onClick: () => { const a = h('a', { href: `${src}?dl=1`, download: '' }); document.body.append(a); a.click(); a.remove(); return true; } }, 'spacer', { label: tr('Kapat') }] });
+}
+export function runDownloadMenu(btn, r, { tr = s => s, onReport = null } = {}) {
+  const item = (label, icon, { href, download, onclick, enabled, title }) => enabled
+    ? (href ? h('a', { class: 'fs-dl-item', role: 'menuitem', href, download: download || '', title: title || '', onclick: () => pop.close() }, h('span', { class: 'fs-runs-bi', html: icon }), label)
+      : h('button', { class: 'fs-dl-item', role: 'menuitem', type: 'button', title: title || '', onclick: () => { pop.close(); onclick(); } }, h('span', { class: 'fs-runs-bi', html: icon }), label))
+    : h('button', { class: 'fs-dl-item', role: 'menuitem', type: 'button', disabled: true, 'aria-disabled': 'true', title: tr('Bu kayıtta yok') }, h('span', { class: 'fs-runs-bi', html: icon }), label);
+  const pop = popover(btn, h('div', { class: 'fs-dl-menu', role: 'menu', 'aria-label': tr('İndir') },
+    item(tr('Uçuş logu (.bin)'), RUN_ICON.bin, { href: `${API}/${r.id}/bin`, download: r.bin_file_name || '', enabled: !!r.bin_log_id, title: r.bin_file_name || '' }),
+    item(tr('Parametreler (.param)'), RUN_ICON.params, { href: `${API}/${r.id}/params`, enabled: !!r.has_params, title: tr('Son parametre dökümü (.param) — yalnız MASTER') }),
+    item(tr('Script arşivi (.zip)'), RUN_ICON.script, { href: `${API}/${r.id}/scripts`, enabled: !!r.has_scripts, title: tr('SITL scripts/ içeriği (zip) — yalnız MASTER') }),
+    item(tr('Video (.webm)'), RUN_ICON.video, { href: `${API}/${r.id}/video?dl=1`, enabled: !!r.has_video }),
+    item(tr('Rapor (yazdır)'), RUN_ICON.print, { enabled: !!(r.has_summary && onReport), onclick: async () => { try { await onReport?.(r); setTimeout(() => window.print(), 700); } catch (err) { toastError(err); } } })),
+  { cls: 'fs-runs-pop', align: 'right' });
+  pop.el.querySelector('.fs-dl-item:not([disabled])')?.focus();
+}
+
 export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null, onReport = null } = {}) {
   const master = !!user?.master;
   // Sorgu durumu: period (hızlı kapsül; 'custom' = Detaylı kutusundan elle tarih aralığı) → from/to; diğerleri Detaylı kutusundan.
@@ -164,28 +186,10 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
     r.has_scripts ? h('span', { class: 'fs-runs-ico on', title: tr('{n} script', { n: r.scripts_count }), html: RUN_ICON.script }) : null,
     !(r.has_video || r.bin_log_id || r.has_params || r.has_scripts) ? h('span', { class: 'muted' }, '—') : null);
 
-  const videoDialog = r => {
-    const src = `${API}/${r.id}/video`;
-    const v = h('video', { class: 'fs-runs-video', src, controls: true, preload: 'metadata', playsinline: true });
-    modal({ title: tr('Ekran kaydı'), body: h('div', null, h('div', { class: 'small muted', style: { marginBottom: '8px' } }, [fmtDateTime(r.started_at), r.center_name, r.owner_name].filter(Boolean).join(' · ')), v),
-      wide: true, actions: [{ label: tr('İndir'), onClick: () => { const a = h('a', { href: `${src}?dl=1`, download: '' }); document.body.append(a); a.click(); a.remove(); return true; } }, 'spacer', { label: tr('Kapat') }] });
-  };
+  const videoDialog = r => runVideoDialog(r, tr);
 
   // ---------- satır işlemleri: kapsül [Oynat · Rapor · Video] + MASTER: Download ▾ (menü) + Sil simgesi ----------
-  const dlMenu = (btn, r) => {
-    const item = (label, icon, { href, download, onclick, enabled, title }) => enabled
-      ? (href ? h('a', { class: 'fs-dl-item', role: 'menuitem', href, download: download || '', title: title || '', onclick: () => pop.close() }, h('span', { class: 'fs-runs-bi', html: icon }), label)
-        : h('button', { class: 'fs-dl-item', role: 'menuitem', type: 'button', title: title || '', onclick: () => { pop.close(); onclick(); } }, h('span', { class: 'fs-runs-bi', html: icon }), label))
-      : h('button', { class: 'fs-dl-item', role: 'menuitem', type: 'button', disabled: true, 'aria-disabled': 'true', title: tr('Bu kayıtta yok') }, h('span', { class: 'fs-runs-bi', html: icon }), label);
-    const pop = popover(btn, h('div', { class: 'fs-dl-menu', role: 'menu', 'aria-label': tr('İndir') },
-      item(tr('Uçuş logu (.bin)'), RUN_ICON.bin, { href: `${API}/${r.id}/bin`, download: r.bin_file_name || '', enabled: !!r.bin_log_id, title: r.bin_file_name || '' }),
-      item(tr('Parametreler (.param)'), RUN_ICON.params, { href: `${API}/${r.id}/params`, enabled: !!r.has_params, title: tr('Son parametre dökümü (.param) — yalnız MASTER') }),
-      item(tr('Script arşivi (.zip)'), RUN_ICON.script, { href: `${API}/${r.id}/scripts`, enabled: !!r.has_scripts, title: tr('SITL scripts/ içeriği (zip) — yalnız MASTER') }),
-      item(tr('Video (.webm)'), RUN_ICON.video, { href: `${API}/${r.id}/video?dl=1`, enabled: !!r.has_video }),
-      item(tr('Rapor (yazdır)'), RUN_ICON.print, { enabled: !!(r.has_summary && onReport), onclick: async () => { try { await onReport?.(r); setTimeout(() => window.print(), 700); } catch (err) { toastError(err); } } })),
-    { cls: 'fs-runs-pop', align: 'right' });
-    pop.el.querySelector('.fs-dl-item:not([disabled])')?.focus();
-  };
+  const dlMenu = (btn, r) => runDownloadMenu(btn, r, { tr, onReport });
   const actions = r => {
     const btn = (label, icon, attrs, cls = '') => h('button', { class: `btn xs ${cls}`, type: 'button', ...attrs }, h('span', { class: 'fs-runs-bi', html: icon }), label);
     const playOk = !!(r.play_log_id && onPlay && canWrite);

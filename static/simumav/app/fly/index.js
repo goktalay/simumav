@@ -298,7 +298,10 @@ async function renderWizard(view, ctx) {
     drawList();
     const cb = (key, label, hint) => { const inp = h('input', { type: 'checkbox', checked: !!W.state.record[key], onchange: () => W.set('record', { [key]: inp.checked }) }); return h('label', { class: 'check sm-rec-opt' }, inp, h('span', null, h('b', null, label), h('small', { class: 'muted' }, hint))); };
     camPick.refresh();
-    body.append(list, camPick.el, h('div', { class: 'sm-rec-opts' }, h('h3', null, 'Kayıt seçenekleri'), cb('video', 'Video kaydı', '3B sahne + HUD/OSD + motor sesi (WebM); uçuş bitince Operasyon\'da'), cb('bin', 'Uçuş logu (.bin)', 'DataFlash log → kayıttan oynatma ve analiz')));
+    // HEPGO §27.3 gösterge tasarımı (önizlemeli kartlar; kalıcı tercih fs.gauge.theme — uçuşta kadran kutusu / G): çekirdek modül /sim/flightsim_gtheme.js
+    const gtHolder = h('div', { class: 'sm-gt-holder fs-gt-wiz' });
+    import('/sim/flightsim_gtheme.js').then(M => { if (destroyed || W.step() !== 'pilot' || !gtHolder.isConnected) return; gtHolder.append(M.createGaugeThemePicker({ tr, keyed: true, game: true, dark: () => true }).el); }).catch(() => {});
+    body.append(list, camPick.el, gtHolder, h('div', { class: 'sm-rec-opts' }, h('h3', null, 'Kayıt seçenekleri'), cb('video', 'Video kaydı', '3B sahne + HUD/OSD + motor sesi (WebM); uçuş bitince Operasyon\'da'), cb('bin', 'Uçuş logu (.bin)', 'DataFlash log → kayıttan oynatma ve analiz')));
   };
   const draw = () => {
     clear(body);
@@ -313,17 +316,15 @@ async function renderWizard(view, ctx) {
     root.classList.remove('sm-anim'); void root.offsetWidth; root.classList.add('sm-anim');
   };
 
-  // ---------- BAŞLA: geri sayım → tam ekran → POST /api/fly/start → sahne ----------
+  // ---------- BAŞLA: tam ekran → POST /api/fly/start → sahne. 3-2-1 geri sayımı artık sahnede (HEPGO §27.2 giriş sekansı: 100 m bakış + bip;
+  // eski sihirbaz geri sayımı COUNTDOWN_S onunla birleştirildi) — burada yalnız "Hazır ol…" perdesi ----------
   let starting = false;
   const start = async () => {
     if (starting || !W.ready()) return;
     starting = true; startBtn.disabled = true;
     document.documentElement.requestFullscreen?.().catch(() => {});   // kullanıcı tıklaması içinde (reddedilirse sessiz)
     const payload = { ...W.payload(), camera: camPick.value };   // §22.3 kamera türü
-    countdown.hidden = false;
-    const t0 = performance.now();
-    await new Promise(resolve => { const tick = () => { if (destroyed) return resolve(); const c = countdownAt((performance.now() - t0) / 1000); countdown.firstChild.textContent = c.text; countdown.lastChild.textContent = c.done ? '' : tr('Hazır ol…'); countdown.style.setProperty('--frac', String(c.frac)); if (c.done) return setTimeout(resolve, 500); requestAnimationFrame(tick); }; tick(); });
-    if (destroyed) return;
+    countdown.hidden = false; countdown.firstChild.textContent = ''; countdown.lastChild.textContent = tr('Hazır ol…');
     let s;
     try { s = await startFlight(payload); } catch (err) {
       const m = { 429: 'Sunucu dolu; bekleme odası — biraz sonra yeniden deneyin', 409: 'Zaten süren bir uçuşunuz var: uçuşa dönün ya da bitirin', 400: 'Geçersiz ayar; dron/parkur/kalkış değerlerini kontrol edin', 503: 'SITL hazır değil' }[err?.status]

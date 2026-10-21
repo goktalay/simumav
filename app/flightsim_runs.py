@@ -147,6 +147,7 @@ def _oturum_alanlari(s):
         'summary_event_id': getattr(gorev, 'summary_id', None) if gorev is not None else None,
         'bin_log_id': bin_sonuc.get('log_id'), 'source_log_id': (getattr(s, 'replay', None) or {}).get('log_id') if mode == 'replay' else None,
         'video_rec_id': video.get('rec_id'), 'video_post_id': video.get('post_id'), 'video_path': video.get('path'),
+        'preset_id': getattr(s, 'preset_id', None),   # §27 kayıtlı simülasyondan başlatıldıysa (serbest sihirbaz / kayıttan oynatma: NULL)
     }
 
 
@@ -160,6 +161,8 @@ def kaydet(s):
             a['video_rec_id'] = m.get('id')
             a['video_post_id'] = m.get('post_id')
     satirlar = param_satirlari(s) if a['mode'] == 'sitl' else []
+    if a.get('preset_id') is None:   # §27: yalnız kayıtlı simülasyonda yazılır (SIMUMAV çekirdek DB'sinde sütun olmayabilir — INSERT düşmesin)
+        a.pop('preset_id', None)
     kols = list(a.keys())
     with db.connect() as conn:
         cur = conn.execute(f"INSERT INTO drone_sim_runs ({', '.join(kols)}, created_at) VALUES ({', '.join('?' * len(kols))}, ?)",
@@ -228,8 +231,10 @@ def video_bagla(sid, rec_id, post_id=None, path=None, conn=None):
 
 
 # ---------------- listeleme ----------------
-_SELECT = '''SELECT r.*, l.status AS bin_status, l.file_name AS bin_file_name, sl.file_name AS source_file_name, sl.status AS source_status
-             FROM drone_sim_runs r LEFT JOIN flight_logs l ON l.id = r.bin_log_id LEFT JOIN flight_logs sl ON sl.id = r.source_log_id'''
+_JOIN = ('FROM drone_sim_runs r LEFT JOIN flight_logs l ON l.id = r.bin_log_id LEFT JOIN flight_logs sl ON sl.id = r.source_log_id'
+         ' LEFT JOIN drone_sim_presets ps ON ps.id = r.preset_id')   # §27 kayıtlı simülasyon adı / silinmiş mi
+_SELECT = ('SELECT r.*, l.status AS bin_status, l.file_name AS bin_file_name, sl.file_name AS source_file_name, sl.status AS source_status,'
+           ' ps.name AS preset_name, ps.deleted_at AS preset_deleted_at ' + _JOIN)
 
 
 def _satir(r, user):
@@ -250,8 +255,15 @@ def _satir(r, user):
     return r
 
 
-def listele(conn, user, *, dfrom=None, dto=None, center_id=None, type=None, owner_id=None, result=None, mode=None, q=None, sort='-started_at', page=1):   # noqa: A002
+def listele(conn, user, *, dfrom=None, dto=None, center_id=None, type=None, owner_id=None, result=None, mode=None, q=None, sort='-started_at', page=1,   # noqa: A002
+            preset=None, per_page=None):
+    """`preset` (§27): 'free' → serbest sihirbazla yapılanlar (preset_id yok ya da kayıtlı simülasyon silinmiş) · kimlik → o kayıtlı simülasyonun uçuşları.
+    `per_page` (≤ 100): üç sütunlu ekranın kart listesi daha çok satır ister; yoksa PER_PAGE."""
     where, args = [], []
+    if preset == 'free':
+        where.append('(r.preset_id IS NULL OR ps.id IS NULL OR ps.deleted_at IS NOT NULL)')
+    elif preset not in (None, ''):
+        where.append('r.preset_id = ?'); args.append(int(preset))
     if dfrom:
         where.append('substr(r.started_at, 1, 10) >= ?'); args.append(str(dfrom)[:10])
     if dto:
@@ -274,16 +286,17 @@ def listele(conn, user, *, dfrom=None, dto=None, center_id=None, type=None, owne
     desc = str(sort or '').startswith('-')
     key = SIRALAMA.get(str(sort or '').lstrip('-+'), 'r.started_at')
     order = f' ORDER BY {key} {"DESC" if desc else "ASC"}, r.id {"DESC" if desc else "ASC"}'
-    total = conn.execute(f'SELECT COUNT(*) FROM drone_sim_runs r LEFT JOIN flight_logs l ON l.id = r.bin_log_id LEFT JOIN flight_logs sl ON sl.id = r.source_log_id{sql_where}', args).fetchone()[0]
-    pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+    total = conn.execute(f'SELECT COUNT(*) {_JOIN}{sql_where}', args).fetchone()[0]
+    pp = max(1, min(100, int(per_page))) if per_page else PER_PAGE
+    pages = max(1, (total + pp - 1) // pp)
     page = max(1, min(int(page or 1), pages))
-    rows = db.rows(conn.execute(_SELECT + sql_where + order + ' LIMIT ? OFFSET ?', args + [PER_PAGE, (page - 1) * PER_PAGE]))
+    rows = db.rows(conn.execute(_SELECT + sql_where + order + ' LIMIT ? OFFSET ?', args + [pp, (page - 1) * pp]))
     facets = {
         'centers': db.rows(conn.execute('SELECT center_id AS id, MAX(center_name) AS name, COUNT(*) AS n FROM drone_sim_runs WHERE center_id IS NOT NULL GROUP BY center_id ORDER BY name COLLATE NOCASE')),
         'owners': db.rows(conn.execute('SELECT owner_id AS id, MAX(owner_name) AS name, COUNT(*) AS n FROM drone_sim_runs WHERE owner_id IS NOT NULL GROUP BY owner_id ORDER BY name COLLATE NOCASE')),
         'types': [r[0] for r in conn.execute('SELECT DISTINCT type FROM drone_sim_runs WHERE type IS NOT NULL ORDER BY type')],
     }
-    return {'items': [_satir(r, user) for r in rows], 'total': total, 'page': page, 'pages': pages, 'per_page': PER_PAGE, 'facets': facets}
+    return {'items': [_satir(r, user) for r in rows], 'total': total, 'page': page, 'pages': pages, 'per_page': pp, 'facets': facets}
 
 
 def getir(conn, rid, user=None):
