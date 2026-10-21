@@ -14,6 +14,7 @@
 import { clear, confirmDialog, fmtDateTime, fmtDuration, h, modal, toast, toastError } from '../ui.js';
 import { launchLabel } from './flightsim_launch.js';
 import { layoutShort } from './flightsim_airframe.js';   // §13.1 kontrol düzeni sütunu (Detaylı)
+import { servoRunBadge } from './flightsim_servotrig.js';   // §34 sonuç sütununda servo tetik rozeti (tetik AGL)
 
 const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
 
@@ -198,7 +199,7 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
       h('span', { class: 'fs-runs-bi', html: RUN_ICON.download }), 'Download', h('span', { class: 'fs-runs-caret', 'aria-hidden': 'true' }, '▾')) : null;
     return h('div', { class: 'fs-runs-actions' },
       h('div', { class: 'pill-group fs-runs-rowpill' },
-        btn(tr('Oynat'), RUN_ICON.play, { disabled: !playOk, 'data-act': 'play', title: r.play_log_id ? tr('Kayıttan oynat kipinde aç') : tr('Oynatılabilir .bin yok (kayıt kapalıydı ya da analiz sürüyor)'), onclick: () => onPlay?.(r) }, playOk ? 'primary' : ''),
+        btn(tr('Oynat'), RUN_ICON.play, { disabled: !playOk, 'data-act': 'play', title: r.play_log_id ? tr('Kaydedilen ayarlarla doğrudan izle') : tr('Oynatılabilir .bin yok (kayıt kapalıydı ya da analiz sürüyor)'), onclick: () => onPlay?.(r) }, playOk ? 'primary' : ''),
         btn(tr('Rapor'), RUN_ICON.report, { disabled: !r.has_summary, 'data-act': 'report', title: r.has_summary ? tr('Özet raporu aç') : tr('Özet rapor yok'), onclick: async () => { try { await onReport?.(r); } catch (err) { toastError(err); } } }),
         r.has_video ? btn(tr('Video'), RUN_ICON.video, { 'data-act': 'video', title: tr('Ekran kaydını izle'), onclick: () => videoDialog(r) }) : null),
       dl,
@@ -231,7 +232,8 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
         layoutCol ? h('td', { class: 'fs-runs-layout' }, r.type === 'sabit_kanat' && r.layout ? h('span', { class: 'badge gray', title: tr('Kontrol düzeni') }, layoutShort(r.layout, tr)) : '—') : null,   // §13.1
         h('td', { class: 'num' }, r.duration_s != null ? fmtDuration(r.duration_s) : '—'),
         h('td', null, h('span', { class: `badge ${cls}` }, r.result === 'carpisma' && r.crash_count > 1 ? `${tr(txt)} ×${r.crash_count}` : tr(txt)),
-          r.speedup_max > 1 ? h('span', { class: 'badge gray fs-runs-speed', title: tr('Simülasyon hızı (en yüksek)') }, `${r.speedup_max}×`) : null),
+          r.speedup_max > 1 ? h('span', { class: 'badge gray fs-runs-speed', title: tr('Simülasyon hızı (en yüksek)') }, `${r.speedup_max}×`) : null,
+          ((b) => (b ? h('span', { class: 'badge orange fs-runs-srv', title: b.title, style: { whiteSpace: 'nowrap' } }, b.text) : null))(servoRunBadge(r, tr))),   // §34
         powerCols ? h('td', { class: 'fs-runs-fuel small' }, r.power?.fuel?.empty_t != null ? h('span', { class: 'badge red' }, tr('YAKIT BİTTİ')) : null, fuelCell(r)) : null,   // §23
         powerCols ? h('td', { class: 'fs-runs-elec small' }, r.power?.elec?.empty_t != null ? h('span', { class: 'badge red' }, tr('BATARYA BİTTİ')) : null, elecCell(r)) : null,
         h('td', null, attachments(r)),
@@ -259,7 +261,7 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
     h('div', { class: 'fs-runs-head' }, filters, pager),
     h('p', { class: 'small muted fs-runs-note' }, master
       ? tr('Her oturumun kapanışında: özet rapor, .bin uçuş logu, ekran kaydı, son parametre dökümü ve SITL script arşivi. Download menüsü yalnız sistem sahibine (MASTER) açıktır.')
-      : tr('Her oturumun kapanışında: özet rapor, .bin uçuş logu ve ekran kaydı. Oynat, kaydı kayıttan oynat kipinde açar.')),
+      : tr('Her oturumun kapanışında: özet rapor, .bin uçuş logu ve ekran kaydı. Oynat, kaydı kaydedilen ayarlarıyla (hava, rampa, kamera…) doğrudan izlemeye açar.')),
     tableBox);
   refresh();
   // setPeriod(k): kapsül dönemi ('1d' | '7d' | '30d' | 'all') · setFilter({result:'carpisma', …}): Detaylı alanlarını ayarlar (sayfa üstü widget tıklaması)

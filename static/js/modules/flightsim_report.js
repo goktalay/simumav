@@ -8,8 +8,9 @@
 import { clear, fmtDateTime, fmtDuration, h, modal, toast, toastError } from '../ui.js';
 import { layoutLabel } from './flightsim_airframe.js';   // §13.1 kontrol düzeni satırı
 import { defendReportBody } from './flightsim_gcs_ui.js';   // §26 "Yer kontrolünü koru" görev sonu raporu
+import { ensureServoCss, servoMapPoints, servoReportLines, servoSection } from './flightsim_servotrig.js';   // §34 servo tetik bölümü + harita işaretleri
 
-const REASON = { terrain: 'arazi', water: 'su', building: 'bina', sitl_hit: 'SITL yer teması (fizik)', sitl: 'SITL (otopilot çarpışma algısı)', manual: 'el ile' };
+const REASON = { terrain: 'arazi', water: 'su', building: 'bina', sitl_hit: 'SITL yer teması (fizik)', sitl: 'SITL (otopilot çarpışma algısı)', manual: 'el ile', servo_trigger: 'servo tetik' };
 const SOURCE = { mp: 'Mission Planner', hepgo: 'HEPGO paneli' };
 const f1 = v => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toFixed(1));
 const f0 = v => (v == null || !Number.isFinite(Number(v)) ? '—' : String(Math.round(Number(v))));
@@ -44,6 +45,7 @@ export function buildReportText(sum, tr) {
   if (tg) out.push(`${tr('Hedefler')}: ${tg}`);
   const dv = sum.defend;   // §26
   if (dv) out.push(`${tr('Yer kontrolünü koru')}: ${tr(dv.ended ? (dv.success ? 'BAŞARILI' : 'BAŞARISIZ') : 'SÜRÜYOR')} · ${tr('Önlenen / doğan')} ${(dv.kills || []).length}/${dv.spawned ?? 0} · ${tr('İstasyon sağlığı')} %${Math.round(dv.health ?? 100)} · ${tr('Puan')} ${dv.score ?? 0} · ${tr({ colonel: 'Albay', major: 'Binbaşı', captain: 'Yüzbaşı', lieutenant: 'Teğmen', sergeant: 'Çavuş', corporal: 'Onbaşı', private: 'Er' }[dv.rank] || 'Er')}`);
+  out.push(...servoReportLines(sum, tr));   // §34
   const sn = safetyText(sum, tr);
   if (sn) out.push(`${tr('Güvenlik notu')}: ${sn}`);
   return out.join('\n');
@@ -121,6 +123,8 @@ export function drawMiniMap(canvas, sum, tr) {
   track.forEach(o => pts.push([o[1], o[2]]));
   if (sum.mission?.end) pts.push([sum.mission.end.lat, sum.mission.end.lon]);
   if (sum.crash?.lat != null) pts.push([sum.crash.lat, sum.crash.lon]);
+  const srvPts = servoMapPoints(sum);   // §34 tetik anı (turuncu ▲) / çarpma anı (kırmızı ✱)
+  srvPts.forEach(p => pts.push([p.lat, p.lon]));
   if (!pts.length) { c.fillStyle = '#94a3b8'; c.font = '13px system-ui'; c.textAlign = 'center'; c.fillText(tr('Konum verisi yok'), W / 2, H / 2); return; }
   const lat0 = pts.reduce((a, p) => a + p[0], 0) / pts.length, cos = Math.cos(lat0 * Math.PI / 180);
   const xy = ([lat, lon]) => [lon * 111320 * cos, lat * 110574];
@@ -164,6 +168,13 @@ export function drawMiniMap(canvas, sum, tr) {
     c.strokeStyle = '#ef4444'; c.lineWidth = 3.5; c.beginPath(); c.moveTo(x - 8, y - 8); c.lineTo(x + 8, y + 8); c.moveTo(x + 8, y - 8); c.lineTo(x - 8, y + 8); c.stroke();
     if (end) { const [ex, ey] = P([end.lat, end.lon]); c.setLineDash([3, 3]); c.strokeStyle = 'rgba(239,68,68,.8)'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(x, y); c.lineTo(ex, ey); c.stroke(); c.setLineDash([]); }
   }
+  // §34 servo tetik: tetik anı turuncu üçgen, çarpma anı kırmızı yıldız (çarpışma X'inin üstüne)
+  srvPts.forEach(p => {
+    const [x, y] = P([p.lat, p.lon]);
+    c.lineWidth = 2; c.strokeStyle = '#0b1220';
+    if (p.kind === 'trigger') { c.fillStyle = '#f59e0b'; c.beginPath(); c.moveTo(x, y - 9); c.lineTo(x + 8, y + 6); c.lineTo(x - 8, y + 6); c.closePath(); c.fill(); c.stroke(); }
+    else { c.fillStyle = '#ef4444'; c.beginPath(); for (let i = 0; i < 10; i++) { const r = i % 2 ? 4 : 10, a = -Math.PI / 2 + i * Math.PI / 5; c[i ? 'lineTo' : 'moveTo'](x + r * Math.cos(a), y + r * Math.sin(a)); } c.closePath(); c.fill(); c.stroke(); }
+  });
   // son konum (çarpışma yoksa)
   if (!sum.crash && sum.flight?.last_pos?.lat != null) { const [x, y] = P([sum.flight.last_pos.lat, sum.flight.last_pos.lon]); c.fillStyle = '#60a5fa'; c.beginPath(); c.arc(x, y, 5, 0, Math.PI * 2); c.fill(); }
   // ölçek çubuğu
@@ -176,6 +187,7 @@ export function drawMiniMap(canvas, sum, tr) {
 
 // ---------- rapor gövdesi ----------
 export function reportBody(sum, tr, { canWrite = false, be = null } = {}) {
+  if (sum?.servo_trigger) ensureServoCss();
   const S = sum.session || {}, F = sum.flight || {}, M = sum.mission, C = sum.crash, D = sum.deviation;
   const kv = (k, v, cls = '') => h('div', { class: `fs-rp-kv ${cls}` }, h('span', null, k), h('b', null, v));
   const tile = (label, value, unit, cls = '') => h('div', { class: `fs-rp-tile ${cls}` }, h('b', null, value, unit ? h('i', null, unit) : null), h('span', null, label));
@@ -220,12 +232,14 @@ export function reportBody(sum, tr, { canWrite = false, be = null } = {}) {
   }
   const safety = h('div', { class: `fs-rp-safety ${C ? 'red' : D?.in_circle ? 'green' : 'orange'}` }, h('b', null, tr('Güvenlik notu'), ': '), safetyText(sum, tr));
   const canvas = h('canvas', { class: 'fs-rp-map', width: 420, height: 320 });
-  const legend = h('div', { class: 'fs-rp-legend small' }, h('span', { class: 'r' }, tr('rota')), h('span', { class: 't' }, tr('dron izi')), h('span', { class: 'e' }, tr('bitiş H')), C ? h('span', { class: 'x' }, tr('çarpışma')) : null);
+  const legend = h('div', { class: 'fs-rp-legend small' }, h('span', { class: 'r' }, tr('rota')), h('span', { class: 't' }, tr('dron izi')), h('span', { class: 'e' }, tr('bitiş H')), C ? h('span', { class: 'x' }, tr('çarpışma')) : null,
+    sum.servo_trigger?.trigger ? h('span', { class: 'st' }, tr('servo tetik')) : null, sum.servo_trigger?.hit ? h('span', { class: 'sh' }, tr('servo çarpma')) : null);   // §34
   const body = h('div', { class: 'fs-rp' },
     h('div', { class: 'fs-rp-head' }, h('div', null, h('b', null, tr('Simülasyon özet raporu')), h('div', { class: 'small muted' }, [sum.session_id != null ? tr('Oturum #{n}', { n: sum.session_id }) : null, sum.owner?.name, sum.created_at ? fmtDateTime(sum.created_at) : null].filter(Boolean).join(' · '))),
       C ? h('span', { class: 'badge red' }, tr('ÇARPIŞMA')) : h('span', { class: 'badge green' }, tr('Çarpışma yok'))),
     tiles,
     h('div', { class: 'fs-rp-cols' }, h('div', null, basic, mission), h('div', { class: 'fs-rp-mapwrap' }, canvas, legend, dev)),
+    servoSection(sum, tr, h),   // §34 servo tetik: tetik anı / çarpma anı irtifası ve evden mesafesi
     powerSection(sum, tr),   // §23
     targetsSection(sum, tr),   // §24
     sum.defend ? h('div', { class: 'fs-rp-sec fs-rp-defend' }, h('h4', null, '◈ ', tr('Görev raporu — Yer kontrolünü koru')), defendReportBody(sum.defend, { tr })) : null,   // §26

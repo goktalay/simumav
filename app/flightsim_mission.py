@@ -43,7 +43,7 @@ TOTAL_TETIK_ARALIK_S = 3.0  # MISSION_CURRENT.total farkı kaynaklı indirmeler 
 _HIT_RE = re.compile(r'hit ground at\s*(-?\d+(?:\.\d+)?)')   # SITL SIM_Aircraft: "SIM Hit ground at %f m/s" (velocity_ef.z, m/s)
 _OTOPILOT_HARIC = ('crash check', 'no crash', 'crash_dump', 'crash dump')
 GCS_COMP = 191              # flightsim.GCS_COMP (döngüsel içe alma olmasın)
-SEBEP_ADLARI = {'terrain': 'arazi', 'water': 'su', 'building': 'bina', 'sitl_hit': 'SITL yer teması', 'sitl': 'SITL', 'manual': 'el ile'}
+SEBEP_ADLARI = {'terrain': 'arazi', 'water': 'su', 'building': 'bina', 'sitl_hit': 'SITL yer teması', 'sitl': 'SITL', 'manual': 'el ile', 'servo_trigger': 'servo tetik'}
 
 
 def statustext_sinifla(txt):
@@ -427,6 +427,8 @@ class GorevIzleyici:
             # §26 yer kontrol sahası + "Yer kontrolünü koru" sonucu (önlenen/sızan, sağlık, interceptor, önleme süreleri, isabet, puan/rütbe)
             'site': dict(s.gcs) if getattr(s, 'gcs', None) else None,
             'defend': s.savunma.ozet() if getattr(s, 'savunma', None) is not None else None,
+            # §34 servo tetik: kanal/eşik/gecikme + tetik anı ve çarpma anı (AGL, MSL, evden mesafe, konum, hız, uçuş süresi); dinlenmediyse None
+            'servo_trigger': s.servo_tetik.ozet() if getattr(s, 'servo_tetik', None) is not None else None,
         }
         out['safety_note'] = guvenlik_notu(out)
         return out

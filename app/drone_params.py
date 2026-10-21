@@ -358,7 +358,8 @@ def ice_aktar(drone_id, text, user_id=None, conn=None):
 # ---------------- dron simülasyon seçenekleri (tablo drone_sitl_options; §23 güç ve yakıt) ----------------
 # key: max_speed_ms · fuel_l · fuel_km_per_l_last · elec_cells · elec_mah · elec_w_last (değerler metin; sayı olarak okunur).
 # Oturum sonunda ölçülen km/L ve ortalama W (`*_last`) yazılır → sonraki sihirbazda önerilir; kullanıcı PUT ile tüm alanları değiştirebilir.
-SECENEK_ANAHTARLARI = ('max_speed_ms', 'fuel_l', 'fuel_km_per_l_last', 'elec_cells', 'elec_mah', 'elec_w_last')
+SECENEK_ANAHTARLARI = ('max_speed_ms', 'fuel_l', 'fuel_km_per_l_last', 'elec_cells', 'elec_mah', 'elec_w_last',
+                       'srvtrig_ch', 'srvtrig_pwm', 'srvtrig_cmp', 'srvtrig_tol', 'srvtrig_delay_ms')   # §34 servo tetik son ayarları (cmp 0 ≥ / 1 ≤ / 2 =; sonraki oturumda öneri)
 
 
 def secenekleri_oku(drone_id, conn=None):

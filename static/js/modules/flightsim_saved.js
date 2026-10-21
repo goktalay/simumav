@@ -14,6 +14,7 @@ import { RUN_ICON, runDownloadMenu, runVideoDialog } from './flightsim_runs.js';
 import { launchLabel } from './flightsim_launch.js';
 import { budgetView, fmtKm, fmtMin, fmtSec, nameError, normName, resultBadge, runFacts, NAME_MAX, DESC_MAX } from './flightsim_presets.js';
 import { flightBudget } from './flightsim_power.js';
+import { servoRunBadge } from './flightsim_servotrig.js';   // §34 uçuş kartında servo tetik irtifası
 
 const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR', rover: 'Kara Aracı' };   // §31
 const DEFAULT_MODEL = { multirotor: 'builtin:quad', hexarotor: 'builtin:hexa', helikopter: 'builtin:heli', sabit_kanat: 'builtin:caymaz', vtol: 'builtin:caymaz', interceptor: 'builtin:icept_x4', rover: 'builtin:rover_4x4' };
@@ -461,7 +462,8 @@ export function savedScreen({ be, tr, user = null, canWrite = false, initial = n
       h('div', { class: 'fs-sv-rl' }, h('strong', null, r.owner_name || '—'), ' · ', tr(TYPE_NAME[r.type] || r.type || '—'), r.model_name ? ` · ${r.model_name}` : ''),
       sel === 'free' && r.preset_id ? h('div', { class: 'fs-sv-rl fs-sv-deleted' }, h('span', { class: 'badge gray' }, tr('silinmiş kayıt')), ` ${r.preset_name || ''}`) : null,
       h('div', { class: 'fs-sv-rf' }, h('span', { html: ICO.clock, style: { width: '14px', height: '14px', display: 'inline-flex' } }), fmtSec(r.duration_s),
-        r.center_name ? h('span', null, r.center_name) : null, r.speedup_max > 1 ? h('span', { class: 'badge gray' }, `${r.speedup_max}×`) : null, att(r)));
+        r.center_name ? h('span', null, r.center_name) : null, r.speedup_max > 1 ? h('span', { class: 'badge gray' }, `${r.speedup_max}×`) : null,
+        ((b) => (b ? h('span', { class: 'badge orange fs-sv-srv', title: b.title, style: { whiteSpace: 'nowrap', flexShrink: '0' } }, b.text) : null))(servoRunBadge(r, tr)), att(r)));   // §34
   };
   const drawMid = () => {
     const p = presetOf(sel);
@@ -503,7 +505,7 @@ export function savedScreen({ be, tr, user = null, canWrite = false, initial = n
       dl([['Merkez', r.center_name || '—'], ['Dünya', tr(WORLD_MODE[w.mode] || w.mode || '—')], r.launch?.method ? ['Kalkış', launchLabel(r.launch, tr)] : null,
         r.camera ? ['Kamera', tr(CAMERA[r.camera] || r.camera)] : null, r.drone_code ? ['Dron kaydı', r.drone_code] : null, ['Bitiş', r.ended_at ? fmtDateTime(r.ended_at) : '—']]),
       h('div', { class: 'fs-sv-dacts pill-group' },
-        btn(tr('Oynat'), RUN_ICON.play, { disabled: !playOk, 'data-act': 'play', title: r.play_log_id ? tr('Kayıttan oynat kipinde aç') : tr('Oynatılabilir .bin yok (kayıt kapalıydı ya da analiz sürüyor)'), onclick: () => onPlay?.(r) }, playOk ? 'primary' : ''),
+        btn(tr('Oynat'), RUN_ICON.play, { disabled: !playOk, 'data-act': 'play', title: r.play_log_id ? tr('Kaydedilen ayarlarla doğrudan izle') : tr('Oynatılabilir .bin yok (kayıt kapalıydı ya da analiz sürüyor)'), onclick: () => onPlay?.(r) }, playOk ? 'primary' : ''),
         btn(tr('Rapor'), RUN_ICON.report, { disabled: !r.has_summary, 'data-act': 'report', onclick: async () => { try { await onReport?.(r); } catch (err) { toastError(err); } } }),
         r.has_video ? btn(tr('Video'), RUN_ICON.video, { 'data-act': 'video', onclick: () => runVideoDialog(r, tr) }) : null,
         master ? h('button', { class: 'btn sm danger', type: 'button', 'data-act': 'download', 'aria-haspopup': 'menu', onclick: e => runDownloadMenu(e.currentTarget, r, { tr, onReport }) },

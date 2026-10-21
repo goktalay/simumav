@@ -109,3 +109,34 @@ export function createStepper({ getSteps, valid, start = null }) {
   };
   return api;
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// §8.5 Kayıttan oynatma girişleri (kullanıcı isteği: "Kaydı tekrar izlemek için Başlat dediğimde tekrar tekrar rampasını soruyor; direkt izlemeye
+// geçmeli, o oturumda hangi ayarlarla uçtuysak o ayarlarla. Saha görevlerinin logları burada görünmemeli, yeni simülasyonda bile. Saha yönetiminde
+// uçuşun yanında 'Simüle et' dediğimde o zaman sorsun — atmosferi, rampayı falan."):
+//   · simülasyon kaydını izle  → sihirbaz YOK (POST /runs/{id}/replay; flightsim.js playRun)
+//   · yeni simülasyon › Kayıttan oynat → log listesi YALNIZ simülatör kayıtları (isSimLog; sunucu da süzer)
+//   · Saha yönetimi / Uçuş Logu Analizi "Simüle et" → #/drone/sim?simulate=<log> : sihirbaz o log sabit (pinned), Dünya adımından başlar
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+const SIM_AIRCRAFT = /^Simülatör\b/;
+const SIM_FILE = /^SIM-\d+-\d{8}-\d{4}\.bin$/i;
+// Simülatörün kendi kaydı mı: saha görevine/uçuşuna bağlı değil ve kaynağı simülasyon (sunucunun `sim` bayrağı varsa o; yoksa origin / ad çıkarımı —
+// flightlog_origin.logOrigin ile aynı kural)
+export function isSimLog(l) {
+  if (!l || l.task_id || l.flight_id || l.task_code) return false;
+  if (l.sim != null) return !!l.sim;
+  if (l.origin === 'SIM') return true;
+  if (l.origin === 'REAL') return false;
+  return SIM_AIRCRAFT.test(l.aircraft || '') || SIM_FILE.test(l.file_name || '');
+}
+export const simLogsOnly = logs => (logs || []).filter(isSimLog);
+// `?simulate=<log kimliği>` → pozitif tam sayı | null
+export function simulateParam(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+// Sihirbazın başlangıç adımı: "Simüle et" (log sabit) → Dünya (atmosfer); aksi hâlde listenin ilk adımı
+export const wizardStartStep = ({ mode = 'sitl', pinned = false } = {}) => (mode === 'replay' && pinned ? 'world' : null);
+// "Simüle et" bağlantısı (Saha yönetimi / Uçuş Logu Analizi)
+export const simulateHref = logId => `#/drone/sim?simulate=${encodeURIComponent(logId)}`;

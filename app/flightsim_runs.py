@@ -100,6 +100,15 @@ def _sonuc(s, crash_count):
     return 'carpisma' if crash_count else 'tamam'
 
 
+def _servo_trig(s):
+    st = getattr(s, 'servo_tetik', None)
+    if st is None:
+        return None
+    from . import flightsim_servotrig
+    k = flightsim_servotrig.kisa_ozet(st.ozet())
+    return json.dumps(k, ensure_ascii=False) if k else None
+
+
 def _oturum_alanlari(s):
     """SimSession / ReplaySession → ortak sütunlar."""
     owner = getattr(s, 'owner', None) or {}
@@ -141,6 +150,7 @@ def _oturum_alanlari(s):
                               ensure_ascii=False, default=str)
         if getattr(s, 'hedefler', None) or getattr(s, 'gcs', None) or getattr(s, 'savunma', None) is not None else None,
         'intercept_count': s.hedef_iz.ozet()['total'] if getattr(s, 'hedef_iz', None) is not None else None,
+        'servo_trig': _servo_trig(s),   # §34 servo tetik kısa özeti (JSON; tetik/çarpma AGL + evden mesafe) — kullanılmadıysa NULL
         'layout': getattr(s, 'layout_etkin', None) or getattr(s, 'layout', None),   # §13.1 kontrol düzeni (SITL'de fiilen uçan; kayıttan oynatmada None)
         'started_at': s.created_at, 'ended_at': bitis, 'duration_s': sure, 'mode': mode, 'result': _sonuc(s, crashes),
         'end_reason': getattr(s, 'end_reason', None) or 'kapatildi', 'crash_count': crashes,
@@ -155,6 +165,8 @@ def kaydet(s):
     """Oturum kapanışında satır + dosyalar (iş parçacığında çağrılır; bloklar). Dönüş: {id, params_count, scripts_count} | None."""
     from . import drone_sitl, flightsim_rec
     a = _oturum_alanlari(s)
+    if a.get('servo_trig') is None:   # §34: yalnız doluysa yazılır (eski çekirdek DB'sinde sütun olmayabilir)
+        a.pop('servo_trig', None)
     if not a['video_rec_id']:   # Bitir'den önce bitirilmemiş (yarım ya da saklanacak) ekran kaydı: sim_rec meta'sından
         m = flightsim_rec.oturum_kaydi(a['session_id'], a['started_at'])
         if m:
@@ -239,7 +251,7 @@ _SELECT = ('SELECT r.*, l.status AS bin_status, l.file_name AS bin_file_name, sl
 
 def _satir(r, user):
     r = dict(r)
-    for k in ('world', 'launch', 'power'):
+    for k in ('world', 'launch', 'power', 'servo_trig'):
         try:
             r[k] = json.loads(r[k]) if r.get(k) else None
         except ValueError:
@@ -302,6 +314,32 @@ def listele(conn, user, *, dfrom=None, dto=None, center_id=None, type=None, owne
 def getir(conn, rid, user=None):
     r = db.row(conn.execute(_SELECT + ' WHERE r.id = ?', (int(rid),)))
     return _satir(r, user) if r else None
+
+
+def oynatma_ayarlari(r):
+    """§8.5 kaydı doğrudan izleme: satırın kaydedilmiş ayarlarından kayıttan oynatma gövdesi → {world, model, camera}.
+    world = kaydın dünyası (kip, saat, hava, rüzgâr/esinti/türbülans, sis, pist yönü, tohum, boyut) + kalkış (world.launch, yoksa `launch`
+    sütunu; `phase` atılır). Eksik alan varsayılanla dolar (world_dogrula); geçersiz/artık desteklenmeyen değer (ör. Google 3B anahtarı
+    kaldırıldı) → önce gerçek araziye, olmazsa yalnız kalkışla, en son varsayılan dünyaya düşer — kayıt her durumda açılır."""
+    from . import flightsim
+    w = dict(r.get('world') or {}) if isinstance(r.get('world'), dict) else {}
+    la = w.get('launch') if isinstance(w.get('launch'), dict) else (r.get('launch') if isinstance(r.get('launch'), dict) else None)
+    if la:
+        w['launch'] = {k: v for k, v in la.items() if k != 'phase'}
+    world = None
+    adaylar = [w]
+    if w.get('mode') == 'google3d':
+        adaylar.append({**w, 'mode': 'real'})
+    adaylar += [{'launch': w['launch']} if w.get('launch') else {}, {}]
+    for aday in adaylar:
+        try:
+            world = flightsim.world_dogrula(aday)
+            break
+        except flightsim.SimHata:
+            continue
+    cam = r.get('camera') if r.get('camera') in flightsim.KAMERA_TURLERI else None
+    mid = r.get('model_id')
+    return {'world': world or dict(flightsim.WORLD_DEFAULTS), 'model': {'id': mid} if mid not in (None, '') else None, 'camera': cam}
 
 
 def dosya(r, tur):

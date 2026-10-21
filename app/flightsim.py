@@ -22,6 +22,7 @@ import re
 import time
 
 from . import db, drone_params, drone_sitl, flightsim_gcs, flightsim_hub, flightsim_icept, flightsim_launcher, flightsim_mission, flightsim_power, flightsim_targets
+from . import flightsim_servotrig   # §34 servo tetik (kanal PWM komutu → gecikme → çarpma → özet)
 
 SITL_ENABLED = os.environ.get('HEPGO_SITL', '1') != '0'
 UDP_BASE = int(os.environ.get('SIM_UDP_BASE', '14550'))
@@ -63,6 +64,7 @@ ROVER_TIPLERI = ('rover',)
 DRIVES = ('ackermann', 'skid')
 MAV_TYPE_GROUND_ROVER = 10
 KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend', 'motor_cut', 'wind', 'launch_aim')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}; defend: §26 {action: 'next'}; motor_cut: {on: bool}; wind: §31 {ms, dir, gust, turb} (uçuşta rüzgâr); launch_aim: §31 {azimuth_deg, angle_deg} (rampa, ARM öncesi)
+KOMUTLAR += ('servo_trigger', 'servo_set')   # §34: servo_trigger {on, ch, pwm, cmp, tol, delay_ms} · servo_set {ch, pwm} (DO_SET_SERVO; sahte kipte sanal çıkış)
 # Motor kesme (`motor_cut {on}`; yalnız uçak tipleri): ARM'lı kalır, motor durur, kumanda yüzeyleri ve uçuş kipi çalışmaya devam eder → süzülme.
 # Gerçek ArduPlane 4.7.2 SITL'de ölçüldü (100–145 m AGL; FBWA/FBWB/CRUISE/AUTO/RTL/MANUAL):
 #   · zorla DISARM (400, 21196): yüzeyler stabilize etmeye devam eder ve fizik süzülür, AMA ArduPlane disarm'lıyken HOME'u anlık konuma taşır →
@@ -995,6 +997,8 @@ class SimSession:
         self.route = []
         self.komutcu = flightsim_hub.MavKomut(self)
         self.gorev = flightsim_mission.GorevIzleyici(self)   # §18: görev izleme (MP yüklemesi algılama), iz, çarpışma/özet kayıtları
+        self.servo_tetik = flightsim_servotrig.ServoTetik(self)   # §34 servo tetik (sunucu tarafı kenar algısı + sim zamanı gecikme + çarpma)
+        self.servo_tetik.oneri_oku()
         self._bekleyenler = []           # [(types, cond, asyncio.Queue)] — _isle içinde dağıtılır (MavKomut ACK/ACK bekleyicileri)
         # §18 arazi sunumu: SITL TERRAIN_REQUEST → sim_terrain → TERRAIN_DATA (gerçek arazi / Google 3B; SIM_TERRAIN_SERVE); sayaçlar + son TERRAIN_REPORT
         self.arazi = {'serve': bool(TERRAIN_SERVE and SITL_ENABLED and world.get('mode') in TERRAIN_KIPLER), 'requests': 0, 'blocks': 0, 'skipped': 0,
@@ -1098,6 +1102,7 @@ class SimSession:
                 'vertical': self.type in DIKEY_TIPLER,
                 'ground': self.type in ROVER_TIPLERI, 'drive': self.drive,   # §31 kara aracı (kalkış yok; 3B zemine oturur) + sürüş biçimi
                 'motor_cut': bool(self.motor_cut),   # motor kesik (süzülüyor); uçak dışı tiplerde hep False
+                'servo_trigger': self.servo_tetik.durum(),   # §34 servo tetik durumu (kanal işlevleri, dron kaydı önerisi)
                 # §26 yer kontrol merkezi (yerleşimiyle) + "Yer kontrolünü koru" görevi (yapılandırma, deterministik plan, anlık durum)
                 'site': {**self.gcs, 'layout': self.gcs_yer} if self.gcs else None,   # ('gcs' anahtarı Mission Planner bağlantısıdır)
                 'defend': self.savunma_dict()}
@@ -1334,6 +1339,7 @@ class SimSession:
                 self.tele['servo_rev'][int(ad[5:-9]) - 1] = int(round(float(m.param_value)))
             except (TypeError, ValueError):
                 pass
+        self.servo_tetik.param(ad, m.param_value)   # §34 SERVO1…16_FUNCTION → kanal etiketleri
         if self.param_izleyici is not None:
             try:
                 self.param_izleyici.param_value(ad, m.param_value, m.param_type, m.param_index, m.param_count)
@@ -1478,6 +1484,7 @@ class SimSession:
             te['rc'] = [m.chan1_raw, m.chan2_raw, m.chan3_raw, m.chan4_raw, m.chan5_raw, m.chan6_raw, m.chan7_raw, m.chan8_raw]
         elif t == 'SERVO_OUTPUT_RAW':   # servo çıkışları µs (ArduPlane: 1 aileron, 2 elevator, 3 gaz, 4 rudder; flap SERVOn_FUNCTION 2/3) → 3B kontrol yüzeyleri (§5)
             te['servo'] = [m.servo1_raw, m.servo2_raw, m.servo3_raw, m.servo4_raw, m.servo5_raw, m.servo6_raw, m.servo7_raw, m.servo8_raw]
+            self.servo_tetik.gozlem_mesaj(m)   # §34: tele.servo16 (1…16) + tetik kenar algısı
         elif t == 'STATUSTEXT':
             self._olay(str(m.text).rstrip('\x00'), m.severity)
         elif t == 'TERRAIN_REPORT':   # §18: ArduPilot arazi veritabanına (SRTM; GCS'ten / bizden TERRAIN_DATA ile dolar) göre AGL → 3B tutarlılık süzgeci. Veri yoksa terrain_height 0 → None
@@ -1512,6 +1519,7 @@ class SimSession:
         d = _dialect()
         self._akis_iste()
         self._gonder(self.mav.command_long_encode(self.sysid, self.comp, 512, 0, 242, 0, 0, 0, 0, 0, 0))         # HOME bir kez
+        self.servo_tetik.islev_iste()   # §34 SERVO1…16_FUNCTION (servo tetik kanal etiketleri)
         self._kayitli_yaz()
         self._ruzgar_yaz(d)
         for ad, deger in RC_PARAMLAR:   # araçta olmayan ad (kopterde THR_FAILSAFE vb.) sessizce yok sayılır
@@ -1941,7 +1949,8 @@ class SimSession:
         TCP parçasında birlikte gelen ardışık kareler düşmez, 66 Hz akış ~50 Hz'e iner. Sahte kipte adım başına (zorla).
         `ts` sunucu alım zamanı (Unix sn), `tbm` SITL time_boot_ms (sahte: oturum ms)."""
         self._guc_adim(tbm)   # §23: izleyici olmasa da yakıt/batarya simülasyon zamanıyla entegre edilir
-        if not self.viewers:
+        self.servo_tetik.adim(tbm)   # §34 servo tetik gecikmesi (simülasyon zamanı)
+        if not self.viewers or self.servo_tetik.donuk:   # §34 çarpmadan sonra 3B görüntü çarpma anında donar
             return
         now = time.time()
         if not zorla:
@@ -2126,6 +2135,11 @@ class SimSession:
         p = params if isinstance(params, dict) else {}
         if name not in KOMUTLAR:
             raise SimHata('invalid', f'Bilinmeyen komut: {name}')
+        if name in ('servo_trigger', 'servo_set'):   # §34 doğrulama + mantık flightsim_servotrig'de
+            try:
+                return await self.servo_tetik.komut(name, p)
+            except flightsim_servotrig.ServoTetikHata as e:
+                raise SimHata('invalid', str(e))
         if name == 'rc':
             p = {'ch': _rc_dogrula(p.get('ch'))}
         elif name == 'takeoff':
@@ -2423,6 +2437,7 @@ class SimSession:
         self.launch_phase = None
         self.motor_cut, self._motor_cut_istek = False, None   # yeni SITL / sıfır kinematik: MOTOR_ESTOP süreç belleğindeydi (yeni süreçte kapalı)
         self.guc.sifirla_zaman()   # §23: yeni SITL saati sıfırdan; yakıt/batarya seviyeleri korunur (tank/batarya değişmez)
+        self.servo_tetik.sifirla()   # §34 bekleyen çarpma iptal; dinleme sürer (taban yeniden)
         if self.sahte is not None:
             self.sahte.sifirla()
             if self.yonetici.sahte_tcp_port and self._tcp_w is None:

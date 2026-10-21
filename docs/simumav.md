@@ -651,3 +651,12 @@ doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
   motor_cut reddi, ARM + RC ile sahte sürüş, land → HOLD), `test_simumav_power.py|mjs`, `test_simumav_fly.mjs`, `test_simumav_rc.mjs`, `test_simumav_models.py`
   (rover GLB'lerinde pervane yok, `wheel_*`/`steer_*`), `test_simumav_site.mjs` (filo). Gerçek SITL: `SMP_REAL=1 HEPGO_SITL_DIR=/opt/hepgo/sitl/bin`.
   Görsel: `tests/rover_shots_simumav.py` → `/tmp/rover-shots/simumav-*.png`.
+
+## 16. Servo tetik — HEPGO docs/ucus-simulatoru.md §34'ün SIMUMAV karşılığı (`fly/session.js`, ortak `flightsim_servotrig.js`, çekirdek `app/flightsim_servotrig.py`)
+- `loadSim` listesinde `flightsim_servotrig.js` (`MSrv`): alt bantta mod seçicinin solunda `SERVO` grubu (kanal S1–S16 · koşul · PWM µs · gecikme ms ·
+  **Dinle**; canlı PWM + yanıp sönen nokta). Metinler `srv.*` anahtarları (7 dil; `makeSrvT(tr, true)`), rapor kartı metinleri Türkçe anahtarla 7 dilde.
+- Komut çekirdeğe WS `cmd servo_trigger` ile gider (`SIM_KOMUT = KOMUTLAR`; `guvenlik_komut` engel koymaz). Tetik/gecikme/çarpma çekirdekte; WS
+  `servo_trigger fired` → 2,5 sn sonra `endFlight({auto: true})` (onaysız) → `/api/fly/{id}/stop` → uçuş özeti (`MReport.reportBody` "⚡ Servo tetik"
+  kartı). Oyuncu sekmeyi kapatırsa çekirdek 5 sn sonra kendisi kapatır (`end_reason servo_trigger`; `bridge._sonuc` → `crash`).
+- `shim/db.py` `RUN_EK_SUTUNLAR` + `servo_trig` (eski core.db'ye ALTER); dron kaydı önerisi (`drone_sitl_options srvtrig_*`) SIMUMAV çekirdeğinde
+  tablo yoksa sessizce atlanır (yerel tercih `fs.srvtrig` yine çalışır).

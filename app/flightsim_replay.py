@@ -1248,21 +1248,38 @@ class ReplaySession:
         self.yonetici.sessions.pop(self.id, None)
 
 
+# Simülatörün KENDİ kaydı (docs §8.5): saha görevine/uçuşuna bağlı olmayan (task_id ve flight_id boş) ve kaynağı SIM olan ya da bir
+# simülasyon oturumunun kapanışta kaydettiği (.bin; drone_sim_runs.bin_log_id) log. Simülatör listeleri YALNIZ bunları gösterir; gerçek
+# uçuş logları (saha görevi ya da Araçlar › Uçuş Logu Analizi) yalnız "Simüle et" girişiyle (log kimliği belirtilerek) açılır.
+SIM_LOG_SQL = ("(l.task_id IS NULL AND l.flight_id IS NULL AND (l.origin = 'SIM' OR l.id IN "
+               "(SELECT bin_log_id FROM drone_sim_runs WHERE bin_log_id IS NOT NULL)))")
+
+
 def log_izinli(user, log):
-    """flightlogs yetkisi (routers/flightlogs.get_log ile aynı): `tools` → her log; `field` → yalnız göreve bağlı log."""
+    """Kayıttan oynatma yetkisi: simülatörün kendi kaydı → drone.sim erişimi yeter (Simülasyon Kayıtları'ndan .bin zaten indirilebilir);
+    gerçek log → flightlogs yetkisi (routers/flightlogs.get_log ile aynı): `tools` → her log; `field` → yalnız göreve bağlı log."""
+    if log.get('sim'):
+        return True
     mods = set(user.get('modules') or [])
     if 'tools' in mods:
         return True
     return bool(log.get('task_id')) and 'field' in mods
 
 
-def loglari_listele(conn, user, q=None, limit=300):
-    """Kayıttan oynatılabilir loglar (status TAMAM, desteklenen uzantı) — kullanıcının flightlogs yetkisiyle kesişim."""
+def gercek_izinli(user):
+    """Gerçek (saha / Araçlar) loglarını "Simüle et" ile açabilir mi: flightlogs yetkisi (tools ya da field)."""
+    return bool({'tools', 'field'} & set(user.get('modules') or []))
+
+
+def loglari_listele(conn, user, q=None, limit=300, log_id=None, hepsi=False):
+    """Kayıttan oynatılabilir loglar (status TAMAM, desteklenen uzantı).
+    Varsayılan: YALNIZ simülatör kayıtları (SIM_LOG_SQL; saha görevi logları ve bağımsız gerçek loglar listelenmez — kullanıcı isteği:
+    "saha görevlerinin logları burada görünmemeli; Saha yönetiminde 'Simüle et' dediğimde o zaman sorsun").
+    `log_id` verilirse ("Simüle et" girişi): yalnız o log, kaynağı ne olursa olsun — gerçek logda flightlogs yetkisiyle kesişim.
+    `hepsi` (CAYSIM `GET /logs` sözleşmesi, docs/caysim-api.md): süzgeçsiz — simülatör kayıtları + yetkinin izin verdiği gerçek loglar."""
     mods = set(user.get('modules') or [])
-    if 'tools' not in mods and 'field' not in mods:
-        return []
-    sql = '''SELECT l.id, l.task_id, l.file, l.file_name, l.size, l.status, l.aircraft, l.pilot, l.location, l.note, l.uploaded_at, l.source, l.origin,
-                    u.full_name AS uploaded_by_name, t.code AS task_code,
+    sql = f'''SELECT l.id, l.task_id, l.flight_id, l.file, l.file_name, l.size, l.status, l.aircraft, l.pilot, l.location, l.note, l.uploaded_at, l.source, l.origin,
+                    u.full_name AS uploaded_by_name, t.code AS task_code, {SIM_LOG_SQL} AS sim,
                     json_extract(l.analysis, '$.summary.vehicle') AS vehicle,
                     json_extract(l.analysis, '$.summary.flight_s') AS flight_s,
                     json_extract(l.analysis, '$.summary.duration_s') AS duration_s,
@@ -1276,8 +1293,11 @@ def loglari_listele(conn, user, q=None, limit=300):
              FROM flight_logs l LEFT JOIN users u ON u.id = l.uploaded_by LEFT JOIN field_tasks t ON t.id = l.task_id
              WHERE l.status = 'TAMAM' '''
     args = []
-    if 'tools' not in mods:
-        sql += ' AND l.task_id IS NOT NULL'
+    if log_id is not None:
+        sql += ' AND l.id = ?'
+        args.append(int(log_id))
+    elif not hepsi:
+        sql += f' AND {SIM_LOG_SQL}'
     if q:
         like = f'%{q.strip()}%'
         sql += ' AND (l.file_name LIKE ? OR l.aircraft LIKE ? OR l.pilot LIKE ? OR l.location LIKE ? OR t.code LIKE ? OR l.note LIKE ?)'
@@ -1287,6 +1307,9 @@ def loglari_listele(conn, user, q=None, limit=300):
     rows = db.rows(conn.execute(sql, args))
     out = []
     for r in rows:
+        r['sim'] = bool(r.get('sim'))
+        if not r['sim'] and not ('tools' in mods or (r.get('task_id') and 'field' in mods)):
+            continue   # gerçek log: flightlogs yetkisi yoksa görünmez
         ext = os.path.splitext(r['file_name'] or r['file'] or '')[1].lower()
         if ext and ext not in UZANTILAR:
             continue
@@ -1302,12 +1325,16 @@ def loglari_listele(conn, user, q=None, limit=300):
 
 
 def log_getir(conn, lid):
-    return db.row(conn.execute('''SELECT l.id, l.task_id, l.file, l.file_name, l.size, l.status, l.aircraft, l.pilot, l.location,
+    r = db.row(conn.execute(f'''SELECT l.id, l.task_id, l.flight_id, l.file, l.file_name, l.size, l.status, l.aircraft, l.pilot, l.location, l.origin,
+                                         {SIM_LOG_SQL} AS sim,
                                          json_extract(l.analysis, '$.summary.vehicle') AS vehicle,
                                          json_extract(l.analysis, '$.summary.home.lat') AS home_lat,
                                          json_extract(l.analysis, '$.summary.home.lng') AS home_lon,
                                          json_extract(l.analysis, '$.summary.home.alt') AS home_alt
                                   FROM flight_logs l WHERE l.id = ?''', (lid,)))
+    if r:
+        r['sim'] = bool(r.get('sim'))
+    return r
 
 
 if __name__ == '__main__':
