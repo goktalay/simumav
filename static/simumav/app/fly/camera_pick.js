@@ -5,7 +5,7 @@
 // Çeviri: paylaşılan modülün Türkçe metinleri `camera.*` anahtarlarına eşlenir (camTr; i18n/<dil>.json 7 dil); oturum sahnesi de aynı eşlemeyi kullanır.
 // Saf kısım (node testi tests/test_simumav_fly.mjs): CAMERA_KEYS, normCamera, cameraDefault, CAM_TEXT_KEYS, camTr.
 
-export const CAMERA_KEYS = ['day', 'thermal', 'night'];
+export const CAMERA_KEYS = ['day', 'thermal', 'night', 'none'];   // §35 none = kamera yok
 export const normCamera = v => (CAMERA_KEYS.includes(v) ? v : 'day');
 export const cameraDefault = (drone, storedForDrone, last) => normCamera([drone?.camera, storedForDrone, last].find(v => CAMERA_KEYS.includes(v)));
 // Paylaşılan modül (flightsim_camera.js) Türkçe metni → SIMUMAV i18n anahtarı
@@ -14,6 +14,7 @@ export const CAM_TEXT_KEYS = {
   'Renkli EO kamera; mevcut görüntü.': 'camera.day_desc',
   'Isı görüntüsü: motorlar, araçlar ve insanlar sıcak; beyaz-sıcak, siyah-sıcak, ironbow paletleri.': 'camera.thermal_desc',
   'Görüntü yoğunlaştırıcı: yeşil fosfor, kazanç, tanecik ve parlak ışıklarda halo.': 'camera.night_desc',
+  'Kamera yok': 'camera.none', 'Araçta görev kamerası yok: PiP penceresi açılmaz, gimbal kamerası kapalı (daha hafif çizim).': 'camera.none_desc', YOK: 'camera.osd_none',
   'Beyaz-sıcak': 'camera.pal_white', 'Siyah-sıcak': 'camera.pal_black', Ironbow: 'camera.pal_iron', 'Termal paleti': 'camera.palette', Palet: 'camera.palette_short',
   Gündüz: 'camera.day_short', Termal: 'camera.thermal_short', Gece: 'camera.night_short',
   GÜNDÜZ: 'camera.osd_day', TERMAL: 'camera.osd_thermal', GECE: 'camera.osd_night', 'GİMBAL': 'camera.osd_gimbal', 'TAKİP': 'camera.osd_follow', GMB: 'camera.osd_gmb',

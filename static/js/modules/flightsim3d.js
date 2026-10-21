@@ -47,7 +47,7 @@ import { buildRoverProc, createDust, roverRig } from './flightsim_rover3d.js';  
 import { introEase, introPose } from './flightsim_intro.js';   // §27.2 giriş sekansı: 100 m'den sinematik iniş (saf poz eğrisi)
 import { fogRange, gustSpeed, normRampAim, normWeather, precipParams, rampHeading, sockState, sunPosition, weatherPreset, windVector } from './flightsim_weather.js';   // §31 hava/rüzgâr/rampa (saf)
 import { createWorldFx } from './flightsim_worldfx.js';   // §31 gerçekçi dünya: gökyüzü, bulut, zemin/su malzemesi, ağaç/bina, yağış, tulum, akış çizgileri
-import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
+import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget, isNoCam } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
 
 const LIB = '/static/vendor/three/';
 export const ATTRIBUTION = 'Uydu: Esri, Maxar, Earthstar Geographics · Yükseklik: Mapzen / AWS Terrain Tiles · Binalar: © OpenStreetMap';
@@ -338,7 +338,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     return post.rt;
   };
   // Kamera türü (§22.3): 'day' | 'thermal' | 'night'; termal paleti; gimbal yakınlaştırması. Türü yalnız araç kameraları (gimbal/FPV) ve PiP'teki araç kamerası kullanır.
-  const camFx = { type: normCamType(opts.camType), palette: normPalette(opts.thermalPalette), zoom: clampZoom(opts.gimbalZoom ?? 1) };
+  // §35 none: kamera yok — PiP render edilmez, gimbal ('fpv') kipine geçilmez; görüntü türü gündüz
+  const camFx = { type: normCamType(opts.camType), none: isNoCam(opts.camType), palette: normPalette(opts.thermalPalette), zoom: clampZoom(opts.gimbalZoom ?? 1) };
   // Kamera PiP'i (§22.4): ayrı küçük kamera; kaynak ana kipe göre (pipSourceFor: ana gimbal değilse gimbal, gimbalse önceki ana kip). Aynı WebGL bağlamı:
   // küçük render hedefine PiP aralığıyla (30 fps; yavaş karede 15) çizilir, her karede CAM_FRAG ile ana görüntünün üstüne viewport/scissor kopyası.
   const pip = { on: false, cam: new T.PerspectiveCamera(50, PIP_SIZE.w / PIP_SIZE.h, 0.5, 60000), rt: null, lastAt: 0, mat: null, quad: null, scene: new T.Scene(), rect: null };
@@ -1465,6 +1466,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   function setCamera(mode) {
     if (typeof mode === 'number') mode = CAMERA_MODES[mode - 1]?.[0];
     if (!CAMERA_MODES.some(([k]) => k === mode)) return;
+    if (mode === 'fpv' && camFx.none) return;   // §35 kamera yok: gimbal kamerası yok
     const prev = camMode;
     if (prev === 'follow' && mode !== 'follow') lastFollowOff = camera.position.clone().sub(controls.target);   // yer değiştirip dönünce kullanıcının bakış açısı korunur
     if (mode !== prev) prevMode = prev;
@@ -1520,7 +1522,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const onKeyDown = e => {
     if (preview || editable(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key >= '1' && e.key <= String(CAMERA_MODES.length)) { setCamera(Number(e.key)); e.preventDefault(); return; }
-    if ((e.key === 'c' || e.key === 'C') && !e.shiftKey) { setCamera(nextCameraMode(camMode)); e.preventDefault(); return; }
+    if ((e.key === 'c' || e.key === 'C') && !e.shiftKey) { let m = nextCameraMode(camMode); if (m === 'fpv' && camFx.none) m = nextCameraMode(m); setCamera(m); e.preventDefault(); return; }
     if (e.key === 'Tab' && tg.items.length) { cycleTarget(e.shiftKey ? -1 : 1); e.preventDefault(); return; }   // §24.5 hedef kilidi
     if (keyLock && RC_KEYS.has(e.key.toLowerCase())) return;
     if (camMode === 'fpv' && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { setGimbal(e.key === 'ArrowUp' ? 5 : -5); e.preventDefault(); return; }
@@ -2201,7 +2203,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     } else {
       renderer.render(scene, camera);
     }
-    if (pip.on && !preview && introOn !== 'fly') renderPip(now);   // §27.2: giriş sırasında PiP çizilmez (çerçevesi de gizli)
+    if (pip.on && !camFx.none && !preview && introOn !== 'fly') renderPip(now);   // §27.2: giriş sırasında PiP çizilmez (çerçevesi de gizli)
     if (!preview && site.cfg) { renderRadarView(now); renderEoView(now); }   // §26 radar + EO ekranları (aynı bağlam; viewport kopyası)
     if (rig?.hasScope) renderScope(now);   // §27 el fırlatıcısı nişangâhı: 3B ekran dokusu + (açıksa) nişangâh penceresi (aynı bağlam)
     if (frameHooks.size) frameHooks.forEach(fn => { try { fn(canvas); } catch { /* kanca hatası kareyi bozmaz */ } });   // §17: render SONRASI (aynı rAF turu; preserveDrawingBuffer gerekmez)
@@ -2557,7 +2559,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   // Karo yükleyicisine kaydedilecek ikincil kameralar (Google 3B; flightsim_g3d.setAuxCameras): yalnız o an çizilenler, render hedefi çözünürlüğüyle
   function auxCameras() {
     const out = [];
-    if (pip.on && pip.rt) out.push({ cam: pip.cam, w: pip.rt.width, h: pip.rt.height });
+    if (pip.on && !camFx.none && pip.rt) out.push({ cam: pip.cam, w: pip.rt.width, h: pip.rt.height });
     if (site.cfg?.radar && rv.rect && rv.rt) out.push({ cam: rv.cam, w: rv.rt.width, h: rv.rt.height });
     if (site.cfg?.eo && ev.rect && ev.rt) out.push({ cam: ev.cam, w: ev.rt.width, h: ev.rt.height });
     if (rig?.hasScope && sc.rt && sc.rect) out.push({ cam: sc.cam, w: sc.rt.width, h: sc.rt.height });
@@ -2749,7 +2751,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   await setType(opts.type, opts.model ?? opts.airframe);
   buildRig();
   resize();
-  if (!preview) { setCamera(CAMERA_MODES.some(([k]) => k === opts.camera) ? opts.camera : 'follow'); } else { controls.enabled = false; }   // opts.camera: oturumlar arası kalıcı seçim (fs.cam)
+  if (!preview) { setCamera(CAMERA_MODES.some(([k]) => k === opts.camera) && !(opts.camera === 'fpv' && camFx.none) ? opts.camera : 'follow'); } else { controls.enabled = false; }   // opts.camera: oturumlar arası kalıcı seçim (fs.cam)
   raf = requestAnimationFrame(frame);
 
   async function setWorld(nw) {
@@ -2815,8 +2817,9 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     // §22.4 kamera PiP'i (sürüklenebilir pencere: flightsim_camera.js createCameraPip) + §22.3 kamera türü
     setPipRect: r => { pip.rect = r && r.w > 0 && r.h > 0 ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } : null; },
     getPipSource: pipSource, getPrevCamera: () => prevMode,
-    swapPip: () => { const t = pipSwapTarget(camMode, prevMode); setCamera(t); return t; },   // çift tık: ana gimbal değilse gimbal; gimbalse PiP'teki kip
-    setCamType: t => { camFx.type = normCamType(t); pip.lastAt = 0; return camFx.type; }, getCamType: () => camFx.type,
+    swapPip: () => { if (camFx.none) return null; const t = pipSwapTarget(camMode, prevMode); setCamera(t); return t; },   // çift tık: ana gimbal değilse gimbal; gimbalse PiP'teki kip
+    setCamType: t => { camFx.none = isNoCam(t); camFx.type = normCamType(t); pip.lastAt = 0; if (camFx.none) { pip.rt?.dispose(); pip.rt = null; if (camMode === 'fpv') setCamera(prevMode !== 'fpv' ? prevMode : 'follow'); } return camFx.none ? 'none' : camFx.type; },
+    getCamType: () => (camFx.none ? 'none' : camFx.type), hasGimbal: () => !camFx.none,
     setThermalPalette: p => { camFx.palette = normPalette(p); return camFx.palette; }, getThermalPalette: () => camFx.palette,
     setGimbalZoom, getGimbalZoom: () => camFx.zoom,
     cameraState: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z, az: controls.getAzimuthalAngle(), pol: controls.getPolarAngle(), dist: camera.position.distanceTo(controls.target) }),   // teşhis (§14 testleri: fare ile döndürme çalışıyor mu)

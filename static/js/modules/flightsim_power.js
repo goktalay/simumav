@@ -16,7 +16,8 @@ import { GAUGE_THEME_KEYS, ensureGaugeThemeCss, gaugeFrac, loadGaugeTheme, makeG
 
 export const HUCRE_V = 3.7, SERVO_J_PER_US = 0.0005, W_PENCERE_S = 30, FUEL_MIN_KM = 0.3, FUEL_MIN_L = 0.02, ELEC_MIN_S = 60;
 export const FUEL_LOW_PCT = 20, ELEC_LOW_PCT = 25;
-export const SPEEDUPS = [1, 2, 4, 8];
+export const SPEEDUPS = [0.25, 0.5, 1, 2, 4, 8];   // §35: < 1 ağır çekim (SITL SIM_SPEEDUP float)
+export const speedLabel = x => `${Number(x)}×`;   // 0.25× · 0.5× · 1× … 8×
 export const POWER_FIELDS = ['max_speed_ms', 'fuel_l', 'fuel_km_per_l', 'elec_cells', 'elec_mah', 'elec_w'];
 export const LIMITS = { max_speed_ms: [5, 150], fuel_l: [0, 500], fuel_km_per_l: [0.5, 500], elec_cells: [1, 16], elec_mah: [100, 200000], elec_w: [0, 2000] };
 export const CAYMAZ_DEFAULTS = { max_speed_ms: 45, fuel_l: 5, fuel_km_per_l: 25, elec_cells: 4, elec_mah: 10000, elec_w: 30 };
@@ -485,9 +486,9 @@ export function createPowerSection({ h, tr, api = null, getType, getDroneId = ()
 // ---------- simülasyon hızı kapsülü (panel + üst çubuk) ----------
 export function createSpeedPill({ h, tr, onPick, cls = '' }) {
   let cur = 1;
-  const btns = SPEEDUPS.map(x => h('button', { class: `btn sm fs-speed-btn ${x === 1 ? 'primary' : ''}`, type: 'button', 'data-speed': x, title: tr('Simülasyon hızı {x}× (SITL SIM_SPEEDUP; video gerçek zamanda)', { x }), onclick: () => onPick?.(x) }, `${x}×`));
+  const btns = SPEEDUPS.map(x => h('button', { class: `btn sm fs-speed-btn ${x === 1 ? 'primary' : ''}`, type: 'button', 'data-speed': x, title: tr('Simülasyon hızı {x}× (SITL SIM_SPEEDUP; video gerçek zamanda)', { x }), onclick: () => onPick?.(x) }, speedLabel(x)));
   const el = h('div', { class: `pill-group fs-speeds fs-speed-pill ${cls}`, title: tr('Simülasyon hızı') }, btns);
-  const set = f => { cur = Number(f) || 1; btns.forEach(b => b.classList.toggle('primary', Number(b.dataset.speed) === cur)); el.classList.toggle('fast', cur > 1); };
+  const set = f => { cur = Number(f) || 1; btns.forEach(b => b.classList.toggle('primary', Number(b.dataset.speed) === cur)); el.classList.toggle('fast', cur > 1); el.classList.toggle('slow', cur < 1); };
   return { el, set, get value() { return cur; }, setEnabled: v => btns.forEach(b => { b.disabled = !v; }) };
 }
 

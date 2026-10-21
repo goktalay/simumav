@@ -204,7 +204,7 @@ test('kontrol düzeni (§13.1): kayıt → katalog modeli → anahtar tahmini �
   assert.equal(airframeForModel('glb:zephyr'), 'elevon'); assert.equal(airframeForModel(''), null); assert.equal(airframeLabel('vtail'), 'V-kuyruk (ruddervator)'); assert.equal(airframeLabel(null), '—');
 });
 test('kamera türü seçimi (camera_pick.js): day|thermal|night; varsayılan dron → yerel → son tercih → gündüz; metin → camera.* çevirisi', () => {
-  assert.deepEqual(CAMERA_KEYS, ['day', 'thermal', 'night']);
+  assert.deepEqual(CAMERA_KEYS, ['day', 'thermal', 'night', 'none']);   // §35 kamera yok
   assert.equal(cameraDefault({ camera: 'night' }, 'thermal', 'day'), 'night'); assert.equal(cameraDefault(null, 'thermal'), 'thermal'); assert.equal(cameraDefault(null, null, 'x'), 'day');
   const t = camTr(k => ({ 'camera.night': 'Night vision' }[k] ?? k));
   assert.equal(t('Gece görüşü'), 'Night vision'); assert.equal(t('Termal kamera'), 'Termal kamera');

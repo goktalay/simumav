@@ -79,8 +79,8 @@ class StartIn(BaseModel):
     launch: Union[LaunchIn, str, None] = None     # {method, angle_deg, release_kmh, hand_speed_ms, hand_pitch_deg, loaded?, aim_az_deg?, aim_el_deg?} ya da yalnız yöntem adı
     record: Optional[RecordIn] = None
     power: Optional[dict] = None                   # §10 güç ve yakıt (sihirbaz): hangar ayarının üstüne; power.dogrula
-    speedup: Any = None                            # §10 (bool/dize zorlaması yok: bridge.speedup_dogrula) başlangıç simülasyon hızı 1 | 2 | 4 | 8 (≤ SIMUMAV_MAX_SPEEDUP)
-    camera: Optional[str] = Field(None, max_length=8)   # HEPGO §22.3 kamera türü: day | thermal | night
+    speedup: Any = None                            # §10 (bool/dize zorlaması yok: bridge.speedup_dogrula) başlangıç simülasyon hızı 0.25 | 0.5 | 1 | 2 | 4 | 8 (≤ SIMUMAV_MAX_SPEEDUP)
+    camera: Optional[str] = Field(None, max_length=8)   # HEPGO §22.3 kamera türü: day | thermal | night | none (§35)
     targets: Optional[TargetsIn] = None             # HEPGO §24 hedefler: {items ≤ 8, radius_m}; içerik bridge.hedefler_dogrula
     site: Optional[SiteIn] = None                   # HEPGO §26 yer kontrol sahası (istasyon + EO/radar kulesi)
     defend: Optional[DefendIn] = None               # HEPGO §26 "Yer kontrolünü koru" (sihirbazdan; görev kaydı kind='defend' ise plandan)

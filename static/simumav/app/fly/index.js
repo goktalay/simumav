@@ -128,7 +128,7 @@ async function renderWizard(view, ctx) {
     startBtn.title = openFlight ? tr('Önce süren uçuşunuza dönün ya da bitirin') : '';
     const d = W.drone(), t = W.track(), p = W.pilot(), m = W.mission();
     const pw = W.state.power || (d ? powerOf(d) : null);
-    const pwTxt = pw ? `⚡ ${pw.engine === 'fuel' ? `${pw.fuel_l} L` : tr('power.engine_electric')} · ${Math.round(pw.elec_cells)}S${W.state.speedup > 1 ? ` · ${W.state.speedup}×` : ''}` : null;
+    const pwTxt = pw ? `⚡ ${pw.engine === 'fuel' ? `${pw.fuel_l} L` : tr('power.engine_electric')} · ${Math.round(pw.elec_cells)}S${W.state.speedup !== 1 ? ` · ${W.state.speedup}×` : ''}` : null;
     const tg = W.state.targets?.items?.length ? `◎ ${W.state.targets.items.length}` : null;   // HEPGO §24 hedef sayısı
     const st = W.state.site, sv = [st?.radar ? `R${st.radar_km}` : null, st?.station ? 'GKS' : null, st?.eo ? `EO${st.eo_km}` : null].filter(Boolean).join('·');
     const siteTxt = sv ? `◈ ${sv}${W.state.defend || m?.kind === 'defend' ? ` · ${tr('site.defend')}` : ''}` : null;   // HEPGO §26

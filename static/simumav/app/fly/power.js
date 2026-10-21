@@ -17,7 +17,7 @@ export const FIELDS = ['max_speed_ms', 'fuel_l', 'fuel_km_per_l', 'elec_cells', 
 export const DEFAULT_LIMITS = { max_speed_ms: [5, 150], fuel_l: [0, 500], fuel_km_per_l: [0.5, 500], elec_cells: [1, 16], elec_mah: [100, 200000], elec_w: [0, 2000] };
 export const FUEL_MIN_L = 0.1;
 export const CELL_V = 3.7;
-export const SPEEDUPS = [1, 2, 4, 8];
+export const SPEEDUPS = [0.25, 0.5, 1, 2, 4, 8];   // §35 ağır çekim (< 1)
 export const STEP = { max_speed_ms: 1, fuel_l: 0.1, fuel_km_per_l: 0.5, elec_cells: 1, elec_mah: 100, elec_w: 1 };
 export const canFuel = t => FUEL_TYPES.includes(t);
 export const canSpeed = t => SPEED_TYPES.includes(t);

@@ -223,7 +223,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const cam0 = startCameraFor(dType);
   // HEPGO §22.3–22.5 kamera türü + kamera PiP'i (flightsim_camera.js): tür sihirbazın seçimi (picked.camera; uçuşa dönüşte start.camera), yoksa son tercih
   const camPrefs = MCam.createCamPrefs();
-  const camType0 = [picked.camera, start.camera, start.session?.camera].find(MCam.isCamType) || camPrefs.type;   // uçuşa dönüş: oturumun türü (session.camera)
+  const camType0 = [picked.camera, start.camera, start.session?.camera].find(v => (MCam.isCamChoice || MCam.isCamType)(v)) || camPrefs.type;   // §35 'none' = kamera yok   // uçuşa dönüş: oturumun türü (session.camera)
   let camPip = null;
 
   // ---------- iskelet ----------
@@ -238,7 +238,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const backBtn = h('a', { class: 'fs-back', href: '#/fly', title: tr('Geri (Esc)'), 'aria-label': tr('Geri'), onclick: e => { e.preventDefault(); leaveToMenu(); } }, h('span', { class: 'fs-back-ico', 'aria-hidden': 'true' }, '←'), h('span', { class: 'fs-back-txt' }, 'Geri'));
   // §10 simülasyon hızı kapsülü (HEPGO createSpeedPill): yalnız sunucunun izin verdiği çarpanlar; seçili düğme tele.speedup ile eşitlenir
   const trP = trPower(tr);
-  const speedAllowed = meta?.power?.speedups || [1, 2, 4];
+  const speedAllowed = meta?.power?.speedups || [0.25, 0.5, 1, 2, 4];
   const speedPill = MPower.createSpeedPill({ h, tr: trP, cls: 'sm-speed-pill', onPick: f => { if (f !== speedPill.value) cmd('speed', { factor: f }); } });
   for (const b of speedPill.el.querySelectorAll('[data-speed]')) b.hidden = !speedAllowed.includes(Number(b.dataset.speed));
   speedPill.el.hidden = speedAllowed.length < 2;
@@ -274,6 +274,8 @@ export async function openSession(view, start, picked, ctx = {}) {
     onType: t => {   // sunucuya sessiz `camera` komutu (çekirdek oturum → kayıt satırı); yanıtı beklenmez
       addEvent(trc('Kamera türü: {t}', { t: MCam.camTypeLabel(t, trc) }));
       if (drone.id != null) camPrefs.rememberDrone(drone.id, t);
+      if (MCam.isNoCam?.(t)) { camPip?.dispose(); camPip = null; } else if (!camPip) camPip = makePip();   // §35: kamera yokken PiP penceresi hiç yok
+      drawFpv();
       socket?.send({ t: 'cmd', rid: `cam-${Date.now().toString(36)}`, bridge_id: session.hub.bridge_id, sysid: 1, name: 'camera', params: { type: t } });
     } });
   const drawFpv = () => { camCtl?.sync(); camPip?.layout(); fpvRows.forEach(r => r.__sync()); const fov = sim?.getPilotFov?.() ?? fpvPrefs.fov; fovTxt.textContent = `${fov}°`; fpvBtn.classList.toggle('primary', !!osd?.enabled); };
@@ -345,7 +347,8 @@ export async function openSession(view, start, picked, ctx = {}) {
     } }) : null;
   if (rampUi) stage.append(rampUi.el);
   window.__fsRampUi = rampUi ? { open: () => rampUi.open(sim?.rampAim || { azimuth_deg: launch.azimuth_deg ?? world.runway_heading, angle_deg: launch.angle_deg }), get isOpen() { return rampUi.isOpen; } } : null;
-  camPip = MCam.createCameraPip(mount, { getSim: () => sim, tr: trc, prefs: camPrefs, insets: side => { const o = MCam.pipObstacleInsets(stage, mount, side); return { top: Math.max(56, Math.round(nav.getBoundingClientRect().bottom - mount.getBoundingClientRect().top) + 10), bottom: Math.max((bar.offsetHeight || 54) + 28, o.bottom || 0), right: o.right ?? 12 }; }, onSwap: () => drawFpv() });
+  function makePip() { return MCam.createCameraPip(mount, { getSim: () => sim, tr: trc, prefs: camPrefs, insets: side => { const o = MCam.pipObstacleInsets(stage, mount, side); return { top: Math.max(56, Math.round(nav.getBoundingClientRect().bottom - mount.getBoundingClientRect().top) + 10), bottom: Math.max((bar.offsetHeight || 54) + 28, o.bottom || 0), right: o.right ?? 12 }; }, onSwap: () => drawFpv() }); }
+  camPip = MCam.isNoCam?.(camType0) ? null : makePip();   // §35 kamera yok: PiP kurulmaz
   if (handLbl) stage.append(handLbl);
   // HEPGO §27 fırlatıcı: hücre envanteri (3B) + el fırlatıcısında NİŞANGÂH penceresi (alt çubukta Nişangâh — G); "Fırlat" → kalkış penceresi
   if (isIcept) {

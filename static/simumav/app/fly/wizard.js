@@ -201,7 +201,7 @@ export function createWizard(data = {}, init = {}) {
     else if (k === 'record') S.record = { ...S.record, ...(v || {}) };
     else if (k === 'drive') S.drive = DRIVES.includes(v) ? v : null;
     else if (k === 'drone_id') { if (v !== S.drone_id) { S.power = null; S.drive = null; } S.drone_id = v; if (type() !== 'interceptor') S.defend = null; i = Math.min(i, steps().length - 1); if (S.mission_id != null) { /* görev parkura bağlı; dron değişince korunur */ } }
-    else if (k === 'speedup') S.speedup = [1, 2, 4, 8].includes(Number(v)) ? Number(v) : 1;
+    else if (k === 'speedup') S.speedup = [0.25, 0.5, 1, 2, 4, 8].includes(Number(v)) ? Number(v) : 1;   // §35 ağır çekim
     else if (k === 'track_id') { if (v !== S.track_id) S.mission_id = null; S.track_id = v; }   // parkur değişti → görev sıfırlanır (§3 missions.track_id)
     else if (k in S) S[k] = v;
   };
@@ -213,7 +213,7 @@ export function createWizard(data = {}, init = {}) {
     body.launch = needsLaunch(type()) ? launchBody(S.launch) : type() === 'interceptor' ? iceptLaunchBody(S.ilaunch) : { method: 'wheels' };   // kopter/heli/kara aracı: alan zorunlu; `wheels` nötr değer; INTERCEPTOR: §27 fırlatıcı
     if (isRover(type())) body.drive = driveOf(drone(), S.drive);   // §15 kara aracı sürüş biçimi (sunucu: çekirdek SITL rover | rover-skid)
     if (S.power) body.power = { ...S.power };
-    if (S.speedup > 1) body.speedup = S.speedup;
+    if (S.speedup !== 1) body.speedup = S.speedup;
     if (S.targets?.items?.length) body.targets = { items: S.targets.items.map(x => ({ ...x })), radius_m: S.targets.radius_m };
     if (S.site && (S.site.station || S.site.radar || S.site.eo)) body.site = { ...S.site };   // HEPGO §26
     const mk = (data.missions || []).find(m => m.id === S.mission_id)?.kind;

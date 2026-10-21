@@ -1,6 +1,6 @@
 # SIMUMAV — bağımsız dron simülasyon oyunu
 
-Sürüm: **0.1.29** · Site: https://simumav.com · Hesap: https://mastertool.download (uygulama kodu `sv`)
+Sürüm: **0.1.30** · Site: https://simumav.com · Hesap: https://mastertool.download (uygulama kodu `sv`)
 
 HEPGO Uçuş Simülatörü çekirdeğinin (ArduPilot SITL + Google 3B / gerçek arazi + dron paneli + görev / çarpışma / .bin /
 replay) HEPGO'dan **bağımsız**, mastertool.download hesap yapısıyla çalışan, oyun görünümünde sürümü.

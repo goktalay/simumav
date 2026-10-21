@@ -18,11 +18,19 @@ export const CAMERA_TYPES = [
 ];
 export const CAM_TYPE_KEYS = CAMERA_TYPES.map(([k]) => k);
 export const isCamType = v => CAM_TYPE_KEYS.includes(v);
-export const normCamType = v => (isCamType(v) ? v : 'day');
-export const nextCamType = cur => CAM_TYPE_KEYS[(CAM_TYPE_KEYS.indexOf(normCamType(cur)) + 1) % CAM_TYPE_KEYS.length];
-export const camTypeLabel = (t, tr = s => s) => tr((CAMERA_TYPES.find(([k]) => k === t) || CAMERA_TYPES[0])[1]);
-export const CAM_TYPE_SHORT = { day: 'GÜNDÜZ', thermal: 'TERMAL', night: 'GECE' };   // PiP OSD etiketi
-export const CAM_TYPE_NAME_SHORT = { day: 'Gündüz', thermal: 'Termal', night: 'Gece' };   // alt çubuk düğmesi
+export const normCamType = v => (isCamType(v) ? v : 'day');   // görüntü türü (gölgelendirici / EO): 'none' → gündüz
+// §35 "Kamera yok" ('none'): araçta görev kamerası yok — PiP penceresi hiç kurulmaz/çizilmez, gimbal kipi kapalı (FPV/takip/serbest/yer kalır).
+// Seçim (sihirbaz / menü / sunucu `camera`) = görüntü türleri + 'none'.
+export const CAM_NONE = 'none';
+export const CAMERA_CHOICES = [...CAMERA_TYPES, [CAM_NONE, 'Kamera yok', 'Araçta görev kamerası yok: PiP penceresi açılmaz, gimbal kamerası kapalı (daha hafif çizim).']];
+export const CAM_CHOICE_KEYS = CAMERA_CHOICES.map(([k]) => k);
+export const isCamChoice = v => CAM_CHOICE_KEYS.includes(v);
+export const normCamChoice = v => (isCamChoice(v) ? v : 'day');
+export const isNoCam = v => v === CAM_NONE;
+export const nextCamType = cur => (isNoCam(cur) ? 'day' : CAM_TYPE_KEYS[(CAM_TYPE_KEYS.indexOf(normCamType(cur)) + 1) % CAM_TYPE_KEYS.length]);   // T döngüsü: görüntü türleri
+export const camTypeLabel = (t, tr = s => s) => tr((CAMERA_CHOICES.find(([k]) => k === t) || CAMERA_TYPES[0])[1]);
+export const CAM_TYPE_SHORT = { day: 'GÜNDÜZ', thermal: 'TERMAL', night: 'GECE', none: 'YOK' };   // PiP OSD etiketi
+export const CAM_TYPE_NAME_SHORT = { day: 'Gündüz', thermal: 'Termal', night: 'Gece', none: 'Kamera yok' };   // alt çubuk düğmesi
 export const THERMAL_PALETTES = [['white', 'Beyaz-sıcak', 'WH'], ['black', 'Siyah-sıcak', 'BH'], ['iron', 'Ironbow', 'IRON']];
 export const PALETTE_KEYS = THERMAL_PALETTES.map(([k]) => k);
 export const normPalette = v => (PALETTE_KEYS.includes(v) ? v : 'white');
@@ -106,15 +114,15 @@ export function createCamPrefs(storage = (typeof localStorage !== 'undefined' ? 
   const json = (k, d) => { try { const v = JSON.parse(get(k) || 'null'); return v && typeof v === 'object' ? v : d; } catch { return d; } };
   let pip = json(LS_CAM.pip, null);
   if (!pip) pip = { on: get(LS_CAM.legacyPip) !== '0' };   // eski FPV PiP anahtarı (fs.fpv.pip) → genel PiP
-  const S = { type: normCamType(get(LS_CAM.type)), palette: normPalette(get(LS_CAM.palette)), pip: normPipPref(pip), byDrone: json(LS_CAM.byDrone, {}) };
+  const S = { type: normCamChoice(get(LS_CAM.type)), palette: normPalette(get(LS_CAM.palette)), pip: normPipPref(pip), byDrone: json(LS_CAM.byDrone, {}) };
   return {
     get type() { return S.type; }, get palette() { return S.palette; }, get pip() { return { ...S.pip }; },
-    setType(t) { S.type = normCamType(t); set(LS_CAM.type, S.type); return S.type; },
+    setType(t) { S.type = normCamChoice(t); set(LS_CAM.type, S.type); return S.type; },
     setPalette(p) { S.palette = normPalette(p); set(LS_CAM.palette, S.palette); return S.palette; },
     setPip(patch) { S.pip = normPipPref({ ...S.pip, ...(patch || {}) }); set(LS_CAM.pip, JSON.stringify(S.pip)); return { ...S.pip }; },
     // Dron kaydına kalıcı son tür (sunucu `camera` önerisi yoksa): kimlik → tür
-    typeForDrone(id) { return id != null && isCamType(S.byDrone[String(id)]) ? S.byDrone[String(id)] : null; },
-    rememberDrone(id, t) { if (id == null || !isCamType(t)) return; S.byDrone[String(id)] = t; set(LS_CAM.byDrone, JSON.stringify(S.byDrone)); },
+    typeForDrone(id) { return id != null && isCamChoice(S.byDrone[String(id)]) ? S.byDrone[String(id)] : null; },
+    rememberDrone(id, t) { if (id == null || !isCamChoice(t)) return; S.byDrone[String(id)] = t; set(LS_CAM.byDrone, JSON.stringify(S.byDrone)); },
   };
 }
 
@@ -249,11 +257,11 @@ export function createCameraPip(mount, opts = {}) {
   const place = r => { box.style.left = `${r.x}px`; box.style.top = `${r.y}px`; box.style.width = `${r.w}px`; box.style.height = `${r.h}px`; };
   function layout() {
     if (disposed) return;
-    const p = prefs.pip;
-    box.hidden = !p.on;
+    const p = prefs.pip, on = p.on && !isNoCam(getSim()?.getCamType?.());   // §35 kamera yok: PiP çizilmez (tercih korunur)
+    box.hidden = !on;
     sizeBtn.textContent = p.size.toUpperCase();
-    getSim()?.setPip?.(p.on);
-    if (!p.on) { rect = null; return; }
+    getSim()?.setPip?.(on);
+    if (!on) { rect = null; return; }
     rect = pipPlace(p, W(), H(), ins(sideOf(p)));
     place(rect);
     box.dataset.corner = rect.corner || '';
@@ -371,9 +379,10 @@ export function createCameraCtl(opts = {}) {
   const lbl = el('span', { class: 'fs-cam-lbl' });
   const ico = el('span', { class: 'fs-cam-ico', 'aria-hidden': 'true' }); ico.innerHTML = CAM_ICON_SVG;
   const mainBtn = el('button', { class: 'btn sm fs-cam-btn', type: 'button', title: tr('Kamera türü (T) · termal paleti (Shift+T) · PiP (V)'), onclick: () => { menu.hidden = !menu.hidden; sync(); } }, ico, lbl, ' ▾');
-  const typeBtns = CAMERA_TYPES.map(([k, name]) => el('button', { class: 'btn sm', type: 'button', 'data-camtype': k, onclick: () => setType(k) }, tr(name)));
+  const typeBtns = CAMERA_CHOICES.map(([k, name]) => el('button', { class: 'btn sm', type: 'button', 'data-camtype': k, onclick: () => setType(k) }, tr(name)));
   const palBtns = THERMAL_PALETTES.map(([k, name]) => el('button', { class: 'btn sm', type: 'button', 'data-pal': k, onclick: () => setPalette(k) }, tr(name)));
   const palRow = el('div', { class: 'fs-cam-row' }, el('span', { class: 'small' }, tr('Palet')), el('div', { class: 'pill-group' }, palBtns));
+  const pipRow = () => pipInp.closest('.fs-cam-row');
   const pipInp = el('input', { type: 'checkbox', onchange: () => { P()?.setOn(pipInp.checked); sync(); } });
   const sizeBtns = PIP_SIZE_KEYS.map(k => el('button', { class: 'btn sm', type: 'button', 'data-size': k, onclick: () => { prefs.setPip({ size: k, on: true }); P()?.layout(); sync(); } }, k.toUpperCase()));
   const menu = el('div', { class: 'fs-audio-menu fs-cam-menu', hidden: true },
@@ -392,16 +401,17 @@ export function createCameraCtl(opts = {}) {
     palBtns.forEach(b => b.classList.toggle('primary', b.dataset.pal === p));
     palRow.hidden = t !== 'thermal';
     pipInp.checked = prefs.pip.on;
+    const pr = pipRow(); if (pr) pr.hidden = isNoCam(t);   // §35 kamera yok: PiP satırı gizli
     sizeBtns.forEach(b => b.classList.toggle('primary', b.dataset.size === prefs.pip.size));
-    mainBtn.classList.toggle('primary', t !== 'day');
+    mainBtn.classList.toggle('primary', t !== 'day' && !isNoCam(t));
   }
-  function setType(t) { t = normCamType(t); getSim()?.setCamType?.(t); prefs.setType(t); opts.onType?.(t); P()?.redraw(); sync(); }
+  function setType(t) { t = normCamChoice(t); getSim()?.setCamType?.(t); prefs.setType(t); opts.onType?.(t); P()?.layout?.(); P()?.redraw(); sync(); }
   function setPalette(p) { p = normPalette(p); getSim()?.setThermalPalette?.(p); prefs.setPalette(p); opts.onPalette?.(p); P()?.redraw(); sync(); }
   const onKey = e => {
     if (e.ctrlKey || e.metaKey || e.altKey || editable(document.activeElement) || editable(e.target)) return;
     const k = e.key.toLowerCase();
     if (k === 't') { if (e.shiftKey) { if ((getSim()?.getCamType?.() || prefs.type) !== 'thermal') setType('thermal'); else setPalette(nextPalette(getSim()?.getThermalPalette?.() || prefs.palette)); } else setType(nextCamType(getSim()?.getCamType?.() || prefs.type)); e.preventDefault(); }
-    else if (k === 'v' && !e.shiftKey) { P()?.toggle(); sync(); e.preventDefault(); }
+    else if (k === 'v' && !e.shiftKey) { if (isNoCam(getSim()?.getCamType?.() || prefs.type)) return; P()?.toggle(); sync(); e.preventDefault(); }
   };
   const onEsc = e => { if (e.key === 'Escape' && !menu.hidden) { menu.hidden = true; e.preventDefault(); } };   // açık menü: Esc yalnız menüyü kapatır (oturumdan çıkmaz; yakalama evresi)
   window.addEventListener('keydown', onKey);
@@ -446,9 +456,18 @@ function sceneLayers(w, h, night) {
 }
 export function drawCamPreview(canvas, type, o = {}) {
   const w = canvas.width, h = canvas.height;
+  const g0 = canvas.getContext('2d'); if (!g0) return;
+  if (isNoCam(type)) {   // §35 kamera yok: koyu kart + üstü çizili kamera simgesi
+    g0.fillStyle = '#151a21'; g0.fillRect(0, 0, w, h);
+    const s = h / 135, cx = w / 2, cy = h / 2;
+    g0.strokeStyle = 'rgba(200,210,225,.75)'; g0.lineWidth = 3 * s; g0.lineJoin = 'round';
+    g0.strokeRect(cx - 34 * s, cy - 20 * s, 68 * s, 44 * s); g0.beginPath(); g0.arc(cx, cy + 2 * s, 12 * s, 0, Math.PI * 2); g0.stroke();
+    g0.strokeStyle = 'rgba(240,90,90,.9)'; g0.beginPath(); g0.moveTo(cx - 46 * s, cy + 34 * s); g0.lineTo(cx + 46 * s, cy - 32 * s); g0.stroke();
+    return;
+  }
   const night = type === 'night';
   const { col, heat } = sceneLayers(w, h, night);
-  const g = canvas.getContext('2d'); if (!g) return;
+  const g = g0;
   if (type === 'day' || !type) { g.drawImage(col, 0, 0); return; }
   const cd = col.getContext('2d').getImageData(0, 0, w, h).data, hd = heat.getContext('2d').getImageData(0, 0, w, h).data;
   const out = g.createImageData(w, h), od = out.data;
@@ -488,9 +507,9 @@ export function drawCamPreview(canvas, type, o = {}) {
 // onPalette(p), cls } → { el, value, palette, set(type), redraw() }
 export function createCameraCards(opts = {}) {
   const tr = opts.tr || (s => s);
-  let value = normCamType(opts.value), palette = normPalette(opts.palette);
+  let value = normCamChoice(opts.value), palette = normPalette(opts.palette);
   const dpr = Math.min(2, (typeof devicePixelRatio !== 'undefined' && devicePixelRatio) || 1);
-  const cards = CAMERA_TYPES.map(([k, name, desc]) => {
+  const cards = CAMERA_CHOICES.map(([k, name, desc]) => {
     const cv = el('canvas', { class: 'fs-cam-prev', width: String(Math.round(240 * dpr)), height: String(Math.round(135 * dpr)), 'aria-hidden': 'true' });
     const b = el('button', { type: 'button', class: `fs-type fs-cam-card ${opts.cls || ''}`, 'data-camtype': k, 'aria-pressed': 'false', onclick: () => set(k, true) },
       cv, el('b', null, tr(name)), el('span', { class: 'small muted' }, tr(desc)));
@@ -503,7 +522,7 @@ export function createCameraCards(opts = {}) {
   const drawPrev = only => cards.forEach(b => { if (!only || b.dataset.camtype === only) drawCamPreview(b.__cv, b.dataset.camtype, { palette }); });
   const drawPal = () => { palBtns.forEach(b => b.classList.toggle('primary', b.dataset.pal === palette)); palRow.hidden = value !== 'thermal'; };
   function set(k, user = false) {
-    value = normCamType(k);
+    value = normCamChoice(k);
     cards.forEach(b => { const on = b.dataset.camtype === value; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
     drawPal();
     if (user) opts.onChange?.(value);

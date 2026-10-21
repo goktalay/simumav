@@ -430,6 +430,9 @@ body.immersive .fs-nav { top: 12px; }
 .fs-pn-kucult { background: none; border: none; color: var(--gt-soluk); cursor: pointer; padding: 2px 5px; margin-left: 6px; font-size: 11px; line-height: 1; display: inline-flex; }   /* .dk-kucult-btn */
 .fs-pn-kucult:hover { color: #fff; }
 .fs-pn-kucult svg { width: 12px; height: 12px; }
+.fs-pn-reset { background: none; border: 1px solid transparent; border-radius: 4px; color: var(--gt-soluk); cursor: pointer; padding: 2px 5px; margin-left: 6px; line-height: 1; display: inline-flex; }   /* §35 kart başlığında onaylı Sıfırla */
+.fs-pn-reset:hover { color: #fff; border-color: rgba(255,255,255,.25); }
+.fs-pn-reset svg { width: 13px; height: 13px; }
 .fs-pn-kart.yalniz-baslik .fs-pn-baslik { border-bottom: none; }   /* .dk-yalniz-baslik: yalnız başlık şeridi kalır */
 .fs-pn-kart.yalniz-baslik > :not(.fs-pn-baslik) { display: none !important; }
 /* gövde (.dron-kart-icerik): 10 px dolgu, Consolas 12 px; bölümler tek gövdede, aralarında boşluk yok (ince çizgi) */

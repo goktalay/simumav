@@ -622,14 +622,14 @@ def _world(track, drone_type, launch):
 
 
 def speedup_dogrula(f):
-    """Başlangıç / canlı simülasyon hızı: 1 | 2 | 4 | 8 ve ≤ config.MAX_SPEEDUP (sunucu üst sınırı, §10). Hatalı → BridgeHata 422."""
+    """Başlangıç / canlı simülasyon hızı: 0,25 | 0,5 (ağır çekim, §35) | 1 | 2 | 4 | 8 ve ≤ config.MAX_SPEEDUP (sunucu üst sınırı, §10). Hatalı → BridgeHata 422."""
     if f is None:
         return 1
     if isinstance(f, bool) or not isinstance(f, (int, float)) or float(f) not in [float(x) for x in flightsim_power.SPEEDUPS]:
-        raise BridgeHata(422, 'invalid', 'speedup 1 | 2 | 4 | 8 olmalı')
+        raise BridgeHata(422, 'invalid', f"speedup {' | '.join(f'{x:g}' for x in flightsim_power.SPEEDUPS)} olmalı")
     if float(f) > config.MAX_SPEEDUP:
         raise BridgeHata(422, 'speedup_limit', f'Bu sunucuda simülasyon hızı en çok {config.MAX_SPEEDUP}×', max_speedup=config.MAX_SPEEDUP)
-    return int(f)
+    return int(f) if float(f) >= 1 else float(f)
 
 
 async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None, power=None, speedup=None, camera=None, targets=None, site=None, defend=None,
@@ -637,7 +637,7 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
     """Kotalar → çekirdek oturum → flights satırı → MP köprüsü. Dönüş: {flight_id, sim_id, mp, ws, power, speedup}. Hatalar BridgeHata.
     `power` (§10): sihirbaz gövdesi — hangar ayarının üstüne power.dogrula ile (sınırlar, yakıt yalnız uçakta); çekirdeğe TAM power sözlüğü gider.
     `speedup`: başlangıç simülasyon hızı (≤ MAX_SPEEDUP); SITL hazır olunca `speed` komutuyla yazılır.
-    `camera` (HEPGO §22.3): day | thermal | night — çekirdek oturuma ve flights.snapshot'a.
+    `camera` (HEPGO §22.3): day | thermal | night | none (§35 kamera yok) — çekirdek oturuma ve flights.snapshot'a.
     `drive` (§15 kara aracı): ackermann | skid; yoksa modelin sürüş biçimi. Kara aracında kalkış yöntemi yok → launch nötr 'wheels'."""
     if drone.get('type') in ROVER_TYPES:
         launch = {'method': 'wheels'}   # kara aracı kalkmaz: fırlatıcı/kalkış alanları yok sayılır (flights.launch nötr değer)
@@ -750,7 +750,7 @@ async def _guc_bekci(s, speedup):
     """§10 sunucu tarafı güvence: (1) başlangıç simülasyon hızı SITL hazır olunca yazılır; (2) SIM_SPEEDUP > MAX_SPEEDUP (Mission Planner ya da
     panel PARAM_SET ile) → geri çekilir (audit `speed_clamp`); (3) yamalı ikilide SIM_PLN_THR_MUL oturumun azami hız çarpanından saparsa (MP'den
     elle) yeniden yazılır (audit `thr_mul_clamp`). Oturum kapanınca biter. Hata uçuşu düşürmez."""
-    yazildi = speedup <= 1
+    yazildi = speedup == 1   # §35: 0,25× / 0,5× de SITL hazır olunca yazılır
     try:
         bitis = time.time() + 120
         while not yazildi and s.state != 'KAPANDI' and time.time() < bitis:

@@ -80,7 +80,7 @@ def main():
 
         # ---- katalog + meta: model başına varsayılan, sınırlar, hız seçenekleri sunucu üst sınırıyla
         cat = c.get('/api/hangar/catalog').json()
-        assert cat['power']['limits']['max_speed_ms'] == [5.0, 150.0] and cat['power']['speedups'] == [1, 2, 4] and cat['power']['max_speedup'] == 4
+        assert cat['power']['limits']['max_speed_ms'] == [5.0, 150.0] and cat['power']['speedups'] == [0.25, 0.5, 1, 2, 4] and cat['power']['max_speedup'] == 4
         assert cat['power']['fuel_types'] == ['plane', 'interceptor', 'vtol', 'rover'] and cat['power']['speed_types'] == ['plane', 'interceptor', 'vtol'] and cat['power']['stock_max_ms'] == 31.8
         # §15 kara aracı: elektrik varsayılan (çekirdek ROVER_VARSAYILAN ile aynı 4×4), azami hız yok
         r4 = next(m for t in cat['types'] if t['key'] == 'rover' for m in t['models'] if m['key'] == 'glb:rover_4x4')['power']
@@ -90,7 +90,7 @@ def main():
         assert mods['glb:jet']['power']['engine'] == 'fuel' and mods['glb:jet']['power']['max_speed_ms'] == 150.0
         assert mods['glb:iris']['power']['engine'] == 'electric' and mods['glb:iris']['power']['max_speed_ms'] is None
         assert all(m['power']['fuel_l'] == 0.0 for t in cat['types'] if t['key'] in ('fpv', 'multirotor', 'heli') for m in t['models'])
-        assert c.get('/api/meta').json()['power']['speedups'] == [1, 2, 4]
+        assert c.get('/api/meta').json()['power']['speedups'] == [0.25, 0.5, 1, 2, 4]
 
         # ---- hangar doğrulaması
         def post(body):

@@ -59,6 +59,7 @@ export function powerLines(sum, tr) {
   if (P.elec) parts.push(`${tr('batarya')} ${f1(P.elec.wh_used)} Wh / ${f0(P.elec.wh_cap)} Wh${P.elec.w_avg != null ? ` · ${tr('ortalama')} ${f1(P.elec.w_avg)} W` : ''}${P.elec.empty_t != null ? ` · ${tr('BATARYA BİTTİ')}` : ''}`);
   if (P.settings?.max_speed_ms) parts.push(`${tr('azami hız')} ${f0(P.settings.max_speed_ms)} m/s (${tr('en yüksek')} ${f1(P.max_speed_seen)} m/s)`);
   if (P.speedup?.max > 1) parts.push(`${tr('simülasyon hızı en çok')} ${P.speedup.max}×`);
+  if (P.speedup?.min < 1) parts.push(`${tr('simülasyon hızı en az')} ${P.speedup.min}×`);   // §35 ağır çekim
   return parts.join(' · ');
 }
 const f2 = v => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toFixed(2));

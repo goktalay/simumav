@@ -119,7 +119,14 @@ export function createOpsPanel(stage, opts = {}) {
     hub: h('span', { class: 'fs-pn-rozet yok', title: tr('Harekât hub bağlantısı (/ws/drone/live)') }, 'HUB'),
   };   // Mission Planner durumu MISSION PLANNER bölümünün başlık rozetinde (kart başlığında yer dar: ad kesilmesin)
   const minBtn = h('button', { class: 'fs-pn-kucult', type: 'button', title: tr('Küçült (yalnız başlık)'), html: ICO.up, onclick: e => { e.stopPropagation(); setMin(!kart.classList.contains('yalniz-baslik')); } });
-  const baslik = h('div', { class: 'fs-pn-baslik' }, B.nokta, B.name, h('span', { class: 'fs-pn-ozet' }, B.irt, B.kip), B.arm, hub ? B.hub : null, minBtn);
+  // §35 uçuş kartında Sıfırla (onaylı): sim `reset` — parametreler/scriptler/görev korunur, Mission Planner bağlantısı kopmaz
+  const resetOnayli = async () => {
+    if (!canWrite) { toast(tr('Sıfırlamak için yazma izni gerekir'), 'err'); return; }
+    if (!await confirmDialog('Sıfırla', tr('Simülatör sıfırlansın mı? Araç başlangıç noktasına döner; parametreler, scriptler ve görev korunur, Mission Planner bağlantısı kopmaz.'), { okLabel: 'Sıfırla', danger: true })) return;
+    onReset ? onReset() : cmdSim?.('reset');
+  };
+  const resetBtn = canWrite ? h('button', { class: 'fs-pn-reset', type: 'button', title: tr('Sıfırla (onaylı): araç başlangıca döner; parametreler ve scriptler korunur'), 'aria-label': tr('Sıfırla'), html: ICO.reset, onclick: e => { e.stopPropagation(); resetOnayli(); } }) : null;
+  const baslik = h('div', { class: 'fs-pn-baslik' }, B.nokta, B.name, h('span', { class: 'fs-pn-ozet' }, B.irt, B.kip), B.arm, hub ? B.hub : null, resetBtn, minBtn);
   const setMin = v => { kart.classList.toggle('yalniz-baslik', v); minBtn.innerHTML = v ? ICO.down : ICO.up; minBtn.title = tr(v ? 'Geri büyüt' : 'Küçült (yalnız başlık)'); lsSet(KEY_MIN, v ? 1 : null); if (!v) { pfdDirty = true; if (!raf) raf = requestAnimationFrame(frame); } };
 
   // --- ÜST SATIR (.dk-ust-satir): UÇUŞA HAZIR rozeti (tıkla → ARM/DISARM) + İŞLEMLER düğmesi ---
@@ -176,7 +183,7 @@ export function createOpsPanel(stage, opts = {}) {
     hucre('İptal', 'cancel', () => hubCmd('mission_cancel', { rota: routeName() }), 'tehlikeli'),
     h('div', { class: 'fs-pn-tam' }, routeInfo),
     grup('Sim'),
-    hucre('↺ Sıfırla', 'reset', () => { onReset ? onReset() : cmdSim?.('reset'); }, 'fs-pn-free'), hucre('Yerleşimi sıfırla', 'layout', () => resetLayout(), 'fs-pn-free'),
+    hucre('↺ Sıfırla', 'reset', () => resetOnayli(), 'fs-pn-free'), hucre('Yerleşimi sıfırla', 'layout', () => resetLayout(), 'fs-pn-free'),
     speedPill ? h('div', { class: 'fs-pn-tam fs-pn-speed' }, h('span', { class: 'fs-pn-not' }, tr('Simülasyon hızı')), speedPill.el) : null,
     h('div', { class: 'fs-pn-tam fs-pn-not fs-pn-perm' }, ''));
   const opsBolum = bolum('ops', 'İŞLEMLER', opsBody);

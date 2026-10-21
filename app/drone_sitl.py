@@ -19,6 +19,7 @@ GÖKTUNGU'da ölçülmüş tuzaklar (sitl.py başlığı):
 """
 import hashlib
 import os
+import shutil
 import socket
 import subprocess
 import threading
@@ -32,6 +33,8 @@ from . import config
 SITL_KLASORU = Path(os.environ.get('HEPGO_SITL_DIR') or (config.BASE_DIR / 'data' / 'sitl'))
 # Her sanal dronun kendi çalışma dizini (eeprom.bin, sitl.log) — kiracının veri dizininde
 CALISMA_KOKU = config.DATA_DIR / 'sitl_calisma'
+# ArduPilot Lua script dizinleri (SITL kökü = çalışma dizini; Mission Planner MAVFTP 'APM/scripts' gösterir) — flightsim_runs.SCRIPT_DIZINLERI ile aynı
+SCRIPT_DIZINLERI = ('scripts', 'APM/scripts')
 
 # Dron tipi → (ikili adı, --model değeri) (GÖKTUNGU TIP_ESLEME). Heli/hexa ayrı ikili istemez, yalnız --model değişir.
 TIP_ESLEME = {
@@ -317,7 +320,8 @@ class SitlYoneticisi:
         `ekstra_parm`: dronun kayıtlı parametreleri (`AD DEĞER` satırları) → varsayilan.parm sonuna (drone_params).
         `temiz`: eski eeprom.bin silinir — her oturum yalnız varsayilan.parm (+ PARAM_SET) ile başlar. Uçuş simülatörü yuvaları (9001…) oturumlar
         arasında yeniden kullanılır; eeprom kalırsa önceki oturumda Mission Planner'dan / başka dronun kaydından yazılan değerler (ör. AIRSPEED_MIN 30,
-        eski SIM_SRV_REV maskesi) sonraki oturuma taşınıyor, uçak kalkışta düşüyordu."""
+        eski SIM_SRV_REV maskesi) sonraki oturuma taşınıyor, uçak kalkışta düşüyordu. §35: `temiz` scripts/ ve APM/scripts/ dizinlerini de siler;
+        uçuş simülatörü YALNIZ oturum başında temiz=True verir — "Sıfırla" temiz=False ile açar (oturumun parametreleri ve Lua scriptleri korunur)."""
         kimlik = int(kimlik)
         konsol = konsol or self.konsol
         if self.calisiyor_mu(kimlik):
@@ -350,6 +354,13 @@ class SitlYoneticisi:
                 (dizin / 'eeprom.bin').unlink(missing_ok=True)
             except OSError as e:
                 return None, f'SITL eski parametre belleği (eeprom.bin) silinemedi: {e}'
+            for alt in SCRIPT_DIZINLERI:   # §35: önceki oturumun Lua scriptleri de yeni oturuma (ve onun scripts.zip kaydına) taşınmasın
+                try:
+                    shutil.rmtree(dizin / alt)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    return None, f'SITL eski script dizini ({alt}) silinemedi: {e}'
         parm = dizin / 'varsayilan.parm'     # Tuzak A: gerçek defaults dosyası
         try:
             parm.write_text(parm_metni(sysid, log_bin, ekstra_parm, tip, model), encoding='utf-8')

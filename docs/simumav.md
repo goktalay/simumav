@@ -660,3 +660,10 @@ doğrulama, sihirbaz, tema ve güvenlik katmanını ekler.
   kartı). Oyuncu sekmeyi kapatırsa çekirdek 5 sn sonra kendisi kapatır (`end_reason servo_trigger`; `bridge._sonuc` → `crash`).
 - `shim/db.py` `RUN_EK_SUTUNLAR` + `servo_trig` (eski core.db'ye ALTER); dron kaydı önerisi (`drone_sitl_options srvtrig_*`) SIMUMAV çekirdeğinde
   tablo yoksa sessizce atlanır (yerel tercih `fs.srvtrig` yine çalışır).
+
+## 17. Sıfırla korunumu, ağır çekim, kamera yok — HEPGO docs/ucus-simulatoru.md §35'in SIMUMAV karşılığı
+
+Ortak çekirdek (`app/flightsim.py` reset `temiz=False`, MP köprü kalp atışı) SIMUMAV uçuşlarında da geçerli: Sıfırla parametreleri, Lua scriptlerini ve
+görevi korur, Mission Planner bağlantısı kopmaz. Simülasyon hızı 0,25× / 0,5× (`/api/meta power.speedups` sunucu sınırıyla; `bridge.speedup_dogrula`,
+sihirbaz `S.speedup !== 1` ise gövdeye). Kamera seçiminde "Kamera yok" (`camera_pick.js` 'none'; `camera.none`, `camera.none_desc`, `camera.osd_none`
+7 dil): PiP penceresi kurulmaz, gimbal kipi kapalı. Harekât kartı başlığında onaylı ↺ Sıfırla (ortak `flightsim_panel.js`).

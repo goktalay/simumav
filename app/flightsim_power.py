@@ -27,7 +27,7 @@ SERVO_J_PER_US = 0.0005           # servo aktivitesi: 1000 µs tam sapma ≈ 0,5
 YAKIT_MIN_KM, YAKIT_MIN_L = 0.3, 0.02    # ölçülen km/L için en az mesafe / yakıt
 ELEC_MIN_S = 60.0                        # ortalama W için en az süre
 W_PENCERE_S = 30.0                       # anlık W (kalan süre) için kayan pencere
-SPEEDUPS = (1, 2, 4, 8)                  # panel/üst çubuk seçici (SIM_SPEEDUP)
+SPEEDUPS = (0.25, 0.5, 1, 2, 4, 8)       # panel/üst çubuk seçici (SIM_SPEEDUP); <1 = ağır çekim (§35; gerçek SITL SIM_SPEEDUP float, ölçüldü)
 # Dron kaydı seçenekleri (drone_sitl_options anahtarları) ↔ start gövdesi `power` alanları
 ALANLAR = ('max_speed_ms', 'fuel_l', 'fuel_km_per_l', 'elec_cells', 'elec_mah', 'elec_w')
 KAYIT_ANAHTARLARI = {'max_speed_ms': 'max_speed_ms', 'fuel_l': 'fuel_l', 'fuel_km_per_l': 'fuel_km_per_l_last', 'elec_cells': 'elec_cells',
@@ -225,6 +225,7 @@ class GucDurumu:
         self._pencere = []         # (t_s, J) son W_PENCERE_S içindeki harcama (anlık W)
         self.speedup = 1.0
         self.speedup_max = 1.0
+        self.speedup_min = 1.0     # §35 ağır çekim (0,25× / 0,5×)
         self.speedup_degisim = 0
         self.max_speed_seen = 0.0
 
@@ -234,6 +235,7 @@ class GucDurumu:
             self.speedup_degisim += 1
         self.speedup = f
         self.speedup_max = max(self.speedup_max, f)
+        self.speedup_min = min(self.speedup_min, f)
 
     def sifirla_zaman(self):
         self._t_ms = None
@@ -319,7 +321,7 @@ class GucDurumu:
             'elec': {'wh_cap': round(self.wh_cap, 2), 'wh_used': round(self.wh_used, 3), 'wh_left': round(self.wh_cap - self.wh_used, 3),
                      'pct': round(100.0 * (self.wh_cap - self.wh_used) / self.wh_cap, 1), 'w_avg': w_avg, 'empty_t': self.elec_empty_t,
                      'cells': int(self.ayar.get('elec_cells') or 0), 'mah': self.ayar.get('elec_mah'), 'w_set': self.ayar.get('elec_w')} if self.elec_on else None,
-            'speedup': {'max': self.speedup_max, 'changes': self.speedup_degisim, 'last': self.speedup},
+            'speedup': {'max': self.speedup_max, 'min': self.speedup_min, 'changes': self.speedup_degisim, 'last': self.speedup},
         }
 
 

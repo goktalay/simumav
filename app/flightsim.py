@@ -65,7 +65,7 @@ DIKEY_TIPLER = ('interceptor',)   # §25: dikey kalkış/iniş yapan uçak tipi 
 ROVER_TIPLERI = ('rover',)
 DRIVES = ('ackermann', 'skid')
 MAV_TYPE_GROUND_ROVER = 10
-KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend', 'motor_cut', 'wind', 'launch_aim')   # speed: §23 SIM_SPEEDUP {factor: 1|2|4|8}; camera: §22.3 {type}; defend: §26 {action: 'next'}; motor_cut: {on: bool}; wind: §31 {ms, dir, gust, turb} (uçuşta rüzgâr); launch_aim: §31 {azimuth_deg, angle_deg} (rampa, ARM öncesi)
+KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend', 'motor_cut', 'wind', 'launch_aim')   # speed: §23 SIM_SPEEDUP {factor: 0.25|0.5|1|2|4|8} (§35 ağır çekim); camera: §22.3 {type}; defend: §26 {action: 'next'}; motor_cut: {on: bool}; wind: §31 {ms, dir, gust, turb} (uçuşta rüzgâr); launch_aim: §31 {azimuth_deg, angle_deg} (rampa, ARM öncesi)
 KOMUTLAR += ('servo_trigger', 'servo_set')   # §34: servo_trigger {on, ch, pwm, cmp, tol, delay_ms} · servo_set {ch, pwm} (DO_SET_SERVO; sahte kipte sanal çıkış)
 # Motor kesme (`motor_cut {on}`; yalnız uçak tipleri): ARM'lı kalır, motor durur, kumanda yüzeyleri ve uçuş kipi çalışmaya devam eder → süzülme.
 # Gerçek ArduPlane 4.7.2 SITL'de ölçüldü (100–145 m AGL; FBWA/FBWB/CRUISE/AUTO/RTL/MANUAL):
@@ -81,17 +81,28 @@ MOTOR_CUT_RED_S = 3.0       # sn: bu süre içinde 218 reddedilirse bayrak geri 
 SAHTE_SUZULME_ORANI = 10.0  # L/D (yatay / düşey)
 SAHTE_SUZULME_HIZ = 12.0    # m/s hava hızı
 SAHTE_ROLL_AZAMI = math.radians(45)
-# §22.3 kamera türü (gimbal/FPV kamerası ve PiP): sunucu yalnız enum doğrular; oturumda/kayıt satırında saklanır, kayıttan oynatma aynı türü açar
-KAMERA_TURLERI = ('day', 'thermal', 'night')
+# §22.3 kamera türü (gimbal/FPV kamerası ve PiP): sunucu yalnız enum doğrular; oturumda/kayıt satırında saklanır, kayıttan oynatma aynı türü açar.
+# §35 'none' = kamera yok: ön yüz PiP penceresini hiç kurmaz/çizmez, gimbal kipi kapalı (FPV/takip/serbest/yer kalır).
+KAMERA_TURLERI = ('day', 'thermal', 'night', 'none')
 
 
 def kamera_dogrula(v, varsayilan='day'):
-    """`camera`: None/boş → varsayılan; 'day' | 'thermal' | 'night' dışı → SimHata('invalid')."""
+    """`camera`: None/boş → varsayılan; 'day' | 'thermal' | 'night' | 'none' dışı → SimHata('invalid')."""
     if v is None or v == '':
         return varsayilan
     if not isinstance(v, str) or v not in KAMERA_TURLERI:
-        raise SimHata('invalid', 'camera day | thermal | night olmalı')
+        raise SimHata('invalid', 'camera day | thermal | night | none olmalı')
     return v
+
+
+# §35 reset'te yeniden YAZILMAYAN oturum parametreleri: kimlik/sayaç (MAV_SYSID — yeni SITL aynı sysid'le açılmalı), sanal montaj maskesi ve itki
+# çarpanı (sunucu kayıtlı/oturum ayarından üretir), istatistik sayaçları.
+OTURUM_PARAM_HARIC_ADLAR = frozenset({'MAV_SYSID', 'SYSID_THISMAV', 'FORMAT_VERSION', 'MIS_TOTAL', 'FENCE_TOTAL', 'RALLY_TOTAL', 'SIM_SRV_REV', 'SIM_PLN_THR_MUL'})
+OTURUM_PARAM_HARIC_ONEKLER = ('STAT_',)
+
+
+def oturum_param_haric(ad):
+    return ad in OTURUM_PARAM_HARIC_ADLAR or ad.startswith(OTURUM_PARAM_HARIC_ONEKLER)
 
 # Sabit kanat kalkış yöntemi (§13): wheels (tekerlekli pist koşusu) · ramp (pnömatik fırlatma rampası; açı 10–30°) · vehicle (pickup üstünden bırakma; hız 40–110 km/h)
 LAUNCH_DEFAULTS = {'method': 'wheels', 'angle_deg': 15, 'release_kmh': 70}
@@ -979,6 +990,15 @@ class SimSession:
         self.hiz_olcegi = drone_sitl.hiz_olcegi_destegi(tip)   # ikili SIM_PLN_THR_MUL tanıyor mu (sahte kipte False)
         self.thr_mul_sitl = None                                # SITL'den gözlenen SIM_PLN_THR_MUL (PARAM_VALUE)
         self.speedup_istek = 1.0                                # son `speed` komutu (reset sonrası yeniden yazılır)
+        # §35 "Sıfırla" parametre/script korunumu: oturum içinde kullanıcının yazdığı parametreler (Mission Planner PARAM_SET + panel param_set)
+        # ad → (değer, ptype); reset'te SITL eeprom.bin'i ve scripts/ korunarak (temiz=False) yeniden açılır, ilk kalp atışında oturum varsayılanlarından
+        # SONRA bu değerler yeniden yazılır (son söz kullanıcının). Yeni oturum her zaman temiz başlar (temiz=True: eeprom + scripts silinir).
+        self.oturum_paramlari = {}
+        self._gcs_ayr = None             # GCS (MP) PARAM_SET ayrıştırıcısı (tembel)
+        self._reset_bekliyor = False     # reset sonrası ilk kalp atışı: oturum parametreleri yeniden yazılır
+        self._kopru_kalp_task = None     # reset boşluğunda Mission Planner'a köprü kalp atışı (§35)
+        self.reset_sayisi = 0
+        self.kopru_kalp_sayac = 0        # reset boşluğunda MP'ye giden köprü çerçeveleri (test/teşhis)
         # §19 kayıt seçenekleri: rec.bin → SITL DataFlash .BIN açık (yalnız armed süre), kapanışta uçuş loglarına kaydedilir (flightsim_bin)
         self.rec = {'bin': bool((rec or {}).get('bin'))}
         self.bin_sonuc = None            # kapanışta {log_id, file_name, size} | {error} | None
@@ -1195,6 +1215,7 @@ class SimSession:
         self.gcs_rx += 1
         if self.param_izleyici is not None:   # Mission Planner PARAM_SET'leri ham geçer; izleyici yalnız niyeti not eder (yankı PARAM_VALUE kaydettirir)
             self.param_izleyici.gcs_bayt(data)
+        self._gcs_param_ayikla(data)   # §35: oturum parametreleri (reset sonrası yeniden yazılır)
         if self._tcp_w is not None and not self._tcp_w.is_closing():
             try:
                 self._tcp_w.write(data)
@@ -1207,6 +1228,86 @@ class SimSession:
                 self._udp.sendto(data, self.gcs_addr)
             except Exception:   # noqa: BLE001
                 pass
+
+    # ---- §35 "Sıfırla" parametre korunumu ----
+    def _gcs_param_ayikla(self, data):
+        """GCS (Mission Planner) baytlarından PARAM_SET → oturum parametresi (ham iletim değişmez)."""
+        if self._gcs_ayr is None:
+            self._gcs_ayr = _dialect().MAVLink(None)
+            self._gcs_ayr.robust_parsing = True
+        try:
+            msgs = self._gcs_ayr.parse_buffer(data) or []
+        except Exception:   # noqa: BLE001
+            return
+        for m in msgs:
+            try:
+                if m.get_type() == 'PARAM_SET':
+                    self.oturum_param_kaydet(str(m.param_id).rstrip('\x00'), m.param_value, m.param_type)
+            except Exception:   # noqa: BLE001
+                continue
+
+    def oturum_param_kaydet(self, ad, deger, ptype=None):
+        """Kullanıcının oturum içinde yazdığı parametre (MP / panel). Sunucunun yönettiği adlar (OTURUM_PARAM_HARIC) tutulmaz."""
+        ad = str(ad or '').strip()
+        if not ad or len(ad) > 16 or oturum_param_haric(ad):
+            return
+        try:
+            v = float(deger)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(v):
+            return
+        self.oturum_paramlari.pop(ad, None)   # son yazılan sona (yeniden yazma sırası = kullanıcının sırası)
+        self.oturum_paramlari[ad] = (v, int(ptype) if ptype else None)
+
+    def oturum_param_unut(self, *adlar_veya_onekler):
+        """HEPGO'nun kendi komutu (speed / wind / launch_aim) aynı parametreyi yeniden belirledi → MP'nin eski değeri reset'te geri yazılmasın."""
+        for ad in list(self.oturum_paramlari):
+            if any(ad == a or (a.endswith('_') and ad.startswith(a)) for a in adlar_veya_onekler):
+                self.oturum_paramlari.pop(ad, None)
+
+    def _oturum_paramlari_yaz(self):
+        """Reset sonrası ilk kalp atışı: oturum varsayılanlarından SONRA kullanıcının parametreleri (eeprom'da zaten kalır; burada kalp atışında
+        yazılan oturum setinin — düzen, flap, hız, RC… — üstüne yazdığı adlar geri gelir). Kalıcı izleyici yankıları yeniden kaydetmez."""
+        if not self.oturum_paramlari:
+            return 0
+        d = _dialect()
+        if self.param_izleyici is not None:
+            self.param_izleyici.yukleme_isaretle(list(self.oturum_paramlari))
+        for ad, (v, pt) in self.oturum_paramlari.items():
+            pt = pt or self.param_types.get(ad) or d.MAV_PARAM_TYPE_REAL32
+            self._gonder(self.mav.param_set_encode(self.sysid, self.comp, ad.encode(), float(v), int(pt)))
+        self._olay(f'Sıfırlama: oturumda değiştirilen {len(self.oturum_paramlari)} parametre yeniden yazıldı', 6)
+        return len(self.oturum_paramlari)
+
+    async def _kopru_kalp(self):
+        """§35: reset sırasında SITL yokken Mission Planner'a köprü kalp atışı (1 Hz; aynı sysid/compid/araç tipi, MAV_STATE_BOOT) — bağlantı
+        "kalp atışı yok" ile kopmaz; yeni SITL'in ilk kalp atışında biter. MP'ye bir kez STATUSTEXT 'SITL yeniden başlatılıyor'."""
+        d = _dialect()
+        enc = d.MAVLink(None, srcSystem=int(self.sysid or 1), srcComponent=int(self.comp or 1))
+        vt = self.vtype if self.vtype is not None else _varsayilan_vtype(self.type)
+        custom = (_modlar(vt) or {}).get(str(self.tele.get('mode') or '').upper(), 0)
+
+        def gonder(m):
+            try:
+                buf = m.pack(enc)
+                enc.seq = (enc.seq + 1) % 256
+                self._gcs_gonder(buf)
+                self.kopru_kalp_sayac += 1
+            except Exception:   # noqa: BLE001
+                pass
+        try:
+            gonder(enc.statustext_encode(5, b'HEPGO: SITL yeniden baslatiliyor (Sifirla)'))
+            while self.state != 'KAPANDI' and not self._heartbeat_alindi:
+                gonder(enc.heartbeat_encode(vt, d.MAV_AUTOPILOT_ARDUPILOTMEGA, d.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, custom, d.MAV_STATE_BOOT))
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            pass
+
+    def _kopru_kalp_durdur(self):
+        if self._kopru_kalp_task is not None and not self._kopru_kalp_task.done():
+            self._kopru_kalp_task.cancel()
+        self._kopru_kalp_task = None
 
     async def _udp_ac(self):
         """SIM_UDP_BASE … +99 arasında boş UDP portuna bağlanır."""
@@ -1225,8 +1326,10 @@ class SimSession:
         raise SimHata('sitl', f'Boş UDP portu yok ({UDP_BASE}–{UDP_BASE + UDP_ARALIK - 1}): {son}')
 
     # ---- SITL / TCP ----
-    async def _sitl_ac(self):
-        """SITL'i başlatır ve SERIAL0 TCP'ye bağlanır (sahte kipte MANAGER.sahte_tcp_port'a). Hata → state HATA."""
+    async def _sitl_ac(self, temiz=True):
+        """SITL'i başlatır ve SERIAL0 TCP'ye bağlanır (sahte kipte MANAGER.sahte_tcp_port'a). Hata → state HATA.
+        `temiz` (§35): oturum başında True (eeprom.bin + scripts/ silinir — önceki oturumdan sızıntı yok); "Sıfırla"da False (oturumun
+        parametreleri ve yüklenen Lua scriptleri yeni SITL sürecinde korunur)."""
         ex = self.loop.run_in_executor
         if SITL_ENABLED:
             c = self.center
@@ -1238,7 +1341,7 @@ class SimSession:
                                                                           irtifa=c.get('alt') or EV_IRTIFA, konsol=self._konsol, model=sitl_model,
                                                                           yon=ev['yaw'] if ev['yaw'] is not None else kalkis_yonu(self.type, self.launch, self.world),   # §31: uçak burnu kalkış yönünde (rampa azimutu / pist)
                                                                           log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type, **self.montaj_arg)
-                                                                          + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]], temiz=True))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir)
+                                                                          + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]], temiz=temiz))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir)
             if port and self.rec['bin']:
                 self._olay('DataFlash kaydı açık: uçuş logu (.bin) oturum kapanışında Uçuş Logları\'na kaydedilir', 6)
             if not port:
@@ -1551,10 +1654,14 @@ class SimSession:
         if self.type in DIKEY_TIPLER:   # §25 tailsitter: açık etkinleştirme + RTL dikey iniş (parm dosyasında da var; eeprom'daki eski değer ezilir) + yerde itki 0
             self._param_set(flightsim_icept.OTURUM_PARAMLARI + PLANE_YER_PARAMLARI)
         self._hiz_yaz()   # §23 azami hız (uçak): AIRSPEED_MAX/CRUISE, THR_MAX + SIM_PLN_THR_MUL (yamalı ikili)
-        if self.speedup_istek != 1.0:   # reset sonrası yeni SITL: seçili simülasyon hızı korunur
+        if self.speedup_istek != 1.0 or self._reset_bekliyor:   # reset sonrası yeni SITL: seçili simülasyon hızı korunur (eeprom'daki değer değil; 1× de yazılır)
             self._param_set(((flightsim_power.SIM_SPEEDUP, self.speedup_istek),))
         if self.arazi['serve']:   # §18: arazi veritabanı açık, 100 m ızgara; istekler sim_terrain'den yanıtlanır
             self._param_set(TERRAIN_PARAMLARI)
+        if self._reset_bekliyor:   # §35 Sıfırla: kullanıcının oturumda yazdığı parametreler oturum setinin ÜSTÜNE (son söz kullanıcının)
+            self._reset_bekliyor = False
+            self._kopru_kalp_durdur()
+            self._oturum_paramlari_yaz()
             self._olay('Arazi verisi: SITL\'in arazi istekleri gerçek yükseklik verisinden (terrarium z13) yanıtlanıyor — fizik gerçek topoğrafyayı görür', 6)
         self._olay('SITL kalp atışı alındı; veri akışı istendi (ATTITUDE/konum 50 Hz)', 6)
         # §9 ev irtifası kuralı: izleyiciler artık bağlı (HAZIR öncesi yayınlar WS'ye ulaşmaz) → kullanılan ev irtifası + uyumsuzluk notu olay şeridine
@@ -1918,6 +2025,7 @@ class SimSession:
         """`wind` komutu (§31): uçuşta rüzgâr — dünya güncellenir, SITL'e yazılır (sahte: kinematik), olay + WS `wind` yayını."""
         yeni = ruzgar_dogrula(p, self.world)
         self.world.update(yeni)
+        self.oturum_param_unut('SIM_WIND_')   # §35
         if self.sahte is not None:
             self.sahte.ruzgar_ayarla(yeni['wind_ms'], yeni['wind_dir'], yeni['wind_gust'], yeni['wind_turb'])
             self.tele['wind_spd'], self.tele['wind_dir'] = round(self.sahte.ruzgar_simdi(), 2), yeni['wind_dir']
@@ -1956,6 +2064,8 @@ class SimSession:
             self.sahte.launch = dict(self.launch)
         elif aci_degisti and self._heartbeat_alindi:
             self._param_set((('TKOFF_LVL_PITCH', float(self.launch['angle_deg'])),))
+        if aci_degisti:
+            self.oturum_param_unut('TKOFF_LVL_PITCH')   # §35
         self._olay(f"Rampa: yön {yon:.0f}° · açı {float(self.launch['angle_deg']):g}°" + (' — yeniden konuşlandırılıyor (SITL yönü)' if yon_degisti and self.sahte is None else ''), 6)
         self._yay({'t': 'launch_cfg', 'ts': round(time.time(), 3), 'launch': dict(self.launch), 'redeploy': bool(yon_degisti and self.sahte is None)})
         if yon_degisti and self.sahte is None and self.state == 'HAZIR':
@@ -2188,7 +2298,7 @@ class SimSession:
         elif name == 'speed':
             f = p.get('factor')
             if isinstance(f, bool) or not isinstance(f, (int, float)) or float(f) not in [float(x) for x in flightsim_power.SPEEDUPS]:
-                raise SimHata('invalid', f"speed.factor {' | '.join(str(x) for x in flightsim_power.SPEEDUPS)} olmalı")
+                raise SimHata('invalid', f"speed.factor {' | '.join(f'{x:g}' for x in flightsim_power.SPEEDUPS)} olmalı")
             p = {'factor': float(f)}
         elif name == 'motor_cut':
             if not isinstance(p.get('on'), bool):
@@ -2224,6 +2334,7 @@ class SimSession:
             raise SimHata('invalid', 'Oturum hazır değil')
         if name == 'speed':   # §23 simülasyon hızı: SITL SIM_SPEEDUP canlı (PARAM_SET); telemetri/kayıt/.bin SITL zamanıyla, video gerçek zaman
             self.speedup_istek = p['factor']
+            self.oturum_param_unut(flightsim_power.SIM_SPEEDUP)   # §35: MP'nin eski SIM_SPEEDUP'ı reset'te geri gelmesin
             if self.sahte is not None:
                 self.sahte.speedup = p['factor']
                 self.guc.hiz_ayarla(p['factor'])
@@ -2231,7 +2342,8 @@ class SimSession:
                 if not self._heartbeat_alindi:
                     raise SimHata('invalid', 'SITL henüz kalp atışı göndermedi')
                 self._param_set(((flightsim_power.SIM_SPEEDUP, p['factor']),))
-            self._olay(f'Simülasyon hızı {p["factor"]:g}× (SITL zamanı; yakıt/batarya ve .bin kaydı simülasyon zamanıyla, video gerçek zamanda; Mission Planner da hızlı görür)', 6)
+            self._olay(f'Simülasyon hızı {p["factor"]:g}× (SITL zamanı; yakıt/batarya ve .bin kaydı simülasyon zamanıyla, video gerçek zamanda; Mission Planner da '
+                       + ('yavaş' if p['factor'] < 1 else 'hızlı') + ' görür)', 6)
             return {'ok': True, 'factor': p['factor']}
         if name == 'motor_cut':
             if self.sahte is None and not self._heartbeat_alindi:
@@ -2320,6 +2432,8 @@ class SimSession:
                 if not self._heartbeat_alindi:
                     return {'ok': False, 'error': 'SITL henüz kalp atışı göndermedi'}
                 res = await self.komutcu.execute(name, p)
+            if name == 'param_set':   # §35 panelden yazılan parametre: reset sonrası yeniden yazılır
+                self.oturum_param_kaydet(p.get('name'), (res or {}).get('value', p.get('value')), (res or {}).get('type') or p.get('type'))
             if name == 'mission_upload':
                 self._rota_ayarla(flightsim_hub.rota_noktalari(p.get('items') or [], offset=int(res.get('offset') or 0)), source='hepgo', total=res.get('uploaded'))
             elif name == 'mission_clear':
@@ -2467,9 +2581,12 @@ class SimSession:
         await self.komut('rc', {'ch': ch})
 
     async def reset(self):
-        """SITL'i aynı ayarlarla yeniden başlatır (sahte kipte kinematiği sıfırlar)."""
+        """SITL'i aynı ayarlarla yeniden başlatır (sahte kipte kinematiği sıfırlar). §35: parametreler ve scriptler KORUNUR (temiz=False: eeprom.bin
+        ve scripts/ silinmez; ilk kalp atışında oturum parametreleri yeniden yazılır). UDP köprüsü açık kalır, Mission Planner'ın adresi (GCS kilidi)
+        unutulmaz; SITL yokken köprü MP'ye aynı sysid'le kalp atışı gönderir (bağlantı kopmaz). Yeni SITL aynı sysid (1) ve aynı UDP portuyla gelir."""
         if self.state == 'KAPANDI':
             raise SimHata('invalid', 'Oturum kapandı')
+        self.reset_sayisi += 1
         self._olay('Sıfırlanıyor', 6)
         self._durum('BASLIYOR')
         if self._launch_task is not None and not self._launch_task.done():
@@ -2487,12 +2604,17 @@ class SimSession:
                 self._durum('HAZIR')
             return
         await self._tcp_kapat()
+        self._heartbeat_alindi = False
+        self._reset_bekliyor = True
+        if self.gcs_addr is not None and self._udp is not None:   # §35: MP bağlıysa SITL yokken köprü kalp atışı
+            self._kopru_kalp_durdur()
+            self._kopru_kalp_task = self.loop.create_task(self._kopru_kalp())
         await self.loop.run_in_executor(None, drone_sitl.YONETICI.durdur, self.kimlik)
         self.tele.update(mode=None, armed=False, alt_rel=0.0, home=None)
         self._tele_tbm, self._smi_red, self._att_son = -10 ** 9, False, 0.0   # yeni SITL: zaman damgası sıfırdan başlar
-        if self.route:
-            self._rota_ayarla([], source=self.gorev.source or 'hepgo')   # yeni SITL'de görev yok
-        await self._sitl_ac()
+        # §35: görev (mission/fence/rally) ArduPilot depolamasında = eeprom.bin → yeni SITL'de de yüklü; 3B rota (self.route) korunur
+        if not await self._sitl_ac(temiz=False):
+            self._kopru_kalp_durdur()
 
     # ---- yaşam döngüsü ----
     async def run(self):
@@ -2678,6 +2800,7 @@ class SimSession:
             pass
         await self._bin_kapat()
         self.state = 'KAPANDI'
+        self._kopru_kalp_durdur()
         if self._launch_task is not None and not self._launch_task.done():
             self._launch_task.cancel()
         try:
@@ -2734,7 +2857,7 @@ class SimManager:
         `drone` (§14, isteğe bağlı): Dron Envanteri kaydı {id, code, name, model} — harekât panelinde telemetri bu adla akar.
         `rec` (§19, isteğe bağlı): {bin: bool} — SITL DataFlash .BIN kaydı; kapanışta Uçuş Logları'na.
         `power` (§23, isteğe bağlı): {max_speed_ms, fuel_l, fuel_km_per_l, elec_cells, elec_mah, elec_w} — eksikler dron kaydı önerisi → tip varsayılanı.
-        `camera` (§22.3, isteğe bağlı): 'day' | 'thermal' | 'night' (varsayılan day)."""
+        `camera` (§22.3, isteğe bağlı): 'day' | 'thermal' | 'night' | 'none' (§35 kamera yok; varsayılan day)."""
         if rec is not None and not isinstance(rec, dict):
             raise SimHata('invalid', 'rec nesne olmalı')
         camera = kamera_dogrula(camera)
