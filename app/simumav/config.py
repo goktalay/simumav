@@ -52,6 +52,12 @@ os.environ['CAYMAZ_CONSOLE'] = '0'
 MAX_FLIGHTS = max(1, int(os.environ.get('SIMUMAV_MAX_FLIGHTS', '6') or 6))
 FLIGHT_MINUTES = max(1, min(45, int(os.environ.get('SIMUMAV_FLIGHT_MINUTES', '45') or 45)))   # §7: ≤ 45 dk
 os.environ['SIM_MAX_SESSIONS'] = str(MAX_FLIGHTS)
+# §18 çok oyunculu karşılaşma: her oyuncu kendi SITL'ini alır; karşılaşma oturumları AYNI sunucu tavanına (SIMUMAV_MAX_FLIGHTS) sayılır
+# (bridge.aktif_sayisi = normal + karşılaşma + başlatılmakta olan karşılaşmaların ayrılmış yuvaları). Çekirdeğin ayrı karşılaşma tavanı aynı değere eşitlenir.
+os.environ['SIM_MATCH_MAX_SESSIONS'] = str(max(2, MAX_FLIGHTS))
+MATCH_MAX_PLAYERS = max(2, min(8, int(os.environ.get('SIMUMAV_MATCH_MAX_PLAYERS', '8') or 8)))   # kurucu dahil (core.OYUNCU_MAX = 8)
+MATCH_MAX_OPEN = max(1, int(os.environ.get('SIMUMAV_MATCH_MAX_OPEN', '30') or 30))                # sunucuda eşzamanlı bitmemiş karşılaşma (lobi dahil)
+MATCH_ABANDON_S = float(os.environ.get('SIMUMAV_MATCH_ABANDON_S', '300') or 300)                   # lobide kurucu bu süre görünmezse iptal (terk_edildi)
 os.environ['SIM_MAX_MINUTES'] = str(FLIGHT_MINUTES)
 os.environ.setdefault('SIM_UDP_BASE', os.environ.get('SIMUMAV_UDP_BASE', '14550'))    # SITL↔MP köprüsünün iç UDP aralığı (güvenlik duvarında kapalı)
 os.environ.setdefault('SIM_BIN_MAX_MB', '50')                                           # §7: .bin ≤ 50 MB

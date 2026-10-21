@@ -1,6 +1,6 @@
 # SIMUMAV — bağımsız dron simülasyon oyunu
 
-Sürüm: **0.1.31** · Site: https://simumav.com · Hesap: https://mastertool.download (uygulama kodu `sv`)
+Sürüm: **0.1.32** · Site: https://simumav.com · Hesap: https://mastertool.download (uygulama kodu `sv`)
 
 HEPGO Uçuş Simülatörü çekirdeğinin (ArduPilot SITL + Google 3B / gerçek arazi + dron paneli + görev / çarpışma / .bin /
 replay) HEPGO'dan **bağımsız**, mastertool.download hesap yapısıyla çalışan, oyun görünümünde sürümü.
@@ -27,7 +27,8 @@ cp .env.example .env 2>/dev/null || true     # GOOGLE_MAPS_API_KEY, SIMUMAV_SECR
 SIMUMAV_DEV_LOGIN=1 PORT=8600 ./run-simumav.sh    # http://127.0.0.1:8600
 python -m tests.test_simumav                      # SITL gerekmez
 python -m tests.test_simumav_power                # güç ve yakıt (§10); SITL gerekmez
-node tests/test_simumav_power.mjs && node tests/test_simumav_fly.mjs
+python -m tests.test_simumav_match                # çok oyunculu karşılaşma (§18); SITL gerekmez
+node tests/test_simumav_power.mjs && node tests/test_simumav_fly.mjs && node tests/test_simumav_match.mjs
 ```
 
 SITL (ArduPilot) kurulu değilse uçuş sahte kinematikle çalışır (`HEPGO_SITL=0`).

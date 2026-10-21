@@ -12,7 +12,11 @@
 // dron adımında seçilir → start gövdesi `drive` (seçilmezse modelin); güç adımı elektrik varsayılan + isteğe bağlı yakıt; hız ölçeği 80 / 20 km/h.
 
 export const STEPS = ['drone', 'track', 'launch', 'power', 'mission', 'site', 'targets', 'pilot'];
-export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', site: 'site.step', targets: 'targets.step', pilot: 'Pilot ve kayıt' };
+// §18 ÇOK OYUNCULU (kurucu): dron + parkur (+ kalkış) → halkalar (sayı, min/max yükseklik …) → davet (oyuncu sayısı + şifre). Güç/görev/yer kontrol/
+// hedef/pilot yok: herkes kurucunun dronuyla, kendi varsayılan pilotuyla uçar.
+export const STEPS_MATCH = ['drone', 'track', 'launch', 'rings', 'invite'];
+export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', site: 'site.step', targets: 'targets.step', pilot: 'Pilot ve kayıt',
+  rings: 'match.step_rings', invite: 'match.step_invite' };
 
 // SIMUMAV türü → HEPGO simülatör tipi
 export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'interceptor', vtol: 'vtol', rover: 'rover' };
@@ -163,7 +167,7 @@ export const timeOfDay = v => { if (v == null) return 'day'; if (TIME_MAP[v]) re
 
 // ---------- adım makinesi ----------
 // createWizard({ drones, tracks, pilots, missions? }) → { state, steps(), index(), step(), canNext(), next(), prev(), goto(k), set(k, v), payload(), summary() }
-export function createWizard(data = {}, init = {}) {
+export function createWizard(data = {}, init = {}, { match = false } = {}) {
   const S = {
     drone_id: init.drone_id ?? (data.drones || []).find(d => d.is_default)?.id ?? (data.drones || [])[0]?.id ?? null,
     track_id: init.track_id ?? (data.tracks || []).find(t => t.is_default)?.id ?? (data.tracks || [])[0]?.id ?? null,
@@ -178,17 +182,21 @@ export function createWizard(data = {}, init = {}) {
     site: init.site ?? null,            // HEPGO §26 yer kontrol sahası: {station, radar, radar_km, eo, eo_km} | null (flightsim_gcs_ui createSiteSection)
     defend: init.defend ?? null,        // HEPGO §26 "Yer kontrolünü koru" (sihirbazdan; yalnız INTERCEPTOR) | null — görev kaydı kind='defend' ise sunucu plandan alır
     drive: DRIVES.includes(init.drive) ? init.drive : null,   // §15 kara aracı sürüş biçimi (null → modelin); dron değişince sıfırlanır
+    // §18 karşılaşma (match: true): halka ayarı (match_core.js ringsBody) + davet (oyuncu sayısı, şifre); *_err adım doğrulaması (null = geçerli)
+    rings: init.rings ?? null, rings_err: null, max_players: init.max_players ?? 2, password: init.password ?? '', invite_err: null,
   };
   let i = 0;
   const drone = () => (data.drones || []).find(d => d.id === S.drone_id) || null;
   const type = () => drone()?.type || 'multirotor';
-  const steps = () => STEPS.filter(k => k !== 'launch' || hasLaunchStep(type()));
+  const steps = () => (match ? STEPS_MATCH : STEPS).filter(k => k !== 'launch' || hasLaunchStep(type()));
   const step = () => steps()[Math.min(i, steps().length - 1)];
   const canNext = () => {
     const k = step();
     if (k === 'drone') return S.drone_id != null;
     if (k === 'track') return S.track_id != null;
     if (k === 'pilot') return S.pilot_id != null;
+    if (k === 'rings') return !!S.rings && !S.rings_err;
+    if (k === 'invite') return !S.invite_err && !!S.password;
     return true;   // launch (varsayılanlı), mission (isteğe bağlı)
   };
   const isLast = () => i >= steps().length - 1;
@@ -205,12 +213,15 @@ export function createWizard(data = {}, init = {}) {
     else if (k === 'track_id') { if (v !== S.track_id) S.mission_id = null; S.track_id = v; }   // parkur değişti → görev sıfırlanır (§3 missions.track_id)
     else if (k in S) S[k] = v;
   };
-  const ready = () => S.drone_id != null && S.track_id != null && S.pilot_id != null;
+  const ready = () => (match ? S.drone_id != null && S.track_id != null && !!S.rings && !S.rings_err && !S.invite_err && !!S.password
+    : S.drone_id != null && S.track_id != null && S.pilot_id != null);
+  const launchOf = () => (needsLaunch(type()) ? launchBody(S.launch) : type() === 'interceptor' ? iceptLaunchBody(S.ilaunch) : { method: 'wheels' });
   const payload = () => {
     if (!ready()) return null;
+    if (match) return { drone_id: S.drone_id, track_id: S.track_id, launch: launchOf(), rings: Object.fromEntries(Object.entries(S.rings).filter(([k, v]) => !k.startsWith('_') && v !== '' && v != null && Number.isFinite(Number(v))).map(([k, v]) => [k, Number(v)])), password: S.password, max_players: S.max_players };   // POST /api/match
     const body = { drone_id: S.drone_id, pilot_id: S.pilot_id, track_id: S.track_id, record: { video: !!S.record.video, bin: !!S.record.bin } };
     if (S.mission_id != null) body.mission_id = S.mission_id;
-    body.launch = needsLaunch(type()) ? launchBody(S.launch) : type() === 'interceptor' ? iceptLaunchBody(S.ilaunch) : { method: 'wheels' };   // kopter/heli/kara aracı: alan zorunlu; `wheels` nötr değer; INTERCEPTOR: §27 fırlatıcı
+    body.launch = launchOf();   // kopter/heli/kara aracı: alan zorunlu; `wheels` nötr değer; INTERCEPTOR: §27 fırlatıcı
     if (isRover(type())) body.drive = driveOf(drone(), S.drive);   // §15 kara aracı sürüş biçimi (sunucu: çekirdek SITL rover | rover-skid)
     if (S.power) body.power = { ...S.power };
     if (S.speedup !== 1) body.speedup = S.speedup;
@@ -222,7 +233,7 @@ export function createWizard(data = {}, init = {}) {
   };
   const missionsFor = () => (data.missions || []).filter(m => S.track_id == null || m.track_id === S.track_id);
   return {
-    state: S, steps, index: () => i, step, canNext, isLast, next, prev, goto, set, ready, payload, type, drone, missionsFor, drive: () => driveOf(drone(), S.drive),
+    state: S, match, steps, index: () => i, step, canNext, isLast, next, prev, goto, set, ready, payload, type, drone, missionsFor, drive: () => driveOf(drone(), S.drive),
     track: () => (data.tracks || []).find(t => t.id === S.track_id) || null,
     pilot: () => (data.pilots || []).find(p => p.id === S.pilot_id) || null,
     mission: () => (data.missions || []).find(m => m.id === S.mission_id) || null,

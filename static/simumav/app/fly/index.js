@@ -14,10 +14,12 @@ import { openSession, startFlight, fetchMeta } from './session.js';
 import { canFuel, createPowerStep, powerOf } from './power.js';
 import { createCameraPick } from './camera_pick.js';   // kamera türü kartları (pilot adımı; HEPGO §22.3)
 import { createTargetsStep } from './targets.js';   // HEDEFLER adımı (HEPGO §24)
+import { isMatchType, lobbyHref, parseFlyParam, ringsLine } from './match_core.js';   // §18 çok oyunculu karşılaşma (saf)
+import { createInviteStep, createMatch, createRingsStep, matchMeta, renderJoin, renderLobby, renderRace } from './match.js';
 
 const here = new URL('.', import.meta.url);
 function ensureCss() {
-  for (const f of ['fly-sim.css', 'fly.css', 'power.css']) {
+  for (const f of ['fly-sim.css', 'fly.css', 'power.css', 'match.css']) {
     const href = new URL(f, here).href;
     if (!document.querySelector(`link[href="${href}"]`)) document.head.append(h('link', { rel: 'stylesheet', href }));
   }
@@ -49,9 +51,51 @@ export async function render(view, params = {}, ctx = {}) {
   runLeave();   // önceki sahne/sihirbaz temizliği
   if (ctx.i18n && typeof ctx.i18n === 'function') globalThis.__smT = ctx.i18n;
   const go = ctx.go || (hash => { location.hash = hash; });
-  const fid = params.id ?? params.flight ?? null;
-  if (fid != null) return resumeFlight(view, fid, ctx);
-  return renderWizard(view, { ...ctx, go });
+  // `#/fly` → Tek / Çok oyunculu seçimi (§18) · `/solo` sihirbaz · `/multi` karşılaşma kurucusu · `/join/<kod>` davet · `/match/<id>` salon ·
+  // `/match/<id>/race` yarış · `/<uçuş id>` süren uçuşa dönüş
+  const P = params.flight != null ? { kind: 'flight', id: params.flight } : parseFlyParam(params.id ?? '');
+  const c = { ...ctx, go };
+  if (P.kind === 'flight') return resumeFlight(view, P.id, ctx);
+  if (P.kind === 'join') return renderJoin(view, P.code, c);
+  if (P.kind === 'lobby') return renderLobby(view, P.id, c);
+  if (P.kind === 'race') return renderRace(view, P.id, c, { openSession });
+  if (P.kind === 'solo' || ctx.preset) return renderWizard(view, c);
+  if (P.kind === 'multi') return renderWizard(view, { ...c, match: true });
+  return renderChoice(view, c);
+}
+
+// ======================================================================
+// En başta: TEK OYUNCULU / ÇOK OYUNCULU (§18) + davet bağlantısı/kodu ile katıl + süren karşılaşmaya dön
+// ======================================================================
+const SOLO_ICON = '<svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="6"/><circle cx="10" cy="10" r="6"/><circle cx="38" cy="10" r="6"/><circle cx="10" cy="38" r="6"/><circle cx="38" cy="38" r="6"/><path d="M14 14l6 6M34 14l-6 6M14 34l6-6M34 34l-6-6"/></svg>';
+const MULTI_ICON = '<svg viewBox="0 0 48 48"><ellipse cx="24" cy="24" rx="9" ry="14"/><ellipse cx="24" cy="24" rx="4" ry="7"/><path d="M4 40l8-6M44 40l-8-6M24 4v6"/><circle cx="8" cy="42" r="3"/><circle cx="40" cy="42" r="3"/></svg>';
+async function renderChoice(view, ctx) {
+  const go = ctx.go;
+  const LT = (k, tx, p) => { const r = tr(k, p); return r && r !== k ? r : tx; };
+  const cur = h('div', { class: 'sm-mt-curholder' });
+  const code = h('input', { class: 'mono', type: 'text', placeholder: LT('match.code_ph', 'Davet bağlantısı ya da kodu'), 'aria-label': LT('match.code_ph', 'Davet bağlantısı ya da kodu'), autocomplete: 'off', spellcheck: 'false' });
+  const joinCode = e => {
+    e?.preventDefault?.();
+    const v = String(code.value || '').trim(), m = v.match(/join\/([A-Za-z0-9_-]{8,64})/) || v.match(/^([A-Za-z0-9_-]{8,64})$/);
+    if (!m) { toast(LT('match.err_not_found', 'Davet bağlantısı geçersiz'), 'err'); return; }
+    go(`#/fly/join/${m[1]}`);
+  };
+  const choice = (cls, icon, title, desc, href) => h('button', { type: 'button', class: `sm-mode-card ${cls}`, onclick: () => go(href) }, h('i', { class: 'sm-ico sm-mode-ico', html: icon }), h('b', null, title), h('span', null, desc), h('em', null, LT('match.choose', 'Seç'), ' ›'));
+  clear(view, h('div', { class: 'sm-fly sm-wizard sm-mode' },
+    h('div', { class: 'sm-wizard-head' }, h('h1', null, 'UÇ'), h('p', { class: 'muted' }, LT('match.mode_sub', 'Nasıl uçmak istersin?'))),
+    cur,
+    h('div', { class: 'sm-mode-grid' },
+      choice('solo', SOLO_ICON, LT('match.mode_solo', 'Tek oyunculu'), LT('match.mode_solo_desc', 'Kendi dronun ve parkurunla serbest uçuş, görevler, hedefler.'), '#/fly/solo'),
+      choice('multi', MULTI_ICON, LT('match.mode_multi', 'Çok oyunculu'), LT('match.mode_multi_desc', 'Halka yarışı: arkadaşlarını davet bağlantısı ve şifreyle çağır, ilk bitiren kazanır.'), '#/fly/multi')),
+    h('form', { class: 'sm-mode-join', onsubmit: joinCode }, h('span', { class: 'muted' }, LT('match.have_invite', 'Davetin mi var?')), code, h('button', { class: 'btn', type: 'submit' }, LT('match.join_btn', 'Katıl')))));
+  try {
+    const m = await matchMeta(true);
+    if (m?.current && cur.isConnected) {
+      clear(cur, h('div', { class: 'sm-open-flight sm-mt-current', role: 'status' }, h('span', { class: 'sm-of-ico', 'aria-hidden': 'true' }, '◎'),
+        h('div', { class: 'sm-of-text' }, h('b', null, LT('match.current', 'Süren karşılaşmanız var')), h('span', null, tr(`match.state_${{ LOBI: 'lobby', HAZIRLIK: 'prep', GERI_SAYIM: 'countdown', YARIS: 'race' }[m.current.state] || 'lobby'}`))),
+        h('div', { class: 'btn-row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => go(lobbyHref(m.current.id)) }, LT('match.back_lobby', 'Salona dön')))));
+    }
+  } catch { /* meta yok: kart gösterilmez */ }
 }
 
 async function resumeFlight(view, fid, ctx) {
@@ -68,16 +112,21 @@ async function resumeFlight(view, fid, ctx) {
 // Sihirbaz
 // ======================================================================
 async function renderWizard(view, ctx) {
-  const root = h('div', { class: 'sm-fly sm-wizard' });
+  const isMatch = !!ctx.match;   // §18 çok oyunculu karşılaşma kurucusu (#/fly/multi)
+  let matchLimits, currentMatch = null;
+  const root = h('div', { class: `sm-fly sm-wizard ${isMatch ? 'sm-wizard-match' : ''}` });
   clear(view, h('div', { class: 'sm-fly sm-loading' }, tr('Hangar, parkurlar ve mürettebat yükleniyor…')));
   let data, openFlight = null;
   try {
-    const [hangar, tracks, crew, missions, meta, cur] = await Promise.all([net.get('/api/hangar'), net.get('/api/tracks'), net.get('/api/crew'), net.get('/api/missions').catch(() => ({ missions: [] })), ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), fetchCurrent()]);
+    const [hangar, tracks, crew, missions, meta, cur, mm] = await Promise.all([net.get('/api/hangar'), net.get('/api/tracks'), net.get('/api/crew'), net.get('/api/missions').catch(() => ({ missions: [] })), ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), fetchCurrent(),
+      isMatch ? matchMeta(true) : Promise.resolve(null)]);
     data = { drones: hangar?.drones || hangar || [], tracks: tracks?.tracks || tracks || [], pilots: crew?.pilots || crew || [], missions: missions?.missions || missions || [], meta: meta || {} };
+    if (isMatch) { data.drones = data.drones.filter(d => isMatchType(d.type)); data.missions = []; matchLimits = mm?.limits || undefined; currentMatch = mm?.current || null; }   // §18: kara aracı yok
     openFlight = cur;
   } catch (err) { toastError(err); clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Veriler alınamadı: {e}', { e: err.message })), h('button', { class: 'btn primary', type: 'button', onclick: () => renderWizard(view, ctx) }, 'Yeniden dene'))); return; }
-  if (!data.drones.length) { clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Hangarınız boş. Önce bir dron ekleyin.')), h('button', { class: 'btn primary', type: 'button', onclick: () => ctx.go('#/hangar') }, 'Hangar\'a git'))); return; }
-  const W = createWizard(data, ctx.preset || {});
+  if (isMatch && currentMatch) { ctx.go(lobbyHref(currentMatch.id)); return; }   // bitmemiş karşılaşma: salona
+  if (!data.drones.length) { clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr(isMatch ? 'match.no_drone' : 'Hangarınız boş. Önce bir dron ekleyin.')), h('button', { class: 'btn primary', type: 'button', onclick: () => ctx.go('#/hangar') }, 'Hangar\'a git'))); return; }
+  const W = createWizard(data, ctx.preset || {}, { match: isMatch });
   const camPick = createCameraPick({ h, tr, getDrone: () => W.drone() });
   const PREVIEW_URL = '/sim/flightsim3d.js';
   let preview = null, previewBox = null, previewType = null, previewModelId = null, destroyed = false;
@@ -87,11 +136,12 @@ async function renderWizard(view, ctx) {
   const body = h('div', { class: 'sm-step-body' });
   const prevBtn = h('button', { class: 'btn sm-nav-btn', type: 'button', onclick: () => { if (W.prev()) draw(); } }, '‹ ', 'Geri');
   const nextBtn = h('button', { class: 'btn primary sm-nav-btn', type: 'button', onclick: () => { if (W.next()) draw(); } }, 'İleri', ' ›');
-  const startBtn = h('button', { class: 'sm-start-btn', type: 'button', hidden: true, onclick: () => start() }, h('span', { class: 'sm-start-ring' }), h('b', null, 'BAŞLA'));
+  const startBtn = h('button', { class: `sm-start-btn ${isMatch ? 'sm-mt-create' : ''}`, type: 'button', hidden: true, onclick: () => start() }, h('span', { class: 'sm-start-ring' }), h('b', null, isMatch ? tr('match.create_btn') : 'BAŞLA'));
   const foot = h('div', { class: 'sm-wizard-foot' }, prevBtn, h('div', { class: 'sm-summary' }), nextBtn, startBtn);
   const countdown = h('div', { class: 'sm-countdown', hidden: true }, h('b', null, '3'), h('small', null, ''));
   const openBox = h('div', { class: 'sm-open-flight-holder' });
-  root.append(h('div', { class: 'sm-wizard-head' }, h('h1', null, 'UÇ'), h('p', { class: 'muted' }, 'Dronunu seç, parkuru belirle, kalk.')), openBox, stepsBar, body, foot, countdown);
+  root.append(h('div', { class: 'sm-wizard-head' }, h('button', { class: 'btn sm sm-mt-backbtn', type: 'button', onclick: () => ctx.go('#/fly') }, '← ', tr('match.mode_back')),
+    h('h1', null, isMatch ? tr('match.multi_title') : 'UÇ'), h('p', { class: 'muted' }, isMatch ? tr('match.multi_sub') : 'Dronunu seç, parkuru belirle, kalk.')), openBox, stepsBar, body, foot, countdown);
   clear(view, root);
 
   // ---------- "Süren uçuşunuz var" kartı: GET /api/fly/current ya da BAŞLA → 409 flight_open ----------
@@ -134,6 +184,7 @@ async function renderWizard(view, ctx) {
     const siteTxt = sv ? `◈ ${sv}${W.state.defend || m?.kind === 'defend' ? ` · ${tr('site.defend')}` : ''}` : null;   // HEPGO §26
     const drv = d && isRover(d.type) ? DRIVE_SM.find(r => r[0] === W.drive()) : null;
     const drvTxt = drv ? (() => { const r = tr(drv[1]); return r && r !== drv[1] ? r : drv[2]; })() : null;   // §15 sürüş biçimi
+    if (isMatch) { clear(foot.querySelector('.sm-summary'), [d ? d.name : null, t ? t.name : null, W.state.rings && !W.state.rings_err ? `◎ ${ringsLine({ time_limit_min: 15, diameter_m: '—', radius_m: '—', ...W.state.rings })}` : null, W.state.max_players ? `${W.state.max_players} ${tr('match.players').toLocaleLowerCase()}` : null].filter(Boolean).join(' · ')); return; }
     clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : d?.type === 'interceptor' ? iceptLaunchLabel(W.state.ilaunch, tr) : drvTxt, pwTxt, m ? m.name : null, siteTxt, tg, p ? p.name : null].filter(Boolean).join(' · '));
   };
   // ---------- §10 güç ve yakıt adımı (dron değişince ön ayar sıfırlanır) ----------
@@ -330,7 +381,9 @@ async function renderWizard(view, ctx) {
     if (k === 'drone' && preview) preview.setLaunch?.(null);
     dropTargetsUi();   // hedef adımına dönülürse yeniden kurulur
     body.dataset.step = k;
-    ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, power: stepPower, mission: stepMission, site: stepSite, targets: stepTargets, pilot: stepPilot })[k]?.();
+    ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, power: stepPower, mission: stepMission, site: stepSite, targets: stepTargets, pilot: stepPilot,
+      rings: () => body.append(createRingsStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el),          // §18 halkalar
+      invite: () => body.append(createInviteStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el) })[k]?.();   // §18 davet (oyuncu sayısı + şifre)
     drawSteps(); drawFoot();
     root.classList.remove('sm-anim'); void root.offsetWidth; root.classList.add('sm-anim');
   };
@@ -338,8 +391,21 @@ async function renderWizard(view, ctx) {
   // ---------- BAŞLA: tam ekran → POST /api/fly/start → sahne. 3-2-1 geri sayımı artık sahnede (HEPGO §27.2 giriş sekansı: 100 m bakış + bip;
   // eski sihirbaz geri sayımı COUNTDOWN_S onunla birleştirildi) — burada yalnız "Hazır ol…" perdesi ----------
   let starting = false;
+  const startMatch = async () => {   // §18: POST /api/match → bekleme salonu
+    starting = true; startBtn.disabled = true;
+    try {
+      const m = await createMatch(W.payload());
+      toast(tr('match.created_toast'));
+      preview?.dispose(); preview = null; destroyed = true;
+      ctx.go(lobbyHref(m.id));
+    } catch (err) {
+      toast(err?.error === 'match_open' ? tr('match.err_match_open') : err.message, 'err'); starting = false; startBtn.disabled = false;
+      if (err?.error === 'match_open' && err.detail?.match_id) ctx.go(lobbyHref(err.detail.match_id));
+    }
+  };
   const start = async () => {
     if (starting || !W.ready()) return;
+    if (isMatch) return startMatch();
     starting = true; startBtn.disabled = true;
     document.documentElement.requestFullscreen?.().catch(() => {});   // kullanıcı tıklaması içinde (reddedilirse sessiz)
     const payload = { ...W.payload(), camera: camPick.value };   // §22.3 kamera türü

@@ -1,6 +1,6 @@
 """SIMUMAV ASGI uygulaması (docs/simumav.md §1–§2, §7 başlıklar/CSP).
 
-Yollar: `/api/*` router'lar; `/ws/fly/{sim_id}` (+ HEPGO `/ws/drone/sim/{id}`, `/ws/drone/live`); statik:
+Yollar: `/api/*` router'lar; `/ws/fly/{sim_id}` (+ HEPGO `/ws/drone/sim/{id}`, `/ws/drone/live`), `/ws/match/{id}` (§18 karşılaşma); statik:
   `/`            → static/simumav/site (tanıtım; index.html)      `/app` → static/simumav/app (oyun kabuğu; index.html)
   `/brand`       → static/simumav/brand                            `/vendor`, `/static/vendor` → static/vendor (three.js, xterm …)
   `/static/models` → static/models (dahili GLB)                    `/sim` → static/js/modules (HEPGO simülatör ön yüz modülleri)
@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config  # noqa: F401 — ilk: çekirdek yollarını yönlendirir
 from . import bridge, db
-from .routers import crew, fly, hangar, meta, missions, ops, session, settings, support, tracks
+from . import match as karsilasma
+from .routers import crew, fly, hangar, match, meta, missions, ops, session, settings, support, tracks
 
 log = logging.getLogger('simumav')
 # CSP (§7): inline script yok; 'unsafe-eval' ZORUNLU: Cesium 1.145 CDN paketi (replay3d.js / görev harita katmanı) içindeki Knockout `(0,eval)("this")`
@@ -47,6 +48,7 @@ async def lifespan(app):
     bridge.cekirdek_baslat()
     log.info('SIMUMAV %s · veri %s · SITL %s · dev login %s', config.VERSION, config.DATA_DIR, 'açık' if config.SITL_ENABLED else 'SAHTE', config.DEV_LOGIN)
     yield
+    await karsilasma.MANAGER.kapat_hepsi()   # §18: süren karşılaşmalar IPTAL sunucu_kapaniyor + oyuncu uçuşları kapanır
     await bridge.hepsini_kapat()
 
 
@@ -87,7 +89,7 @@ async def _genel(request, e):
 
 
 for r in (session.router, settings.router, hangar.router, crew.router, tracks.router, missions.router, fly.router, fly.compat, ops.router, support.router, meta.router,
-          fly.ws_router):
+          match.router, fly.ws_router, match.ws_router):
     app.include_router(r)
 
 

@@ -667,3 +667,114 @@ Ortak çekirdek (`app/flightsim.py` reset `temiz=False`, MP köprü kalp atış�
 görevi korur, Mission Planner bağlantısı kopmaz. Simülasyon hızı 0,25× / 0,5× (`/api/meta power.speedups` sunucu sınırıyla; `bridge.speedup_dogrula`,
 sihirbaz `S.speedup !== 1` ise gövdeye). Kamera seçiminde "Kamera yok" (`camera_pick.js` 'none'; `camera.none`, `camera.none_desc`, `camera.osd_none`
 7 dil): PiP penceresi kurulmaz, gimbal kipi kapalı. Harekât kartı başlığında onaylı ↺ Sıfırla (ortak `flightsim_panel.js`).
+
+## 18. ÇOK OYUNCULU KARŞILAŞMA — halka yarışı (İSTEK 66 aşama 2; HEPGO docs/ucus-simulatoru.md §33 çekirdeği ortak)
+
+Kullanıcı isteği: Uç bölümünde **en başta "Tek oyunculu / Çok oyunculu"** seçimi (tek oyunculu = mevcut akış aynen). Çok oyunculuda kurucu karşılaşmayı
+ayarlar (HEPGO'daki radar/EO/yer kontrol yok; halkalar oyundan önce: **min/max irtifa, halka sayısı**; harita/araç mevcut sihirbaz adımlarından); sistem
+bir **davet bağlantısı** üretir, **şifreyi kurucu belirler**; davetli bağlantıyı açar → Mastertool hesabıyla girer (giriş yapmışsa e-postası görünür) →
+şifreyi girer → **LOBİ**. Kurucu herkes hazır olunca **Başlat**; herkes aynı haritada **farklı başlangıç noktalarında**; yarış başlayana kadar ARM/kalkış
+kilitli; **ilk tüm halkaları bitiren kazanır**, herkes sonuç ekranını görür. SIMUMAV'da e-posta gönderim altyapısı yoktur: bağlantı + şifre kurucu
+tarafından elle paylaşılır ("e-posta adımı" = hesapla giriş/kimlik).
+
+### 18.1 Dosyalar
+| Katman | Dosya | Not |
+|---|---|---|
+| Ortak saf çekirdek | `app/flightsim_match_core.py` (HEPGO §33) | halka ayarı/üretimi, başlangıç noktaları, geçiş denetimi, durum makinesi, sıralama — **değiştirilmedi** |
+| SIMUMAV çalışma zamanı | `app/simumav/match.py` | `Mac` (lobi + çekirdek `Karsilasma` bağlama, oyuncu uçuşları, tele kancası, komut kapısı, WS yayını, DB), `Yonetici`, şifre özeti, deneme sınırı |
+| REST + WS | `app/simumav/routers/match.py` | `/api/match…`, `WS /ws/match/{id}` |
+| Köprü ekleri | `app/simumav/bridge.py` | `ucus_baslat(start=, match_id=)`, `MAC_REZERV`, `aktif_sayisi` (normal + karşılaşma + ayrılmış), karşılaşmada hız 1× bekçisi |
+| Komut sınırı | `app/simumav/routers/fly.py` `guvenlik_komut(…, match)` | karşılaşma oturumunda `speed ≠ 1` ve `set_home` reddi (WS, REST, hub) |
+| Ön yüz saf | `static/simumav/app/fly/match_core.js` | rota ayrıştırma, doğrulama (i18n anahtarı), şifre önerisi, davet bağlantısı, salon görünüm modeli, sonuç satırları |
+| Ön yüz | `fly/match.js` (halkalar/davet adımları, davet sayfası, salon, yarış ekranı), `fly/match_hud.js` (yarış katmanı), `fly/match.css` | ortak `/sim/flightsim_match.js` (saat, geri sayım, canlı sıralama) + `/sim/flightsim_match3d.js` (3B halkalar + diğer oyuncular) |
+| Değişen | `fly/index.js` (seçim ekranı, `#/fly/*` yönlendirme, kurucu sihirbazı), `fly/wizard.js` (`createWizard(…, {match:true})`, `STEPS_MATCH`), `fly/session.js` (`ctx.match` kancası), `app.js` (oturumsuz derin bağlantı → `/?giris=1&sonra=…`), `site/js/auth.js` (`nextTarget`, `?giris` → giriş penceresi) | |
+
+### 18.2 Rotalar (`#/fly/…`; kabuk rota tablosu değişmedi)
+`#/fly` seçim ekranı (Tek / Çok oyunculu + "Davetin mi var?" bağlantı/kod kutusu + süren karşılaşma kartı) · `#/fly/solo` mevcut sihirbaz ·
+`#/fly/multi` kurucu sihirbazı · `#/fly/join/<kod>` davet sayfası · `#/fly/match/<id>` bekleme salonu / sonuç · `#/fly/match/<id>/race` yarış ekranı ·
+`#/fly/<uçuş id>` süren uçuşa dönüş (eskisi gibi). Davet bağlantısı: `https://simumav.com/app/#/fly/join/<kod>`. Oturumsuz açılırsa kabuk
+`/?giris=1&sonra=/app/%23/fly/join/<kod>` adresine gider; site giriş penceresini açar, girişten sonra `sonra`'ya döner (yalnız `/app` altı; açık
+yönlendirme yok).
+
+### 18.3 Akış
+1. **Kurucu sihirbazı** (`createWizard(data, {}, {match:true})`): Dron (kara aracı listelenmez) → Parkur → (Kalkış: sabit kanat/VTOL/INTERCEPTOR) →
+   **Halkalar** (sayı 1–30, min/max yükseklik 5–400 m, çap 4–80 m, parkur yarıçapı 80–3000 m, süre 2–60 dk, parkur tohumu 🎲; sağda sunucu önizlemesi
+   `POST /api/match/rings-preview` kuş bakışı + başlangıç noktaları + yükseklik profili) → **Davet** (en çok oyuncu 2…sınır, şifre — 🎲 6 karakterlik
+   öneri, kurucu değiştirebilir) → **OLUŞTUR** → `POST /api/match` → salon. Güç/görev/yer kontrol/hedef/pilot adımı yoktur: herkes kurucunun dronuyla
+   (aynı model, parametre, güç ayarı) ve **kendi varsayılan pilotuyla** uçar.
+2. **Davetli**: bağlantı → (giriş) → davet sayfası: "Giriş yapılan hesap: e-posta" (+ başka hesapla gir), kurucu, araç, parkur, halka sayısı, doluluk →
+   şifre → `POST /api/match/join` → salon. Yanlış şifre 403 + kalan hak; sınır aşımı 429 (bekleme dakikası).
+3. **Salon** (`WS /ws/match/{id}` canlı + 15 sn yoklama): oyuncular (renk, çevrimiçi noktası, Kurucu rozeti, Hazır/Bekleniyor; kurucu ✕ çıkarır —
+   çıkarılan aynı karşılaşmaya yeniden giremez), boş yerler, ayarlar + parkur çizimi, davet kutusu (bağlantı + Kopyala; kurucuda şifre + Kopyala +
+   "Bağlantı + şifreyi kopyala" + Yeni şifre — şifre yalnız oluşturan tarayıcıda `sessionStorage`'da görünür, sunucu düz şifreyi saklamaz), davetlide
+   **Hazırım**, kurucuda **BAŞLAT** (≥ 2 oyuncu ve herkes hazır; sunucu `can_start`), Ayrıl / İptal.
+4. **BAŞLAT** (`POST /{id}/start`): denetimler → çekirdek `Karsilasma(kurucu, katılanlar)` kurulur ve herkes "geldi" yapılır → **HAZIRLIK**: her
+   oyuncuya `bridge.ucus_baslat(..., start={lat, lon, yaw_deg}, match_id)` ile kendi uçuşu (flights satırı `match_id`, .bin kaydı açık, MP köprüsü YOK).
+   Başlangıç noktaları `core.baslangic_noktalari` (dikey kalkanlar ≥ 40 m çember, sabit kanat pist yönüne dik şeritler). Salon sayfası oyuncunun
+   uçuşu açılınca yarış ekranına geçer (yarıştan "Geri" ile dönüldüyse kendiliğinden geçmez → "Yarışa dön").
+5. **Yarış ekranı**: `GET /api/fly/<flight_id>` → `openSession(..., {match})`. 3B dünya kurulup oturum HAZIR olunca WS `ready`; herkes hazır →
+   **GERI_SAYIM** (`start_at` sunucu saati; istemci `pong.now` ile saat farkını kestirir) → son 3 sn'de oturumun giriş sekansı (3‑2‑1) herkeste aynı
+   anda → **YARIS**: komut kapısı açılır. Üst şerit: sıradaki halka, yön oku, mesafe, yükseklik farkı, süre; sağda canlı sıralama; halka geçişi /
+   ters yön / bitiş bildirimleri. Halka geçişi **sunucuda** doğrulanır (çekirdek `HalkaIzleyici`; tele kancası, her telemetri karesinde).
+6. **BITTI** (ilk bitiren `birinci_bitirdi` ya da süre `sure`): WS `result` → herkeste sonuç penceresi (sıra, süre, halka x/n, sıradakine mesafe, azami
+   hız, durum) → "Salona dön" → salonda sonuç tablosu. Oyuncu uçuşları `KAPANIS_GECIKME_S` (8 sn) sonra `bridge.ucus_durdur(fid, 'karsilasma_bitti')`
+   ile kapanır (flights satırı tamamlanır, Operasyon'da görünür); yarış ekranındaki "Uçuş sona erdi" perdesi bu nedenle gösterilmez.
+
+### 18.4 REST / WS sözleşmesi
+- `GET /api/match/meta` → `{limits{players[2, max], count, alt_m, diameter_m, radius_m, time_limit_min, password[4, 32], types, defaults{dikey, ucak},
+  countdown_s, lobby_timeout_s, attempts}, capacity{max, used}, current{id, state, host}|null}`.
+- `POST /api/match/rings-preview {drone_id, track_id, rings, players?}` → `{cfg, rings, starts}` (kendi dron/parkur kaydı; başkasınınki 404).
+- `POST /api/match {drone_id, track_id, launch?, camera?, rings, password, max_players}` → 201 anlık görüntü (+ `code`); 422 geçersiz (kara aracı,
+  kısa şifre, oyuncu sınırı), 409 `match_open`, 429 (saatte 10 oluşturma / sunucuda açık karşılaşma tavanı).
+- `GET /api/match` son 20 karşılaşmam · `GET /api/match/{id}` (yalnız oyuncular; değilse 404; bellekte yoksa DB satırı `live:false`).
+- `GET /api/match/invite/{code}` → `{code, joined, id?, state, host_name, track, world_mode, drone{name,type}, rings, players, max_players, me{id,
+  email, name}, kicked}` (şifre ve diğer oyuncuların adları/e-postaları yok); bilinmeyen kod 404 (IP başına başarısız sorgu 30/10 dk), bitmiş 409.
+- `POST /api/match/join {code, password}` → anlık görüntü · 403 `bad_password {remaining}` · 429 `too_many_attempts {retry_after}` · 404 · 409
+  `full | started | match_open` · 403 `kicked`.
+- `POST /api/match/{id}/ready {ready}` · `/leave` (kurucu → IPTAL `kurucu_ayrildi`) · `/kick {user_id}` · `/start` · `/cancel` · `/password {password}`.
+  `start` hataları: 403 kurucu değil · 409 `not_enough | not_ready | flight_open` (süren uçuşu olan oyuncu adlarıyla) · 429 `server_full {need, free,
+  retry_after}` "Sunucuda yeterli simülatör yuvası yok: N oyuncunun her biri kendi simülatörünü alır, şu an M boş yuva var…".
+- Anlık görüntü: `{id, code, state, reason, host_id, max_players, created_at, settings{drone{name,type,model_key,color}, track{name,lat,lon,
+  world_mode,radius_m,weather,time_of_day}, launch, camera, type}, rings_cfg, rings[{i, lat, lon, x, y, agl_m, alt_msl, yaw_deg, nx, ny, radius_m}],
+  center{lat, lon, alt}, players[{id, name, host, status, ready, online, flight_id, session_id, start, rings, total, next, dist_next_m, finished,
+  max_speed_ms, crashes}], can_start, prepare_at, start_at, ended_at, winner, result, countdown_s, now, live, me}`.
+- `WS /ws/match/{id}` (çerez; oyuncu değilse `{t:'error', error:'forbidden'}` + 4403; 20 mesaj/sn): sunucu → `hello{match, me}`, `match{match}`,
+  `player`, `state`, `countdown{start_at}`, `pos{ts, p[{id, lat, lon, alt_msl, alt_rel, yaw, roll, pitch, gs, armed, rings, next, dist}]}` (10 Hz),
+  `ring{id, i, total, elapsed_s}`, `finish`, `wrong_way`, `result{result}`, `pong{now}`; istemci → `ping`, `ready`.
+
+### 18.5 Güvenlik ve kaynak sınırları
+- **Şifre**: 4–32 karakter, kontrol karakteri yok; `hashlib.scrypt` (n=2¹⁴, r=8, p=1, 16 bayt tuz) → `matches.pass_hash = scrypt$<tuz>$<özet>`;
+  doğrulama `hmac.compare_digest`, iş parçacığında. Düz şifre hiçbir yanıtta/günlükte yok.
+- **Kaba kuvvet** (`match_attempts`, 15 dk pencere): kullanıcı × karşılaşma 5 yanlış, IP 20 yanlış, karşılaşma toplam 60 yanlış → 429
+  `too_many_attempts` (doğru şifre de reddedilir); yanlış denemeler `audit match_bad_password`. 1 günden eski denemeler açılışta silinir.
+- **Davet kodu**: `secrets.token_urlsafe(16)` (128 bit); bilinmeyen kod denemesi IP başına oran sınırlı (`match_code_fail` 30/10 dk).
+- **Sınırlar**: oyuncu ≤ `min(8, SIMUMAV_MATCH_MAX_PLAYERS, SIMUMAV_MAX_FLIGHTS)` (kurucu dahil); kullanıcı aynı anda tek bitmemiş karşılaşmada
+  (kurucu/oyuncu); sunucuda ≤ `SIMUMAV_MATCH_MAX_OPEN` (30) bitmemiş karşılaşma; oluşturma saatte 10/kullanıcı.
+- **Temizlik**: lobi 30 dk'da başlamazsa IPTAL `zaman_asimi`; kurucu `SIMUMAV_MATCH_ABANDON_S` (300 sn) görünmezse (salon WS'i yok, GET yok) IPTAL
+  `terk_edildi`; görünmeyen davetli lobiden düşer (yeniden şifreyle girer); hazırlıkta 150 sn'de hazır olmayan düşer (çekirdek); biten karşılaşma 15 dk
+  bellekte, sonra yalnız DB; sunucu yeniden başlarsa bitmemiş satırlar IPTAL `sunucu_yeniden_basladi`, kapanışta süren karşılaşmalar `sunucu_kapaniyor`.
+- **SITL tavanı** (`SIMUMAV_MAX_FLIGHTS` = çekirdek `SIM_MAX_SESSIONS`; çekirdeğin `SIM_MATCH_MAX_SESSIONS`'ı aynı değere eşitlenir): her oyuncu kendi
+  SITL'ini alır; BAŞLAT'ta n oyuncu için n boş yuva yoksa 429 (anlaşılır mesaj). Yuvalar oturumlar açılana dek `bridge.MAC_REZERV` ile ayrılır;
+  `aktif_sayisi()` = normal + karşılaşma + ayrılmış → normal uçuşların 429 "bekleme odası" denetimi de karşılaşmaları sayar.
+- **Adalet**: yarış başlayana kadar ARM / kalkış / görev başlatma / sanal kumanda RC'si reddedilir (çekirdek komut kapısı: web WS/REST ve hub); MP TCP
+  köprüsü açılmaz (ham MAVLink kapıyı aşamasın); simülasyon hızı 1× sabit (istek reddi + bekçi geri yazar; süre duvar saatiyle ölçülür);
+  `set_home` reddi; yalnız sıradaki halka, doğru yönde ve halka içinden geçiş sayılır; > 250 m sıçrama (Sıfırla) geçiş sayılmaz.
+- Başkasının oturumuna komut 404 (oturum sahipliği); salon/yarış WS'i yalnız oyunculara.
+
+### 18.6 Veritabanı göçü (v3; idempotent)
+`SCHEMA` içinde `CREATE TABLE IF NOT EXISTS`: `matches (id, code UNIQUE, host_id, pass_hash, state, reason, max_players, settings, rings_cfg, rings,
+result, winner_id, created_at, started_at, ended_at)`, `match_players (match_id, user_id, name, is_host, status, flight_id, rank, rings, time_s,
+joined_at; PK match_id+user_id)`, `match_attempts (id, match_id, user_id, ip, ok, ts)` + indeksler; `flights.match_id` sütunu `PRAGMA table_info`
+denetimiyle `ALTER TABLE … ADD COLUMN` (yalnız yoksa) + `ix_flights_match`. `schema_version` 3 (veri dönüşümü yok; geri alınması gerekmez).
+Karşılaşma uçuşunda `flights.drone_id` / `track_id` yalnız kayıt oyuncunun kendisininse yazılır (kurucunun dronu/parkuru başkasının hesabına bağlanmaz;
+anlık görüntüde adları durur); `snapshot.match = {id, start}`.
+
+### 18.7 Testler ve görsel doğrulama
+- `.venv/bin/python -m tests.test_simumav_match` (sahte kinematik, 5 hesap): meta sınırları, önizleme deterministik, oluşturma doğrulaması, şifre özeti,
+  davet özeti, bilinmeyen kod 404, yanlış şifre 403 + kalan hak, kaba kuvvet 429, katılım, oyuncu olmayan 404 / WS 4403, dolu 409, çıkarılan geri
+  giremez, hazır olmadan / açık uçuşla / yuva yetmezken başlatma reddi, BAŞLAT → farklı başlangıçlar + flights.match_id + MP yok, komut kapısı + hız
+  1×, WS ready → geri sayım → YARIS → halka 1‑2‑3 → kazanan → iki WS'de sonuç → uçuşlar kapanır, DB BITTI + sıralama, geçmiş, iptal / kurucu ayrılır /
+  terk edilen lobi, göç idempotent.
+- `node tests/test_simumav_match.mjs` (match_core.js + `createWizard({match:true})` + 7 dil anahtar/yer tutucu denetimi).
+- Görsel: `.venv/bin/python -m tests.simumav_match_e2e` → `/tmp/smmatch-shots/` (seçim ekranı, kurucu halkalar / davet-şifre, salon bağlantı+şifre,
+  oturumsuz davet → giriş, davetli şifre ekranı + yanlış şifre, salon hazır, hazırlık bekleme, yarış HUD'u (iki taraf), sonuç (iki taraf), salonda sonuç).

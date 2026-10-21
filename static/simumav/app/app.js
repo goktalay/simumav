@@ -47,7 +47,8 @@ async function loadSession() {
     const s = await api.get('/api/session');
     state.user = s.user; state.pilotsCount = s.pilots_count ?? 0;
   } catch (e) {
-    if (e.status === 401 || e.status === 403) { location.href = '/'; return false; }   // tanıtım/giriş sayfası
+    // tanıtım/giriş sayfası; derin bağlantı (ör. §18 davet #/fly/join/<kod>) girişten sonra geri açılır
+    if (e.status === 401 || e.status === 403) { const h = location.hash && location.hash !== '#/menu' ? location.hash : ''; location.href = h ? `/?giris=1&sonra=${encodeURIComponent(`/app/${h}`)}` : '/'; return false; }
     toastErr(e); state.user = { display_name: '—' };
   }
   try { Object.assign(state.settings, await api.get('/api/settings')); } catch { /* varsayılanlar */ }

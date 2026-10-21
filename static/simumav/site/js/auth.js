@@ -23,6 +23,14 @@ function deviceName() {
   return `SIMUMAV Web (${os})`;
 }
 
+// Girişten sonra dönülecek yer (§18 davet bağlantısı): `?giris=1&sonra=/app/%23/fly/join/<kod>` — yalnız aynı kökende /app altı (açık yönlendirme yok)
+export function nextTarget(search = '') {
+  let v = null;
+  try { v = new URLSearchParams(search).get('sonra'); } catch (e) { v = null; }
+  if (!v || !/^\/app(\/|$|#|\?)/.test(v) || v.startsWith('//') || /[\\\s]/.test(v)) return '/app';
+  return v;
+}
+
 class ApiError extends Error { constructor(code, status, retry) { super(code); this.code = code; this.status = status; this.retry = retry; } }
 
 async function call(url, body, headers = {}) {
@@ -90,7 +98,7 @@ export function initAuth({ t, onEvent = () => {} }) {   // onEvent(ad, params): 
     const r = await fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin' });
     if (!r.ok) throw new ApiError('session', r.status);
     if (!body.dev_user) try { onEvent('login', { method: 'mastertool', transport_type: 'beacon' }); } catch (e) { /* analitik yok */ }
-    location.href = '/app';
+    location.href = nextTarget(location.search);
   }
 
   forms.login.addEventListener('submit', async e => {
@@ -153,6 +161,11 @@ export function initAuth({ t, onEvent = () => {} }) {   // onEvent(ad, params): 
     const name = forms.login.email.value.trim() || 'dev';
     try { await openSession({ dev_user: name.split('@')[0] }); } catch (err) { say('err', errText(err)); }
   });
+
+  // Davet bağlantısından oturumsuz gelindi (`?giris=1&sonra=…`): oturum varsa doğrudan hedefe, yoksa giriş penceresi açılır
+  if (new URLSearchParams(location.search).has('giris')) {
+    fetch('/api/session', { credentials: 'same-origin' }).then(r => { if (r.ok) location.replace(nextTarget(location.search)); else show('login'); }).catch(() => show('login'));
+  }
 
   return { show, close };
 }

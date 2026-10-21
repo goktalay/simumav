@@ -141,6 +141,45 @@ CREATE TABLE IF NOT EXISTS support_files (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_support_files_t ON support_files(user_id, ticket_id);
+-- ÇOK OYUNCULU KARŞILAŞMA (docs/simumav.md §18; halka yarışı, çekirdek app/flightsim_match_core.py). Durum makinesi bellekte (match.py);
+-- satır her durum değişiminde güncellenir. Davet kodu tahmin edilemez (secrets.token_urlsafe(16)); şifre yalnız scrypt özeti (düz değer saklanmaz).
+CREATE TABLE IF NOT EXISTS matches (
+    id INTEGER PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,                  -- davet kodu (bağlantı /app/#/match/join/<code>)
+    host_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    pass_hash TEXT NOT NULL,                    -- scrypt$<tuz hex>$<özet hex>
+    state TEXT NOT NULL,                        -- LOBI | HAZIRLIK | GERI_SAYIM | YARIS | BITTI | IPTAL
+    reason TEXT,                                -- bitiş / iptal nedeni (core REASON + terk_edildi)
+    max_players INTEGER NOT NULL,
+    settings TEXT NOT NULL DEFAULT '{}',        -- JSON: dron + parkur anlık görüntüsü, kalkış, kamera
+    rings_cfg TEXT NOT NULL DEFAULT '{}',       -- JSON: core.halka_ayar_dogrula çıktısı (+ seed)
+    rings TEXT NOT NULL DEFAULT '[]',           -- JSON: core.halkalar_uret
+    result TEXT,                                -- JSON: core.Karsilasma.sonuc() (BITTI)
+    winner_id INTEGER,
+    created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_matches_host ON matches(host_id, created_at);
+CREATE TABLE IF NOT EXISTS match_players (
+    match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    is_host INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,                       -- geldi | hazirlaniyor | hazir | ayrildi | cikarildi | dustu (core oyuncu durumları)
+    flight_id INTEGER,                          -- oyuncunun flights kaydı (yarış oturumu)
+    rank INTEGER, rings INTEGER, time_s REAL,
+    joined_at TEXT NOT NULL,
+    PRIMARY KEY (match_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS ix_match_players_user ON match_players(user_id);
+CREATE TABLE IF NOT EXISTS match_attempts (     -- şifre denemeleri (kaba kuvvet sınırı; 1 günden eskiler silinir)
+    id INTEGER PRIMARY KEY,
+    match_id INTEGER,
+    user_id INTEGER,
+    ip TEXT,
+    ok INTEGER NOT NULL DEFAULT 0,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_match_attempts ON match_attempts(ts);
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 """
 # [(sürüm, [sql, …])] — idempotent. v2 (HEPGO §25): "interceptor" artık 4 pervaneli tailsitter; eski sabit kanat jet/delta interceptor dronları
@@ -150,8 +189,11 @@ _MIGRATIONS = [
     (2, [f"UPDATE drones SET type = 'plane' WHERE type = 'interceptor' AND model_key IN {_ESKI_ICEPT}",
          "UPDATE flights SET snapshot = json_set(snapshot, '$.drone.type', 'plane') WHERE json_valid(snapshot) "
          f"AND json_extract(snapshot, '$.drone.type') = 'interceptor' AND json_extract(snapshot, '$.drone.model_key') IN {_ESKI_ICEPT}"]),
+    # v3 (§18 çok oyunculu karşılaşma): matches / match_players / match_attempts tabloları SCHEMA'da (CREATE IF NOT EXISTS); flights.match_id sütunu
+    # init() içinde PRAGMA denetimiyle eklenir (ALTER yalnız yoksa → idempotent). Veri dönüşümü yok.
+    (3, []),
 ]
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # TR TEST Kalecik (Ankara) UAV test sahası — tesisin resmî koordinatı kamuya açık kaynaklarda yok; Kalecik ilçe merkezi (40.0972N 33.4083E,
 # 725 m) yakınındaki sözleşme değeri kullanılır. Kullanıcı parkuru düzenleyip kaydırabilir.
@@ -180,6 +222,9 @@ def init():
             conn.execute('ALTER TABLE drones ADD COLUMN airframe TEXT')
         if 'power' not in kolonlar:      # eski taban: güç ve yakıt (§10); NULL = model varsayılanı → mevcut dronlar bozulmaz
             conn.execute('ALTER TABLE drones ADD COLUMN power TEXT')
+        if 'match_id' not in {r[1] for r in conn.execute('PRAGMA table_info(flights)')}:   # §18: karşılaşma uçuşu (NULL = tek oyunculu)
+            conn.execute('ALTER TABLE flights ADD COLUMN match_id INTEGER')
+        conn.execute('CREATE INDEX IF NOT EXISTS ix_flights_match ON flights(match_id)')
         cur = conn.execute('SELECT version FROM schema_version').fetchone()
         ver = cur[0] if cur else 0
         for v, sqls in _MIGRATIONS:

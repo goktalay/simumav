@@ -381,8 +381,12 @@ def aktif_ucus(user_id):
     return None, None
 
 
+MAC_REZERV = {}      # §18: başlatılan karşılaşmanın henüz açılmamış oyuncu oturumları (match_id → yuva sayısı); sunucu tavanına sayılır
+
+
 def aktif_sayisi():
-    return flightsim.MANAGER.acik_sayisi()
+    """Sunucu tavanına (SIMUMAV_MAX_FLIGHTS) sayılan SITL'ler: normal uçuşlar + karşılaşma oturumları + açılmakta olan karşılaşma yuvaları (§18)."""
+    return flightsim.MANAGER.acik_sayisi() + flightsim.MANAGER.acik_sayisi(match=True) + sum(MAC_REZERV.values())
 
 
 def bekleme_suresi():
@@ -633,12 +637,15 @@ def speedup_dogrula(f):
 
 
 async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None, power=None, speedup=None, camera=None, targets=None, site=None, defend=None,
-                      drive=None):
+                      drive=None, start=None, match_id=None):
     """Kotalar → çekirdek oturum → flights satırı → MP köprüsü. Dönüş: {flight_id, sim_id, mp, ws, power, speedup}. Hatalar BridgeHata.
     `power` (§10): sihirbaz gövdesi — hangar ayarının üstüne power.dogrula ile (sınırlar, yakıt yalnız uçakta); çekirdeğe TAM power sözlüğü gider.
     `speedup`: başlangıç simülasyon hızı (≤ MAX_SPEEDUP); SITL hazır olunca `speed` komutuyla yazılır.
     `camera` (HEPGO §22.3): day | thermal | night | none (§35 kamera yok) — çekirdek oturuma ve flights.snapshot'a.
-    `drive` (§15 kara aracı): ackermann | skid; yoksa modelin sürüş biçimi. Kara aracında kalkış yöntemi yok → launch nötr 'wheels'."""
+    `drive` (§15 kara aracı): ackermann | skid; yoksa modelin sürüş biçimi. Kara aracında kalkış yöntemi yok → launch nötr 'wheels'.
+    §18 karşılaşma: `match_id` + `start` {lat, lon, yaw_deg?} (oyuncunun başlangıç noktası) → çekirdek karşılaşma oturumu; sunucu tavanı karşılaşma
+    başlarken ayrılmıştır (MAC_REZERV) → burada yeniden sayılmaz; Mission Planner TCP köprüsü AÇILMAZ (ham MAVLink komut kapısını aşmasın: yarış
+    başlamadan ARM yok); `drone` kurucunun dronu olabilir → flights.drone_id yalnız dron oyuncunun kendisininse yazılır."""
     if drone.get('type') in ROVER_TYPES:
         launch = {'method': 'wheels'}   # kara aracı kalkmaz: fırlatıcı/kalkış alanları yok sayılır (flights.launch nötr değer)
     launch = launch_dogrula(launch)
@@ -662,10 +669,10 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         if fid is not None:
             # 409 gövdesi {error:'flight_open', flight_id, sim_id}: ön yüz "Süren uçuşunuz var" kartını (Uçuşa dön / Uçuşu bitir) gösterir
             raise BridgeHata(409, 'flight_open', 'Zaten süren bir uçuşunuz var; önce onu bitirin', flight_id=fid, sim_id=_a['sim_id'])
-        if aktif_sayisi() >= config.MAX_FLIGHTS:
+        if match_id is None and aktif_sayisi() >= config.MAX_FLIGHTS:
             raise BridgeHata(429, 'server_full', 'Sunucudaki tüm simülasyon yuvaları dolu — bekleme odası', retry_after=bekleme_suresi() or 60)
-        port = bos_mp_port()
-        if port is None:
+        port = bos_mp_port() if match_id is None else None
+        if port is None and match_id is None:
             raise BridgeHata(503, 'no_port', 'Boş Mission Planner portu yok')
         ctip = TIP_ESLEME[drone['type']]
         loop = asyncio.get_running_loop()
@@ -695,7 +702,7 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         try:
             s = await flightsim.MANAGER.ac(ctip, center, world, owner, None, mdl, core_drone, {'bin': bool((record or {}).get('bin', True))}, power=core_power,
                                           layout=drone_airframe(drone), camera=camera, targets=hedefler, targets_katalog=hedef_katalogu(), site=site, defend=defend,
-                                          drive=drive)
+                                          drive=drive, start=start, match_id=match_id)
         except flightsim.SimHata as e:
             kod = {'invalid': 422, 'limit': 429, 'sitl': 503}.get(e.kod, 400)
             raise BridgeHata(kod, e.kod, str(e))
@@ -711,16 +718,21 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
                 'launch': launch, 'record': {'bin': bool((record or {}).get('bin', True)), 'video': bool((record or {}).get('video'))},
                 'power': power_ayar, 'speedup': speedup, 'camera': camera, 'targets': hedefler,
                 'site': s.gcs, 'defend': dict(s.savunma.cfg) if getattr(s, 'savunma', None) is not None else None}   # §12 (HEPGO §26)
+        if match_id is not None:
+            snap['match'] = {'id': match_id, 'start': dict(start) if start else None}   # §18
+        kendi = lambda r: r is not None and r.get('user_id') in (None, user['id'])   # noqa: E731 — karşılaşmada kurucunun dronu/parkuru başkasına yazılmaz
         with db.connect() as conn:
-            fid = conn.execute('INSERT INTO flights (user_id, pilot_id, drone_id, track_id, mission_id, launch, started_at, mp_port, snapshot, created_at, updated_at) '
-                               'VALUES (?,?,?,?,?,?,?,?,?,?,?)', (user['id'], pilot['id'], drone['id'], track['id'], mission['id'] if mission else None, launch['method'],
-                                                                  s.created_at, port, json.dumps(snap, ensure_ascii=False), t, t)).lastrowid
+            fid = conn.execute('INSERT INTO flights (user_id, pilot_id, drone_id, track_id, mission_id, launch, started_at, mp_port, snapshot, created_at, updated_at, match_id) '
+                               'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', (user['id'], pilot['id'], drone['id'] if kendi(drone) else None, track['id'] if kendi(track) else None,
+                                                                    mission['id'] if mission else None, launch['method'], s.created_at, port, json.dumps(snap, ensure_ascii=False), t, t,
+                                                                    match_id)).lastrowid
             conn.execute('INSERT INTO sim_runs_link (flight_id, sim_id) VALUES (?,?)', (fid, s.id))
             db.audit(conn, 'fly_start', user['id'], request and _ip(request), f'flight {fid} sim {s.id} {drone["type"]} {track["name"]} {launch["method"]} mp {port}')
             conn.commit()
-        mp = MpKopru(s, port)
+        mp = MpKopru(s, port) if port is not None else None
         try:
-            await mp.ac()
+            if mp is not None:
+                await mp.ac()
         except OSError:
             mp = None
         s.sm_gates = db.j(track.get('gates'), []) if isinstance(track.get('gates'), str) else list(track.get('gates') or [])   # FPV halkaları (WS hello + durum)
@@ -770,7 +782,14 @@ async def _guc_bekci(s, speedup):
                 continue
             hazir_t = hazir_t or time.time()
             g = getattr(s, 'guc', None)
-            if g is not None and float(g.speedup or 1) > config.MAX_SPEEDUP:
+            if g is not None and getattr(s, 'match_id', None) and float(g.speedup or 1) != 1:   # §18 karşılaşma: süre duvar saatiyle ölçülür → hız 1× sabit
+                db.audit_bagimsiz('speed_clamp', (s.owner or {}).get('id'), None, f'sim {s.id} (karşılaşma): SIM_SPEEDUP {g.speedup:g} → 1')
+                try:
+                    await s.komut('speed', {'factor': 1})
+                except flightsim.SimHata:
+                    pass
+                s._olay('Karşılaşmada simülasyon hızı 1× sabittir', 4)
+            elif g is not None and float(g.speedup or 1) > config.MAX_SPEEDUP:
                 db.audit_bagimsiz('speed_clamp', (s.owner or {}).get('id'), None, f'sim {s.id}: SIM_SPEEDUP {g.speedup:g} > {config.MAX_SPEEDUP}')
                 try:
                     await s.komut('speed', {'factor': config.MAX_SPEEDUP})

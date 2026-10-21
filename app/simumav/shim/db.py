@@ -75,7 +75,8 @@ RUN_EK_SUTUNLAR = (('power', 'TEXT'), ('fuel_used_l', 'REAL'), ('fuel_km_per_l',
                    ('layout', 'TEXT'), ('camera', 'TEXT'),   # + §22.3 kamera türü
                    ('targets', 'TEXT'), ('intercept_count', 'INTEGER'),   # + §24 hedefler (yapılandırma + önleme sonucu)
                    ('preset_id', 'INTEGER'),   # + HEPGO §27 kayıtlı simülasyon bağı (SIMUMAV'da hep NULL; çekirdek INSERT'i sütunu yalnız doluyken yazar)
-                   ('servo_trig', 'TEXT'))   # + HEPGO §34 servo tetik kısa özeti (yalnız tetik kullanıldıysa yazılır)
+                   ('servo_trig', 'TEXT'),   # + HEPGO §34 servo tetik kısa özeti (yalnız tetik kullanıldıysa yazılır)
+                   ('match_id', 'INTEGER'))   # + §33 / SIMUMAV §18 çok oyunculu karşılaşma oyuncu oturumu (yalnız doluyken yazılır)
 
 
 def init():

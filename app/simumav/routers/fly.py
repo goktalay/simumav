@@ -342,9 +342,14 @@ async def c_close(sid: int, user=User):
     return {'ok': True, 'bin': getattr(s, 'bin_sonuc', None)}
 
 
-def guvenlik_komut(name, params):
+def guvenlik_komut(name, params, match=False):
     """§10: SIMUMAV'a özgü komut sınırları (çekirdek doğrulamasından ÖNCE). `speed` ≤ MAX_SPEEDUP; hub `param_set` SIM_* (SIM_BATT_ hariç:
-    SIM_SPEEDUP, SIM_PLN_THR_MUL, SIM_WIND…) adlarını reddeder — bunlar yalnız sunucu tarafından yazılır. Dönüş: hata metni ya da None."""
+    SIM_SPEEDUP, SIM_PLN_THR_MUL, SIM_WIND…) adlarını reddeder — bunlar yalnız sunucu tarafından yazılır. Dönüş: hata metni ya da None.
+    §18 karşılaşma oturumu (`match`): simülasyon hızı 1× sabit (süre duvar saatiyle ölçülür) ve ev konumu taşınamaz (başlangıç noktası adil)."""
+    if match and name == 'speed' and (params or {}).get('factor') not in (1, 1.0):
+        return 'Karşılaşmada simülasyon hızı değiştirilemez (1×)'
+    if match and name == 'set_home':
+        return 'Karşılaşmada ev konumu değiştirilemez'
     if name == 'speed':
         f = (params or {}).get('factor')
         if isinstance(f, (int, float)) and not isinstance(f, bool) and float(f) > config.MAX_SPEEDUP:
@@ -361,7 +366,7 @@ def guvenlik_komut(name, params):
 @compat.post('/sessions/{sid}/cmd')
 async def c_cmd(sid: int, body: CmdIn, user=User):
     s = _oturum(sid, user)
-    red = guvenlik_komut(body.name, body.params)
+    red = guvenlik_komut(body.name, body.params, bool(getattr(s, 'match_id', None)))
     if red:
         raise auth.hata(400, 'invalid', red)
     try:
@@ -573,7 +578,7 @@ async def _sim_ws(ws, sid):
                 name = str(msg.get('name') or '')[:30]
                 rid = str(msg.get('rid') or secrets.token_hex(8))[:40]
                 params = msg.get('params') if isinstance(msg.get('params'), dict) else {}
-                red = guvenlik_komut(name, params)
+                red = guvenlik_komut(name, params, bool(getattr(s, 'match_id', None)))
                 if red:
                     db.audit_bagimsiz('cmd_reject', user['id'], None, f'{name}: {red}'[:200])
                     yanit(rid=rid, name=name, ok=False, error=red)
@@ -696,7 +701,8 @@ async def ws_live(ws: WebSocket):
                 if bid is None or bid not in v.allowed:
                     v.put(json.dumps({'t': 'res', 'rid': rid, 'ok': False, 'error': 'Bu oturum size ait değil'}, ensure_ascii=False))
                     continue
-                red = guvenlik_komut(str(msg.get('name') or ''), msg.get('params') if isinstance(msg.get('params'), dict) else {})
+                red = guvenlik_komut(str(msg.get('name') or ''), msg.get('params') if isinstance(msg.get('params'), dict) else {},
+                                     bool(getattr(flightsim.MANAGER.get(v.sim_id), 'match_id', None)) if v.sim_id else False)   # §18
                 if red:
                     v.put(json.dumps({'t': 'res', 'rid': rid, 'ok': False, 'error': red}, ensure_ascii=False))
                     continue

@@ -187,6 +187,10 @@ export function showFlightReport(MReport, sum, gates, { pilot, drone, track, fli
 // ======================================================================
 export async function openSession(view, start, picked, ctx = {}) {
   const go = ctx.go || (hash => { location.hash = hash; });
+  // §18 ÇOK OYUNCULU KARŞILAŞMA: ctx.match = {id, backHref, onBack(), attach({stage, getSim, startIntro, getTele}) → {onWorldReady, dispose}} (match.js / match_hud.js).
+  // Giriş sekansı (3‑2‑1) kendiliğinden değil sunucunun geri sayımıyla (herkeste aynı an); karşılaşma kapanışında "Uçuş sona erdi" perdesi yerine sonuç kalır.
+  const matchCfg = ctx.match || null;
+  let matchUi = null;
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
@@ -633,7 +637,7 @@ export async function openSession(view, start, picked, ctx = {}) {
         case 'defend': if (m.state && session.defend) session.defend.state = m.state; launcherUi?.sync(); return defHud?.event(m);   // HEPGO §26 görev olayları (§27: sıradaki hücre)
         case 'state': if (m.center) session.center = { ...session.center, ...m.center }; return setState(m.state);
         case 'res': { const p = pending.get(m.rid); if (p) { clearTimeout(p.timer); pending.delete(m.rid); p.resolve(m); } return; }
-        case 'end': setState('KAPANDI'); showEnded(m.reason); socket?.close(); return;
+        case 'end': setState('KAPANDI'); if (!(matchUi && m.reason === 'karsilasma_bitti')) showEnded(m.reason); socket?.close(); return;   // §18: sonuç ekranı kalır
         default: return;
       }
     },
@@ -656,10 +660,16 @@ export async function openSession(view, start, picked, ctx = {}) {
       await showFlightReport(MReport, sum || {}, body.gates || r?.gates || null, { pilot, drone, track, flightId: fid, ctx });
       if (document.fullscreenElement) await document.exitFullscreen?.().catch(() => {});
       toast('Uçuş kaydedildi');
-      go('#/ops');
+      if (matchCfg) { matchCfg.onBack?.(); go(matchCfg.backHref || '#/fly'); } else go('#/ops');   // §18: karşılaşmada salona
     } catch (err) { toastError(err); ending = false; endBtn.disabled = false; }
   };
-  const leaveToMenu = async () => { if (await confirmDialog('Uçuştan çık', 'Uçuş sürüyor. Bitirmeden çıkılsın mı? (Uçuş arka planda kalır; Operasyon\'dan bitirebilirsiniz.)', { okLabel: 'Çık', danger: true })) go('#/fly'); };
+  const leaveToMenu = async () => {
+    if (matchCfg) {   // §18: yarıştan salona (uçuş sürer; salondan "Yarışa dön")
+      if (matchUi?.state && !['BITTI', 'IPTAL'].includes(matchUi.state) && !await confirmDialog(tr('match.leave_race'), tr('match.leave_race_q'), { okLabel: tr('match.leave_race_ok'), danger: true })) return;
+      matchCfg.onBack?.(); go(matchCfg.backHref || '#/fly'); return;
+    }
+    if (await confirmDialog('Uçuştan çık', 'Uçuş sürüyor. Bitirmeden çıkılsın mı? (Uçuş arka planda kalır; Operasyon\'dan bitirebilirsiniz.)', { okLabel: 'Çık', danger: true })) go('#/fly');
+  };
   // ---------- sanal kumanda (HEPGO rcToggle birebir): 20 Hz {t:'rc', ch} yalnız açıkken; kapatınca tek sefer 8×0 (override serbest) ----------
   const rcToggle = () => {
     if (rc) {
@@ -682,7 +692,12 @@ export async function openSession(view, start, picked, ctx = {}) {
   // iniş, büyük 3-2-1 + "dıt dıt dıt … diiit" (ayarlar › ses kapalıysa sessiz), sonra seçili kamera kipine yumuşak geçiş
   const intro = MIntro.createIntro(stage, { getSim: () => sim, tr, keyed: true, sound: () => { const c = sfx.config?.() || {}; return { on: c.sound !== false, vol: c.volume ?? 0.8 }; }, sub: track.name || null });
   let introStarted = false;
-  const maybeIntro = () => { if (introStarted || destroyed || !sim || !msg.hidden || session.state !== 'HAZIR') return; introStarted = true; intro.start(); };
+  if (matchCfg) stage.classList.add('sm-match');   // §18: MP köprüsü yok → panel MP bölümü gizli (match.css)
+  if (matchCfg?.attach) matchUi = matchCfg.attach({ stage, getSim: () => sim, startIntro: () => { introStarted = true; intro.start(); }, getTele: () => last });
+  const maybeIntro = () => {
+    if (matchUi) { if (!destroyed && sim && msg.hidden && session.state === 'HAZIR') matchUi.onWorldReady(); return; }   // §18: giriş sekansını sunucu geri sayımı başlatır
+    if (introStarted || destroyed || !sim || !msg.hidden || session.state !== 'HAZIR') return; introStarted = true; intro.start();
+  };
   const introTick = setInterval(maybeIntro, 250);
   const netTick = setInterval(() => {
     if (!sim?.netStats) { netLbl.hidden = true; return; }
@@ -705,7 +720,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const dispose = () => {
     if (destroyed) return; destroyed = true;
     clearInterval(netTick); clearInterval(introTick); clearTimeout(alertTimer);
-    safe(() => gauges.dispose()); safe(() => rcFeel.dispose()); safe(() => fltBar.dispose()); safe(() => srvTrig.dispose()); clearTimeout(autoEndTimer); safe(() => intro.dispose());
+    safe(() => gauges.dispose()); safe(() => rcFeel.dispose()); safe(() => fltBar.dispose()); safe(() => srvTrig.dispose()); clearTimeout(autoEndTimer); safe(() => intro.dispose()); safe(() => matchUi?.dispose());
     safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();
