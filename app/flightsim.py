@@ -15,6 +15,7 @@ SIM_PUBLIC_HOST (Mission Planner'a verilecek adres; yoksa istek Host'u), HEPGO_S
 """
 import asyncio
 import contextlib
+import functools
 import json
 import math
 import os
@@ -1002,6 +1003,7 @@ class SimSession:
         # §19 kayıt seçenekleri: rec.bin → SITL DataFlash .BIN açık (yalnız armed süre), kapanışta uçuş loglarına kaydedilir (flightsim_bin)
         self.rec = {'bin': bool((rec or {}).get('bin'))}
         self.bin_sonuc = None            # kapanışta {log_id, file_name, size} | {error} | None
+        self.bin_ara = []                # §35: "Sıfırla" öncesi kaydedilen ara .BIN logları [{log_id, file_name, size}]
         self.alt_not = None              # §9 ev irtifası kuralı: merkez `alt` ≠ arazi (ya da arazi alınamadı) notu; SITL açılışında olay şeridine düşer
         # §21 simülasyon kaydı (flightsim_runs): oturumun gördüğü son parametre değerleri (PARAM_VALUE; kapanışta PARAM_REQUEST_LIST ile tamamlanır),
         # ekran kaydı bağı (rec_finish → video_bagla) ve kapanışta yazılan drone_sim_runs satırı
@@ -1122,7 +1124,7 @@ class SimSession:
                 # §14: harekât paneli köprüsü (bridge_id = -kimlik), dron kaydı, SITL'deki görevin rota noktaları
                 'hub': {'bridge_id': -self.kimlik, 'online': self.hub is not None, 'name': self.hub.name if self.hub else None},
                 'drone': dict(self.drone) if self.drone else None, 'route': list(self.route), 'mission': self.gorev.yayin_alanlari(),
-                'rec': {**self.rec, 'bin_log': dict(self.bin_sonuc) if self.bin_sonuc else None},
+                'rec': {**self.rec, 'bin_log': dict(self.bin_sonuc) if self.bin_sonuc else None, 'bin_logs_reset': [dict(x) for x in self.bin_ara]},
                 'params': {'tracked': self.param_izleyici is not None, 'loaded': len(self.kayitli_params),
                            'saved': self.param_izleyici.kayit_sayisi if self.param_izleyici else 0,
                            # montaj parametreleri (SERVOn_REVERSED; §20.1): sanal montaj desteği, SIM_SRV_REV maskesi (yazılan / SITL'de gözlenen), nötrlenen adlar
@@ -2610,6 +2612,7 @@ class SimSession:
             self._kopru_kalp_durdur()
             self._kopru_kalp_task = self.loop.create_task(self._kopru_kalp())
         await self.loop.run_in_executor(None, drone_sitl.YONETICI.durdur, self.kimlik)
+        await self._bin_kaydet(ara=True)   # §35: sıfırlama öncesi uçuşun .BIN'i hemen Uçuş Logları'na (yeni SITL logs/*.BIN'i siler)
         self.tele.update(mode=None, armed=False, alt_rel=0.0, home=None)
         self._tele_tbm, self._smi_red, self._att_son = -10 ** 9, False, 0.0   # yeni SITL: zaman damgası sıfırdan başlar
         # §35: görev (mission/fence/rally) ArduPilot depolamasında = eeprom.bin → yeni SITL'de de yüklü; 3B rota (self.route) korunur
@@ -2740,20 +2743,35 @@ class SimSession:
         except Exception:   # noqa: BLE001
             pass
 
-    async def _bin_kaydet(self):
-        """§19: çalışma dizinindeki en büyük .BIN → Uçuş Logları (flightsim_bin.kaydet); sonuç `bin_sonuc` (DELETE yanıtı) + olay."""
+    async def _bin_kaydet(self, ara=False):
+        """§19: çalışma dizinindeki en büyük .BIN → Uçuş Logları (flightsim_bin.kaydet); sonuç `bin_sonuc` (DELETE yanıtı) + olay.
+        `ara` (§35): "Sıfırla"da SITL durduktan sonra — o ana kadarki uçuş ayrı log olarak kaydedilir (`bin_ara`); armed süre yoksa sessiz.
+        Kapanışta yeni .BIN yoksa son ara log oturumun logu sayılır."""
         if not self.rec['bin']:
             return
         from . import flightsim_bin
         yollar = drone_sitl.bin_dosyalari(self.kimlik) if SITL_ENABLED else list(self.yonetici.sahte_bin_dosyalari or [])
+        if ara and not SITL_ENABLED:
+            return   # sahte kip: .BIN yalnız kapanışta (test dosyaları)
+        not_eki = f' · sıfırlama #{self.reset_sayisi} öncesi' if ara else (f' · sıfırlama #{self.reset_sayisi} sonrası' if self.bin_ara else '')
         try:
-            self.bin_sonuc = await asyncio.get_running_loop().run_in_executor(None, flightsim_bin.kaydet, self.to_dict(), yollar)
+            sonuc = await asyncio.get_running_loop().run_in_executor(None, functools.partial(flightsim_bin.kaydet, self.to_dict(), yollar, not_eki=not_eki))
         except Exception as e:   # noqa: BLE001
-            self.bin_sonuc = {'error': f'Uçuş logu kaydedilemedi: {e}'[:300]}
+            sonuc = {'error': f'Uçuş logu kaydedilemedi: {e}'[:300]}
+        if ara:
+            if sonuc and sonuc.get('error'):
+                self._olay(sonuc['error'], 4)
+            elif sonuc:
+                self.bin_ara.append(sonuc)
+                self._olay(f'Sıfırlama öncesi uçuş logu kaydedildi: {sonuc["file_name"]} ({sonuc["size"] // 1024} KB) — analiz kuyruğunda', 6)
+            return
+        self.bin_sonuc = sonuc
         if self.bin_sonuc and self.bin_sonuc.get('error'):
             self._olay(self.bin_sonuc['error'], 4)
         elif self.bin_sonuc:
             self._olay(f'Uçuş logu kaydedildi: {self.bin_sonuc["file_name"]} ({self.bin_sonuc["size"] // 1024} KB) — analiz kuyruğunda', 6)
+        elif self.bin_ara:
+            self.bin_sonuc = dict(self.bin_ara[-1])   # sıfırlamadan sonra uçulmadı: oturumun logu son ara log
         else:
             self._olay('Uçuş logu yok (armed süre olmadı); .bin kaydedilmedi', 6)
 
