@@ -94,7 +94,41 @@ export const arrowFor = rel => ['⬆', '⬈', '➡', '⬊', '⬇', '⬋', '⬅',
 
 // ---------------------------------------------------------------- gösterim
 export const PLAYER_COLORS = ['#22c55e', '#3b82f6', '#f97316', '#e11d48', '#a855f7', '#eab308', '#06b6d4', '#f472b6'];
-export const colorFor = (players, id) => { const i = (players || []).findIndex(p => p.id === id); return PLAYER_COLORS[(i < 0 ? 0 : i) % PLAYER_COLORS.length]; };
+export const colorFor = (players, id) => { const i = (players || []).findIndex(p => p.id === id); return (i >= 0 && players[i].color) || PLAYER_COLORS[(i < 0 ? 0 : i) % PLAYER_COLORS.length]; };   // §44 bot: kendi rengi
+
+// ---------------------------------------------------------------- §44 yapay zekâ pilot (bot oyuncu) — sunucu flightsim_match_core.BOT_*
+export const BOT_LEVELS = ['easy', 'normal', 'hard'];
+export const BOT_LEVEL_TEXT = { easy: 'Kolay', normal: 'Normal', hard: 'Zor' };
+export const BOT_NAMES = ['Şahin', 'Kartal', 'Doğan', 'Atmaca', 'Kerkenez', 'Albatros', 'Akbaba'];
+export const BOT_COLORS = ['#ef4444', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#64748b', '#84cc16'];
+export const isBot = p => !!(p && (p.is_bot || Number(p.id) < 0));
+/** Sunucunun vereceği ad (sıra i, 0 tabanlı): HEPGO 'AI-Şahin (Zor)', SIMUMAV (seviye rozetle ayrı) 'AI-Şahin'. */
+export const botName = (level, i, { names = BOT_NAMES, withLevel = true, T = s => s } = {}) =>
+  `AI-${names[((Number(i) || 0) % names.length + names.length) % names.length]}${withLevel ? ` (${T(BOT_LEVEL_TEXT[level] || level)})` : ''}`;
+/** Rozet metni 'AI · Zor' (insan → null). */
+export const botBadge = (p, T = s => s) => (isBot(p) ? `AI · ${T(BOT_LEVEL_TEXT[p.level] || p.level || '')}`.replace(/ · $/, '') : null);
+/** Davet + bot birlikte: en az 1 rakip, en çok `max` (it dalaşında tam 1). null = geçerli. */
+export function opponentsError(nInvited, nBots, max, limits = MATCH_LIMITS) {
+  const n = (Number(nInvited) || 0) + (Number(nBots) || 0);
+  if (max === 1 && n !== 1) return 'İt dalaşı tam 2 oyuncuyla oynanır: bir kullanıcı davet edin ya da bir yapay zekâ pilot ekleyin';
+  if (n < (limits.invite_min ?? 1)) return 'En az bir kullanıcı davet edin ya da yapay zekâ pilot ekleyin';
+  if (n > Math.min(max ?? 99, (limits.players_max ?? 8) - 1)) return 'Davet sınırı aşıldı';
+  return null;
+}
+/** Canlı sıralamada yerim (1 tabanlı) ya da null. */
+export function myRank(players, pos, me) {
+  const rows = liveStandings(players, pos).filter(p => ACTIVE.has(p.status));
+  const i = rows.findIndex(p => p.id === me);
+  return i < 0 || rows.length < 2 ? null : i + 1;
+}
+/** §44 sonuç ekranı puanı (oyun gösterimi): halka yarışı — halka başına 100, bitirene 250 + sıra bonusu (1. 150, 2. 100, 3. 50); it dalaşı —
+ * kazanan 1000, kovalayanın en uzun tutması (sn) × 100 (en çok 500). */
+export function matchScore(row, kind = 'rings', extra = {}) {
+  if (!row) return 0;
+  if (kind === 'dogfight') return (row.won ? 1000 : 0) + (row.role === 'chaser' ? Math.min(500, Math.round(Number(extra.max_hold_s || 0) * 100)) : 0);
+  const rk = Number(row.rank) || 99;
+  return (Number(row.rings) || 0) * 100 + (row.finished ? 250 + Math.max(0, 200 - 50 * rk) : 0);
+}
 export const STATUS_TEXT = { davetli: 'Bekleniyor', geldi: 'Geldi', hazirlaniyor: 'Hazırlanıyor', hazir: 'Hazır', ayrildi: 'Ayrıldı', cikarildi: 'Çıkarıldı', dustu: 'Düştü' };
 export const STATUS_TONE = { davetli: 'gray', geldi: 'blue', hazirlaniyor: 'yellow', hazir: 'green', ayrildi: 'red', cikarildi: 'red', dustu: 'red' };
 export const STATE_TEXT = { LOBI: 'Bekleme salonu', HAZIRLIK: 'Simülatörler hazırlanıyor', GERI_SAYIM: 'Geri sayım', YARIS: 'Yarış', BITTI: 'Bitti', IPTAL: 'İptal edildi' };

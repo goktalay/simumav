@@ -13,6 +13,7 @@
 //   kapatılır). Kayıttan oynatmada aynı değerlendirici telemetriden yeniden hesaplar (sunucuya gönderilmez; atlamada sıfırlanır).
 // • RAPOR: `gpwsReportSection(alerts, {tr, keyed})` — tür başına adet / toplam süre / ilk görülme + uçuş disiplini puanı.
 
+import { countUp } from './flightsim_sfx.js';   // §44 puan sayacı (tıklama + coin)
 import {
   BANK_LIMITS, GPWS_BY_CODE, GPWS_CODES, alertEventSev, alertEventText, alertRows, alertSpeech, alertText, codeApplies, createGpws, createGpwsPrefs, makeGpwsT,
   modeKind, gpwsThresholds, teleInput, vehicleClass,
@@ -424,7 +425,7 @@ export function gpwsReportLine(A, tr, keyed = false) {
   return `${T('gpws.report')}: ${T('gpws.n_warn')} ${A.warnings} · ${T('gpws.n_caution')} ${A.cautions} · ${T('gpws.total')} ${Number(A.total_s || 0).toFixed(1)} s · ${T('gpws.discipline')} ${A.score ?? '—'}/100${A.grade ? ` (${A.grade})` : ''}`;
 }
 /** Rapor bölümü (HEPGO özet raporu + SIMUMAV uçuş özeti kartı). alerts: özet (summary.alerts) ya da null. */
-export function gpwsReportSection(A, { tr, keyed = false, lang = 'aviation', cls = 'fs-rp-sec fs-rp-gpws' } = {}) {
+export function gpwsReportSection(A, { tr, keyed = false, lang = 'aviation', cls = 'fs-rp-sec fs-rp-gpws', animate = typeof window !== 'undefined' } = {}) {
   if (!A || typeof document === 'undefined') return null;
   ensureCss();
   const T = makeGpwsT(tr, keyed);
@@ -438,6 +439,7 @@ export function gpwsReportSection(A, { tr, keyed = false, lang = 'aviation', cls
   tiles.append(tile(T('gpws.n_warn'), String(A.warnings ?? 0), A.warnings ? 'red' : 'green'), tile(T('gpws.n_caution'), String(A.cautions ?? 0), A.cautions ? 'orange' : ''),
     tile(T('gpws.total'), `${Number(A.total_s || 0).toFixed(1)} s`), tile(T('gpws.discipline'), A.score != null ? `${A.score}` : '—', A.score >= 75 ? 'green' : A.score >= 60 ? 'orange' : 'red'));
   sec.append(tiles);
+  if (A.score != null && animate) countUp(tiles.lastChild?.firstChild, A.score, { key: keyed ? 'sm.sfx' : 'fs.sfx' });   // §44 disiplin puanı sayacı + "coin"
   const rows = alertRows(A, T, lang);
   if (!rows.length) sec.append(el('div', 'small fs-gpws-clean', `✓ ${T('gpws.no_alerts')}`));
   else {

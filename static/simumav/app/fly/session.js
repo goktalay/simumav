@@ -69,8 +69,8 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js', 'flightsim_rover.js', 'flightsim_windui.js', 'flightsim_servotrig.js', 'flightsim_gamepad.js', 'flightsim_mobile.js', 'flightsim_engage.js', 'flightsim_gpws_ui.js', 'flightsim_gfx_ui.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js', 'flightsim_rover.js', 'flightsim_windui.js', 'flightsim_servotrig.js', 'flightsim_gamepad.js', 'flightsim_mobile.js', 'flightsim_engage.js', 'flightsim_gpws_ui.js', 'flightsim_gfx_ui.js', 'flightsim_sfx.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
 // HEPGO §27: INTERCEPTOR + fırlatıcı (pod4 | pod8 | tube | handheld) → {method, loaded? | aim_*?}; fırlatıcısız INTERCEPTOR → null (pad, eski davranış)
@@ -199,7 +199,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx } = await loadSim();
   MGpwsRef = MGpws;
   MSiteRef = MSite;
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
@@ -468,6 +468,8 @@ export async function openSession(view, start, picked, ctx = {}) {
     uiLang: () => document.documentElement.lang || 'en',
     getCtx: () => { const cm = sim?.getCamera?.(); return { crashed: !crash.hidden, phase: sim?.launchPhase ?? null, maxSpeed: session.power?.max_speed_ms ?? null,
       fence: num(track.radius_m, 0) > 0 ? num(track.radius_m) : null, hudDraws: (cm === 'pilot' && !!osd?.enabled) || (cm === 'fpv' && !!milHud?.enabled) }; } });
+  // HEPGO §44 oyun efektleri (halka, sıralama, angajman, önleme, puan): motor sesinin master yolunda; uçuş uyarısı çalarken kısılır; menüde aç/kapa + düzey (sm.sfx)
+  const gameFx = MSfx.createSfx({ audio, key: 'sm.sfx', keyed: true, T: tr, menuHost: audio.menu, isAlert: () => { const g = gpws?.state?.(); return !!g && g.mode === 'full' && (g.active?.length || 0) > 0; } });
   const recText = () => ['SIMUMAV', TYPE_LABEL[dType] || dType, drone.name, track.name, pilot?.name, launch ? launchLabelSm(launch) : null, fmtDateTime(session.created_at)].filter(Boolean).join(' · ');
   const wantVideo = !!(picked.record?.video ?? start.record?.video);
   if (wantVideo && MRec.recSupported()) rec = MRec.createRecorder(stage, { sid: fid, tr, getSim: () => sim, getHudCanvas: () => stage.querySelector('.fs-mhud'), getOsdCanvas: () => stage.querySelector('.fs-osd'), getOverlays: () => [camPip?.overlay(), launcherUi?.overlay?.()].filter(Boolean), audio, text: recText, share: () => false, rest: recRest(fid), onEvent: (t, sev) => addEvent(t, sev) });
@@ -534,7 +536,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   // Sahne kurulamadı (WebGL bağlamı yok vb.): uçuş sunucuda açık BIRAKILMAZ → otomatik stop + anlaşılır mesaj (BAŞLA tekrar denenebilir)
   if (sceneError) {
     const e = sceneError.message || String(sceneError);
-    const dispose0 = () => { if (destroyed) return; destroyed = true; safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => gpws?.dispose()); safe(() => camPip?.dispose()); safe(() => gfxCtl.dispose()); safe(() => camCtl.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose()); safe(() => restoreWs()); document.removeEventListener('fullscreenchange', onFullChange); document.body.classList.remove('fs-full'); view.classList.remove('sm-fly-session'); stage.remove(); };
+    const dispose0 = () => { if (destroyed) return; destroyed = true; safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => gpws?.dispose()); safe(() => camPip?.dispose()); safe(() => gfxCtl.dispose()); safe(() => camCtl.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => gameFx.dispose()); safe(() => audio.dispose()); safe(() => ops?.dispose()); safe(() => restoreWs()); document.removeEventListener('fullscreenchange', onFullChange); document.body.classList.remove('fs-full'); view.classList.remove('sm-fly-session'); stage.remove(); };
     dispose0();
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
     let stopped = false;
@@ -617,7 +619,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   let engage = null;
   const ensureEngage = () => {
     if (engage || destroyed || !session.targets?.items?.length) { if (engage && session.engagement !== undefined) engage.onHello(session.engagement); return; }
-    engage = MEng.createEngageCtl(stage, { getSim: () => sim, tr, keyed: true, canWrite: true, cmd: (name, p) => cmd(name, p),
+    engage = MEng.createEngageCtl(stage, { getSim: () => sim, tr, keyed: true, canWrite: true, cmd: (name, p) => cmd(name, p), sfx: gameFx,
       onEvent: (t, sev) => addEvent(t, sev, 'HEDEF'), toast: (t, k) => toast(t, k), isRcOn: () => !!rc });
     engHint.hidden = false;
     if (session.engagement) engage.onHello(session.engagement);
@@ -652,7 +654,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     sim?.flashTarget(m.i);
     addEvent(`${tr('targets.intercept')} · ${m.name} · ${f0(m.dist_m)} m · ${m.first ? tr('targets.first_after', { s: f1(m.after_s) }) : tr('targets.pass_n', { n: m.n })}`, 'warning', 'HEDEF');
     if (m.state) scoreBadge.update(m.state);
-    sfx.select?.();
+    sfx.select?.(); gameFx.play('coin');   // HEPGO §44 önleme bonusu
     showPwAlert(`◎ ${tr('targets.intercept')}`, m.name, 'low');
   };
   let crashSpeed = null;   // §18.6: darbe sesi ve görsel efekt şiddeti
@@ -743,7 +745,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const intro = MIntro.createIntro(stage, { getSim: () => sim, tr, keyed: true, sound: () => { const c = sfx.config?.() || {}; return { on: c.sound !== false, vol: c.volume ?? 0.8 }; }, sub: track.name || null });
   let introStarted = false;
   if (matchCfg) stage.classList.add('sm-match');   // §18: MP köprüsü yok → panel MP bölümü gizli (match.css)
-  if (matchCfg?.attach) matchUi = matchCfg.attach({ stage, getSim: () => sim, startIntro: () => { introStarted = true; intro.start(); }, getTele: () => last });
+  if (matchCfg?.attach) matchUi = matchCfg.attach({ stage, getSim: () => sim, startIntro: () => { introStarted = true; intro.start(); }, getTele: () => last, sfx: gameFx });
   const maybeIntro = () => {
     if (matchUi) { if (!destroyed && sim && msg.hidden && session.state === 'HAZIR') matchUi.onWorldReady(); return; }   // §18: giriş sekansını sunucu geri sayımı başlatır
     if (introStarted || destroyed || !sim || !msg.hidden || session.state !== 'HAZIR') return; introStarted = true; intro.start();
@@ -774,7 +776,7 @@ export async function openSession(view, start, picked, ctx = {}) {
     safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();
-    safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => engage?.dispose()); safe(() => gpws?.dispose()); safe(() => camPip?.dispose()); safe(() => gfxCtl.dispose()); safe(() => camCtl.dispose()); safe(() => siteUi?.dispose()); safe(() => defHud?.dispose()); safe(() => launcherUi?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => audio.dispose()); safe(() => ops?.dispose());
+    safe(() => milHud?.dispose()); safe(() => osd?.dispose()); safe(() => engage?.dispose()); safe(() => gpws?.dispose()); safe(() => camPip?.dispose()); safe(() => gfxCtl.dispose()); safe(() => camCtl.dispose()); safe(() => siteUi?.dispose()); safe(() => defHud?.dispose()); safe(() => launcherUi?.dispose()); safe(() => { if (rec) { rec.abandon(); rec.dispose(); } }); safe(() => gameFx.dispose()); safe(() => audio.dispose()); safe(() => ops?.dispose());
     safe(() => hand?.dispose()); safe(() => gateLayer?.dispose()); safe(() => overlay?.dispose()); safe(() => sim?.dispose());
     safe(restoreWs);
     if (window.__smSim === sim) delete window.__smSim; if (window.__fsSim === sim) delete window.__fsSim; delete window.__smHand; delete window.__smGates; if (window.__smSession === api) delete window.__smSession;

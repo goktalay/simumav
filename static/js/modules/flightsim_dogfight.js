@@ -161,7 +161,7 @@ function beep(f = 1400, d = 0.07, n = 2) {
 const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 
 /**
- * createDogfightHud(stage, { getSim, tr, keyed, me, sound }) → { update(match, pos, now), setPos(pFrame), dispose(), state() }
+ * createDogfightHud(stage, { getSim, tr, keyed, me, sound, sfx }) → { update(match, pos, now), setPos(pFrame), dispose(), state() }
  * match: anlık görüntü (kind 'dogfight'); pos: son `pos` çerçevesi ({p[], df}); now: sunucu saati (sn).
  */
 export function createDogfightHud(stage, o = {}) {
@@ -216,6 +216,14 @@ export function createDogfightHud(stage, o = {}) {
       if (o.sound !== false && now - lastBeep > 0.45) { lastBeep = now; beep(1500, 0.06, 2); }
     } else alert.hidden = true;
   }
+  // §44 oyun efekti: kovalayan koni içindeyken angajman halkası dolarken yükselen ton (dolduğunca sıklaşır); `o.sfx` (flightsim_sfx) verilirse
+  let lastLock = 0;
+  function lockSound() {
+    const M = S.match, df = S.frame?.df;
+    if (!o.sfx || M?.state !== 'YARIS' || myRole() !== 'chaser' || !df?.in_cone || df.guard) return;
+    const f = Math.min(1, Number(df.hold_s || 0) / Number(df.need_s || cfg().hold_s || 1)), t = performance.now() / 1000;
+    if (t - lastLock > 0.32 - 0.22 * f) { lastLock = t; o.sfx.play('lock', { p: f }); }
+  }
   function drawMarker() {
     g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
     const M = S.match, sim = getSim();
@@ -257,7 +265,7 @@ export function createDogfightHud(stage, o = {}) {
     if (disposed) return;
     if (fromTimer !== true) raf = requestAnimationFrame(frame);
     const now = S.now + (performance.now() - S.nowAt) / 1000;
-    try { drawMarker(); drawBar(now); drawAlert(now); } catch { /* yarım kurulum */ }
+    try { drawMarker(); drawBar(now); drawAlert(now); lockSound(); } catch { /* yarım kurulum */ }
   }
   raf = requestAnimationFrame(frame);
   const iv = setInterval(() => frame(true), 100);   // yavaş WebGL karelerinde de güncel

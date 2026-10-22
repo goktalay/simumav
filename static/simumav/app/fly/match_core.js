@@ -64,12 +64,13 @@ export function genPassword(len = 6, rand = cryptoRand) {
 export const inviteLink = (origin, code) => `${String(origin || '').replace(/\/$/, '')}/app/#/fly/join/${encodeURIComponent(code)}`;
 export const lobbyHref = id => `#/fly/match/${encodeURIComponent(id)}`;
 export const raceHref = id => `#/fly/match/${encodeURIComponent(id)}/race`;
-// `#/fly/<param>` → görünüm: choice (seçim) · solo · multi · join{code} · lobby{id} · race{id} · flight{id} (süren uçuşa dönüş)
+// `#/fly/<param>` → görünüm: choice (seçim) · solo · multi · ai (yapay zekâya karşı) · join{code} · lobby{id} · race{id} · flight{id} (süren uçuşa dönüş)
 export function parseFlyParam(param) {
   const p = String(param ?? '').replace(/^\/+|\/+$/g, '');
   if (!p) return { kind: 'choice' };
   if (p === 'solo') return { kind: 'solo' };
   if (p === 'multi') return { kind: 'multi' };
+  if (p === 'ai') return { kind: 'ai' };   // HEPGO §44 "Yapay zekâya karşı" hızlı başlat
   let m = p.match(/^join\/([A-Za-z0-9_-]{8,64})$/);
   if (m) return { kind: 'join', code: m[1] };
   m = p.match(/^match\/(\d+)(\/race)?$/);
@@ -115,7 +116,8 @@ export function resultRows(match) {
   const total = match?.result?.total ?? (match?.rings || []).length;
   const src = Array.isArray(st) && st.length ? st : [...(match?.players || [])].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
   return src.map((p, i) => ({ rank: p.rank ?? i + 1, id: p.id, name: p.name, time_s: p.time_s ?? null, rings: p.rings ?? 0, total, dist_next_m: p.dist_next_m ?? null,
-    max_speed_ms: p.max_speed_ms ?? null, crashes: p.crashes ?? 0, status: p.status, finished: !!p.finished || p.time_s != null, winner: match?.result?.winner === p.id || match?.winner === p.id }));
+    max_speed_ms: p.max_speed_ms ?? null, crashes: p.crashes ?? 0, status: p.status, finished: !!p.finished || p.time_s != null, winner: match?.result?.winner === p.id || match?.winner === p.id,
+    is_bot: !!p.is_bot || Number(p.id) < 0, level: p.level ?? null }));   // HEPGO §44 yapay zekâ pilot
 }
 export const fmtClock = s => { if (s == null || !Number.isFinite(Number(s))) return '—'; const v = Math.max(0, Number(s)), m = Math.floor(v / 60), r = v - m * 60; return `${m}:${r < 10 ? '0' : ''}${r.toFixed(1)}`; };
 export const fmtDist = m => (m == null || !Number.isFinite(Number(m)) ? '—' : Number(m) >= 1000 ? `${(Number(m) / 1000).toFixed(2)} km` : `${Math.round(Number(m))} m`);
@@ -128,3 +130,14 @@ export function viewBox(rings = [], starts = [], pad = 0.14) {
   const span = Math.max(x1 - x0, y1 - y0, 50) * (1 + 2 * pad), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
   return { span, toSvg: (x, y) => [(x - (cx - span / 2)) / span, ((cy + span / 2) - y) / span] };
 }
+
+// ---------------------------------------------------------------- HEPGO §44 yapay zekâ pilot
+export const AI_LEVELS = ['easy', 'normal', 'hard'];
+/** "Yapay zekâya karşı" gövdesi: POST /api/match/ai (halka yarışında 1…max-1 bot; it dalaşında tek bot, rol dogfight.roles'ta). */
+export function aiBody(base, level = 'normal', bots = 1, limits = LIMITS) {
+  const max = Math.max(1, ((limits.players || LIMITS.players)[1] || 2) - 1);
+  const lv = AI_LEVELS.includes(level) ? level : 'normal';
+  const { password, max_players, ...rest } = base || {};
+  return { ...rest, level: lv, bots: (rest.kind === 'dogfight') ? 1 : Math.max(1, Math.min(max, Math.round(Number(bots) || 1))) };
+}
+

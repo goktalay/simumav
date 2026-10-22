@@ -50,7 +50,8 @@ import { createGaugeThemePicker, gaugeThemeLabel } from './flightsim_gtheme.js';
 import { createIntro, hepgoSound } from './flightsim_intro.js';   // §27.2 giriş sekansı: 100 m bakış + 3-2-1 geri sayım + bip
 import { createPowerGauges, createPowerSection, createPowerSim, createSpeedPill, elecText, fuelText, rangeText } from './flightsim_power.js';   // §23: güç ve yakıt (sihirbaz bölümü, göstergeler, güç paneli kadranları §23.6, kayıtta istemci modeli, hız kapsülü)
 import { LAUNCH_OPTIONS, LAUNCH_PARAM_DEFS, createStepper, firstInvalid, launchOptionsFor, launchStepDesc, normLaunchMethod, paramField, simLogsOnly, simulateParam, stepDefFor, wizardStartStep, wizardSteps } from './flightsim_wizard.js';
-import { attachMatch, createInviteSection, createRingsSection, matchApi, matchesCard, renderLobby } from './flightsim_match_ui.js';   // §33 çok oyunculu karşılaşma: sihirbaz Halkalar / Davet et, bekleme salonu, oturum katmanı, sekme
+import { attachMatch, createInviteSection, createRingsSection, matchApi, matchesCard, renderLobby } from './flightsim_match_ui.js';
+import { createSfx } from './flightsim_sfx.js';   // §44 oyun efektleri (halka, sıralama, angajman, puan; ses kapsülü menüsünde aç/kapa + düzey)   // §33 çok oyunculu karşılaşma: sihirbaz Halkalar / Davet et, bekleme salonu, oturum katmanı, sekme
 import { matchHref, ringsSummary } from './flightsim_match.js';   // §6 adım adım sihirbaz (saf: adım listesi, doğrulama geçişleri, veriden kalkış seçenekleri)
 import { numSlider } from './fs_inputs.js';   // §6.1 görsel giriş: kaydırıcı + düzenlenebilir değer kutusu + birim
 import { askPresetName, budgetBox, countdown, ensureSavedCss, pilotPicker, savedScreen } from './flightsim_saved.js';   // §27 Kayıtlı Simülasyonlar: üç sütunlu ekran, Uç/Kaydet, pilot, ad sorma, geri sayım
@@ -529,6 +530,13 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   // Etkin dron tipi: canlı kipte seçilen kart, kayıt kipinde seçili logun araç tipi (model kütüphanesi bu tipe göre listelenir)
   const activeType = () => (S.mode === 'replay' ? ((S.logs || []).find(x => x.id === S.log)?.type || 'multirotor') : S.type);
 
+  // ---------- 1Y. uçuş yığını (§45; YALNIZ HEPGO — meta.stacks yalnız HEPGO meta'sında; modül SIMUMAV'a dışa aktarılmaz) ----------
+  const stackMod = !isMatch && S.mode === 'sitl' && Array.isArray(meta.stacks) ? await import('./ucus_yigini.js').catch(() => null) : null;
+  const stackSec = stackMod ? stackMod.createStackPicker({ h, tr, stacks: meta.stacks, getType: () => S.type, initial: P0 ? { stack: P0.stack, stack_cfg: P0.stack_cfg } : (last.stack ? { stack: last.stack } : null),
+    onChange: () => { drawLaunch(); drawLayout(); if (W) draw(); } }) : null;
+  const isPx4 = () => !!stackSec?.isPx4();
+  const launchOpts = () => (isPx4() ? LAUNCH_OPTIONS.filter(o => o.key === 'wheels') : LAUNCH_OPTIONS);   // §45 PX4: yalnız pist kalkışı (RWTO)
+
   // ---------- 1. dron tipi ----------
   const typeCards = h('div', { class: 'fs-types' });
   // Görsel model kütüphanesi (§12): tip kartının altında kart ızgarası (dahili + tasarım + yüklenen), seçim önizlemeye uygulanır
@@ -537,7 +545,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   const modelBox = h('div', { class: 'fs-model-step' }, h('h4', { class: 'fs-wz-sec-h' }, 'Görsel model'), h('p', { class: 'small muted' }, 'Dron tipi için görsel gövde: dahili modeller her zaman vardır; sistemdeki STEP/GLB/OBJ dosyaları ya da yüklediğiniz model seçilince tarayıcıda GLB\'ye dönüştürülür.'), picker.el);
   if (P0?.model) picker.prefer(P0.type, typeof P0.model === 'object' ? P0.model : { id: P0.model });   // §27 kayıtlı model
   const refreshModels = () => picker.refresh(activeType()).then(m => { if (m) preview?.setType(activeType(), m); drawDrive(); if (W?.step === 'summary') drawSummary(); });   // §31: model gelince varsayılan sürüş biçimi   // özet açıksa model adı güncellensin (§27 hızlı başlat)
-  const drawTypes = () => clear(typeCards, types.map(t => h('button', { type: 'button', class: `fs-type ${S.type === t.key ? 'on' : ''}`, onclick: () => { S.type = t.key; drawTypes(); drawLaunch(); drawLayout(); drawDrive(); refreshModels(); powerSec?.refresh(); siteSec?.refresh(); ringsSec?.refresh(); } },
+  const drawTypes = () => clear(typeCards, types.map(t => h('button', { type: 'button', class: `fs-type ${S.type === t.key ? 'on' : ''}`, onclick: () => { S.type = t.key; drawTypes(); stackSec?.refresh(); drawLaunch(); drawLayout(); drawDrive(); refreshModels(); powerSec?.refresh(); siteSec?.refresh(); ringsSec?.refresh(); } },
     h('span', { class: 'fs-type-ico', html: TYPE_ICON[t.icon] || TYPE_ICON.quad }),
     h('b', null, t.name), h('span', { class: 'small muted' }, t.desc || ''))));
   drawTypes();
@@ -581,10 +589,10 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   const lastMethod = {};   // tip → son seçilen kalkış yöntemi (tip değişip geri gelince seçim korunur)
   // Kayıt kipinde de sorulur (kullanıcı isteği): seçili logun aracı sabit kanat (ArduPlane) ise kartlar görünür; düzenek 3B'de kurulur, aşamalar logdan türetilir (§8)
   const drawLaunch = () => {
-    const at = activeType(), opts = launchOptionsFor(at);   // veriden: tipe uygun kalkış seçenekleri (yoksa adım atlanır)
+    const at = activeType(), opts = launchOptionsFor(at, launchOpts());   // veriden: tipe uygun kalkış seçenekleri (yoksa adım atlanır)
     launchBox.hidden = !opts.length;
     if (opts.some(o => o.key === L.method)) lastMethod[at] = L.method; else if (lastMethod[at]) L.method = lastMethod[at];
-    const nm = normLaunchMethod(L.method, at); if (nm !== L.method) { L.method = nm; applyLaunch(); }
+    const nm = normLaunchMethod(L.method, at, launchOpts()); if (nm !== L.method) { L.method = nm; applyLaunch(); }
     launchDesc.textContent = tr(launchStepDesc(at, S.mode));
     launchCards.classList.toggle('fs-launches-4', opts.length >= 4);
     clear(launchCards, opts.map(o => h('button', { type: 'button', class: `fs-type fs-launch ${L.method === o.key ? 'on' : ''}`, 'data-launch': o.key, onclick: () => { if (o.key !== L.method && (o.key === 'pod4' || o.key === 'pod8')) L.loaded = o.key === 'pod4' ? 4 : 8; L.method = o.key; drawLaunch(); applyLaunch(); } },   // kutu değişince hücreler dolu başlar
@@ -612,7 +620,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     layoutInfo.textContent = `${tr('SITL modeli')}: ${LAYOUT_SITL_MODEL[S.layout] || 'plane'} · ${liste}. ${not_}`;
   };
   const drawLayout = () => {
-    layoutBox.hidden = activeType() !== 'sabit_kanat' || S.mode === 'replay';
+    layoutBox.hidden = activeType() !== 'sabit_kanat' || S.mode === 'replay' || isPx4();   // §45 PX4: düzeni airframe belirler
     clear(layoutCards, LAYOUTS.map(([key, name, desc]) => h('button', { type: 'button', class: `fs-type fs-launch fs-layout ${S.layout === key ? 'on' : ''}`, 'data-layout': key, onclick: () => { S.layout = key; drawLayout(); picker.redraw(); } },
       h('span', { class: 'fs-type-ico', html: LAYOUT_ICON[key] }), h('b', null, name), h('span', { class: 'small muted' }, desc))));
     drawLayoutInfo();
@@ -866,7 +874,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   const goStep = k => { W.goto(k, { force: true }); draw(true); };   // doğrulama hatasında ilgili adıma dön
   // Canlı oturum gövdesi (Başlat ve §27 Kaydet ortak; kayıtlı simülasyonun `settings`i bunun aynısıdır)
   const sitlBody = () => ({ mode: 'sitl', type: S.type, center_id: S.center, world: { ...S.world }, model: modelBody(picker.selectionFor(activeType()), mock), drone_id: S.drone ?? undefined, rec: { bin: recOpts.bin }, power: powerSec.values(), layout: S.type === 'sabit_kanat' ? S.layout : undefined, drive: S.type === 'rover' ? driveOf() : undefined, camera: camCards.value,
-    targets: targetsSec.values(), site: siteSec.values().site || undefined, defend: siteSec.values().defend || undefined });   // §23 güç ve yakıt · §13.1 kontrol düzeni · §22.3 kamera türü · §24 hedefler · §26 yer kontrol sahası + görev
+    targets: targetsSec.values(), site: siteSec.values().site || undefined, defend: siteSec.values().defend || undefined, ...(stackSec ? stackSec.body() : {}) });   // §45 uçuş yığını (ArduPilot + dosyasız: alan yok)   // §23 güç ve yakıt · §13.1 kontrol düzeni · §22.3 kamera türü · §24 hedefler · §26 yer kontrol sahası + görev
   const preCheck = () => {   // Başlat / Kaydet öncesi: ilgili adıma dön
     if (S.mode === 'replay' && S.log == null) { toast('Önce bir uçuş logu seçin', 'err'); goStep('log'); return false; }
     if (S.mode === 'sitl' && S.center == null) { toast('Önce bir merkez seçin', 'err'); goStep('world'); return false; }
@@ -900,7 +908,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     const body = sitlBody();
     for (const k of ['drone_id', 'targets', 'site', 'defend', 'rec']) delete body[k];
     let mt;
-    try { mt = await matchApi.create({ settings: body, rings: ringsSec.values(), invite: inviteSec.values(), kind: ringsSec.kind(), dogfight: ringsSec.kind() === 'dogfight' ? ringsSec.dogfight() : null }); } catch (err) {
+    try { mt = await matchApi.create({ settings: body, rings: ringsSec.values(), invite: inviteSec.values(), bots: inviteSec.bots(), kind: ringsSec.kind(), dogfight: ringsSec.kind() === 'dogfight' ? ringsSec.dogfight() : null }); } catch (err) {
       toast(err?.status === 409 ? (err.message || tr('Simülatör kapasitesi dolu')) : err.message, 'err');
       return true;
     }
@@ -911,7 +919,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   const start = async () => {
     if (!preCheck()) return true;
     if (isMatch) return startMatch();
-    if (S.mode === 'sitl' && !P0) setPref('fs.wz.last', JSON.stringify({ type: S.type, center: S.center, launch: { method: L.method, angle_deg: L.angle_deg, release_kmh: L.release_kmh, loaded: L.loaded, aim_az_deg: L.aim_az_deg, aim_el_deg: L.aim_el_deg } }));   // §6 son seçimler (§27 fırlatıcı alanları dahil)
+    if (S.mode === 'sitl' && !P0) setPref('fs.wz.last', JSON.stringify({ type: S.type, center: S.center, stack: stackSec?.value.stack, launch: { method: L.method, angle_deg: L.angle_deg, release_kmh: L.release_kmh, loaded: L.loaded, aim_az_deg: L.aim_az_deg, aim_el_deg: L.aim_el_deg } }));   // §6 son seçimler (§27 fırlatıcı alanları dahil)
     // §17: otomatik tam ekran (kullanıcı etkinleştirmesi içinde; reddedilirse sessiz) + kayıt açıksa ekran paylaşımı izni BİR KEZ, oturum açılmadan önce
     enterFullscreen();
     if (!mock && recPrefs.on) { const { stream, reason } = await acquireDisplayStream(); stashStream(stream); if (!stream && reason === 'denied') toast(tr('Ekran paylaşımı reddedildi; 3B sahne + HUD kaydedilecek (panel kayda girmez)')); }
@@ -946,6 +954,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   // ======================================================================
   const valid = k => {
     if (k === 'log') return !logsAllowed ? tr('Uçuş loglarına erişim için Araçlar ya da Saha Yönetimi yetkisi gerekir.') : S.logs === null ? tr('Uçuş logları yükleniyor…') : S.log == null ? (S.pinned ? tr('Uçuş logu bulunamadı ya da erişim yetkiniz yok.') : tr('Bir uçuş logu seçin.')) : null;
+    if (k === 'vehicle' && S.mode === 'sitl' && stackSec?.error()) return tr(stackSec.error());   // §45 yığın bu tipi uçuramıyor
     if (k === 'world' && S.mode === 'sitl' && S.center == null) return centers.length ? tr('Bir merkez seçin.') : tr('Kayıtlı merkez yok — önce Rotalar › Merkezler bölümünden bir merkez ekleyin.');
     if (k === 'targets' && S.mode === 'sitl') return targetsSec.error() || null;
     if (k === 'site' && S.mode === 'sitl') return siteSec.error() || null;
@@ -954,7 +963,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     if (k === 'summary' && !canWrite) return tr('Oturum açmak için Dron Yönetimi yazma izni gerekir; açık oturumları izleyebilirsiniz.');
     return null;
   };
-  const W = createStepper({ getSteps: () => wizardSteps({ mode: S.mode, type: activeType(), match: isMatch }), valid });
+  const W = createStepper({ getSteps: () => wizardSteps({ mode: S.mode, type: activeType(), match: isMatch, options: launchOpts() }), valid });
   const sec = (title, ...kids) => h('div', { class: 'fs-wz-sec' }, title ? h('h4', { class: 'fs-wz-sec-h' }, title) : null, ...kids);
   const centerSec = sec('Merkez', h('p', { class: 'small muted' }, 'Sanal dünyanın merkezi ve kalkış noktası. Mission Planner haritası bu koordinatı gösterir.'), centerList);
   const worldHint = h('p', { class: 'small muted', hidden: true }, 'Dünya kaydın kalkış noktası etrafında kurulur (pist seviyesi = kalkış irtifası); çarpışma denetimi kapalıdır. Prosedürel kipte arazi gerçek araziyle örtüşmez; gerçek kipte kalkış noktasının çevresi gerçek yükseklik ve uydu görüntüsüyle kurulur.');
@@ -966,7 +975,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   const gpwsWz = gpwsWizardField({ tr });   // §42 uçuş uyarıları: Kapalı / Yalnız görsel / Görsel + ses (tercih; uçuşta ses kapsülünden de)
   const panel = (key, ...kids) => h('section', { class: 'fs-wz-panel', 'data-step': key, hidden: true }, ...kids);
   const panels = {
-    vehicle: panel('vehicle', sec('Dron tipi', typeCards), isMatch ? null : sec('Dron kaydı (isteğe bağlı)', droneBox), modelBox, layoutBox, driveBox),   // §33 karşılaşmada dron kaydı yok
+    vehicle: panel('vehicle', sec('Dron tipi', typeCards), stackSec ? sec('Uçuş yığını', stackSec.el) : null, isMatch ? null : sec('Dron kaydı (isteğe bağlı)', droneBox), modelBox, layoutBox, driveBox),   // §33 karşılaşmada dron kaydı yok
     log: panel('log', stepLog),
     world: panel('world', centerSec, worldHint, sec('Dünya', worldForm)),
     launch: panel('launch', launchBox),
@@ -1032,7 +1041,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     const timeName = tr({ day: 'Gündüz', dusk: 'Akşam', night: 'Gece' }[W0.time] || W0.time);
     const rows = {
       vehicle: [['Dron tipi', types.find(x => x.key === S.type)?.name || TYPE_NAME[S.type] || S.type], ['Görsel model', sel?.name || '—'],
-        S.type === 'sabit_kanat' ? ['Kontrol düzeni', layoutLabel(S.layout, tr)] : null, S.type === 'rover' ? ['Sürüş biçimi', tr(DRIVE_NAME[driveOf()])] : null, ['Dron kaydı', S.drone != null ? droneSel.selectedOptions[0]?.textContent || `#${S.drone}` : tr('Yok — "Simülatör #N" sanal dronu')]],
+        stackSec ? ['Uçuş yığını', stackSec.label()] : null, S.type === 'sabit_kanat' && !isPx4() ? ['Kontrol düzeni', layoutLabel(S.layout, tr)] : null, S.type === 'rover' ? ['Sürüş biçimi', tr(DRIVE_NAME[driveOf()])] : null, ['Dron kaydı', S.drone != null ? droneSel.selectedOptions[0]?.textContent || `#${S.drone}` : tr('Yok — "Simülatör #N" sanal dronu')]],
       log: [['Uçuş logu', lg?.file_name || '—'], lg ? ['Araç', [TYPE_NAME[lg.type] || lg.type, lg.aircraft].filter(Boolean).join(' · ')] : null, lg && (lg.flight_s ?? lg.duration_s) != null ? ['Süre', fmtDuration(lg.flight_s ?? lg.duration_s)] : null, ['Görsel model', sel?.name || '—']],
       world: [S.mode === 'sitl' ? ['Merkez', centerOf() ? `${centerOf().name} · ${Number(centerOf().lat).toFixed(4)}, ${Number(centerOf().lon).toFixed(4)}` : '—'] : null,
         ['Dünya kipi', `${worldName} · ${fmtKm(W0.size_m)}`], ['Saat', timeName], ['Hava durumu', tr(WEATHER_LABELS[normWeather(W0.weather)])], ['Rüzgâr', `${W0.wind_ms} m/s · ${W0.wind_dir}°${Number(W0.wind_gust) > 0 ? ` · ${tr('esinti')} +${W0.wind_gust}` : ''}${Number(W0.wind_turb) > 0 ? ` · ${tr('türbülans')} ${W0.wind_turb}` : ''}`], ['Sis', `%${Math.round(W0.fog * 100)}`],
@@ -1045,7 +1054,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
       targets: [['Hedefler', tg?.items?.length ? tr('{n} hedef', { n: tg.items.length }) : tr('Hedef yok')], tg?.items?.length ? ['Modeller', tg.items.map(x => x.model_name || x.model).join(', ')] : null,
         tg?.items?.length ? ['Önleme yarıçapı', `${tg.radius_m} m`] : null],
       rings: isMatch ? ringsSec.summary() : [],   // §33 halkalar / §41 it dalaşı kuralları
-      invite: isMatch ? [['Davet edilenler', inviteSec.names().join(', ') || '—'], ['Oyuncu sayısı', tr('{n} (siz dahil)', { n: inviteSec.values().length + 1 })]] : [],
+      invite: isMatch ? [['Davet edilenler', inviteSec.names().join(', ') || '—'], ['Oyuncu sayısı', tr('{n} (siz dahil)', { n: inviteSec.values().length + inviteSec.bots().length + 1 })]] : [],
       site: [['Saha', sv.site ? [sv.site.radar ? `${tr('Radar')} ${sv.site.radar_km} km` : null, sv.site.station ? tr('İstasyon') : null, sv.site.eo ? `EO ${sv.site.eo_km} km` : null].filter(Boolean).join(' · ') : tr('Yok')],
         ['Görev', sv.defend ? tr('Yer kontrolünü koru · {w} dalga · {i} önleyici', { w: sv.defend.waves, i: sv.defend.interceptors }) : tr('Serbest uçuş')]],
     };
@@ -1171,7 +1180,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     return;
   }
   const replay = session.mode === 'replay';   // kayıttan oynatma: SITL/UDP/komut yok; kareler sunucudan bir kez çekilir, tarayıcıda oynatılır
-  const type = session.type, modes = modesFor(type);
+  const type = session.type, modes = session.modes?.length ? session.modes : modesFor(type);   // §45 PX4 oturumu kendi kip listesini verir
   const rover = isRoverType(type), drive = rover ? normDrive(session.drive || session.model?.drive) : null;   // §31 kara aracı + sürüş biçimi
   const world = { ...WORLD_DEFAULTS, ...(session.world || {}) };
   // Sabit kanat kalkış yöntemi (§13): session.launch {method, angle_deg, release_kmh, phase}. Canlıda aşamalar sunucudan (WS `launch`); kayıtta
@@ -1200,10 +1209,11 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     onclick: e => { e.preventDefault(); goBack(be.href()); } }, h('span', { class: 'fs-back-ico', 'aria-hidden': 'true' }, '←'), h('span', { class: 'fs-back-txt' }, 'Geri'));
   // §23 simülasyon hızı kapsülü (üst çubuk; panelde aynı seçici): cmd speed {factor} → SITL SIM_SPEEDUP; seçili düğme tele.speedup ile eşitlenir
   const speedPill = createSpeedPill({ h, tr, onPick: f => { if (!canWrite) { toast(tr('Simülasyon hızı için yazma izni gerekir'), 'err'); return; } cmd('speed', { factor: f }); } });
-  if (!canWrite) speedPill.setEnabled(false);
+  if (!canWrite || session.stack === 'px4') speedPill.setEnabled(false);   // §45 PX4: hız yalnız açılışta (PX4_SIM_SPEED_FACTOR) — kapsül yalnız gösterir
+  if (session.stack === 'px4') speedPill.el.title = tr('PX4 SIH: simülasyon hızı yalnız açılışta seçilir (sihirbaz › Uçuş yığını); uçuşta değiştirilemez');
   const nav = h('div', { class: 'fs-nav' },
     backBtn,
-    h('b', null, 'Uçuş Simülatörü'), h('span', { class: 'fs-nav-sub' }, `${TYPE_NAME[type] || type} · ${(replay ? session.replay?.file_name : session.center?.name) || '—'}`), stateBadge, wsBadge,
+    h('b', null, 'Uçuş Simülatörü'), h('span', { class: 'fs-nav-sub' }, `${TYPE_NAME[type] || type}${session.stack === 'px4' ? ` · PX4 ${session.stack_info?.airframe || ''}` : ''} · ${(replay ? session.replay?.file_name : session.center?.name) || '—'}`), stateBadge, wsBadge,   // §45 PX4 yığını
     replay ? h('span', { class: 'badge purple', title: 'Kayıttan oynatma: yüklü uçuş logu aynen oynatılır; kontrol yok' }, 'Kayıt') : null,
     launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, launchLabel(launch, tr)) : null,
     session.layout ? h('span', { class: `badge ${session.layout_effective && session.layout_effective !== session.layout ? 'yellow' : 'gray'} fs-layout-badge`, title: `${tr('Kontrol düzeni')}: ${layoutLabel(session.layout, tr)}${session.layout_sitl_model ? ` · SITL ${session.layout_sitl_model}` : ''}${session.layout_effective && session.layout_effective !== session.layout ? ` · ${tr('kalıcı kayıt öncelikli')}: ${layoutShort(session.layout_effective, tr)}` : ''}` }, layoutShort(session.layout, tr)) : null,   // §13.1
@@ -1258,7 +1268,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // Mission Planner bağlantısı (§14): harekât panelinde MISSION PLANNER bölümü; panel kapalı/FPV'de panelin yüzen koyu kutusu (flightsim_panel.js placeMp) —
   // eski sol alt .fs-mp kutusu (beyaz .btn/.badge) KALKTI. Kayıt kipinde yerine kayıt bilgisi kutusu
   const addr = `${session.host || location.hostname}:${session.udp_port || '—'}`;
-  const mpOpts = replay ? null : { addr, port: session.udp_port, copy: a => copy(a, 'Adres kopyalandı') };
+  const mpOpts = replay ? null : { addr, port: session.udp_port, copy: a => copy(a, 'Adres kopyalandı'), qgc: session.stack === 'px4' };   // §45 PX4: QGC önerisi
   const mp = replay ? h('div', { class: 'fs-mp fs-rec' },
     h('div', { class: 'fs-mp-head' }, h('b', null, 'Kayıttan oynatma'), h('span', { class: 'badge purple' }, (session.replay?.vehicle || '').split(' ')[0] || 'Log')),
     h('div', { class: 'small fs-mp-hint fs-rec-info' }, '—')) : null;
@@ -1342,7 +1352,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const rcFeel = createRcFeelPanel(stage, { tr, plane: isPlane(type), rover, onChange: () => { rcShape = rcFeel.shaper(); padCtl?.refreshCurve(); } });   // §31 kara aracı: direksiyon + gaz; §37 kumanda paneli birleşik eğri
   let rcShape = rcFeel.shaper();
   // §29.6 uçuş denetimi (harekât paneli açıkken de görünür): mod seçici + DISARM (sabit kanatta havada motor kesme → süzülme; kopterde onaylı)
-  const fltBar = canWrite && !replay ? createFlightBar({ tr, kind: modeKind(type), modes: flightModesFor(modeKind(type)), stage,
+  const fltBar = canWrite && !replay ? createFlightBar({ tr, kind: session.stack === 'px4' ? 'copter' : modeKind(type), modes: session.modes?.length ? session.modes : flightModesFor(modeKind(type)), stage,
     cmd: (name, params = {}) => be.cmd(sid, name, params), onEvent: (t, sev) => addEvent(t, sev),
     confirm: msg => confirmDialog(tr('DISARM'), msg, { okLabel: tr('DISARM'), danger: true }) }) : null;
   // §34 servo tetik (alt bant; tüm kamera kipleri): seçili kanala PWM komutu gelince sunucu gecikme sonunda aracı çarptırır → otomatik Bitir + özet
@@ -1497,9 +1507,11 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     onEvent: (t, sev) => addEvent(t, sev, replay ? (player?.time() ?? null) : null, 'UYARI'), menuHost: audio.menu,
     getCtx: () => { const cm = sim?.getCamera?.(); return { crashed: !crash.hidden, phase: sim?.launchPhase ?? null, maxSpeed: session.power?.max_speed_ms ?? null,
       fence: Number(world.size_m) > 0 ? Number(world.size_m) / 2 : null, hudDraws: (cm === 'pilot' && !!osd?.enabled) || (cm === 'fpv' && !!milHud?.enabled) }; } });
+  // §44 oyun efektleri: motor sesinin master yolunda (🔊/🔇, düzey, gizli sekme, hızlı oynatma); uçuş uyarısı çalarken kısılır; menüde aç/kapa + düzey
+  const sfx = createSfx({ audio, isAlert: () => (gpws?.state()?.active?.length || 0) > 0 && gpws.state().mode === 'full', menuHost: replay ? null : audio.menu, T: tr });
   // §40 hedefli uçuş: Boşluk ile kilit + angajman (kutu ekrandayken; kamera kipi fark etmez), kayıttan oynatmada kayıtlı angajmanlar
   if (session.targets?.items?.length) {
-    engage = createEngageCtl(stage, { getSim: () => sim, tr, replay, canWrite: canWrite && !mock, cmd: (name, p) => be.cmd(sid, name, p),
+    engage = createEngageCtl(stage, { getSim: () => sim, tr, replay, canWrite: canWrite && !mock, cmd: (name, p) => be.cmd(sid, name, p), sfx,
       onEvent: (t, sev) => addEvent(t, sev, replay ? (player?.time() ?? null) : null, 'HEDEF'), toast: (t, k) => toast(t, k), isRcOn: () => !!rc });
     if (replay) engage.setReplay(session.engagements || []);
     else if (session.engagement) engage.onHello(session.engagement);
@@ -1645,7 +1657,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // §33 karşılaşma oturumu: halkalar + diğer oyuncular (3B), durum şeridi, canlı sıralama, sonuç ekranı. Giriş sekansı burada değil SUNUCU saatine
   // göre geri sayımın son 3 sn'sinde oynar (herkes aynı anda "BAŞLA"); 3B hazır olunca sunucuya `ready`.
   const matchUi = matchId && !replay && !mock && String(session.match_id ?? '') === String(matchId)
-    ? attachMatch({ stage, getSim: () => sim, mid: matchId, me: ctx.user?.id ?? null, sid, startIntro: () => { introStarted = true; intro.start(); }, getTele: () => last }) : null;
+    ? attachMatch({ stage, getSim: () => sim, mid: matchId, me: ctx.user?.id ?? null, sid, startIntro: () => { introStarted = true; intro.start(); }, getTele: () => last, sfx }) : null;
   const maybeIntro = () => {
     if (introStarted || destroyed || !sim || !msg.hidden || !(session.state === 'HAZIR' || mock)) return;
     if (matchUi) { matchUi.onWorldReady(); return; }
@@ -1854,7 +1866,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     sim?.flashTarget(m.i);
     const ek = m.first ? tr('ilk önleme {s} sn', { s: f1(m.after_s) }) : tr('{n}. geçiş', { n: m.n });
     addEvent(`${tr('ÖNLEME')} · ${m.name} · ${f0(m.dist_m)} m · ${ek}`, 'warning', at, 'HEDEF');
-    if (!replay) toast(`◎ ${tr('ÖNLEME')} · ${m.name}`);
+    if (!replay) { toast(`◎ ${tr('ÖNLEME')} · ${m.name}`); sfx.play('coin'); }   // §44 önleme bonusu
   };
   // Kalkış aşaması (WS `launch`): 3B düzenek + olay şeridi
   const onLaunch = m => {
@@ -2003,7 +2015,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     socket?.close();
     milHud?.dispose(); osd?.dispose(); engage?.dispose(); gpws?.dispose(); camPip?.dispose(); camCtl.dispose(); siteUi?.dispose(); defHud?.dispose(); launcherUi?.dispose();   // §26 + §27
     if (rec) { rec.abandon(); rec.dispose(); }   // §17: Bitir'siz çıkış → kayıt durur, parçalar akıtılır, sunucuda yarım kayıt (24 sa)
-    padCtl?.dispose(); mobMenu.dispose(); gfxCtl.dispose(); audio.dispose(); ops?.dispose(); gauges.dispose(); rcFeel.dispose(); intro.dispose(); fltBar?.dispose(); srvTrig?.dispose(); matchUi?.dispose(); clearTimeout(autoEndTimer);
+    padCtl?.dispose(); mobMenu.dispose(); gfxCtl.dispose(); audio.dispose(); ops?.dispose(); gauges.dispose(); rcFeel.dispose(); intro.dispose(); fltBar?.dispose(); srvTrig?.dispose(); matchUi?.dispose(); sfx.dispose(); clearTimeout(autoEndTimer);
     sim?.dispose();
     if (window.__fsSim === sim) delete window.__fsSim;
     if (player && window.__fsPlayer === player) delete window.__fsPlayer;

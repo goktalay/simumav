@@ -834,3 +834,22 @@ anlık görüntüde adları durur); `snapshot.match = {id, start}`.
 - Sihirbaz son adımı ("Pilot ve kayıt", `fly/index.js stepPilot`): gösterge tasarımının altında `/sim/flightsim_gfx_ui.js createGfxPicker` (sm.gfx).
 - Ön ayarlar, uyarlamalı kip, son işlem, kayıt tabanı HEPGO ile birebir (ortak çekirdek). Metinler `gfx.*` (7 dil, `static/simumav/app/i18n/*.json`).
 - Görsel: `./.venv/bin/python -m tests.gfx_shots_simumav` (GFX_LANG=en ile İngilizce menü).
+
+## 24. Karşılaşmada yapay zekâ pilot + oyun efektleri — HEPGO docs/ucus-simulatoru.md §44'ün SIMUMAV karşılığı
+- **Salon**: kurucu boş yerde "🤖 Kolay / Normal / Zor" ile yapay zekâ pilot ekler (`POST /api/match/{id}/bot {level}`; ad `AI-Şahin`, seviye
+  7 dilli "AI · Zor" rozetiyle; renk `BOT_RENKLERI`), ✕ ile onaysız kaldırır (`/kick`, yasak listesine girmez). Bot hazır ve çevrimiçi sayılır,
+  oyuncu sınırına girer (it dalaşında tek rakip). BAŞLAT'ta her bot bir SITL yuvası alır (429 `server_full` mesajında "(n yapay zekâ pilot dahil)").
+- **Yapay zekâya karşı** (Uç seçim ekranında Çok oyunculu altında `.sm-mode-ai`): `#/fly/ai` → `createWizard(…, {match: true, ai: true})`
+  `STEPS_AI = drone, track, launch, rings, ai` — "Yapay zekâ" adımı (seviye + açıklama, rakip sayısı 1…sınır−1; it dalaşında 1, rol "Roller"den)
+  → BAŞLAT → `POST /api/match/ai {drone_id, track_id, launch, rings | dogfight, kind, level, bots}` (rastgele şifre, botlar, hemen BAŞLAT; davet
+  bağlantısı yok) → salon → yarış ekranı. Oran sınırı oluşturma ile ortak (saatte 10).
+- **Çalışma zamanı** (`app/simumav/match.py`): lobi girdisinde `bot`; `baslat` botları çekirdeğe `botlar=` ile verir; bot oturumu
+  `bridge.bot_ucusu_ac` (kurucunun dronu, parametreleri ve gücü; `flights` satırı / MP köprüsü / `.bin` yok; çekirdek uçuş kaydı yazılmaz) +
+  `flightsim_match_bot.BotSurucu`; düşen/ayrılan bot ve bitişte oturum `MANAGER.kapat`.
+- **DB v5** (`app/simumav/db.py`, idempotent): `match_players` FK'siz yeniden kurulum (`user_id` < 0 = bot) + `is_bot`, `level`; satırlar taşınır;
+  `tr_match_players_user_sil` tetikleyicisi kullanıcı silinince satırlarını siler. `GET /api/match/{id}` ve geçmiş oyuncularda `is_bot`, `level`.
+- **Oyun efektleri**: `fly/session.js` `loadSim` → `flightsim_sfx.js` (MSfx) `createSfx({ audio, key: 'sm.sfx', keyed: true, menuHost: audio.menu,
+  isAlert })` → ses kapsülü menüsünde "Oyun efektleri" (`sfx.*`, 7 dil); `match_hud.js` halka ding / bitiş fanfarı / sıralama / ters yön / zafer-
+  yenilgi / puan sayacı (`ai.your_score`), it dalaşında angajman tonu; önleme ve angajman başarısında "coin"; uçuş özetinde disiplin puanı sayacı.
+- Metinler `ai.*`, `sfx.*` (7 dil). Testler: `tests.test_simumav_match` (`yapay_zeka`), `node tests/test_flightsim_sfx.mjs`. Görsel:
+  `./.venv/bin/python -m tests.simumav_aibot_shots` → `/tmp/aibot-shots/sm-*.png`.

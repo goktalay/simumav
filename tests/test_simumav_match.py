@@ -105,11 +105,29 @@ def main():
             calis(c)
     finally:
         core.GERI_SAYIM_S, M.KAPANIS_GECIKME_S = core_geri, kapanis
-    # göç idempotent: ikinci init hata vermez, sürüm 4 (HEPGO §41: matches.kind + game_cfg)
+    # göç idempotent: ikinci init hata vermez, sürüm 5 (HEPGO §41: matches.kind + game_cfg; §44: match_players FK'siz + is_bot/level)
     db.init()
     db.init()
     with db.connect() as conn:
-        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 4
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 5
+        assert {'is_bot', 'level'} <= {r[1] for r in conn.execute('PRAGMA table_info(match_players)')}
+        assert [r[2] for r in conn.execute('PRAGMA foreign_key_list(match_players)')] == ['matches'], 'user_id FK kalktı'
+        # v4 → v5: eski tablo (users FK'li) satırlarıyla yeniden kurulur
+        n0 = conn.execute('SELECT COUNT(*) FROM match_players').fetchone()[0]
+        conn.executescript("""
+            DROP TRIGGER IF EXISTS tr_match_players_user_sil;
+            CREATE TABLE mp_eski (match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL, is_host INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, flight_id INTEGER, rank INTEGER, rings INTEGER, time_s REAL,
+                joined_at TEXT NOT NULL, PRIMARY KEY (match_id, user_id));
+            INSERT INTO mp_eski SELECT match_id, user_id, name, is_host, status, flight_id, rank, rings, time_s, joined_at FROM match_players WHERE is_bot = 0;
+            DROP TABLE match_players; ALTER TABLE mp_eski RENAME TO match_players; UPDATE schema_version SET version = 4;
+        """)
+        n_insan = conn.execute('SELECT COUNT(*) FROM match_players').fetchone()[0]
+    db.init()
+    with db.connect() as conn:
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 5
+        assert {'is_bot', 'level'} <= {r[1] for r in conn.execute('PRAGMA table_info(match_players)')}
+        assert conn.execute('SELECT COUNT(*) FROM match_players').fetchone()[0] == n_insan <= n0 and n_insan > 0
         assert {'kind', 'game_cfg'} <= {r[1] for r in conn.execute('PRAGMA table_info(matches)')}
         tabs = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {'matches', 'match_players', 'match_attempts'} <= tabs, tabs
@@ -345,6 +363,89 @@ def it_dalasi(ali, veli, dora, drone, tr):
     hl = ok(veli.get(A))
     assert hl[0]['id'] == mid and hl[0]['kind'] == 'dogfight' and hl[0]['rank'] == 1, hl[0]
     print('  it dalaşı API geçti (karşılaşma', mid, ')')
+    yapay_zeka(ali, veli, dora, drone, tr)
+
+
+def yapay_zeka(ali, veli, dora, drone, tr):
+    """HEPGO §44 yapay zekâ pilot (SIMUMAV): salonda bot ekle/çıkar (yalnız kurucu, oyuncu sınırı, hazır + çevrimiçi sayılır), BAŞLAT'ta botlar
+    da SITL yuvası (429 mesajında), "Yapay zekâya karşı" hızlı başlat (davetsiz; hemen HAZIRLIK; botun uçuş kaydı yok) → BOT KAZANIR (DB
+    is_bot/level, geçmişte kazanan adı) ve insan hızlı uçunca İNSAN KAZANIR."""
+    from app.simumav import auth as sauth
+    sauth.oran_sifirla()   # oluşturma oranı (saatte 10) önceki bölümlerde doldu
+    assert ok(ali.get(f'{A}/meta'))['limits']['bot']['levels'] == ['easy', 'normal', 'hard']
+    halka = {'count': 2, 'min_alt_m': 10, 'max_alt_m': 16, 'diameter_m': 14, 'radius_m': 80, 'seed': 5}
+    govde = {'drone_id': drone['id'], 'track_id': tr['id'], 'rings': halka, 'password': 'Bot-1234', 'max_players': 3}
+    mt = ok(ali.post(A, json=govde), 201)
+    mid = mt['id']
+    ok(veli.post(f'{A}/join', json={'code': mt['code'], 'password': 'Bot-1234'}))
+    assert veli.post(f'{A}/{mid}/bot', json={'level': 'hard'}).status_code == 403
+    assert ali.post(f'{A}/{mid}/bot', json={'level': 'uzman'}).status_code == 422
+    b = ok(ali.post(f'{A}/{mid}/bot', json={'level': 'hard'}))
+    bot = next(p for p in b['players'] if p['is_bot'])
+    assert bot['id'] < 0 and bot['name'] == 'AI-Şahin' and bot['level'] == 'hard' and bot['ready'] and bot['online'] and bot['color'], bot
+    r = ali.post(f'{A}/{mid}/bot', json={'level': 'easy'}); assert r.status_code == 409 and r.json()['detail']['error'] == 'full', r.text
+    k = ok(ali.post(f'{A}/{mid}/kick', json={'user_id': bot['id']}))
+    assert not any(p['is_bot'] for p in k['players'])
+    ok(ali.post(f'{A}/{mid}/bot', json={'level': 'normal'}))   # çıkarılan bot yasaklanmaz; yeniden eklenebilir
+    ok(veli.post(f'{A}/{mid}/ready', json={'ready': True}))
+    eski = config.MAX_FLIGHTS
+    config.MAX_FLIGHTS = 2
+    r = ali.post(f'{A}/{mid}/start')
+    config.MAX_FLIGHTS = eski
+    assert r.status_code == 429 and 'yapay zekâ' in r.json()['detail']['message'] and r.json()['detail']['need'] == 3, r.text
+    assert ok(ali.post(f'{A}/{mid}/cancel'))['state'] == 'IPTAL'
+
+    # ---- yapay zekâya karşı (hızlı başlat): insan uçmaz → bot kazanır
+    r = ali.post(f'{A}/ai', json={'drone_id': drone['id'], 'track_id': tr['id'], 'rings': halka, 'level': 'x'}); assert r.status_code == 422, r.text
+    q = ok(ali.post(f'{A}/ai', json={'drone_id': drone['id'], 'track_id': tr['id'], 'rings': halka, 'level': 'hard'}), 201)
+    mid = q['id']
+    assert q['state'] == 'HAZIRLIK' and len(q['players']) == 2 and sum(p['is_bot'] for p in q['players']) == 1, q
+    bot = next(p for p in q['players'] if p['is_bot'])
+    d = bekle(lambda: (lambda x: x if all(p['session_id'] for p in x['players']) else None)(ok(ali.get(f'{A}/{mid}'))))
+    assert d and next(p for p in d['players'] if p['is_bot'])['flight_id'] is None, d
+    sids = {p['id']: p['session_id'] for p in d['players']}
+    sb = flightsim.MANAGER.get(sids[bot['id']])
+    assert sb.bot == {'uid': bot['id'], 'level': 'hard'} and all(bekle(lambda sx=sx: flightsim.MANAGER.get(sx).state == 'HAZIR') for sx in sids.values())
+    with ali.ws(f'/ws/match/{mid}') as wa:
+        ws_bekle(wa, lambda x: x['t'] == 'hello')
+        wa.send_text(json.dumps({'t': 'ready'}))
+        ws_bekle(wa, lambda x: x['t'] == 'state' and x['state'] == 'YARIS', sn=8)
+        gorulen = []
+        res = ws_bekle(wa, lambda x: x['t'] == 'result', sn=120, biriktir=gorulen)
+        assert res, [x for x in gorulen if x['t'] == 'ring']
+        rs = res['result']
+        assert rs['winner'] == bot['id'] and rs['standings'][0]['is_bot'] and rs['standings'][0]['level'] == 'hard', rs
+        assert bekle(lambda: all(flightsim.MANAGER.get(sx) is None for sx in sids.values()), sn=20)
+
+    def satirlar():
+        with db.connect() as conn:
+            row = db.row(conn.execute('SELECT * FROM matches WHERE id = ?', (mid,)))
+            mp = {r['user_id']: r for r in db.rows(conn.execute('SELECT * FROM match_players WHERE match_id = ?', (mid,)))}
+            fl = db.rows(conn.execute('SELECT user_id FROM flights WHERE match_id = ?', (mid,)))
+        return (row, mp, fl) if row['state'] == 'BITTI' and mp[bot['id']]['rank'] == 1 else None
+    row, mp, fl = bekle(satirlar, sn=5)
+    assert row['winner_id'] == bot['id'] and mp[bot['id']]['is_bot'] == 1 and mp[bot['id']]['level'] == 'hard' and mp[ali.id]['is_bot'] == 0, mp
+    assert [f['user_id'] for f in fl] == [ali.id], fl   # botun uçuş kaydı yok
+    hl = ok(ali.get(A))
+    assert hl[0]['id'] == mid and hl[0]['winner_name'] == 'AI-Şahin', hl[0]
+    g = ok(ali.get(f'{A}/{mid}'))
+    assert any(p['is_bot'] and p['level'] == 'hard' for p in g['players']), g['players']
+
+    # ---- insan hızlı uçar → insan kazanır (bot Kolay)
+    q = ok(ali.post(f'{A}/ai', json={'drone_id': drone['id'], 'track_id': tr['id'], 'rings': halka, 'level': 'easy'}), 201)
+    mid = q['id']
+    d = bekle(lambda: (lambda x: x if all(p['session_id'] for p in x['players']) else None)(ok(ali.get(f'{A}/{mid}'))))
+    sids = {p['id']: p['session_id'] for p in d['players']}
+    assert all(bekle(lambda sx=sx: flightsim.MANAGER.get(sx) is not None and flightsim.MANAGER.get(sx).state == 'HAZIR') for sx in sids.values())
+    with ali.ws(f'/ws/match/{mid}') as wa:
+        ws_bekle(wa, lambda x: x['t'] == 'hello')
+        wa.send_text(json.dumps({'t': 'ready'}))
+        ws_bekle(wa, lambda x: x['t'] == 'state' and x['state'] == 'YARIS', sn=8)
+        rota_pilotu(flightsim.MANAGER.get(sids[ali.id]), d['rings'], d['center'], hiz=40.0)
+        res = ws_bekle(wa, lambda x: x['t'] == 'result', sn=40)
+        assert res and res['result']['winner'] == ali.id and res['result']['standings'][1]['is_bot'], res
+        assert bekle(lambda: all(flightsim.MANAGER.get(sx) is None for sx in sids.values()), sn=20)
+    print('  yapay zekâ pilot geçti (karşılaşma', mid, ')')
 
 
 if __name__ == '__main__':

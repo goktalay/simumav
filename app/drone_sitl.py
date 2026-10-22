@@ -396,6 +396,12 @@ class SitlYoneticisi:
         konsol(f'Sanal dron başladı: {tip} ({model}) tcp:127.0.0.1:{port} (pid {p.pid})', 'basari')
         return port, None
 
+    def surec_kaydet(self, kimlik, p, bilgi):
+        """Başka bir başlatıcının açtığı SITL sürecini (§45 PX4: flightsim_px4.baslat) yöneticiye kaydeder — calisiyor_mu / bilgi / durdur ortak."""
+        with self._kilit:
+            self._surecler[int(kimlik)] = p
+            self._bilgi[int(kimlik)] = dict(bilgi)
+
     def durdur(self, kimlik):
         kimlik = int(kimlik)
         with self._kilit:
@@ -434,7 +440,8 @@ class SitlYoneticisi:
                     cmd = Path(f'/proc/{pid}/cmdline').read_bytes().decode('utf-8', 'ignore')
                 except OSError:
                     continue
-                if kok in cmd and ('arducopter' in cmd or 'arduplane' in cmd or 'ardurover' in cmd):
+                px4 = '/bin/px4\x00' in cmd and os.path.realpath(f'/proc/{pid}/cwd').startswith(kok + '/')   # §45 PX4: kök çalışma dizininde (cmdline'da yok)
+                if px4 or (kok in cmd and ('arducopter' in cmd or 'arduplane' in cmd or 'ardurover' in cmd)):
                     try:
                         os.kill(int(pid), 15)
                         sayi += 1

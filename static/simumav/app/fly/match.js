@@ -13,7 +13,8 @@ import { clear, h, toast, toastError, confirmDialog, t as tr, onLeave } from './
 import { net, wsUrl } from './net.js';
 import { genPassword, inviteLink, LIMITS, lobbyHref, lobbyView, joinErrorKey, OUT, passwordErrorKey, phaseOf, playersErrorKey, raceHref, REASON_KEY, resultRows,
   ringsBody, ringsDefaults, ringsErrorKey, ringsLine, shouldEnterRace, STATE_KEY, STATUS_KEY, viewBox } from './match_core.js';
-import { dfResultTable, resultTable } from './match_hud.js';
+import { aiTag, dfResultTable, resultTable } from './match_hud.js';
+import { isBot } from '/sim/flightsim_match.js';   // HEPGO §44 bot rozeti
 import { DF_LIMITS, dfDefaults, dfError, dfSummary, dfSvg, makeDfT } from '/sim/flightsim_dogfight.js';   // HEPGO §41 it dalaşı (ortak)
 import { TYPE_LABEL, WORLD_MODE_LABEL } from './wizard.js';
 
@@ -198,6 +199,31 @@ export function createInviteStep({ W, limits = LIMITS, onChange = () => {} }) {
   return { el };
 }
 
+// ---------------------------------------------------------------- sihirbaz: YAPAY ZEKÂ adımı (HEPGO §44 "Yapay zekâya karşı")
+export function createAiStep({ W, limits = LIMITS, onChange = () => {} }) {
+  const L = { ...LIMITS, ...limits };
+  const df = W.state.kind === 'dogfight';
+  const maxBots = Math.max(1, (L.players?.[1] || 2) - 1);
+  if (df) W.set('ai_bots', 1);
+  const lv = h('div', { class: 'sm-mt-seg sm-ai-levels' });
+  const drawLv = () => clear(lv, ['easy', 'normal', 'hard'].map(k => h('button', { type: 'button', class: W.state.ai_level === k ? 'on' : '', 'data-level': k, onclick: () => { W.set('ai_level', k); drawLv(); desc.textContent = tr(`ai.level_${k}_d`); onChange(); } },
+    h('b', null, tr(`ai.level_${k}`)))));
+  const desc = h('p', { class: 'muted small sm-ai-desc' }, tr(`ai.level_${W.state.ai_level}_d`));
+  drawLv();
+  const bots = h('div', { class: 'sm-mt-seg' });
+  const drawBots = () => clear(bots, (df ? [1] : Array.from({ length: maxBots }, (_, i) => i + 1)).map(n =>
+    h('button', { type: 'button', class: n === W.state.ai_bots ? 'on' : '', onclick: () => { W.set('ai_bots', n); drawBots(); onChange(); } }, String(n))));
+  drawBots();
+  const el = h('div', { class: 'sm-mt-step sm-ai-step' },
+    h('h2', null, '🤖 ', tr('ai.title')), h('p', { class: 'muted' }, tr(df ? 'ai.sub_df' : 'ai.sub')),
+    h('div', { class: 'sm-mt-form narrow' },
+      h('div', { class: 'sm-mt-field col' }, h('span', null, tr('ai.level')), lv, desc),
+      h('div', { class: 'sm-mt-field col' }, h('span', null, tr(df ? 'ai.opponent' : 'ai.count')), bots, h('small', { class: 'muted' }, tr('ai.count_hint', { n: maxBots })))),
+    h('ul', { class: 'sm-mt-howto' }, h('li', null, tr('ai.how1')), h('li', null, tr('ai.how2')), h('li', null, tr('ai.how3'))));
+  return { el };
+}
+export const createAiMatch = payload => net.post('/api/match/ai', payload);   // → anlık görüntü (HAZIRLIK)
+
 // Sihirbaz sonu: POST /api/match → salon
 export async function createMatch(payload) {
   const m = await net.post('/api/match', payload);
@@ -296,18 +322,21 @@ export async function renderLobby(view, id, ctx = {}) {
     const V = lobbyView(M, me), ph = phaseOf(M.state);
     root.dataset.state = M.state;
     clear(stateBadge, tr(STATE_KEY[M.state] || M.state)); stateBadge.className = `sm-mt-state s-${M.state}`;
-    clear(players, (M.players || []).map((p, i) => h('li', { class: `${p.id === me ? 'me' : ''} ${OUT.has(p.status) ? 'out' : ''}`.trim(), 'data-uid': String(p.id) },
-      h('span', { class: 'dot', style: { background: COLORS[i % COLORS.length] } }),
-      h('span', { class: `online ${p.online ? 'on' : ''}`, title: tr(p.online ? 'match.online' : 'match.offline') }),
-      h('span', { class: 'nm' }, p.name, p.id === me ? ` (${tr('match.you')})` : ''),
+    clear(players, (M.players || []).map((p, i) => h('li', { class: `${p.id === me ? 'me' : ''} ${OUT.has(p.status) ? 'out' : ''} ${isBot(p) ? 'bot' : ''}`.trim(), 'data-uid': String(p.id) },
+      h('span', { class: 'dot', style: { background: p.color || COLORS[i % COLORS.length] } }),
+      h('span', { class: `online ${p.online ? 'on' : ''}`, title: tr(isBot(p) ? 'ai.pilot' : p.online ? 'match.online' : 'match.offline') }),
+      h('span', { class: 'nm' }, isBot(p) ? '🤖 ' : '', p.name, p.id === me ? ` (${tr('match.you')})` : ''), aiTag(p),
       p.host ? h('span', { class: 'sm-mt-badge host' }, tr('match.host')) : null,
       p.role ? h('span', { class: `sm-df-badge ${p.role}` }, DT(`df.${p.role}`)) : null,
       ph === 'lobby' ? h('span', { class: `sm-mt-badge ${p.ready ? 'st-hazir' : 'st-davetli'}` }, tr(p.host ? 'match.host_ready' : p.ready ? 'match.ready' : 'match.not_ready'))
         : h('span', { class: `sm-mt-badge st-${p.status}` }, tr(STATUS_KEY[p.status] || p.status)),
-      V.isHost && !p.host && ph === 'lobby' ? h('button', { class: 'x-btn', type: 'button', title: tr('match.kick'), 'aria-label': tr('match.kick'), onclick: async () => {
-        if (await confirmDialog(tr('match.kick'), tr('match.kick_q', { n: p.name }), { okLabel: tr('match.kick'), danger: true })) act(`/api/match/${M.id}/kick`, { user_id: p.id });
+      V.isHost && !p.host && ph === 'lobby' ? h('button', { class: 'x-btn', type: 'button', title: tr(isBot(p) ? 'ai.remove' : 'match.kick'), 'aria-label': tr(isBot(p) ? 'ai.remove' : 'match.kick'), onclick: async () => {
+        if (isBot(p) || await confirmDialog(tr('match.kick'), tr('match.kick_q', { n: p.name }), { okLabel: tr('match.kick'), danger: true })) act(`/api/match/${M.id}/kick`, { user_id: p.id });
       } }, '✕') : null)),
-    Array.from({ length: Math.max(0, (M.max_players || 0) - (M.players || []).length) }, () => h('li', { class: 'empty' }, h('span', { class: 'dot' }), h('span', { class: 'nm muted' }, tr('match.slot_empty')))));
+    Array.from({ length: Math.max(0, (M.max_players || 0) - (M.players || []).length) }, (_, k) => h('li', { class: 'empty' }, h('span', { class: 'dot' }), h('span', { class: 'nm muted' }, tr('match.slot_empty')),
+      // HEPGO §44: kurucu boş yere yapay zekâ pilot ekler (seviye seçimi; bot hazır sayılır, BAŞLAT'ta kendi simülatörünü alır)
+      k === 0 && V.isHost && ph === 'lobby' ? h('span', { class: 'sm-ai-add' }, ...['easy', 'normal', 'hard'].map(l => h('button', { class: 'btn sm', type: 'button', 'data-level': l, title: tr('ai.add'),
+        onclick: () => act(`/api/match/${M.id}/bot`, { level: l }, 'ai.added') }, '🤖 ', tr(`ai.level_${l}`)))) : null)));
     // yan sütun: davet + ayarlar + parkur
     const link = M.code ? inviteLink(location.origin, M.code) : null;
     let pwTxt = null; try { pwTxt = sessionStorage.getItem(PW_KEY(M.id)); } catch { /* */ }

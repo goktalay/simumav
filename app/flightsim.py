@@ -464,6 +464,13 @@ def world_dogrula(w):
     return out
 
 
+def _yigin_modulu():
+    """§45 HEPGO'ya özgü uçuş yığını modülü (flightsim_px4): yalnız `stack` verilince, importlib ile yüklenir — SIMUMAV dışa aktarımının
+    göreli import zincirine girmez (SIMUMAV hep ArduPilot)."""
+    import importlib
+    return importlib.import_module(f'{__package__}.flightsim_px4')
+
+
 def tipler():
     """GET /meta types: SITL tipleri + ikili var mı (sahte kipte her zaman var sayılır)."""
     return [{'key': k, 'name': TIP_ADLARI.get(k, k), 'binary': (not SITL_ENABLED) or drone_sitl.ikili_yolu(k).is_file()}
@@ -581,6 +588,7 @@ class SahteKinematik:
         self.motor_cut = False                      # motor kesildi (uçak): itki yok → süzülme; ARM korunur
         self._daireye_don = False                   # süzülmeden sonra motor geri verildi: daireye ışınlanmadan yaklaş
         self.sure_ms = 0.0                          # time_boot_ms karşılığı
+        self.bot_v = None                           # §44 yapay zekâ pilot hız komutu (doğu, kuzey, yukarı m/s, sure_ms) — GUIDED'da 3 sn geçerli
 
     RC_VARSAYILAN = (1500, 1500, 1000, 1500, 1500, 1500, 1500, 1500)
     RC_VARSAYILAN_ROVER = (1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500)   # ArduRover: gaz ortası = dur (ileri/geri çift yönlü)
@@ -657,6 +665,44 @@ class SahteKinematik:
             self.rc = [v if v else eski for v, eski in zip(ch, self.rc)]   # 0 = o kanalı değiştirme
             if ch[2] and not self.rover:
                 self.throttle = max(0.0, min(100.0, (self.rc[2] - 1000) / 10.0))
+
+    def bot_hiz(self, ve, vn, vu):
+        """§44 GUIDED hız komutu (gerçek SITL'de SET_POSITION_TARGET hız vektörü karşılığı; 3 sn içinde yenilenmezse araç bekler)."""
+        self.bot_v = (float(ve), float(vn), float(vu), self.sure_ms)
+
+    def _bot_adim(self, dt):
+        """Hız komutuna ivme sınırlı yaklaşma (6 m/s² yatay, 4 m/s² dikey); uçakta en az 12 m/s; burun hız yönünde, yatış dönüş oranından."""
+        ve, vn, vu = self.bot_v[:3]
+        a = 6.0 * dt
+        dn, de = vn - self.vn, ve - self.ve
+        L = math.hypot(dn, de)
+        if L > a:
+            dn, de = dn / L * a, de / L * a
+        self.vn += dn
+        self.ve += de
+        hs = math.hypot(self.vn, self.ve)
+        if self.plane and hs < 12.0:
+            if hs < 1e-3:
+                self.vn, self.ve = 12.0 * math.cos(self.yaw), 12.0 * math.sin(self.yaw)
+            else:
+                self.vn, self.ve = self.vn / hs * 12.0, self.ve / hs * 12.0
+            hs = 12.0
+        dvd = -vu - self.vd
+        self.vd += max(-4.0 * dt, min(4.0 * dt, dvd))
+        cos_lat = math.cos(math.radians(self.lat0))
+        self.lat += self.vn * dt / 110574.0
+        self.lon += self.ve * dt / (111320.0 * cos_lat)
+        self.alt_rel = max(0.0, self.alt_rel - self.vd * dt)
+        if self.alt_rel <= 0.0:
+            self.vd = 0.0
+        self.hedef_alt = self.alt_rel
+        y0 = self.yaw
+        if hs > 0.5:
+            self.yaw = math.atan2(self.ve, self.vn)
+        donus = ((self.yaw - y0 + math.pi) % (2 * math.pi) - math.pi) / dt if dt > 0 else 0.0
+        self.roll = max(-1.0, min(1.0, math.atan(donus * hs / 9.81)))
+        self.pitch = (0.05 if self.plane else -min(0.35, hs * 0.02))
+        self.throttle = 60.0
 
     def _motor_ver(self):
         """Motor kesmesi kalkar; havadaysa daireye (ışınlanmadan) yaklaşarak döner."""
@@ -841,6 +887,10 @@ class SahteKinematik:
                 self.aci = math.atan2(de, dn)
                 self.kalkis = None
             return
+        if (self.bot_v is not None and self.mode == 'GUIDED' and self.sure_ms - self.bot_v[3] < 3000.0
+                and (self.alt_rel > 0.5 or self.bot_v[2] > 0)):   # §44 yapay zekâ pilot hız komutu
+            self._bot_adim(dt)
+            return
         if self.alt_rel < self.hedef_alt:   # tırmanış
             self.alt_rel = min(self.hedef_alt, self.alt_rel + self.TIRMANMA * dt)
             self.vd = -self.TIRMANMA
@@ -969,6 +1019,11 @@ class SimSession:
         self.match_id = match_id
         self.tele_kanca = None
         self.komut_kapisi = None
+        # §44 yapay zekâ pilot oturumu: {'uid', 'level'} (sunucudaki bot sürücüsü yönetir; insan komutu yok, uçuş kaydı yazılmaz)
+        self.bot = None
+        self._bot_mod_t = 0.0
+        self._bot_hedef = None            # uçak: son gönderilen GUIDED hedefi (lat, lon, alt, t)
+        self._bot_hiz = None
         # §26 yer kontrol merkezi + EO/radar kulesi (doğrulanmış flightsim_gcs.gcs_dogrula) ve "Yer kontrolünü koru" görevi (SavunmaGorevi; yalnız INTERCEPTOR).
         # Görev istasyonu gerektirir: gcs yoksa istasyon + radar + EO varsayılanlarla açılır, istasyon kapalı seçildiyse açılır.
         if defend and (not gcs or not gcs.get('station')):
@@ -1346,7 +1401,9 @@ class SimSession:
                                                                           irtifa=c.get('alt') or EV_IRTIFA, konsol=self._konsol, model=sitl_model,
                                                                           yon=ev['yaw'] if ev['yaw'] is not None else kalkis_yonu(self.type, self.launch, self.world),   # §31: uçak burnu kalkış yönünde (rampa azimutu / pist)
                                                                           log_bin=self.rec['bin'], ekstra_parm=drone_params.parm_satirlari(self.kayitli_params, self.sanal_montaj, self.type, **self.montaj_arg)
-                                                                          + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]], temiz=temiz))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir)
+                                                                          + [f'{a} {v:g}' for a, v in self.layout_parametreleri()[0]] + list(getattr(self, 'ek_parm', None) or []), temiz=temiz))   # §13.1 düzen seti parm dosyasına da (SITL ilk andan doğru; ilk kalp atışında PARAM_SET yinelenir) · §45 yüklenen .parm
+            if port and getattr(self, 'ek_parm', None):
+                self._olay(f'Parametre dosyası: {len(self.ek_parm) - 1} parametre varsayilan.parm\'a yazıldı (aynı adda dron kaydının kalıcı değeri öncelikli)', 6)
             if port and self.rec['bin']:
                 self._olay('DataFlash kaydı açık: uçuş logu (.bin) oturum kapanışında Uçuş Logları\'na kaydedilir', 6)
             if not port:
@@ -2469,6 +2526,66 @@ class SimSession:
             self._gonder(enc.rc_channels_override_encode(s, c, *p['ch']))
         return {'ok': True}
 
+    # ---- §44 yapay zekâ pilot (bot) komut yolu — yalnız sunucudaki BotSurucu çağırır ----
+    def bot_hazirla(self, vmax):
+        """Uçuşa geçerken: gerçek kopter SITL'inde GUIDED hız tavanı (WPNAV_SPEED, cm/s) seviyenin hızına yetsin."""
+        if self.sahte is None and self._heartbeat_alindi and self.type not in PLANE_TIPLERI:
+            self._param_set((('WPNAV_SPEED', round(float(vmax) * 100 + 100)),))
+
+    def bot_yonlendir(self, cmd, merkez=None):
+        """BotPilot komutu {vx, vy, vz (ENU m/s), hedef (x, y, z — merkez ENU, z eve göre), hiz, yaw_deg} → araç. Kopter (ve sahte kinematik):
+        GUIDED + SET_POSITION_TARGET_LOCAL_NED hız vektörü + yön (5 Hz; ArduCopter 3 sn yenilenmeyen hız komutunda durur). Uçak ailesi:
+        GUIDED hedef noktası (MISSION_ITEM_INT current=2, göreli irtifa; ileriye uzatılmış) + DO_CHANGE_SPEED. Karşılaşma kapısı kapalıysa
+        (yarış dışı) hiçbir şey göndermez. Dönüş: gönderildi mi."""
+        if self.komut_kapisi is not None and self.komut_kapisi('arm'):
+            return False
+        if self.state != 'HAZIR':
+            return False
+        if self.sahte is not None:
+            k = self.sahte
+            if not k.armed or k.kalkis is not None:
+                return False
+            if k.mode != 'GUIDED':
+                k.komut('mode', {'mode': 'GUIDED'})
+            k.bot_hiz(cmd['vx'], cmd['vy'], cmd['vz'])
+            return True
+        if not self._heartbeat_alindi or not self.tele.get('armed'):
+            return False
+        now = time.time()
+        mod = str(self.tele.get('mode') or '').upper()
+        enc, s, c = self.mav, self.sysid, self.comp
+        if self.type in PLANE_TIPLERI:
+            from . import flightsim_match_core as mcore
+            m = merkez or self.center
+            te = self.tele
+            if te.get('lat') is None:
+                return False
+            bx, by = mcore.enu(m['lat'], m['lon'], te['lat'], te['lon'])
+            hx, hy, hz = cmd['hedef']
+            dx, dy = hx - bx, hy - by
+            L = math.hypot(dx, dy)
+            if L < 250.0:   # GUIDED hedefe varınca daireye girer: hedefi aynı yönde ileri uzat
+                ux, uy = (dx / L, dy / L) if L > 1e-3 else (math.sin(math.radians(cmd.get('yaw_deg') or 0)), math.cos(math.radians(cmd.get('yaw_deg') or 0)))
+                hx, hy = bx + ux * 250.0, by + uy * 250.0
+            lat, lon = mcore.latlon(m['lat'], m['lon'], hx, hy)
+            son = self._bot_hedef
+            if son is None or now - son[3] > 2.5 or math.hypot(*mcore.enu(son[0], son[1], lat, lon)) > 20.0 or abs(son[2] - hz) > 3.0:
+                self._gonder(enc.mission_item_int_encode(s, c, 0, 6, 16, 2, 1, 0, 0, 0, 0, int(lat * 1e7), int(lon * 1e7), float(hz)))
+                self._bot_hedef = (lat, lon, float(hz), now)
+            hiz = float(cmd.get('hiz') or 0)
+            if hiz and (self._bot_hiz is None or abs(self._bot_hiz - hiz) > 1.5):
+                self._gonder(enc.command_long_encode(s, c, 178, 0, 0, hiz, -1, 0, 0, 0, 0))   # MAV_CMD_DO_CHANGE_SPEED (hava hızı)
+                self._bot_hiz = hiz
+            return True
+        if mod != 'GUIDED' and now - self._bot_mod_t > 1.0:
+            self._bot_mod_t = now
+            self._mod_gonder('GUIDED')
+        yaw = math.radians(float(cmd.get('yaw_deg') or 0))
+        # MAV_FRAME_LOCAL_NED (1); maske: konum + ivme + yön hızı yok say → hız (kuzey, doğu, aşağı) + yön
+        self._gonder(enc.set_position_target_local_ned_encode(0, s, c, 1, 0b0000100111000111, 0, 0, 0,
+                                                              float(cmd['vy']), float(cmd['vx']), -float(cmd['vz']), 0, 0, 0, yaw, 0))
+        return True
+
     KAPI_KOMUTLARI = ('arm', 'takeoff', 'reset')   # §33: yarış dışında kapalı (hub'da ayrıca mission_start); §41 reset: kapı yalnız it dalaşında reddeder
 
     def _kapi_denetle(self, name):
@@ -2864,6 +2981,8 @@ class SimSession:
     async def _run_kaydet(self):
         """`drone_sim_runs` satırı + params.param + scripts.zip (flightsim_runs.kaydet; iş parçacığı). Hata oturumu düşürmez."""
         from . import flightsim_runs
+        if self.bot:   # §44 yapay zekâ pilot oturumu: uçuş kaydı yok (karşılaşma satırında bot oyuncu olarak işaretli)
+            return
         try:
             self.run_sonuc = await asyncio.get_running_loop().run_in_executor(None, flightsim_runs.kaydet, self)
         except Exception as e:   # noqa: BLE001
@@ -2937,7 +3056,7 @@ class SimManager:
         return len([s for s in self.sessions.values() if s.state != 'KAPANDI' and bool(getattr(s, 'match_id', None)) == bool(match)])
 
     async def ac(self, tip, center, world, owner, airframe=None, model=None, drone=None, rec=None, power=None, layout=None, camera=None, targets=None,
-                 targets_katalog=None, site=None, defend=None, drive=None, start=None, match_id=None):
+                 targets_katalog=None, site=None, defend=None, drive=None, start=None, match_id=None, stack=None, stack_cfg=None):
         """Yeni oturum: doğrulama (400) → limit (409) → SITL ikilisi (503) → UDP port (503, oturum içinde HATA) → görev.
         `model`: flightsim_models.coz ile çözülmüş kütüphane nesnesi (router); yoksa `airframe` ile dahili model.
         `drone` (§14, isteğe bağlı): Dron Envanteri kaydı {id, code, name, model} — harekât panelinde telemetri bu adla akar.
@@ -2949,6 +3068,17 @@ class SimManager:
         camera = kamera_dogrula(camera)
         if tip not in drone_sitl.TIP_ESLEME:
             raise SimHata('invalid', 'Geçersiz dron tipi')
+        yigin = None   # §45 uçuş yığını: yalnız HEPGO router'ı verir (SIMUMAV köprüsü vermez → ArduPilot, yığın modülü hiç yüklenmez)
+        if stack is not None or stack_cfg is not None:
+            try:
+                yigin = _yigin_modulu().yigin_dogrula(stack, tip, stack_cfg)
+            except ValueError as e:
+                raise SimHata('invalid', str(e))
+            except RuntimeError as e:
+                raise SimHata('sitl', str(e))
+        px4 = bool(yigin and yigin['stack'] == 'px4')
+        if px4 and (defend or match_id is not None):
+            raise SimHata('invalid', 'PX4 yığınında "Yer kontrolünü koru" görevi ve karşılaşma yok (ArduPilot akışları)')
         try:
             oneri = drone_params.guc_onerisi(drone['id']) if drone and drone.get('id') else None
         except Exception:   # noqa: BLE001 — öneri okunamazsa varsayılanlar
@@ -2982,7 +3112,7 @@ class SimManager:
                 raise SimHata('limit', f'Karşılaşmalar için en fazla {MATCH_MAX_SESSIONS} eşzamanlı simülatör')
         elif self.acik_sayisi() >= MAX_SESSIONS:
             raise SimHata('limit', f'En fazla {MAX_SESSIONS} açık oturum')
-        if SITL_ENABLED and not drone_sitl.ikili_yolu(tip).is_file():
+        if SITL_ENABLED and not px4 and not drone_sitl.ikili_yolu(tip).is_file():
             loop = asyncio.get_running_loop()
             try:   # ikili yoksa yönetici indirir (sabit sürüm); olmazsa 503
                 yol, err = await asyncio.wait_for(loop.run_in_executor(None, drone_sitl.indir, tip), 180)
@@ -3009,9 +3139,12 @@ class SimManager:
                 alt_not = f'Arazi yüksekliği alınamadı ({str(e)[:80]}); SITL ev irtifası {girilen if girilen is not None else EV_IRTIFA:.0f} m (kayıtlı/varsayılan) ile kuruldu'
         sid = self._next
         self._next += 1
-        s = SimSession(sid, tip, {'id': center.get('id'), 'name': center.get('name'), 'lat': float(center['lat']), 'lon': float(center['lon']),
-                                  'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout, camera, targets,
-                       site, defend, drive, start=start, match_id=match_id)
+        cls, ek = (_yigin_modulu().Px4Session, {'yigin': yigin}) if px4 else (SimSession, {})   # §45
+        s = cls(sid, tip, {'id': center.get('id'), 'name': center.get('name'), 'lat': float(center['lat']), 'lon': float(center['lon']),
+                           'alt': alt, 'alt_entered': girilen}, world, owner, self, airframe, model, drone, rec, power, layout, camera, targets,
+                site, defend, drive, start=start, match_id=match_id, **ek)
+        if yigin and not px4:   # §45 ArduPilot + yüklenen .parm: varsayilan.parm sonuna (kalıcı kayıttan sonra)
+            s.ek_parm = _yigin_modulu().ardupilot_parm_satirlari(yigin)
         s.alt_not = alt_not
         self.sessions[sid] = s
         s.task = asyncio.get_running_loop().create_task(s.run())

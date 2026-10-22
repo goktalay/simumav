@@ -19,6 +19,9 @@ Burada SIMUMAV'a özgü olanlar:
   · HEPGO §41 İT DALAŞI (`kind: 'dogfight'`): oyuncu sınırı tam 2; halka yok; roller BAŞLAT'ta (çekirdek HAZIRLIK) atanır; başlangıç noktaları
     rol başına (`core.it_baslangiclari`); angajman sunucuda (`core.ItDalasi`; tele kancası, yön + yunuslama); çarpışma → `k.carpti`; `pos`
     çerçevesinde `df`; yarışta Sıfırla yok (komut kapısı). DB `matches.kind` + `game_cfg` (v4 göçü).
+  · HEPGO §44 YAPAY ZEKÂ PİLOT: kurucu salonda bot ekler/çıkarır (`bot_ekle`; negatif kimlik, hazır sayılır, oyuncu sınırı içinde; it dalaşında tek
+    rakip) ya da "Yapay zekâya karşı" hızlı başlatır (`Yonetici.yapay_zekaya_karsi`: rastgele şifre, botlar, hemen BAŞLAT). BAŞLAT'ta botlar da SITL
+    yuvası sayılır; bot oturumu `bridge.bot_ucusu_ac` (flights satırı yok), sürücü `flightsim_match_bot.BotSurucu`. DB v5: match_players.is_bot/level.
 """
 import asyncio
 import hashlib
@@ -28,6 +31,7 @@ import secrets
 import time
 
 from .. import flightsim
+from .. import flightsim_match_bot as mbot
 from .. import flightsim_match_core as core
 from . import bridge, config, db
 
@@ -138,6 +142,7 @@ class Mac:
         self._kapanis = None
         self.bitti_t = None
         self.alt_ok = False
+        self.bot_gorevleri = {}           # §44 uid → asyncio.Task (BotSurucu)
 
     # ---------------------------------------------------------------- sorgular
     @property
@@ -169,7 +174,7 @@ class Mac:
     def cevrimici(self, now=None):
         now = now or time.time()
         ws_uid = {getattr(w, '_uid', None) for w in self.viewers}
-        return {uid for uid, p in self.lobi.items() if now - p.get('seen_t', 0) <= GORULDU_S} | (ws_uid - {None})
+        return {uid for uid, p in self.lobi.items() if p.get('bot') or now - p.get('seen_t', 0) <= GORULDU_S} | (ws_uid - {None})
 
     def baslatilabilir(self):
         if self.durum != core.LOBI or self.k is not None or len(self.lobi) < 2:
@@ -184,11 +189,12 @@ class Mac:
             players = []
             for p in d['players']:
                 lp = self.lobi.get(p['id']) or {}
-                players.append({**p, 'ready': bool(lp.get('ready', True)), 'online': p['id'] in on, 'flight_id': self.flights.get(p['id'])})
+                players.append({**p, 'ready': bool(lp.get('ready', True)), 'online': p['id'] in on or bool(p.get('is_bot')), 'flight_id': self.flights.get(p['id'])})
             out = {k: d[k] for k in ('prepare_at', 'start_at', 'ended_at', 'winner', 'result', 'countdown_s', 'dogfight')}
         else:
             players = [{'id': p['id'], 'name': p['name'], 'host': p['host'], 'status': core.GELDI, 'ready': p['ready'], 'online': p['id'] in on,
-                        'joined_at': p['joined_t'], 'rings': 0, 'total': len(self.halkalar), 'finished': False, 'flight_id': None, 'session_id': None, 'role': None}
+                        'joined_at': p['joined_t'], 'rings': 0, 'total': len(self.halkalar), 'finished': False, 'flight_id': None, 'session_id': None, 'role': None,
+                        'is_bot': bool(p.get('bot')), 'level': p.get('bot'), 'color': p.get('color')}
                        for p in self.lobi.values()]
             out = {'prepare_at': None, 'start_at': None, 'ended_at': self.bitis_t, 'winner': None, 'result': None, 'countdown_s': core.GERI_SAYIM_S, 'dogfight': None}
         return {'id': self.id, 'code': self.code, 'state': self.durum, 'reason': self.k.neden if self.k is not None else self.neden, 'host_id': self.host_id,
@@ -245,6 +251,24 @@ class Mac:
         p['seen_t'] = time.time()
         self.degisti(kaydet=False)
 
+    def bot_ekle(self, istek_uid, seviye, now=None):
+        """HEPGO §44: kurucu salonda yapay zekâ pilot ekler (oyuncu sınırı içinde; it dalaşında tek rakip). Dönüş: bot kimliği (negatif)."""
+        now = now or time.time()
+        if int(istek_uid) != self.host_id:
+            raise H(403, 'forbidden', 'Yapay zekâ pilotu yalnız kurucu ekleyebilir')
+        if seviye not in core.BOT_SEVIYELER:
+            raise H(422, 'invalid', f"Yapay zekâ seviyesi {' | '.join(core.BOT_SEVIYELER)} olmalı")
+        if self.k is not None or self.durum != core.LOBI:
+            raise H(409, 'conflict', 'Yapay zekâ pilot yalnız bekleme salonunda eklenebilir')
+        if len(self.lobi) >= self.max_players:
+            raise H(409, 'full', f'Karşılaşma dolu ({self.max_players} oyuncu; yapay zekâ pilotlar da sayılır)')
+        uid = min([0] + list(self.lobi)) - 1
+        n = sum(1 for p in self.lobi.values() if p.get('bot'))
+        self.lobi[uid] = {'id': uid, 'name': core.bot_adi(seviye, n, etiket=False), 'host': False, 'ready': True, 'bot': seviye,
+                          'color': core.BOT_RENKLERI[n % len(core.BOT_RENKLERI)], 'joined_t': now, 'seen_t': now}
+        self.degisti()
+        return uid
+
     def ayril(self, uid, now):
         uid = int(uid)
         if self.bitti():
@@ -267,8 +291,9 @@ class Mac:
         if self.k is None:
             if self.durum != core.LOBI:
                 raise H(409, 'conflict', 'Karşılaşma bitti')
-            self.lobi.pop(uid, None)
-            self.yasakli.add(uid)
+            p = self.lobi.pop(uid, None)
+            if not (p or {}).get('bot'):   # bot kaldırma yasak listesine girmez
+                self.yasakli.add(uid)
             self.degisti()
             return
         try:
@@ -300,19 +325,22 @@ class Mac:
         bekleyen = [p['name'] for p in self.lobi.values() if not p['host'] and not p['ready']]
         if bekleyen:
             raise H(409, 'not_ready', f"Henüz hazır olmayan oyuncular: {', '.join(bekleyen)}")
-        acik = [p['name'] for p in self.lobi.values() if bridge.aktif_ucus(p['id'])[0] is not None]
+        acik = [p['name'] for p in self.lobi.values() if not p.get('bot') and bridge.aktif_ucus(p['id'])[0] is not None]
         if acik:
             raise H(409, 'flight_open', f"Süren uçuşu olan oyuncular önce uçuşunu bitirmeli: {', '.join(acik)}")
         n = len(self.lobi)
         bos = config.MAX_FLIGHTS - bridge.aktif_sayisi()
         if n > bos:
-            raise H(429, 'server_full', f'Sunucuda yeterli simülatör yuvası yok: {n} oyuncunun her biri kendi simülatörünü alır, şu an {max(0, bos)} boş yuva var '
+            nb = sum(1 for p in self.lobi.values() if p.get('bot'))
+            raise H(429, 'server_full', f'Sunucuda yeterli simülatör yuvası yok: {n} oyuncunun her biri kendi simülatörünü alır'
+                    + (f' ({nb} yapay zekâ pilot dahil)' if nb else '') + f', şu an {max(0, bos)} boş yuva var '
                     f'(sunucu tavanı {config.MAX_FLIGHTS}). Biraz sonra yeniden deneyin.', retry_after=bridge.bekleme_suresi() or 60, need=n, free=max(0, bos))
         host = self.lobi[self.host_id]
-        digerleri = [(p['id'], p['name']) for p in self.lobi.values() if not p['host']]
+        digerleri = [(p['id'], p['name']) for p in self.lobi.values() if not p['host'] and not p.get('bot')]
+        botlar = [(p['id'], p['name'], p['bot'], p.get('color')) for p in self.lobi.values() if p.get('bot')]
         try:
             k = core.Karsilasma(self.id, (self.host_id, host['name']), digerleri, {'type': ctip(self.settings['drone']['type'])}, self.cfg, self.merkez, now,
-                                self.halkalar, tur=self.tur)
+                                self.halkalar, tur=self.tur, botlar=botlar)
         except core.MacHata as e:
             raise H(409 if e.kod == 'limit' else 422, e.kod, str(e))
         self.k = k
@@ -320,6 +348,8 @@ class Mac:
         ev = []
         for uid, _ in digerleri:
             ev += k.katil(uid, now)   # herkes salonda: son katılımla LOBI → HAZIRLIK (çekirdek)
+        if not digerleri:   # §44 yalnız yapay zekâ rakip(ler)
+            ev += k.lobi_denetle(now)
         self.isle(ev)
 
     # ---------------------------------------------------------------- çekirdek olayları
@@ -336,6 +366,8 @@ class Mac:
                 if s is not None:
                     s.tele_kanca = None
                 asyncio.get_running_loop().create_task(bridge.ucus_durdur(self.flights[e['id']], 'karsilasma_ayrildi'))
+            elif e['t'] == 'player' and e.get('status') in core.KATILMAYAN and e.get('id') in self.bot_gorevleri and not self.bitti():
+                self._bot_kapat(e['id'])   # §44 düşen bot: sürücü durur, SITL kapanır
         self._yay({'t': 'match', 'match': self.anlik()})
         self.kaydet()
 
@@ -348,6 +380,15 @@ class Mac:
             bridge.MAC_REZERV.pop(self.id, None)
             if self._kapanis is None:
                 self._kapanis = asyncio.get_running_loop().create_task(self._oturumlari_kapat())
+
+    def _bot_kapat(self, uid):
+        t = self.bot_gorevleri.pop(uid, None)
+        if t is not None:
+            t.cancel()
+        s = self.sessions.get(uid)
+        if s is not None:
+            s.tele_kanca = None
+            asyncio.get_running_loop().create_task(flightsim.MANAGER.kapat(s.id, 'karsilasma_bitti'))
 
     def _rezerv_dus(self):
         n = bridge.MAC_REZERV.get(self.id)
@@ -374,18 +415,13 @@ class Mac:
             lat, lon = core.latlon(self.merkez['lat'], self.merkez['lon'], x, y)
             o.baslangic = {'x': round(x, 1), 'y': round(y, 1), 'lat': round(lat, 7), 'lon': round(lon, 7), 'yaw_deg': round(yaw, 1)}
 
-            def oku():
-                with db.connect() as conn:
-                    u = db.row(conn.execute('SELECT * FROM users WHERE id = ?', (o.uid,)))
-                    p = db.row(conn.execute('SELECT * FROM pilots WHERE user_id = ? ORDER BY is_default DESC, id LIMIT 1', (o.uid,)))
-                    return u, p
-            u, pilot = await asyncio.get_running_loop().run_in_executor(None, oku)
-            if u is None:
-                raise H(404, 'not_found', 'Hesap bulunamadı')
-            if pilot is None:
-                raise H(409, 'no_pilot', 'Pilot kaydı yok (Mürettebat\'tan bir pilot ekleyin)')
-            out = await bridge.ucus_baslat(u, pilot, drone, track, None, st.get('launch') or {'method': 'wheels'}, {'bin': True}, None, camera=st.get('camera'),
-                                           start={'lat': lat, 'lon': lon, 'yaw_deg': None if tip in core.UCAK_TIPLER else yaw}, match_id=self.id)
+            if o.bot:   # §44 yapay zekâ pilot: kurucunun dronu, flights satırı yok
+                s = await bridge.bot_ucusu_ac(drone, track, st.get('launch') or {'method': 'wheels'}, st.get('camera'),
+                                              {'lat': lat, 'lon': lon, 'yaw_deg': None if tip in core.UCAK_TIPLER else yaw}, self.id,
+                                              {'id': o.uid, 'name': o.ad, 'bot': True}, self.host_id)
+                out = {'sim_id': s.id, 'flight_id': None}
+            else:
+                out = await self._insan_ucusu(o, drone, track, st, tip, lat, lon, yaw)
         except bridge.BridgeHata as e:
             self._rezerv_dus()
             self.isle(k.dusur(o.uid, time.time(), f'Simülatör açılamadı: {e.message}'))
@@ -394,10 +430,31 @@ class Mac:
             self._rezerv_dus()
             self.isle(k.dusur(o.uid, time.time(), f'Simülatör açılamadı: {e}'))
             return
+        await self._oturum_bagla(o, out)
+
+    async def _insan_ucusu(self, o, drone, track, st, tip, lat, lon, yaw):
+        def oku():
+            with db.connect() as conn:
+                u = db.row(conn.execute('SELECT * FROM users WHERE id = ?', (o.uid,)))
+                p = db.row(conn.execute('SELECT * FROM pilots WHERE user_id = ? ORDER BY is_default DESC, id LIMIT 1', (o.uid,)))
+                return u, p
+        u, pilot = await asyncio.get_running_loop().run_in_executor(None, oku)
+        if u is None:
+            raise H(404, 'not_found', 'Hesap bulunamadı')
+        if pilot is None:
+            raise H(409, 'no_pilot', 'Pilot kaydı yok (Mürettebat\'tan bir pilot ekleyin)')
+        return await bridge.ucus_baslat(u, pilot, drone, track, None, st.get('launch') or {'method': 'wheels'}, {'bin': True}, None, camera=st.get('camera'),
+                                        start={'lat': lat, 'lon': lon, 'yaw_deg': None if tip in core.UCAK_TIPLER else yaw}, match_id=self.id)
+
+    async def _oturum_bagla(self, o, out):
+        k = self.k
         self._rezerv_dus()
         s = flightsim.MANAGER.get(out['sim_id'])
         if s is None or k.durum in core.SON_DURUMLAR or o.durum in core.KATILMAYAN:
-            await bridge.ucus_durdur(out['flight_id'], 'karsilasma_bitti')
+            if out.get('flight_id') is not None:
+                await bridge.ucus_durdur(out['flight_id'], 'karsilasma_bitti')
+            elif s is not None:
+                await flightsim.MANAGER.kapat(s.id, 'karsilasma_bitti')
             return
         if not self.alt_ok:
             # Halka yükseklikleri SITL ev irtifasıyla AYNI kaynaktan (gerçek arazi: terrarium; yoksa çekirdeğin varsayılanı): ilk oturumdan düzeltilir
@@ -411,11 +468,16 @@ class Mac:
                     k.halkalar = core.halkalar_uret(self.cfg, self.merkez)
                 self.halkalar = k.halkalar
         self.sessions[o.uid] = s
-        self.flights[o.uid] = out['flight_id']
+        if out.get('flight_id') is not None:
+            self.flights[o.uid] = out['flight_id']
         k.oturum_bagla(o.uid, s.id)
         s.tele_kanca = lambda tele, uid=o.uid, ss=s: self._tele(uid, ss, tele)
         s.komut_kapisi = self._kapi
-        self.isle([{'t': 'player', 'id': o.uid, 'status': o.durum, 'session_id': s.id, 'flight_id': out['flight_id']}])
+        if o.bot:   # §44: istemcisi yok → oturum HAZIR olunca hazır; sürücü yarışta uçurur
+            s.bot = {'uid': o.uid, 'level': o.bot}
+            self.ready.add(o.uid)
+            self.bot_gorevleri[o.uid] = asyncio.get_running_loop().create_task(mbot.BotSurucu(k, o.uid, s, ctip(self.settings['drone']['type'])).calis())
+        self.isle([{'t': 'player', 'id': o.uid, 'status': o.durum, 'session_id': s.id, 'flight_id': out.get('flight_id')}])
 
     def _kapi(self, ad):
         if ad == 'reset':   # HEPGO §41: it dalaşında (geri sayım + yarış) Sıfırla yok (başlangıca ışınlanma); halka yarışında serbest
@@ -514,13 +576,15 @@ class Mac:
         on = self.cevrimici(now)
         if self.host_id not in on and now - self.lobi[self.host_id].get('seen_t', 0) > config.MATCH_ABANDON_S:
             return self.iptal('terk_edildi', now)
-        dusen = [uid for uid, p in self.lobi.items() if not p['host'] and uid not in on and now - p.get('seen_t', 0) > config.MATCH_ABANDON_S]
+        dusen = [uid for uid, p in self.lobi.items() if not p['host'] and not p.get('bot') and uid not in on and now - p.get('seen_t', 0) > config.MATCH_ABANDON_S]
         for uid in dusen:
             self.lobi.pop(uid, None)
         if dusen:
             self.degisti()
 
     async def _oturumlari_kapat(self, gecikme=KAPANIS_GECIKME_S):
+        for t in list(self.bot_gorevleri.values()):   # §44 bot sürücüleri hemen durur
+            t.cancel()
         if gecikme:
             await asyncio.sleep(gecikme)
         for uid, s in list(self.sessions.items()):
@@ -530,6 +594,12 @@ class Mac:
                 await bridge.ucus_durdur(fid, 'karsilasma_bitti')
             except Exception:   # noqa: BLE001
                 pass
+        for uid, s in list(self.sessions.items()):   # §44 bot oturumları (flights satırı yok)
+            if uid not in self.flights and s.state != 'KAPANDI':
+                try:
+                    await flightsim.MANAGER.kapat(s.id, 'karsilasma_bitti')
+                except Exception:   # noqa: BLE001
+                    pass
 
     # ---------------------------------------------------------------- kayıt
     def kaydet(self):
@@ -537,12 +607,12 @@ class Mac:
         if k is not None:
             sira = {p['id']: p for p in (k.sonuc()['standings'] if k.durum == core.BITTI else [])}
             oyuncular = [(o.uid, o.ad, int(o.kurucu), o.durum, self.flights.get(o.uid), (sira.get(o.uid) or {}).get('rank'),
-                          len(o.iz.gecisler) if o.iz else 0, (sira.get(o.uid) or {}).get('time_s')) for o in k.oyuncular.values()]
+                          len(o.iz.gecisler) if o.iz else 0, (sira.get(o.uid) or {}).get('time_s'), int(bool(o.bot)), o.bot) for o in k.oyuncular.values()]
             d = {'state': k.durum, 'reason': k.neden, 'rings': json.dumps(k.halkalar or [], ensure_ascii=False),
                  'result': json.dumps(k.sonuc(), ensure_ascii=False) if k.durum == core.BITTI else None, 'winner_id': k.kazanan,
                  'started_at': _iso(k.baslangic_t) if k.durum in (core.YARIS, core.BITTI) else None, 'ended_at': _iso(k.bitis_t) if k.bitis_t else None}
         else:
-            oyuncular = [(p['id'], p['name'], int(p['host']), core.GELDI, None, None, 0, None) for p in self.lobi.values()]
+            oyuncular = [(p['id'], p['name'], int(p['host']), core.GELDI, None, None, 0, None, int(bool(p.get('bot'))), p.get('bot')) for p in self.lobi.values()]
             d = {'state': self._durum, 'reason': self.neden, 'rings': json.dumps(self.halkalar, ensure_ascii=False), 'result': None, 'winner_id': None,
                  'started_at': None, 'ended_at': _iso(self.bitis_t) if self.bitis_t else None}
         mid, t = self.id, db.now()
@@ -553,10 +623,10 @@ class Mac:
                              (d['state'], d['reason'], d['rings'], d['result'], d['winner_id'], d['started_at'], d['ended_at'], mid))
                 ids = [o[0] for o in oyuncular]
                 conn.execute(f"DELETE FROM match_players WHERE match_id = ? AND user_id NOT IN ({','.join('?' * len(ids))})", (mid, *ids))
-                for uid, ad, kur, durum, fid, rank, rings, time_s in oyuncular:
-                    conn.execute('INSERT INTO match_players (match_id, user_id, name, is_host, status, flight_id, rank, rings, time_s, joined_at) VALUES (?,?,?,?,?,?,?,?,?,?) '
+                for uid, ad, kur, durum, fid, rank, rings, time_s, bot, sev in oyuncular:
+                    conn.execute('INSERT INTO match_players (match_id, user_id, name, is_host, status, flight_id, rank, rings, time_s, joined_at, is_bot, level) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) '
                                  'ON CONFLICT(match_id, user_id) DO UPDATE SET status = excluded.status, flight_id = COALESCE(excluded.flight_id, match_players.flight_id), '
-                                 'rank = excluded.rank, rings = excluded.rings, time_s = excluded.time_s', (mid, uid, ad, kur, durum, fid, rank, rings, time_s, t))
+                                 'rank = excluded.rank, rings = excluded.rings, time_s = excluded.time_s', (mid, uid, ad, kur, durum, fid, rank, rings, time_s, t, bot, sev))
                 conn.commit()
         try:
             asyncio.get_running_loop().run_in_executor(None, yaz)
@@ -652,6 +722,22 @@ class Yonetici:
         m.task = loop.create_task(m.run())
         return m
 
+    async def yapay_zekaya_karsi(self, user, drone, track, launch, camera, cfg, seviye, bot_sayisi, request_ip=None, tur=core.TUR_HALKA):
+        """HEPGO §44 "Yapay zekâya karşı" hızlı başlat: davet bağlantısı/şifre gerekmez (rastgele şifre; paylaşılmaz) → botlar → hemen BAŞLAT
+        (yuva denetimi BAŞLAT'ta; yetmezse karşılaşma iptal edilir ve 429 iletilir)."""
+        if seviye not in core.BOT_SEVIYELER:
+            raise H(422, 'invalid', f"Yapay zekâ seviyesi {' | '.join(core.BOT_SEVIYELER)} olmalı")
+        n = 1 if tur == core.TUR_IT else max(1, min(int(bot_sayisi or 1), oyuncu_siniri() - 1))
+        m = await self.olustur(user, drone, track, launch, camera, cfg, secrets.token_urlsafe(12), n + 1, request_ip, tur=tur)
+        try:
+            for _ in range(n):
+                m.bot_ekle(user['id'], seviye)
+            m.baslat(user['id'], time.time())
+        except bridge.BridgeHata:
+            m.iptal('kurucu_iptal')
+            raise
+        return m
+
     async def kapat_hepsi(self):
         for m in list(self.matches.values()):
             if m.task is not None and not m.task.done():
@@ -695,7 +781,7 @@ def satir_dict(r, uid=None):
     return {'id': r['id'], 'code': r['code'] if r['state'] not in core.SON_DURUMLAR else None, 'state': r['state'], 'reason': r['reason'], 'host_id': r['host_id'],
             'max_players': r['max_players'], 'settings': ayar_ozeti(st), 'rings_cfg': j(r.get('game_cfg'), {}) if kind == core.TUR_IT else j(r['rings_cfg'], {}), 'rings': j(r['rings'], []), 'kind': kind,
             'players': [{'id': p['user_id'], 'name': p['name'], 'host': bool(p['is_host']), 'status': p['status'], 'flight_id': p['flight_id'] if p['user_id'] == uid else None,
-                         'rank': p['rank'], 'rings': p['rings'], 'time_s': p['time_s'],
+                         'rank': p['rank'], 'rings': p['rings'], 'time_s': p['time_s'], 'is_bot': bool(p.get('is_bot')), 'level': p.get('level'),
                          'role': ((res or {}).get('dogfight') or {}).get('roles', {}).get(str(p['user_id']))} for p in ps],
             'result': res, 'winner': r['winner_id'], 'created_at': r['created_at'], 'started_at': r['started_at'], 'ended_at': r['ended_at'], 'live': False,
             'can_start': False, 'now': time.time()}

@@ -15,7 +15,7 @@ import { canFuel, createPowerStep, powerOf } from './power.js';
 import { createCameraPick } from './camera_pick.js';   // kamera türü kartları (pilot adımı; HEPGO §22.3)
 import { createTargetsStep } from './targets.js';   // HEDEFLER adımı (HEPGO §24)
 import { isMatchType, lobbyHref, parseFlyParam, ringsLine } from './match_core.js';   // §18 çok oyunculu karşılaşma (saf)
-import { createInviteStep, createMatch, createRingsStep, matchMeta, renderJoin, renderLobby, renderRace } from './match.js';
+import { createAiMatch, createAiStep, createInviteStep, createMatch, createRingsStep, matchMeta, renderJoin, renderLobby, renderRace } from './match.js';
 
 const here = new URL('.', import.meta.url);
 function ensureCss() {
@@ -61,6 +61,7 @@ export async function render(view, params = {}, ctx = {}) {
   if (P.kind === 'race') return renderRace(view, P.id, c, { openSession });
   if (P.kind === 'solo' || ctx.preset) return renderWizard(view, c);
   if (P.kind === 'multi') return renderWizard(view, { ...c, match: true });
+  if (P.kind === 'ai') return renderWizard(view, { ...c, match: true, ai: true });   // HEPGO §44 yapay zekâya karşı
   return renderChoice(view, c);
 }
 
@@ -87,6 +88,9 @@ async function renderChoice(view, ctx) {
     h('div', { class: 'sm-mode-grid' },
       choice('solo', SOLO_ICON, LT('match.mode_solo', 'Tek oyunculu'), LT('match.mode_solo_desc', 'Kendi dronun ve parkurunla serbest uçuş, görevler, hedefler.'), '#/fly/solo'),
       choice('multi', MULTI_ICON, LT('match.mode_multi', 'Çok oyunculu'), LT('match.mode_multi_desc', 'Halka yarışı: arkadaşlarını davet bağlantısı ve şifreyle çağır, ilk bitiren kazanır.'), '#/fly/multi')),
+    // HEPGO §44: Çok oyunculu altında "Yapay zekâya karşı" hızlı başlat (davet bağlantısı / şifre gerekmez)
+    h('button', { type: 'button', class: 'sm-mode-ai', onclick: () => go('#/fly/ai') }, h('span', { class: 'sm-mode-ai-ico', 'aria-hidden': 'true' }, '🤖'),
+      h('span', null, h('b', null, LT('ai.mode', 'Yapay zekâya karşı')), h('small', null, LT('ai.mode_desc', 'Davet gerekmeden hemen başla: Kolay / Normal / Zor yapay zekâ pilotlarla halka yarışı ya da it dalaşı.'))), h('em', null, LT('match.choose', 'Seç'), ' ›')),
     h('form', { class: 'sm-mode-join', onsubmit: joinCode }, h('span', { class: 'muted' }, LT('match.have_invite', 'Davetin mi var?')), code, h('button', { class: 'btn', type: 'submit' }, LT('match.join_btn', 'Katıl')))));
   try {
     const m = await matchMeta(true);
@@ -113,6 +117,7 @@ async function resumeFlight(view, fid, ctx) {
 // ======================================================================
 async function renderWizard(view, ctx) {
   const isMatch = !!ctx.match;   // §18 çok oyunculu karşılaşma kurucusu (#/fly/multi)
+  const isAi = isMatch && !!ctx.ai;   // HEPGO §44 yapay zekâya karşı (#/fly/ai)
   let matchLimits, currentMatch = null;
   const root = h('div', { class: `sm-fly sm-wizard ${isMatch ? 'sm-wizard-match' : ''}` });
   clear(view, h('div', { class: 'sm-fly sm-loading' }, tr('Hangar, parkurlar ve mürettebat yükleniyor…')));
@@ -126,7 +131,7 @@ async function renderWizard(view, ctx) {
   } catch (err) { toastError(err); clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Veriler alınamadı: {e}', { e: err.message })), h('button', { class: 'btn primary', type: 'button', onclick: () => renderWizard(view, ctx) }, 'Yeniden dene'))); return; }
   if (isMatch && currentMatch) { ctx.go(lobbyHref(currentMatch.id)); return; }   // bitmemiş karşılaşma: salona
   if (!data.drones.length) { clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr(isMatch ? 'match.no_drone' : 'Hangarınız boş. Önce bir dron ekleyin.')), h('button', { class: 'btn primary', type: 'button', onclick: () => ctx.go('#/hangar') }, 'Hangar\'a git'))); return; }
-  const W = createWizard(data, ctx.preset || {}, { match: isMatch });
+  const W = createWizard(data, ctx.preset || {}, { match: isMatch, ai: isAi });
   const camPick = createCameraPick({ h, tr, getDrone: () => W.drone() });
   const PREVIEW_URL = '/sim/flightsim3d.js';
   let preview = null, previewBox = null, previewType = null, previewModelId = null, destroyed = false;
@@ -136,12 +141,12 @@ async function renderWizard(view, ctx) {
   const body = h('div', { class: 'sm-step-body' });
   const prevBtn = h('button', { class: 'btn sm-nav-btn', type: 'button', onclick: () => { if (W.prev()) draw(); } }, '‹ ', 'Geri');
   const nextBtn = h('button', { class: 'btn primary sm-nav-btn', type: 'button', onclick: () => { if (W.next()) draw(); } }, 'İleri', ' ›');
-  const startBtn = h('button', { class: `sm-start-btn ${isMatch ? 'sm-mt-create' : ''}`, type: 'button', hidden: true, onclick: () => start() }, h('span', { class: 'sm-start-ring' }), h('b', null, isMatch ? tr('match.create_btn') : 'BAŞLA'));
+  const startBtn = h('button', { class: `sm-start-btn ${isMatch ? 'sm-mt-create' : ''}`, type: 'button', hidden: true, onclick: () => start() }, h('span', { class: 'sm-start-ring' }), h('b', null, isAi ? tr('ai.start_btn') : isMatch ? tr('match.create_btn') : 'BAŞLA'));
   const foot = h('div', { class: 'sm-wizard-foot' }, prevBtn, h('div', { class: 'sm-summary' }), nextBtn, startBtn);
   const countdown = h('div', { class: 'sm-countdown', hidden: true }, h('b', null, '3'), h('small', null, ''));
   const openBox = h('div', { class: 'sm-open-flight-holder' });
   root.append(h('div', { class: 'sm-wizard-head' }, h('button', { class: 'btn sm sm-mt-backbtn', type: 'button', onclick: () => ctx.go('#/fly') }, '← ', tr('match.mode_back')),
-    h('h1', null, isMatch ? tr('match.multi_title') : 'UÇ'), h('p', { class: 'muted' }, isMatch ? tr('match.multi_sub') : 'Dronunu seç, parkuru belirle, kalk.')), openBox, stepsBar, body, foot, countdown);
+    h('h1', null, isAi ? tr('ai.title') : isMatch ? tr('match.multi_title') : 'UÇ'), h('p', { class: 'muted' }, isAi ? tr('ai.wizard_sub') : isMatch ? tr('match.multi_sub') : 'Dronunu seç, parkuru belirle, kalk.')), openBox, stepsBar, body, foot, countdown);
   clear(view, root);
 
   // ---------- "Süren uçuşunuz var" kartı: GET /api/fly/current ya da BAŞLA → 409 flight_open ----------
@@ -184,7 +189,7 @@ async function renderWizard(view, ctx) {
     const siteTxt = sv ? `◈ ${sv}${W.state.defend || m?.kind === 'defend' ? ` · ${tr('site.defend')}` : ''}` : null;   // HEPGO §26
     const drv = d && isRover(d.type) ? DRIVE_SM.find(r => r[0] === W.drive()) : null;
     const drvTxt = drv ? (() => { const r = tr(drv[1]); return r && r !== drv[1] ? r : drv[2]; })() : null;   // §15 sürüş biçimi
-    if (isMatch) { clear(foot.querySelector('.sm-summary'), [d ? d.name : null, t ? t.name : null, W.state.kind === 'dogfight' ? `✈ ${tr('df.kind_dogfight')}` : W.state.rings && !W.state.rings_err ? `◎ ${ringsLine({ time_limit_min: 15, diameter_m: '—', radius_m: '—', ...W.state.rings })}` : null, W.state.max_players ? `${W.state.max_players} ${tr('match.players').toLocaleLowerCase()}` : null].filter(Boolean).join(' · ')); return; }
+    if (isMatch) { clear(foot.querySelector('.sm-summary'), [d ? d.name : null, t ? t.name : null, W.state.kind === 'dogfight' ? `✈ ${tr('df.kind_dogfight')}` : W.state.rings && !W.state.rings_err ? `◎ ${ringsLine({ time_limit_min: 15, diameter_m: '—', radius_m: '—', ...W.state.rings })}` : null, isAi ? `🤖 ${W.state.kind === 'dogfight' ? 1 : W.state.ai_bots} × ${tr('ai.pilot')} · ${tr(`ai.level_${W.state.ai_level}`)}` : W.state.max_players ? `${W.state.max_players} ${tr('match.players').toLocaleLowerCase()}` : null].filter(Boolean).join(' · ')); return; }
     clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : d?.type === 'interceptor' ? iceptLaunchLabel(W.state.ilaunch, tr) : drvTxt, pwTxt, m ? m.name : null, siteTxt, tg, p ? p.name : null].filter(Boolean).join(' · '));
   };
   // ---------- §10 güç ve yakıt adımı (dron değişince ön ayar sıfırlanır) ----------
@@ -389,7 +394,8 @@ async function renderWizard(view, ctx) {
     body.dataset.step = k;
     ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, power: stepPower, mission: stepMission, site: stepSite, targets: stepTargets, pilot: stepPilot,
       rings: () => body.append(createRingsStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el),          // §18 halkalar
-      invite: () => body.append(createInviteStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el) })[k]?.();   // §18 davet (oyuncu sayısı + şifre)
+      invite: () => body.append(createInviteStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el),   // §18 davet (oyuncu sayısı + şifre)
+      ai: () => body.append(createAiStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el) })[k]?.();   // HEPGO §44 yapay zekâ (seviye + bot sayısı)
     drawSteps(); drawFoot();
     root.classList.remove('sm-anim'); void root.offsetWidth; root.classList.add('sm-anim');
   };
@@ -400,8 +406,8 @@ async function renderWizard(view, ctx) {
   const startMatch = async () => {   // §18: POST /api/match → bekleme salonu
     starting = true; startBtn.disabled = true;
     try {
-      const m = await createMatch(W.payload());
-      toast(tr('match.created_toast'));
+      const m = isAi ? await createAiMatch(W.payload()) : await createMatch(W.payload());
+      toast(tr(isAi ? 'ai.started_toast' : 'match.created_toast'));
       preview?.dispose(); preview = null; destroyed = true;
       ctx.go(lobbyHref(m.id));
     } catch (err) {

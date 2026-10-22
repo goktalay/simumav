@@ -7,8 +7,9 @@ import { numSlider } from './fs_inputs.js';
 import { hepgoSound } from './flightsim_intro.js';
 import { createMatchLayer } from './flightsim_match3d.js';
 import { DF_LIMITS, createDogfightHud, dfDefaults, dfError, dfResultRows, dfSummary, dfSvg, makeDfT, roleOf } from './flightsim_dogfight.js';   // §41 it dalaşı
-import { ACTIVE, MATCH_LIMITS, REASON_TEXT, STATE_TEXT, STATUS_TEXT, STATUS_TONE, arrowFor, bearingDeg, colorFor, countdownPhase, createClock, fmtClock, fmtDist,
-  inviteAdd, inviteError, inviteRemove, liveStandings, lobbyCounts, matchHref, partitionInvite, relAngle, ringDefaults, ringsError, ringsSummary, ringsViewBox, sessionHref } from './flightsim_match.js';
+import { ACTIVE, BOT_LEVELS, BOT_LEVEL_TEXT, BOT_NAMES, MATCH_LIMITS, REASON_TEXT, STATE_TEXT, STATUS_TEXT, STATUS_TONE, arrowFor, bearingDeg, botBadge, botName, colorFor, countdownPhase, createClock, fmtClock, fmtDist,
+  inviteAdd, inviteRemove, isBot, liveStandings, lobbyCounts, matchHref, matchScore, myRank, opponentsError, partitionInvite, relAngle, ringDefaults, ringsError, ringsSummary, ringsViewBox, sessionHref } from './flightsim_match.js';
+import { countSteps, createSfx, rankChange } from './flightsim_sfx.js';   // §44 oyun efektleri
 
 const API = '/api/drone/sim/matches';
 export const matchApi = {
@@ -23,6 +24,7 @@ export const matchApi = {
   start: id => api.post(`${API}/${encodeURIComponent(id)}/start`, {}),
   cancel: id => api.post(`${API}/${encodeURIComponent(id)}/cancel`, {}),
   rematch: id => api.post(`${API}/${encodeURIComponent(id)}/rematch`, {}),   // §41 it dalaşı rövanşı (roller değişir)
+  addBot: (id, level) => api.post(`${API}/${encodeURIComponent(id)}/bot`, { level }),   // §44 yapay zekâ pilot (kurucu, salonda)
 };
 const DT = makeDfT(tr, false);   // §41 metinleri (HEPGO: Türkçe anahtar)
 const isDf = m => (m?.kind || 'rings') === 'dogfight';
@@ -121,6 +123,20 @@ export function ensureMatchCss() {
 .fs-mt-result{position:absolute;inset:0;z-index:40;display:grid;place-items:center;background:rgba(2,6,23,.62);backdrop-filter:blur(3px)}
 .fs-mt-result .box{background:var(--card,#fff);color:var(--text,#111);border-radius:20px;padding:22px 24px;width:min(860px,94vw);max-height:90vh;overflow:auto;box-shadow:0 24px 80px rgba(0,0,0,.55)}
 .fs-mt-result .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+.fs-ai-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:7px;font-weight:800;font-size:11px;letter-spacing:.04em;color:#fff;background:linear-gradient(120deg,#7c3aed,#db2777);vertical-align:middle}
+.fs-mt-bots{margin-top:12px;border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:color-mix(in srgb,#7c3aed 5%,transparent)}
+.fs-mt-bots h5{margin:0 0 6px;font-size:13px;display:flex;gap:8px;align-items:center}
+.fs-mt-bots .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.fs-mt-bots .row>*{flex:0 0 auto;width:auto}.fs-mt-bots .row>.small{flex:1 1 200px}
+.fs-mt-lv{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden}
+.fs-mt-lv button{border:0;background:transparent;color:inherit;padding:5px 11px;cursor:pointer;font:600 12.5px system-ui,sans-serif}
+.fs-mt-lv button.on{background:#7c3aed;color:#fff}
+.fs-mt-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.fs-mt-chip{display:inline-flex;gap:6px;align-items:center;padding:4px 6px 4px 10px;border-radius:999px;border:1px solid var(--border);font-size:12.5px;background:var(--card,#fff)}
+.fs-mt-chip i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.fs-mt-chip button{border:0;background:transparent;cursor:pointer;color:var(--muted);font-size:13px;padding:0 4px}
+.fs-mt-players li .av.bot{font-size:17px}
+.fs-mt-score{display:flex;align-items:baseline;gap:10px;margin:4px 0 10px}.fs-mt-score b{font-size:30px;font-variant-numeric:tabular-nums;color:#7c3aed}
 .fs-mt-toast{position:absolute;left:50%;top:104px;transform:translateX(-50%);z-index:32;padding:6px 14px;border-radius:999px;background:rgba(34,197,94,.92);color:#04130a;font:700 15px system-ui,sans-serif;pointer-events:none;transition:opacity .4s}
 `;
   document.head.append(st);
@@ -128,16 +144,8 @@ export function ensureMatchCss() {
 
 const DROP_TEXT = { gelmedi: 'Gelmedi', hazirlanamadi: 'Simülatörü zamanında hazır olmadı' };
 const initials = n => String(n || '?').trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toLocaleUpperCase('tr');
-const beep = (f = 1046, dur = 0.12) => {
-  const s = hepgoSound();
-  if (!s.on || !(s.vol > 0)) return;
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext; const c = new AC(); const o = c.createOscillator(), g = c.createGain();
-    o.frequency.value = f; o.type = 'sine'; g.gain.value = 0.0001; o.connect(g); g.connect(c.destination);
-    const t0 = c.currentTime; g.gain.exponentialRampToValueAtTime(0.35 * s.vol, t0 + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.start(t0); o.stop(t0 + dur + 0.02); setTimeout(() => c.close().catch(() => {}), (dur + 0.3) * 1000);
-  } catch { /* ses yok */ }
-};
+
+const aiBadge = p => (isBot(p) ? h('span', { class: 'fs-ai-badge', title: tr('Yapay zekâ pilot') }, botBadge(p, tr)) : null);   // §44 'AI · Zor'
 
 // ---------------------------------------------------------------- halkaların kuş bakışı + profil (SVG)
 export function ringsSvg(rings, { starts = [], me = null } = {}) {
@@ -279,6 +287,25 @@ export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChang
   ensureMatchCss();
   let invited = new Set(), q = '';
   let max = (limits.players_max || 8) - 1;
+  // §44 yapay zekâ pilotlar (davetlilerle birlikte rakip sayısına girer; it dalaşında toplam tam 1)
+  const BN = limits.bot?.names || BOT_NAMES;
+  let bots = [], level = limits.bot?.default || 'normal';
+  const lvBtns = BOT_LEVELS.map(l => h('button', { type: 'button', 'data-level': l, onclick: () => { level = l; drawBots(); } }, tr(BOT_LEVEL_TEXT[l])));
+  const chips = h('div', { class: 'fs-mt-chips' });
+  const botNote = h('span', { class: 'small muted' });
+  const addBot = () => {
+    if (invited.size + bots.length >= max) { toast(tr(max === 1 ? 'İt dalaşı tam 2 oyuncuyla oynanır: bir kullanıcı davet edin ya da bir yapay zekâ pilot ekleyin' : 'En çok {n} rakip olabilir (davetli + yapay zekâ)', { n: max }), 'err'); return; }
+    bots = [...bots, { level }]; drawBots(); draw(); onChange();
+  };
+  const drawBots = () => {
+    lvBtns.forEach(b => b.classList.toggle('on', b.dataset.level === level));
+    clear(chips, bots.map((b, i) => h('span', { class: 'fs-mt-chip', 'data-level': b.level }, h('i', { style: { background: (limits.bot?.colors || [])[i] || '#7c3aed' } }), '🤖 ', h('b', null, botName(b.level, i, { names: BN, T: tr })),
+      h('button', { type: 'button', title: tr('Kaldır'), 'aria-label': tr('Kaldır'), onclick: () => { bots = bots.filter((_, k) => k !== i); drawBots(); draw(); onChange(); } }, '✕'))));
+    botNote.textContent = bots.length ? tr('{n} yapay zekâ pilot · her biri kendi simülatörünü kullanır', { n: bots.length }) : tr('Tek başınıza da oynayabilirsiniz: yalnız yapay zekâ rakiple karşılaşma hemen başlar.');
+  };
+  const botBox = h('div', { class: 'fs-mt-bots' }, h('h5', null, '🤖 ', tr('Yapay zekâ pilot ekle')),
+    h('div', { class: 'row' }, h('span', { class: 'fs-mt-lv', role: 'group', 'aria-label': tr('Seviye') }, lvBtns), h('button', { class: 'btn sm primary', type: 'button', onclick: addBot }, tr('+ Ekle')), botNote),
+    chips);
   const selL = new Set(), selR = new Set();
   const listL = h('ul', { class: 'fs-mt-list', role: 'listbox', 'aria-multiselectable': 'true', 'data-side': 'left' });
   const listR = h('ul', { class: 'fs-mt-list', role: 'listbox', 'aria-multiselectable': 'true', 'data-side': 'right' });
@@ -287,7 +314,7 @@ export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChang
   const colR = h('div', { class: 'fs-mt-col', 'data-side': 'right' }, h('h5', null, h('span', null, 'Davet edilenler'), cntR), listR);
   const note = h('div', { class: 'small muted' });
   const set = s => { invited = s; selL.clear(); selR.clear(); draw(); onChange(); };
-  const add = ids => { const before = invited.size; const n = inviteAdd(invited, ids, max); if (n.size - before < [].concat(ids).length) toast(tr('En çok {n} kişi davet edilebilir', { n: max }), 'err'); set(n); };
+  const add = ids => { const before = invited.size; const n = inviteAdd(invited, ids, Math.max(0, max - bots.length)); if (n.size - before < [].concat(ids).length) toast(tr('En çok {n} kişi davet edilebilir', { n: Math.max(0, max - bots.length) }), 'err'); set(n); };
   const rem = ids => set(inviteRemove(invited, ids));
   const item = (u, side) => {
     const sel = side === 'left' ? selL : selR;
@@ -303,8 +330,8 @@ export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChang
     const { left, right } = partitionInvite(users, invited, q);
     clear(listL, left.length ? left.map(u => item(u, 'left')) : h('li', { class: 'empty' }, q ? 'Aramaya uyan kullanıcı yok' : 'Herkes davet edildi'));
     clear(listR, right.length ? right.map(u => item(u, 'right')) : h('li', { class: 'empty' }, 'Henüz kimse davet edilmedi — soldan seçip › ile ekleyin, çift tıklayın ya da sürükleyin'));
-    cntL.textContent = String(users.length - invited.size); cntR.textContent = `${invited.size} / ${max}`;
-    note.textContent = tr('Siz de oyuncusunuz: karşılaşma {n} kişi.', { n: invited.size + 1 });
+    cntL.textContent = String(users.length - invited.size); cntR.textContent = `${invited.size + bots.length} / ${max}`;
+    note.textContent = tr('Siz de oyuncusunuz: karşılaşma {n} kişi.', { n: invited.size + bots.length + 1 });
   };
   for (const [col, side] of [[colL, 'left'], [colR, 'right']]) {
     col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('on'); });
@@ -321,11 +348,14 @@ export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChang
         btn('›', tr('Seçilenleri davet et'), () => add([...selL])), btn('»', tr('Tümünü davet et'), () => add(partitionInvite(users, invited, q).left.map(u => u.id))),
         btn('‹', tr('Seçilenleri davetten çıkar'), () => rem([...selR])), btn('«', tr('Tümünü çıkar'), () => rem([...invited]))),
       colR),
-    note);
-  draw();
-  return { el, values: () => [...invited], error: () => (max === 1 && invited.size !== 1 ? DT('df.need_two') : inviteError(invited, limits)), names: () => users.filter(u => invited.has(u.id)).map(u => u.full_name), set: ids => set(new Set(ids)),
-    // §41 it dalaşı: tam 1 davetli (fazlası düşer)
-    setMax: n => { max = Math.max(1, Number(n) || ((limits.players_max || 8) - 1)); if (invited.size > max) set(new Set([...invited].slice(0, max))); else draw(); } };
+    botBox, note);
+  drawBots(); draw();
+  return { el, values: () => [...invited], bots: () => bots.map(b => ({ level: b.level })),
+    error: () => opponentsError(invited.size, bots.length, max, limits),
+    names: () => [...users.filter(u => invited.has(u.id)).map(u => u.full_name), ...bots.map((b, i) => botName(b.level, i, { names: BN, T: tr }))], set: ids => set(new Set(ids)),
+    setBots: arr => { bots = (arr || []).map(b => ({ level: b.level || b })); drawBots(); draw(); onChange(); },
+    // §41 it dalaşı: tam 1 rakip (davetli ya da yapay zekâ; fazlası düşer)
+    setMax: n => { max = Math.max(1, Number(n) || ((limits.players_max || 8) - 1)); if (bots.length > max) { bots = bots.slice(0, max); drawBots(); } if (invited.size + bots.length > max) set(new Set([...invited].slice(0, Math.max(0, max - bots.length)))); else draw(); } };
 }
 
 // ---------------------------------------------------------------- WS istemcisi
@@ -365,7 +395,7 @@ function dfResultsBody(match, me) {   // §41 it dalaşı sonucu: kazanan, sebep
       h('thead', null, h('tr', null, [DT('df.role'), 'Oyuncu', DT('df.result'), 'Azami hız', 'Çarpışma'].map(x => h('th', null, tr(x))))),
       h('tbody', null, rows.map(r => h('tr', { class: r.id === me ? 'me' : '', 'data-id': r.id },
         h('td', null, r.role ? h('span', { class: `fs-df-badge ${r.role}` }, DT(`df.${r.role}`)) : '—'),
-        h('td', null, h('b', null, r.name), r.id === me ? h('span', { class: 'small muted' }, ` (${tr('siz')})`) : null),
+        h('td', null, h('b', null, r.name), aiBadge((match.players || []).find(p => p.id === r.id) || r), r.id === me ? h('span', { class: 'small muted' }, ` (${tr('siz')})`) : null),
         h('td', null, h('span', { class: `badge ${r.won ? 'green' : 'red'}` }, DT(r.won ? 'df.won' : 'df.lost'))),
         h('td', { class: 'n' }, r.max_speed_ms != null ? `${Number(r.max_speed_ms).toFixed(1)} m/s` : '—'),
         h('td', { class: 'n' }, String(r.crashes ?? 0))))))));
@@ -383,7 +413,7 @@ export function resultsBody(match, me) {
     h('div', { class: 'tw' }, h('table', null,
       h('thead', null, h('tr', null, ['Sıra', 'Oyuncu', 'Süre', 'Halka', 'Sıradakine', 'Azami hız', 'Çarpışma', 'Durum'].map(x => h('th', null, x)))),
       h('tbody', null, rows.map(r => h('tr', { class: r.id === me ? 'me' : '', 'data-id': r.id },
-        h('td', null, medal(r.rank ?? 0)), h('td', null, h('b', null, r.name), r.id === me ? h('span', { class: 'small muted' }, ` (${tr('siz')})`) : null),
+        h('td', null, medal(r.rank ?? 0)), h('td', null, h('b', null, r.name), aiBadge(r), r.id === me ? h('span', { class: 'small muted' }, ` (${tr('siz')})`) : null),
         h('td', { class: 'n' }, r.time_s != null ? fmtClock(r.time_s) : r.finished ? '✓' : '—'),
         h('td', { class: 'n' }, `${r.rings ?? 0} / ${r.total ?? res?.total ?? '—'}`),
         h('td', { class: 'n' }, r.finished ? '—' : fmtDist(r.dist_next_m)),
@@ -428,14 +458,23 @@ export async function renderLobby(view, ctx, mid, { head }) {
   };
   const drawPlayers = () => {
     const online = new Set(M.viewers || []);
-    clear(plist, (M.players || []).map(p => h('li', { 'data-status': p.status, 'data-id': p.id },
-      h('span', { class: 'av', style: { background: colorFor(M.players, p.id) } }, initials(p.name), h('i', { class: online.has(p.id) ? 'on' : '', title: tr(online.has(p.id) ? 'Çevrimiçi' : 'Çevrimdışı') })),
-      h('div', { class: 'grow' }, h('b', null, p.name), p.host ? h('span', { class: 'badge purple', style: { marginLeft: '6px' } }, 'Kurucu') : null,
+    clear(plist, (M.players || []).map(p => h('li', { 'data-status': p.status, 'data-id': p.id, 'data-bot': isBot(p) ? '1' : null },
+      h('span', { class: `av ${isBot(p) ? 'bot' : ''}`, style: { background: colorFor(M.players, p.id) } }, isBot(p) ? '🤖' : initials(p.name),
+        h('i', { class: online.has(p.id) || isBot(p) ? 'on' : '', title: tr(isBot(p) ? 'Yapay zekâ pilot' : online.has(p.id) ? 'Çevrimiçi' : 'Çevrimdışı') })),
+      h('div', { class: 'grow' }, h('b', null, p.name), aiBadge(p), p.host ? h('span', { class: 'badge purple', style: { marginLeft: '6px' } }, 'Kurucu') : null,
         p.role ? h('span', { class: `fs-df-badge ${p.role}`, style: { marginLeft: '6px' } }, DT(`df.${p.role}`)) : null, p.id === me ? h('span', { class: 'small muted' }, ` (${tr('siz')})`) : null,
         p.drop_reason ? h('div', { class: 'small muted' }, tr(DROP_TEXT[p.drop_reason] || p.drop_reason)) : null),
       h('span', { class: `badge ${STATUS_TONE[p.status] || 'gray'}` }, tr(p.status === 'hazir' && ['YARIS', 'BITTI'].includes(M.state) ? (p.finished ? 'Bitirdi' : 'Yarıştı') : STATUS_TEXT[p.status] || p.status)),
       isHost() && !p.host && ACTIVE.has(p.status) && ['LOBI', 'HAZIRLIK'].includes(M.state) && M.live !== false
-        ? h('button', { class: 'btn sm ghost', type: 'button', title: tr('Oyuncuyu çıkar'), onclick: async () => { if (await confirmDialog(tr('Oyuncuyu çıkar'), tr('{n} karşılaşmadan çıkarılsın mı?', { n: p.name }), { okLabel: tr('Çıkar'), danger: true })) { try { M = await matchApi.kick(mid, p.id); draw(); } catch (err) { toastError(err); } } } }, '✕') : null)));
+        ? h('button', { class: 'btn sm ghost', type: 'button', title: tr(isBot(p) ? 'Yapay zekâ pilotu kaldır' : 'Oyuncuyu çıkar'), onclick: async () => { if (isBot(p) || await confirmDialog(tr('Oyuncuyu çıkar'), tr('{n} karşılaşmadan çıkarılsın mı?', { n: p.name }), { okLabel: tr('Çıkar'), danger: true })) { try { M = await matchApi.kick(mid, p.id); draw(); } catch (err) { toastError(err); } } } }, '✕') : null)));
+    // §44 kurucu salonda yapay zekâ pilot ekler (LOBI; oyuncu sınırı içinde, it dalaşında tek rakip)
+    const nAct = (M.players || []).filter(p => ACTIVE.has(p.status)).length;
+    if (isHost() && M.state === 'LOBI' && M.live !== false && nAct < (isDf(M) ? 2 : 8)) {
+      const sel = h('select', { class: 'input', style: { width: 'auto' }, 'aria-label': tr('Seviye') }, BOT_LEVELS.map(l => h('option', { value: l, selected: l === 'normal' }, tr(BOT_LEVEL_TEXT[l]))));
+      plist.append(h('li', { class: 'fs-mt-addbot', style: { borderStyle: 'dashed' } }, h('span', { class: 'av bot', style: { background: '#7c3aed' } }, '🤖'),
+        h('div', { class: 'grow' }, h('b', null, tr('Yapay zekâ pilot ekle')), h('div', { class: 'small muted' }, tr('Bot kendi simülatöründe uçar; hazır sayılır'))), sel,
+        h('button', { class: 'btn sm primary', type: 'button', onclick: async () => { try { M = { ...(await matchApi.addBot(mid, sel.value)), live: true }; draw(); } catch (err) { toastError(err); } } }, tr('+ Ekle'))));
+    }
   };
   const drawActs = () => {
     const live = M.live !== false && !['BITTI', 'IPTAL'].includes(M.state);
@@ -506,9 +545,12 @@ export async function renderLobby(view, ctx, mid, { head }) {
 
 // ---------------------------------------------------------------- oturum ekranı katmanı
 // stage: .fs-stage · getSim(): flightsim3d nesnesi · startIntro(): §29 giriş sekansı (3‑2‑1 + bip) — geri sayımın son 3 sn'sinde çağrılır
-export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/sim?tab=matches', startIntro = () => {}, getTele = () => null }) {
+export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/sim?tab=matches', startIntro = () => {}, getTele = () => null, sfx = null }) {
   ensureMatchCss();
   const clock = createClock();
+  // §44 oyun efektleri: oturumun efekt yolu (motor sesi master'ı; ses kapsülü + uçuş uyarısı önceliği) ya da yedek bağlam
+  const fx = sfx || createSfx({ fallbackVol: () => { const s = hepgoSound(); return s.on ? s.vol : 0; } });
+  let prevRank = null, lastRankT = 0;
   let M = null, layer = null, worldReady = false, introDone = false, resultShown = false, disposed = false, dfHud = null;   // dfHud: §41 it dalaşı HUD'u
   const pos = {};   // id → son pos girdisi
   const bar = h('div', { class: 'fs-mt-bar wait' }, 'Karşılaşmaya bağlanılıyor…');
@@ -532,7 +574,7 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
   const syncPlayers = () => layer?.setPlayers((M?.players || []).filter(p => ACTIVE.has(p.status)).map(p => ({ id: p.id, name: p.name, color: colorFor(M.players, p.id), plane: M.settings?.type === 'sabit_kanat' })));
   const ensureDf = () => {   // §41: it dalaşında sıralama tablosu yerine rakip işaretçisi / angajman halkası / uyarı HUD'u
     if (!M || !isDf(M) || dfHud) return;
-    dfHud = createDogfightHud(stage, { getSim, tr, me });
+    dfHud = createDogfightHud(stage, { getSim, tr, me, sfx: fx });
     board.hidden = true;
     if (typeof window !== 'undefined') window.__fsDogfight = dfHud;
   };
@@ -593,10 +635,28 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     if (resultShown || !M) return;
     resultShown = true;
     resEl.hidden = false;
-    clear(resEl, h('div', { class: 'box', role: 'dialog', 'aria-modal': 'true' }, h('h2', { style: { marginTop: '0' } }, tr('Karşılaşma sonucu · #{id}', { id: M.id })), resultsBody(M, me),
+    // §44 puan: zafer / yenilgi sesi, sonra puan sayacı tıklamalarla artar, sonunda "coin"
+    const res = M.result || {}, df = isDf(M);
+    const row = df ? dfResultRows(M).find(r => r.id === me) : (res.standings || []).find(r => r.id === me);
+    const score = row ? matchScore(row, df ? 'dogfight' : 'rings', res.dogfight || {}) : null;
+    const scoreEl = h('b', { 'data-score': score ?? '' }, '0');
+    clear(resEl, h('div', { class: 'box', role: 'dialog', 'aria-modal': 'true' }, h('h2', { style: { marginTop: '0' } }, tr('Karşılaşma sonucu · #{id}', { id: M.id })),
+      score != null ? h('div', { class: 'fs-mt-score' }, h('span', { class: 'muted' }, tr('Puanınız')), scoreEl) : null, resultsBody(M, me),
       h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: () => { resEl.hidden = true; } }, 'Kapat'),
         h('a', { class: 'btn primary', href: homeHref }, 'Karşılaşmalar'))));
+    if (row) {
+      const won = (res.winner ?? M.winner) === me;
+      fx.play(won ? 'win' : 'lose');
+      const steps = countSteps(score), t0 = won ? 1.1 : 1.3;
+      steps.forEach((st, k) => setTimeout(() => { if (disposed) return; scoreEl.textContent = String(st.v); if (k === steps.length - 1) { if (st.v > 0) fx.play('coin'); } else fx.play('tick'); }, (t0 + st.t) * 1000));
+    }
     try { if (document.fullscreenElement) document.exitFullscreen?.(); } catch { /* */ }
+  };
+  const rankSound = () => {   // §44 sıralama değişimi (halka geçişlerinde): öne geçince whoosh + ding, geride kalınca alçak ton
+    if (!M || isDf(M) || M.state !== 'YARIS') return;
+    const r = myRank(M.players, pos, me), ch = rankChange(prevRank, r);
+    if (r != null) prevRank = r;
+    if (ch && performance.now() - lastRankT > 1200) { lastRankT = performance.now(); fx.play(ch); }
   };
   const maybeIntro = () => {
     if (introDone || !worldReady || !M) return;
@@ -627,15 +687,17 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     }
     if (m.t === 'ring') {
       const nm = (M?.players || []).find(p => p.id === m.id)?.name || '';
-      if (m.id === me) { beep(1175, 0.14); flashMsg(tr('Halka {i} / {n} ✓', { i: m.i, n: m.total })); layer?.setNext(m.i + 1 > m.total ? null : m.i + 1); }
+      pos[m.id] = { ...(pos[m.id] || {}), rings: Math.max(Number(pos[m.id]?.rings) || 0, m.i), next: m.i + 1 > m.total ? null : m.i + 1 };
+      if (m.id === me) { fx.play(m.i >= m.total ? 'finish' : 'ring', { i: m.i, n: m.total }); flashMsg(tr('Halka {i} / {n} ✓', { i: m.i, n: m.total })); layer?.setNext(m.i + 1 > m.total ? null : m.i + 1); }   // §44 yükselen ding / son halkada fanfar
       else if (m.i === m.total) flashMsg(tr('{n} son halkayı geçti', { n: nm }), 'rgba(250,204,21,.92)');
+      rankSound();
       return;
     }
-    if (m.t === 'wrong_way' && m.id === me) { flashMsg(tr('Ters yön! Halkayı ok yönünde geçin'), 'rgba(248,113,113,.95)'); beep(330, 0.25); return; }
-    if (m.t === 'finish') { const nm = (M?.players || []).find(p => p.id === m.id)?.name || ''; flashMsg(m.id === me ? tr('BİTİRDİNİZ! {t}', { t: fmtClock(m.elapsed_s) }) : tr('{n} bitirdi', { n: nm }), 'rgba(250,204,21,.95)'); if (m.id === me) { beep(1568, 0.4); } return; }
+    if (m.t === 'wrong_way' && m.id === me) { flashMsg(tr('Ters yön! Halkayı ok yönünde geçin'), 'rgba(248,113,113,.95)'); fx.play('wrong'); return; }
+    if (m.t === 'finish') { const nm = (M?.players || []).find(p => p.id === m.id)?.name || ''; flashMsg(m.id === me ? tr('BİTİRDİNİZ! {t}', { t: fmtClock(m.elapsed_s) }) : tr('{n} bitirdi', { n: nm }), 'rgba(250,204,21,.95)'); return; }
     if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; dfHud?.update(M, clock.now()); showResult(); drawBar(); return; }
     if (m.t === 'dogfight' && M) {   // §41 olaylar: koniye giriş (kaçana uyarı), angaje, alan dışı, çarpma
-      if (m.kind === 'engaged') { flashMsg(DT('df.engaged'), 'rgba(239,68,68,.95)'); beep(1568, 0.35); }
+      if (m.kind === 'engaged') flashMsg(DT('df.engaged'), 'rgba(239,68,68,.95)');   // §44 zafer/yenilgi sesi sonuçta
       else if (m.kind === 'area') flashMsg(DT('df.r_alan_disi'), 'rgba(248,113,113,.95)');
       else if (m.kind === 'crash') flashMsg(DT('df.r_carpti'), 'rgba(248,113,113,.95)');
       else if (m.kind === 'guard_off') flashMsg(DT('df.guard_off'));
@@ -648,7 +710,8 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     // 3B dünya kuruldu + oturum HAZIR → sunucuya `ready` (herkes hazır olunca geri sayım başlar)
     onWorldReady() { if (worldReady) return; worldReady = true; ensureLayer(); const send = () => sock.send({ t: 'ready' }); send(); setTimeout(send, 1500); setTimeout(send, 5000); maybeIntro(); },
     get state() { return M?.state || null; },
-    dispose() { disposed = true; clearInterval(iv); sock.close(); layer?.dispose(); dfHud?.dispose(); if (window.__fsDogfight === dfHud) delete window.__fsDogfight; bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__fsMatch?.layer === layer) delete window.__fsMatch; },
+    get sfx() { return fx; },
+    dispose() { disposed = true; clearInterval(iv); sock.close(); layer?.dispose(); if (!sfx) fx.dispose(); dfHud?.dispose(); if (window.__fsDogfight === dfHud) delete window.__fsDogfight; bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__fsMatch?.layer === layer) delete window.__fsMatch; },
   };
 }
 

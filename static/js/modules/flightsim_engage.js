@@ -193,7 +193,7 @@ export function createEngageCtl(stage, o = {}) {
       if (S.eng?.i === m.i) setEng(null);
       const txt = `${T('eng.success')} · ${name} · ${fmtDur(m.dur_s)}`;
       ev(txt, 'warning'); S.okUntil = performance.now() + 2500; S.okText = txt;
-      if (!replay) { o.toast?.(`◆ ${txt}`); if (o.sound !== false) engageBeep('success'); }
+      if (!replay) { o.toast?.(`◆ ${txt}`); if (o.sound !== false) engageBeep('success'); o.sfx?.play('coin'); }   // §44 angajman bonusu: "coin"
     } else if (m.kind === 'cut') {
       if (S.eng?.i === m.i) setEng(null);
       ev(`${T('eng.cut')} · ${name} · ${fmtDur(m.dur_s)} · ${reasonText(m.reason)}`, 'info');

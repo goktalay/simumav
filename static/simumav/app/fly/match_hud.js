@@ -7,26 +7,24 @@
 //   • 3B dünya kurulup oturum HAZIR olunca `onWorldReady()` → WS `ready` (herkes hazır olunca sunucu geri sayımı başlatır).
 import { h, clear, t as tr } from './simui.js';
 import { wsUrl } from './net.js';
-import { createClock, countdownPhase, liveStandings, colorFor, bearingDeg, relAngle, ACTIVE } from '/sim/flightsim_match.js';
+import { createClock, countdownPhase, liveStandings, colorFor, bearingDeg, relAngle, ACTIVE, isBot, matchScore, myRank } from '/sim/flightsim_match.js';
+import { countSteps, createSfx, rankChange } from '/sim/flightsim_sfx.js';   // HEPGO §44 oyun efektleri (ortak)
 import { createMatchLayer } from '/sim/flightsim_match3d.js';
 import { createDogfightHud, dfResultRows, makeDfT, roleOf } from '/sim/flightsim_dogfight.js';   // HEPGO §41 it dalaşı HUD'u (ortak)
 import { fmtClock, fmtDist, lobbyHref, REASON_KEY, resultRows, STATUS_KEY } from './match_core.js';
 
-function beep(freq = 880, dur = 0.12) {
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
-    const ac = beep.ac || (beep.ac = new AC()); const o = ac.createOscillator(), g = ac.createGain();
-    o.frequency.value = freq; g.gain.value = 0.06; o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + dur);
-  } catch { /* ses yok */ }
-}
+// HEPGO §44 yapay zekâ pilot rozeti 'AI · Zor' (seviye 7 dilde ai.level_*)
+export const aiTag = p => (isBot(p) ? h('span', { class: 'sm-ai-badge', title: tr('ai.pilot') }, `AI${p.level ? ` · ${tr(`ai.level_${p.level}`)}` : ''}`) : null);
 
 const DT = makeDfT(tr, true);
 const isDf = m => (m?.kind || 'rings') === 'dogfight';
-export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele = () => null, mid, me, go = hash => { location.hash = hash; } }) {
+export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele = () => null, mid, me, go = hash => { location.hash = hash; }, sfx = null }) {
   const clock = createClock();
+  const fx = sfx || createSfx({ key: 'sm.sfx', keyed: true });   // HEPGO §44: oturumun efekt yolu (yoksa yedek bağlam)
+  let prevRank = null, lastRankT = 0;
   let M = null, layer = null, worldReady = false, introDone = false, resultShown = false, disposed = false, ringsSig = '', dfHud = null;
   // HEPGO §41: it dalaşı HUD'u (rakip işaretçisi, angajman halkası, KİLİTLENİYOR uyarısı, rol/süre/mesafe şeridi). Yükseklikler sahne ölçeğine çevrilir (localPos).
-  const ensureDf = () => { if (!M || !isDf(M) || dfHud) return; dfHud = createDogfightHud(stage, { getSim: () => getSim(), tr, keyed: true, me }); board.hidden = true; window.__smDogfight = dfHud; };
+  const ensureDf = () => { if (!M || !isDf(M) || dfHud) return; dfHud = createDogfightHud(stage, { getSim: () => getSim(), tr, keyed: true, me, sfx: fx }); board.hidden = true; window.__smDogfight = dfHud; };
   const pos = {};
   const bar = h('div', { class: 'sm-mt-bar wait' }, tr('match.hud_connecting'));
   const board = h('div', { class: 'sm-mt-board' }, h('h6', null, tr('match.standings')), h('ol'));
@@ -59,7 +57,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     if (!M || isDf(M)) return;
     const rows = liveStandings(M.players, pos), total = (M.rings || []).length;
     clear(board.querySelector('ol'), rows.map((p, i) => h('li', { class: `${p.id === me ? 'me' : ''} ${ACTIVE.has(p.status) ? '' : 'out'}`.trim() },
-      h('span', { class: 'v' }, `${i + 1}.`), h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }), h('span', { class: 'nm' }, p.name),
+      h('span', { class: 'v' }, `${i + 1}.`), h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }), h('span', { class: 'nm' }, isBot(p) ? '🤖 ' : '', p.name),
       h('span', { class: 'v' }, p.finished ? '⚑' : `${p.rings ?? 0}/${total}`))));
   };
   const drawWait = () => {
@@ -112,14 +110,32 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     resEl.hidden = false;
     const rows = resultRows(M), win = rows.find(r => r.winner);
     const df = isDf(M);
+    // HEPGO §44 puan: zafer / yenilgi sesi, sayaç tıklamalarla artar, sonunda "coin"
+    const res = M.result || {};
+    const row = df ? dfResultRows(M).find(r => r.id === me) : (res.standings || []).find(r => r.id === me);
+    const score = row ? matchScore(row, df ? 'dogfight' : 'rings', res.dogfight || {}) : null;
+    const scoreEl = h('b', { 'data-score': score ?? '' }, '0');
     clear(resEl, h('div', { class: 'box', role: 'dialog', 'aria-modal': 'true' },
       h('div', { class: 'trophy', 'aria-hidden': 'true' }, '★'),
       h('h2', null, win ? (win.id === me ? tr('match.result_you_won') : tr('match.result_winner', { n: win.name })) : tr('match.result_title')),
+      score != null ? h('div', { class: 'sm-mt-score' }, h('span', { class: 'muted' }, tr('ai.your_score')), scoreEl) : null,
       h('p', { class: 'sub' }, df ? DT(`df.r_${M.result?.reason || M.reason}`) : tr(REASON_KEY[M.result?.reason || M.reason] || 'match.reason_first')),
       df ? dfResultTable(M, me) : resultTable(rows, me),
       h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: () => { resEl.hidden = true; } }, tr('common.ok')),
         h('button', { class: 'btn primary', type: 'button', onclick: () => go(lobbyHref(mid)) }, tr('match.back_lobby')))));
+    if (row) {
+      const won = (res.winner ?? M.winner) === me;
+      fx.play(won ? 'win' : 'lose');
+      const steps = countSteps(score), t0 = won ? 1.1 : 1.3;
+      steps.forEach((st, k) => setTimeout(() => { if (disposed) return; scoreEl.textContent = String(st.v); if (k === steps.length - 1) { if (st.v > 0) fx.play('coin'); } else fx.play('tick'); }, (t0 + st.t) * 1000));
+    }
     try { if (document.fullscreenElement) document.exitFullscreen?.(); } catch { /* */ }
+  };
+  const rankSound = () => {   // HEPGO §44 sıralama değişimi (halka geçişlerinde)
+    if (!M || isDf(M) || M.state !== 'YARIS') return;
+    const r = myRank(M.players, pos, me), ch = rankChange(prevRank, r);
+    if (r != null) prevRank = r;
+    if (ch && performance.now() - lastRankT > 1200) { lastRankT = performance.now(); fx.play(ch); }
   };
   const maybeIntro = () => {
     if (introDone || !worldReady || !M) return;
@@ -149,15 +165,17 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     }
     if (m.t === 'ring') {
       const nm = (M?.players || []).find(p => p.id === m.id)?.name || '';
-      if (m.id === me) { beep(1175, 0.14); flashMsg(tr('match.ring_ok', { i: m.i, n: m.total }), 'ok'); layer?.setNext(m.i + 1 > m.total ? null : m.i + 1); }
+      pos[m.id] = { ...(pos[m.id] || {}), rings: Math.max(Number(pos[m.id]?.rings) || 0, m.i), next: m.i + 1 > m.total ? null : m.i + 1 };
+      if (m.id === me) { fx.play(m.i >= m.total ? 'finish' : 'ring', { i: m.i, n: m.total }); flashMsg(tr('match.ring_ok', { i: m.i, n: m.total }), 'ok'); layer?.setNext(m.i + 1 > m.total ? null : m.i + 1); }
       else if (m.i === m.total) flashMsg(tr('match.last_ring', { n: nm }), 'warn');
+      rankSound();
       return;
     }
-    if (m.t === 'wrong_way' && m.id === me) { flashMsg(tr('match.wrong_way'), 'bad'); beep(330, 0.25); return; }
-    if (m.t === 'finish') { const nm = (M?.players || []).find(p => p.id === m.id)?.name || ''; flashMsg(m.id === me ? tr('match.you_finished', { t: fmtClock(m.elapsed_s) }) : tr('match.finished', { n: nm }), 'warn'); if (m.id === me) beep(1568, 0.4); return; }
+    if (m.t === 'wrong_way' && m.id === me) { flashMsg(tr('match.wrong_way'), 'bad'); fx.play('wrong'); return; }
+    if (m.t === 'finish') { const nm = (M?.players || []).find(p => p.id === m.id)?.name || ''; flashMsg(m.id === me ? tr('match.you_finished', { t: fmtClock(m.elapsed_s) }) : tr('match.finished', { n: nm }), 'warn'); return; }
     if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; dfHud?.update(M, clock.now()); showResult(); drawBar(); }
     if (m.t === 'dogfight') {   // §41 olaylar
-      if (m.kind === 'engaged') { flashMsg(DT('df.engaged'), 'bad'); beep(1568, 0.35); }
+      if (m.kind === 'engaged') flashMsg(DT('df.engaged'), 'bad');   // §44 zafer/yenilgi sesi sonuçta
       else if (m.kind === 'area') flashMsg(DT('df.r_alan_disi'), 'bad');
       else if (m.kind === 'crash') flashMsg(DT('df.r_carpti'), 'bad');
       else if (m.kind === 'guard_off') flashMsg(DT('df.guard_off'), 'ok');
@@ -187,7 +205,8 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     backHref: lobbyHref(mid),
     get state() { return M?.state || null; },
     get match() { return M; },
-    dispose() { disposed = true; closed = true; clearInterval(iv); clearInterval(pingIv); clearTimeout(timer); clearTimeout(flashT); try { ws?.close(); } catch { /* */ } layer?.dispose(); dfHud?.dispose(); bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__smMatch?.layer === layer) delete window.__smMatch; if (window.__smDogfight === dfHud) delete window.__smDogfight; },
+    get sfx() { return fx; },
+    dispose() { disposed = true; closed = true; if (!sfx) fx.dispose(); clearInterval(iv); clearInterval(pingIv); clearTimeout(timer); clearTimeout(flashT); try { ws?.close(); } catch { /* */ } layer?.dispose(); dfHud?.dispose(); bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__smMatch?.layer === layer) delete window.__smMatch; if (window.__smDogfight === dfHud) delete window.__smDogfight; },
   };
 }
 
@@ -200,7 +219,7 @@ export function dfResultTable(M, me) {
     h('table', { class: 'sm-mt-table' },
       h('thead', null, h('tr', null, [DT('df.role'), tr('match.col_player'), DT('df.result'), tr('match.col_speed')].map(x => h('th', null, x)))),
       h('tbody', null, rows.map(r => h('tr', { class: `${r.id === me ? 'me' : ''} ${r.won ? 'win' : ''}`.trim() },
-        h('td', null, r.role ? h('span', { class: `sm-df-badge ${r.role}` }, DT(`df.${r.role}`)) : '—'), h('td', null, h('b', null, r.name)),
+        h('td', null, r.role ? h('span', { class: `sm-df-badge ${r.role}` }, DT(`df.${r.role}`)) : '—'), h('td', null, h('b', null, r.name), aiTag((M.players || []).find(p => p.id === r.id) || r)),
         h('td', null, h('span', { class: `sm-mt-badge ${r.won ? 'st-hazir' : 'st-dustu'}` }, DT(r.won ? 'df.won' : 'df.lost'))),
         h('td', { class: 'mono' }, r.max_speed_ms != null ? `${Math.round(r.max_speed_ms * 3.6)} km/h` : '—'))))));
 }
@@ -210,7 +229,7 @@ export function resultTable(rows, me) {
   return h('table', { class: 'sm-mt-table' },
     h('thead', null, h('tr', null, ['#', tr('match.col_player'), tr('match.col_time'), tr('match.col_rings'), tr('match.col_next'), tr('match.col_speed'), tr('match.col_status')].map(x => h('th', null, x)))),
     h('tbody', null, rows.map(r => h('tr', { class: `${r.id === me ? 'me' : ''} ${r.winner ? 'win' : ''}`.trim() },
-      h('td', null, r.winner ? '★' : String(r.rank)), h('td', null, h('b', null, r.name)), h('td', { class: 'mono' }, r.time_s != null ? fmtClock(r.time_s) : '—'),
+      h('td', null, r.winner ? '★' : String(r.rank)), h('td', null, h('b', null, r.name), aiTag(r)), h('td', { class: 'mono' }, r.time_s != null ? fmtClock(r.time_s) : '—'),
       h('td', { class: 'mono' }, `${r.rings}/${r.total}`), h('td', { class: 'mono' }, r.time_s != null ? '—' : fmtDist(r.dist_next_m)),
       h('td', { class: 'mono' }, r.max_speed_ms != null ? `${Math.round(r.max_speed_ms * 3.6)} km/h` : '—'),
       h('td', null, h('span', { class: `sm-mt-badge st-${r.status}` }, r.finished ? tr('match.st_finished') : (ACTIVE.has(r.status) ? tr('match.st_dnf') : tr(STATUS_KEY[r.status] || r.status))))))));

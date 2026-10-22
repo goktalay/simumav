@@ -162,3 +162,21 @@
 .sm-df-badge{display:inline-block;padding:2px 8px;border-radius:7px;font-weight:800;font-size:11px;letter-spacing:.06em;color:#fff;margin-left:6px}
 .sm-df-badge.chaser{background:#b91c1c}.sm-df-badge.evader{background:#1d4ed8}
 .sm-df-preview svg{width:100%;height:auto;display:block}
+
+/* ---- HEPGO §44 yapay zekâ pilot (bot) + puan ---- */
+.sm-mode-ai { display: flex; align-items: center; gap: 14px; width: 100%; max-width: 760px; margin-top: 18px; padding: 14px 18px; border-radius: 16px; text-align: left; cursor: pointer; font: inherit; color: #e4e9f1;
+  border: 1px solid rgba(167,139,250,.45); background: linear-gradient(120deg, rgba(124,58,237,.22), rgba(219,39,119,.10)); transition: transform .2s ease, box-shadow .2s ease; }
+.sm-mode-ai:hover, .sm-mode-ai:focus-visible { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(124,58,237,.35); }
+.sm-mode-ai-ico { font-size: 30px; width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; background: rgba(124,58,237,.35); flex: none; }
+.sm-mode-ai > span:nth-child(2) { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.sm-mode-ai b { font-size: 18px; letter-spacing: .03em; } .sm-mode-ai small { color: #c4b5fd; font-size: 13px; line-height: 1.4; }
+.sm-mode-ai > em { font-style: normal; font-weight: 700; color: #c4b5fd; letter-spacing: .06em; white-space: nowrap; }
+.sm-ai-badge { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 7px; font-size: 11px; font-weight: 800; letter-spacing: .04em; color: #fff; background: linear-gradient(120deg, #7c3aed, #db2777); white-space: nowrap; vertical-align: middle; }
+.sm-mt-players li.bot { border-color: rgba(167,139,250,.35); background: rgba(124,58,237,.08); }
+.sm-ai-add { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.sm-ai-add .btn { padding: 3px 9px; font-size: 12px; }
+.sm-ai-levels button { min-width: 92px; }
+.sm-ai-desc { min-height: 2.6em; margin: 6px 0 0; }
+.sm-wizard-match .sm-ai-step h2 { color: #c4b5fd; }
+.sm-mt-score { display: flex; align-items: baseline; justify-content: center; gap: 10px; margin: 2px 0 10px; }
+.sm-mt-score b { font-size: 32px; font-variant-numeric: tabular-nums; color: #c4b5fd; }

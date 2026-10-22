@@ -15,8 +15,10 @@ export const STEPS = ['drone', 'track', 'launch', 'power', 'mission', 'site', 't
 // §18 ÇOK OYUNCULU (kurucu): dron + parkur (+ kalkış) → halkalar (sayı, min/max yükseklik …) → davet (oyuncu sayısı + şifre). Güç/görev/yer kontrol/
 // hedef/pilot yok: herkes kurucunun dronuyla, kendi varsayılan pilotuyla uçar.
 export const STEPS_MATCH = ['drone', 'track', 'launch', 'rings', 'invite'];
+// HEPGO §44 "Yapay zekâya karşı": davet adımı yerine yapay zekâ adımı (seviye + bot sayısı); şifre/davet yok, oluşturunca hemen başlar
+export const STEPS_AI = ['drone', 'track', 'launch', 'rings', 'ai'];
 export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', site: 'site.step', targets: 'targets.step', pilot: 'Pilot ve kayıt',
-  rings: 'match.step_rings', invite: 'match.step_invite' };
+  rings: 'match.step_rings', invite: 'match.step_invite', ai: 'ai.step' };
 
 // SIMUMAV türü → HEPGO simülatör tipi
 export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'interceptor', vtol: 'vtol', rover: 'rover' };
@@ -167,7 +169,7 @@ export const timeOfDay = v => { if (v == null) return 'day'; if (TIME_MAP[v]) re
 
 // ---------- adım makinesi ----------
 // createWizard({ drones, tracks, pilots, missions? }) → { state, steps(), index(), step(), canNext(), next(), prev(), goto(k), set(k, v), payload(), summary() }
-export function createWizard(data = {}, init = {}, { match = false } = {}) {
+export function createWizard(data = {}, init = {}, { match = false, ai = false } = {}) {
   const S = {
     drone_id: init.drone_id ?? (data.drones || []).find(d => d.is_default)?.id ?? (data.drones || [])[0]?.id ?? null,
     track_id: init.track_id ?? (data.tracks || []).find(t => t.is_default)?.id ?? (data.tracks || [])[0]?.id ?? null,
@@ -185,11 +187,12 @@ export function createWizard(data = {}, init = {}, { match = false } = {}) {
     // §18 karşılaşma (match: true): halka ayarı (match_core.js ringsBody) + davet (oyuncu sayısı, şifre); *_err adım doğrulaması (null = geçerli)
     rings: init.rings ?? null, rings_err: null, max_players: init.max_players ?? 2, password: init.password ?? '', invite_err: null,
     kind: init.kind ?? 'rings', dogfight: init.dogfight ?? null,   // HEPGO §41 karşılaşma türü + it dalaşı ayarı
+    ai_level: init.ai_level ?? 'normal', ai_bots: init.ai_bots ?? 1,   // HEPGO §44 yapay zekâya karşı
   };
   let i = 0;
   const drone = () => (data.drones || []).find(d => d.id === S.drone_id) || null;
   const type = () => drone()?.type || 'multirotor';
-  const steps = () => (match ? STEPS_MATCH : STEPS).filter(k => k !== 'launch' || hasLaunchStep(type()));
+  const steps = () => (match ? (ai ? STEPS_AI : STEPS_MATCH) : STEPS).filter(k => k !== 'launch' || hasLaunchStep(type()));
   const step = () => steps()[Math.min(i, steps().length - 1)];
   const canNext = () => {
     const k = step();
@@ -214,13 +217,18 @@ export function createWizard(data = {}, init = {}, { match = false } = {}) {
     else if (k === 'track_id') { if (v !== S.track_id) S.mission_id = null; S.track_id = v; }   // parkur değişti → görev sıfırlanır (§3 missions.track_id)
     else if (k in S) S[k] = v;
   };
-  const ready = () => (match ? S.drone_id != null && S.track_id != null && !!S.rings && !S.rings_err && !S.invite_err && !!S.password
+  const ready = () => (match ? S.drone_id != null && S.track_id != null && !!S.rings && !S.rings_err && (ai || (!S.invite_err && !!S.password))
     : S.drone_id != null && S.track_id != null && S.pilot_id != null);
   const launchOf = () => (needsLaunch(type()) ? launchBody(S.launch) : type() === 'interceptor' ? iceptLaunchBody(S.ilaunch) : { method: 'wheels' });
   const payload = () => {
     if (!ready()) return null;
     if (match) {   // POST /api/match (HEPGO §41: kind + it dalaşı ayarı; it dalaşında 2 oyuncu)
       const df = S.kind === 'dogfight';
+      if (ai) {   // HEPGO §44 POST /api/match/ai
+        return { drone_id: S.drone_id, track_id: S.track_id, launch: launchOf(), rings: Object.fromEntries(Object.entries(S.rings).filter(([k, v]) => !k.startsWith('_') && v !== '' && v != null && Number.isFinite(Number(v))).map(([k, v]) => [k, Number(v)])),
+          kind: S.kind || 'rings', dogfight: df ? Object.fromEntries(Object.entries(S.dogfight || {}).filter(([k, v]) => !k.startsWith('_') && v !== '' && v != null).map(([k, v]) => [k, k === 'roles' ? v : Number(v)])) : null,
+          level: ['easy', 'normal', 'hard'].includes(S.ai_level) ? S.ai_level : 'normal', bots: df ? 1 : Math.max(1, Math.round(Number(S.ai_bots) || 1)) };
+      }
       return { drone_id: S.drone_id, track_id: S.track_id, launch: launchOf(), rings: Object.fromEntries(Object.entries(S.rings).filter(([k, v]) => !k.startsWith('_') && v !== '' && v != null && Number.isFinite(Number(v))).map(([k, v]) => [k, Number(v)])), password: S.password, max_players: df ? 2 : S.max_players,
         kind: S.kind || 'rings', dogfight: df ? Object.fromEntries(Object.entries(S.dogfight || {}).filter(([k, v]) => !k.startsWith('_') && v !== '' && v != null).map(([k, v]) => [k, k === 'roles' ? v : Number(v)])) : null };
     }
@@ -238,7 +246,7 @@ export function createWizard(data = {}, init = {}, { match = false } = {}) {
   };
   const missionsFor = () => (data.missions || []).filter(m => S.track_id == null || m.track_id === S.track_id);
   return {
-    state: S, match, steps, index: () => i, step, canNext, isLast, next, prev, goto, set, ready, payload, type, drone, missionsFor, drive: () => driveOf(drone(), S.drive),
+    state: S, match, ai, steps, index: () => i, step, canNext, isLast, next, prev, goto, set, ready, payload, type, drone, missionsFor, drive: () => driveOf(drone(), S.drive),
     track: () => (data.tracks || []).find(t => t.id === S.track_id) || null,
     pilot: () => (data.pilots || []).find(p => p.id === S.pilot_id) || null,
     mission: () => (data.missions || []).find(m => m.id === S.mission_id) || null,

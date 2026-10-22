@@ -194,11 +194,13 @@ export function createOpsPanel(stage, opts = {}) {
   const mpBody = mp ? h('div', { class: 'fs-pn-mp' },
     h('div', { class: 'fs-pn-mp-adres' }, h('code', { class: 'fs-pn-mp-kod' }, `UDP ${mp.addr}`),
       h('button', { class: 'fs-pn-btn', type: 'button', onclick: e => { e.stopPropagation(); mp.copy?.(mp.addr); } }, 'Kopyala')),
-    h('div', { class: 'fs-pn-not fs-pn-mp-not' }, 'Mission Planner › sağ üst bağlantı türü UDP › CONNECT › port ', h('b', null, String(mp.port || '—')), '. USB kumanda: Mission Planner › Joystick.')) : null;
+    mp.qgc   // §45 PX4 yığını (yalnız HEPGO): QGroundControl önerilir; Mission Planner da aynı porta bağlanır
+      ? h('div', { class: 'fs-pn-not fs-pn-mp-not' }, 'PX4 · QGroundControl önerilir: Application Settings › Comm Links › Add › UDP › sunucu ', h('b', null, mp.addr), '. Mission Planner da UDP port ', h('b', null, String(mp.port || '—')), ' ile bağlanır.')
+      : h('div', { class: 'fs-pn-not fs-pn-mp-not' }, 'Mission Planner › sağ üst bağlantı türü UDP › CONNECT › port ', h('b', null, String(mp.port || '—')), '. USB kumanda: Mission Planner › Joystick.')) : null;
   const mpYuvaBas = mp ? h('span', { class: 'fs-pn-mp-yuva' }) : null;   // rozet yuvası (bölüm başlığı)
-  const mpBolum = mp ? bolum('mp', 'MISSION PLANNER', mpBody, { cls: 'fs-pn-mp-bolum', extra: mpYuvaBas }) : null;   // büyük harf elle: CSS uppercase tr'de "MİSSİON" yapar
+  const mpBolum = mp ? bolum('mp', mp.qgc ? 'QGROUNDCONTROL / MP' : 'MISSION PLANNER', mpBody, { cls: 'fs-pn-mp-bolum', extra: mpYuvaBas }) : null;   // büyük harf elle: CSS uppercase tr'de "MİSSİON" yapar
   const mpYuvaYuzen = mp ? h('span', { class: 'fs-pn-mp-yuva' }) : null;   // rozet yuvası (yüzen kutu başlığı)
-  const mpYuzen = mp ? h('div', { class: 'fs-mp fs-pn-yuzen', hidden: true, title: tr('Mission Planner (UDP) bağlantısı') }, h('div', { class: 'fs-pn-yuzen-bas' }, h('b', null, 'MISSION PLANNER'), mpYuvaYuzen)) : null;
+  const mpYuzen = mp ? h('div', { class: 'fs-mp fs-pn-yuzen', hidden: true, title: tr('Mission Planner (UDP) bağlantısı') }, h('div', { class: 'fs-pn-yuzen-bas' }, h('b', null, mp.qgc ? 'QGROUNDCONTROL / MP' : 'MISSION PLANNER'), mpYuvaYuzen)) : null;
   // Otomatik katlama: kullanıcı tercihi yoksa (fold.mp tanımsız) GCS bağlıyken katlı, değilken açık
   const applyMpFold = () => { if (mpBolum) mpBolum.classList.toggle('folded', fold.mp == null ? gcs : !!fold.mp); };
   const placeMp = () => {

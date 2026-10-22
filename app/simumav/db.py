@@ -160,18 +160,22 @@ CREATE TABLE IF NOT EXISTS matches (
     created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_matches_host ON matches(host_id, created_at);
+-- v5 (HEPGO §44 yapay zekâ pilot): user_id artık users'a FK DEĞİL (bot oyuncular negatif kimlikli); kullanıcı silinince satırları tetikleyici siler.
 CREATE TABLE IF NOT EXISTS match_players (
     match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL,                   -- users.id (insan) | < 0 (yapay zekâ pilot)
     name TEXT NOT NULL,
     is_host INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,                       -- geldi | hazirlaniyor | hazir | ayrildi | cikarildi | dustu (core oyuncu durumları)
-    flight_id INTEGER,                          -- oyuncunun flights kaydı (yarış oturumu)
+    flight_id INTEGER,                          -- oyuncunun flights kaydı (yarış oturumu; botta NULL)
     rank INTEGER, rings INTEGER, time_s REAL,
     joined_at TEXT NOT NULL,
+    is_bot INTEGER NOT NULL DEFAULT 0,          -- v5: yapay zekâ pilot
+    level TEXT,                                 -- v5: bot seviyesi easy | normal | hard
     PRIMARY KEY (match_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS ix_match_players_user ON match_players(user_id);
+CREATE TRIGGER IF NOT EXISTS tr_match_players_user_sil AFTER DELETE ON users BEGIN DELETE FROM match_players WHERE user_id = OLD.id; END;
 CREATE TABLE IF NOT EXISTS match_attempts (     -- şifre denemeleri (kaba kuvvet sınırı; 1 günden eskiler silinir)
     id INTEGER PRIMARY KEY,
     match_id INTEGER,
@@ -196,8 +200,11 @@ _MIGRATIONS = [
     # v4 (HEPGO §41 it dalaşı): matches.kind ('rings' | 'dogfight') + matches.game_cfg (it dalaşı ayarı JSON) — init() içinde PRAGMA denetimiyle
     # ALTER (yalnız yoksa → idempotent); eski satırlar 'rings'. Veri dönüşümü yok.
     (4, []),
+    # v5 (HEPGO §44 yapay zekâ pilot): match_players yeniden kurulur — user_id'deki users FK'si kalkar (bot kimlikleri negatif), is_bot + level
+    # sütunları eklenir; satırlar aynen taşınır; kullanıcı silme temizliği tetikleyiciyle. init() içinde `is_bot` sütunu yoksa (idempotent).
+    (5, []),
 ]
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # TR TEST Kalecik (Ankara) UAV test sahası — tesisin resmî koordinatı kamuya açık kaynaklarda yok; Kalecik ilçe merkezi (40.0972N 33.4083E,
 # 725 m) yakınındaki sözleşme değeri kullanılır. Kullanıcı parkuru düzenleyip kaydırabilir.
@@ -233,6 +240,20 @@ def init():
         for col, ddl in (('kind', "TEXT NOT NULL DEFAULT 'rings'"), ('game_cfg', 'TEXT')):   # HEPGO §41 karşılaşma türü + it dalaşı ayarı
             if col not in mcols:
                 conn.execute(f'ALTER TABLE matches ADD COLUMN {col} {ddl}')
+        if 'is_bot' not in {r[1] for r in conn.execute('PRAGMA table_info(match_players)')}:   # v5 (§44): FK'siz yeniden kurulum + bot sütunları
+            conn.executescript("""
+                DROP TRIGGER IF EXISTS tr_match_players_user_sil;
+                CREATE TABLE match_players_v5 (
+                    match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE, user_id INTEGER NOT NULL, name TEXT NOT NULL,
+                    is_host INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, flight_id INTEGER, rank INTEGER, rings INTEGER, time_s REAL,
+                    joined_at TEXT NOT NULL, is_bot INTEGER NOT NULL DEFAULT 0, level TEXT, PRIMARY KEY (match_id, user_id));
+                INSERT INTO match_players_v5 (match_id, user_id, name, is_host, status, flight_id, rank, rings, time_s, joined_at)
+                    SELECT match_id, user_id, name, is_host, status, flight_id, rank, rings, time_s, joined_at FROM match_players;
+                DROP TABLE match_players;
+                ALTER TABLE match_players_v5 RENAME TO match_players;
+                CREATE INDEX IF NOT EXISTS ix_match_players_user ON match_players(user_id);
+                CREATE TRIGGER IF NOT EXISTS tr_match_players_user_sil AFTER DELETE ON users BEGIN DELETE FROM match_players WHERE user_id = OLD.id; END;
+            """)
         cur = conn.execute('SELECT version FROM schema_version').fetchone()
         ver = cur[0] if cur else 0
         for v, sqls in _MIGRATIONS:

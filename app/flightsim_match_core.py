@@ -20,6 +20,9 @@ HEPGO çalışma zamanı `app/flightsim_match.py` (SITL oturumları, WS yayını
     menzil + burun konisi içinde gerekli süre KESİNTİSİZ tutarsa ANGAJE → kovalayan kazanır; süre biterse kaçan; alan dışı / çarpan kaybeder;
     iki araç da başlangıç irtifasına yaklaşana dek — en geç KORUMA_S — angajman sayılmaz: SITL'de araçlar yerden kalkar). Kapsam: yalnız oyun
     mekaniği; araca güdüm/takip komutu yoktur.
+  · §44 YAPAY ZEKÂ PİLOT (bot oyuncu): seviye tablosu (`BOT_SEVIYE`: Kolay / Normal / Zor — hız oranı, tepki gecikmesi, dönüş oranı, sapma, ıskalama,
+    önceden dönüş, tahmin hatası, kaçış manevrası), bot adları/renkleri, `Karsilasma` içinde bot oyuncular (negatif kimlik; "geldi" sayılır; kurucu
+    ekler/çıkarır; insan kalmazsa karşılaşma biter). Pilot davranışı (oyun mantığı; gerçek güdüm yasası değildir) `flightsim_match_bot.py`'dedir.
 """
 import math
 import random
@@ -64,6 +67,47 @@ KORUMA_S = 60.0                  # kalkış koruması: iki araç da başlangıç
 KORUMA_ORAN = 0.8
 TELE_BAYAT_S = 2.0               # iki oyuncunun konum örnekleri arasında en çok fark (daha eskisiyle angajman hesaplanmaz)
 KOVALAYAN, KACAN = 'chaser', 'evader'
+
+# §44 yapay zekâ pilot (bot oyuncu) — TEK seviye tablosu (davranış: flightsim_match_bot.BotPilot; testler: tests.test_flightsim_match_bot)
+#   hiz          : sınıfın azami seyir hızına oran (dikey 16 m/s, uçak 30 m/s hava hızı; uçakta en az BOT_UCAK_VMIN)
+#   gecikme_s    : tepki gecikmesi — halkada geçişten sonra yeni hedefe dönmeden önce, it dalaşında rakibin konumunu bu kadar eski görür
+#   donus_dps    : komut yönünün en çok dönüş oranı (°/sn; Kolay geniş dönüş)
+#   sapma        : halka merkezinden rastgele kaçıklık (halka yarıçapına oran); iska: halkayı ıskalama olasılığı (sonra geri dönüp yeniden dener)
+#   giris_aci    : halkaya düz girişe geçmek için kabul edilen yanal açı (°; büyük = daha erken/daha cesur giriş)
+#   on_donus     : sıradaki halkaya göre önceden dönüş (giriş açısı optimizasyonu) — yalnız Zor
+#   tahmin_hata_m: it dalaşında rakip konum tahmin hatası (m; yavaş değişen)
+#   onculuk      : kovalarken öngörü karışımı (0 = doğrudan rakibe, 1 = rakibin tahmini ileri konumuna)
+#   manevra_s / manevra_aci / rastgele: kaçarken yön değiştirme aralığı (sn), en büyük sapma (°), öngörülemezlik (0 = hep aynı düzen)
+#   irtifa_oyunu : kaçarken irtifa değişimi; alan_esik: alan sınırına bu oranda yaklaşınca içeri döner; zemin_pay: en düşük güvenli irtifaya çarpan
+BOT_SEVIYELER = ('easy', 'normal', 'hard')
+BOT_SEVIYE_AD = {'easy': 'Kolay', 'normal': 'Normal', 'hard': 'Zor'}
+BOT_SEVIYE = {
+    'easy':   {'hiz': 0.55, 'gecikme_s': 1.5, 'donus_dps': 45.0, 'sapma': 0.45, 'iska': 0.15, 'giris_aci': 30.0, 'on_donus': False,
+               'tahmin_hata_m': 30.0, 'onculuk': 0.15, 'manevra_s': 7.0, 'manevra_aci': 45.0, 'rastgele': 0.0, 'irtifa_oyunu': False,
+               'alan_esik': 0.9, 'zemin_pay': 0.75},
+    'normal': {'hiz': 0.75, 'gecikme_s': 0.7, 'donus_dps': 75.0, 'sapma': 0.22, 'iska': 0.03, 'giris_aci': 40.0, 'on_donus': False,
+               'tahmin_hata_m': 12.0, 'onculuk': 0.45, 'manevra_s': 4.5, 'manevra_aci': 70.0, 'rastgele': 0.5, 'irtifa_oyunu': True,
+               'alan_esik': 0.8, 'zemin_pay': 1.0},
+    'hard':   {'hiz': 0.95, 'gecikme_s': 0.25, 'donus_dps': 120.0, 'sapma': 0.06, 'iska': 0.0, 'giris_aci': 50.0, 'on_donus': True,
+               'tahmin_hata_m': 3.0, 'onculuk': 0.8, 'manevra_s': 2.8, 'manevra_aci': 95.0, 'rastgele': 1.0, 'irtifa_oyunu': True,
+               'alan_esik': 0.72, 'zemin_pay': 1.0},
+}
+BOT_VMAX = {'dikey': 16.0, 'ucak': 30.0}
+BOT_UCAK_VMIN = 15.0
+BOT_ADLARI = ('Şahin', 'Kartal', 'Doğan', 'Atmaca', 'Kerkenez', 'Albatros', 'Akbaba')
+BOT_RENKLERI = ('#ef4444', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#64748b', '#84cc16')
+
+
+def bot_seviye(seviye):
+    if seviye not in BOT_SEVIYE:
+        raise MacHata('invalid', f"Yapay zekâ seviyesi {' | '.join(BOT_SEVIYELER)} olmalı")
+    return dict(BOT_SEVIYE[seviye])
+
+
+def bot_adi(seviye, sira, etiket=True):
+    """'AI-Şahin (Zor)' (etiket=False → 'AI-Şahin'; çok dilli arayüz seviyeyi ayrı rozetle gösterir)."""
+    ad = f'AI-{BOT_ADLARI[int(sira) % len(BOT_ADLARI)]}'
+    return f'{ad} ({BOT_SEVIYE_AD[seviye]})' if etiket else ad
 
 # durumlar
 LOBI, HAZIRLIK, GERI_SAYIM, YARIS, BITTI, IPTAL = 'LOBI', 'HAZIRLIK', 'GERI_SAYIM', 'YARIS', 'BITTI', 'IPTAL'
@@ -413,11 +457,13 @@ class HalkaIzleyici:
 
 # ---------------------------------------------------------------- karşılaşma
 class Oyuncu:
-    def __init__(self, uid, ad, kurucu=False):
+    def __init__(self, uid, ad, kurucu=False, bot=None, renk=None):
         self.uid = int(uid)
         self.ad = str(ad or '')
         self.kurucu = bool(kurucu)
-        self.durum = GELDI if kurucu else DAVETLI
+        self.bot = bot                # §44 yapay zekâ pilot seviyesi ('easy' | 'normal' | 'hard') ya da None (insan)
+        self.renk = renk
+        self.durum = GELDI if (kurucu or bot) else DAVETLI
         self.geldi_t = None
         self.sira_no = None           # başlangıç noktası sırası
         self.baslangic = None         # {x, y, lat, lon, yaw_deg}
@@ -436,13 +482,14 @@ class Oyuncu:
                 'rings': len(iz.gecisler) if iz else 0, 'total': halka_sayisi, 'next': (iz.sira + 1) if iz and not iz.bitti else None,
                 'dist_next_m': round(iz.mesafe, 1) if iz and iz.mesafe is not None else None,
                 'finished': bool(iz and iz.bitti), 'finish_t': iz.bitis_t if iz else None,
-                'max_speed_ms': round(self.azami_hiz, 1), 'crashes': self.carpisma, 'drop_reason': self.dusme_nedeni, 'role': self.rol}
+                'max_speed_ms': round(self.azami_hiz, 1), 'crashes': self.carpisma, 'drop_reason': self.dusme_nedeni, 'role': self.rol,
+                'is_bot': bool(self.bot), 'level': self.bot, 'color': self.renk}
 
 
 class Karsilasma:
     """Durum makinesi. Zaman `now` (Unix sn) dışarıdan; olaylar döndürülür (platform yayınlar/kaydeder). Kurucu kendisi de oyuncudur."""
 
-    def __init__(self, mid, kurucu, davetliler, ayar, halka_ayar, merkez, now, halkalar=None, baslangiclar=None, tur=TUR_HALKA):
+    def __init__(self, mid, kurucu, davetliler, ayar, halka_ayar, merkez, now, halkalar=None, baslangiclar=None, tur=TUR_HALKA, botlar=None):
         if tur not in TURLER:
             raise MacHata('invalid', 'Bilinmeyen karşılaşma türü')
         self.tur = tur                           # §41 'rings' (halka yarışı) | 'dogfight' (it dalaşı; halka_ayar = it_ayar_dogrula çıktısı)
@@ -465,12 +512,20 @@ class Karsilasma:
         for uid, ad in davetliler:
             if int(uid) != int(kid) and int(uid) not in self.oyuncular:
                 self.oyuncular[int(uid)] = Oyuncu(uid, ad)
+        for b in botlar or ():   # §44 (uid < 0, ad, seviye, renk?) — "geldi" (hazır sayılır)
+            uid, ad, sev = int(b[0]), b[1], b[2]
+            bot_seviye(sev)
+            if uid >= 0 or uid in self.oyuncular:
+                raise MacHata('invalid', 'Bot kimliği negatif ve tekil olmalı')
+            o = Oyuncu(uid, ad, bot=sev, renk=b[3] if len(b) > 3 else None)
+            o.geldi_t = float(now)
+            self.oyuncular[uid] = o
         if len(self.oyuncular) - 1 < DAVET_MIN:
-            raise MacHata('invalid', 'En az bir kullanıcı davet edin')
+            raise MacHata('invalid', 'En az bir kullanıcı davet edin ya da yapay zekâ pilot ekleyin')
         if len(self.oyuncular) > OYUNCU_MAX:
             raise MacHata('limit', f'Karşılaşmada en çok {OYUNCU_MAX} oyuncu olabilir (siz dahil)')
         if tur == TUR_IT and len(self.oyuncular) != 2:
-            raise MacHata('invalid', 'İt dalaşı tam 2 oyuncuyla oynanır (siz + 1 davetli)')
+            raise MacHata('invalid', 'İt dalaşı tam 2 oyuncuyla oynanır (siz + 1 davetli ya da 1 yapay zekâ pilot)')
         self.halkalar = halkalar
         self.baslangiclar = baslangiclar        # [(x, y, yaw)] sıra no → nokta (platform verir ya da HAZIRLIK'ta üretilir)
 
@@ -487,6 +542,36 @@ class Karsilasma:
 
     def aktifler(self):
         return [o for o in self.oyuncular.values() if o.durum not in KATILMAYAN]
+
+    def insanlar(self):
+        """§44: yarışa katılabilecek insan oyuncular (botlar hariç)."""
+        return [o for o in self.aktifler() if not o.bot]
+
+    def botlar(self):
+        return [o for o in self.oyuncular.values() if o.bot]
+
+    def bot_ekle(self, istek_uid, seviye, now, ad=None, renk=None, etiket=True):
+        """§44 kurucu LOBI'de yapay zekâ pilot ekler (oyuncu sınırı içinde; it dalaşında yalnız tek rakip). Dönüş: (olaylar, bot uid)."""
+        if int(istek_uid) != self.kurucu_id:
+            raise MacHata('forbidden', 'Yapay zekâ pilotu yalnız kurucu ekleyebilir')
+        bot_seviye(seviye)
+        if self.durum != LOBI:
+            raise MacHata('conflict', 'Yapay zekâ pilot yalnız bekleme salonunda eklenebilir')
+        dolu = [o for o in self.oyuncular.values() if o.durum not in KATILMAYAN]
+        if self.tur == TUR_IT and len(dolu) >= 2:
+            raise MacHata('conflict', 'İt dalaşı tam 2 oyunculu: rakip zaten var')
+        if len(dolu) >= OYUNCU_MAX:
+            raise MacHata('limit', f'Karşılaşmada en çok {OYUNCU_MAX} oyuncu olabilir (siz dahil)')
+        uid = min([0] + list(self.oyuncular)) - 1
+        n = len(self.botlar())
+        o = Oyuncu(uid, ad or bot_adi(seviye, n, etiket), bot=seviye, renk=renk or BOT_RENKLERI[n % len(BOT_RENKLERI)])
+        o.geldi_t = float(now)
+        self.oyuncular[uid] = o
+        return [{'t': 'player', 'id': uid, 'status': o.durum, 'is_bot': True, 'level': seviye}] + self._lobi_denetle(now), uid
+
+    def lobi_denetle(self, now):
+        """Davetli kalmadıysa (ör. yalnız botlarla kurulan karşılaşma) LOBI → HAZIRLIK."""
+        return self._lobi_denetle(now)
 
     def gelmeyenler(self):
         return [o for o in self.oyuncular.values() if o.durum == DAVETLI]
@@ -532,6 +617,9 @@ class Karsilasma:
         o = self.oyuncu(uid)
         if o is None or o.kurucu:
             raise MacHata('invalid', 'Oyuncu bulunamadı')
+        if o.bot and self.durum == LOBI:   # §44 bot kaldırma: listeden tamamen çıkar (yerine yeni bot/davetli eklenebilir)
+            self.oyuncular.pop(o.uid, None)
+            return [{'t': 'player', 'id': o.uid, 'status': 'kaldirildi'}] + self._sayi_denetle(now) + self._lobi_denetle(now)
         if self.durum not in (LOBI, HAZIRLIK):
             raise MacHata('conflict', 'Yarış başladıktan sonra oyuncu çıkarılamaz')
         if o.durum in KATILMAYAN:
@@ -571,6 +659,11 @@ class Karsilasma:
         if self.durum == YARIS and self.tur == TUR_IT and n == 1:   # §41 rakip ayrıldı / düştü → kalan kazanır
             self.kazanan = self.aktifler()[0].uid
             return self.bitir(now, 'rakip_ayrildi')
+        if not self.insanlar():   # §44 yalnız botlar kaldı: karşılaşma biter (bot SITL'leri kapanır)
+            if self.durum in (HAZIRLIK, GERI_SAYIM):
+                return self.iptal(now, 'oyuncu_kalmadi')
+            if self.durum == YARIS:
+                return self.bitir(now, 'oyuncu_kalmadi')
         return []
 
     def _lobi_denetle(self, now):

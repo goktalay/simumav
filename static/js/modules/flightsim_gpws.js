@@ -96,8 +96,8 @@ export function modeKind(vc, mode) {
   if (vc === 'vtol' || vc === 'icept') return Q_MODE(mode) ? 'copter' : 'plane';
   return 'copter';   // copter + heli
 }
-const LAND_MODES = new Set(['LAND', 'QLAND']);
-const RTL_MODES = new Set(['RTL', 'QRTL', 'SMART_RTL', 'AUTO_RTL']);
+const LAND_MODES = new Set(['LAND', 'QLAND', 'AUTO.LAND', 'AUTO.PRECLAND']);   // §45 PX4 kip adları da
+const RTL_MODES = new Set(['RTL', 'QRTL', 'SMART_RTL', 'AUTO_RTL', 'AUTO.RTL']);
 const ACRO_MODES = new Set(['ACRO', 'FLIP', 'TRAINING', 'AUTOTUNE', 'QACRO', 'QAUTOTUNE', 'STABILIZE_ACRO']);
 
 // Temel eşikler (sens 'normal'). Süreler sn, hızlar m/s, açılar °, irtifalar m (AGL).
@@ -186,7 +186,7 @@ export function rawConditions(I, S, P, vc, kind, on = new Set()) {
   const inAir = A && S.airAt != null && kind !== 'rover';
   const sinceAir = inAir ? t - S.airAt : 0;
   const takeoff = !inAir || sinceAir < (P.grace ?? 3) || I.phase === 'armed' || I.phase === 'launch' || I.mode === 'TAKEOFF';
-  const landing = LAND_MODES.has(I.mode) || ((RTL_MODES.has(I.mode) || I.mode === 'AUTO') && I.agl != null && I.agl < (P.finalAgl ?? 25) && (I.distHome == null || I.distHome < (P.finalDist ?? 60)));
+  const landing = LAND_MODES.has(I.mode) || ((RTL_MODES.has(I.mode) || I.mode === 'AUTO' || I.mode === 'AUTO.MISSION') && I.agl != null && I.agl < (P.finalAgl ?? 25) && (I.distHome == null || I.distHome < (P.finalDist ?? 60)));
   const acro = ACRO_MODES.has(I.mode);
   const agl = I.agl ?? 0, sink = Math.max(0, -(I.vs || 0));
   // §42 yer yaklaşması (GPWS kip 1/2): kapanma hızı = alçalma ya da ileri bakış noktasındaki AGL kaybı / ileri bakış süresi (arazi yükselmesi dahil)

@@ -636,6 +636,54 @@ def speedup_dogrula(f):
     return int(f) if float(f) >= 1 else float(f)
 
 
+def _cekirdek_hazirla(drone, params, uid):
+    """Çekirdek model kaydı + dronun SITL parametreleri (iş parçacığında; bloklar). Dönüş: flightsim_models.coz nesnesi."""
+    ctip = TIP_ESLEME[drone['type']]
+    with core_db.connect() as conn:
+        mdl = flightsim_models.coz(conn, ctip, {'id': _core_model_id(drone['model_key'])})
+    # Kullanıcının parametreleri çekirdeğin kalıcı parametre tablosuna (SITL defaults + ilk kalp atışında PARAM_SET); dron id'si tekil
+    # drone_params.kaydet TKOFF_* gibi oturum adlarını hariç tutar; SIMUMAV beyaz listesi geçerli → doğrudan yazılır (aynı tablo, çekirdek yukle() okur)
+    with core_db.connect() as conn:
+        conn.execute('DELETE FROM drone_sitl_params WHERE drone_id = ?', (int(drone['id']),))
+        # §10: çekirdeğin dron seçenekleri (ölçüm önerileri) SIMUMAV'da kullanılmaz — güç ayarı drones.power'dan TAM gelir; kimlik yeniden
+        # kullanılırsa önceki sahibin ölçümü kalmasın
+        conn.execute('DELETE FROM drone_sitl_options WHERE drone_id = ?', (int(drone['id']),))
+        conn.executemany('INSERT INTO drone_sitl_params (drone_id, name, value, ptype, updated_at, updated_by, source) VALUES (?,?,?,?,?,?,?)',
+                         [(int(drone['id']), ad, float(deger), 9, core_db.now(), uid, 'hepgo') for ad, deger in params.items()])
+        conn.commit()
+    return mdl
+
+
+async def bot_ucusu_ac(drone, track, launch, camera, start, match_id, owner, host_id):
+    """HEPGO §44 karşılaşmada YAPAY ZEKÂ PİLOT oturumu: kurucunun dronu/parkuru ile çekirdek SITL oturumu (insan oyuncuyla aynı fizik, parametre,
+    güç). flights satırı / MP köprüsü / .bin kaydı YOK (bot uçuş geçmişine yazılmaz; karşılaşma satırında bot oyuncu); sunucu tavanına karşılaşma
+    oturumu olarak sayılır (BAŞLAT'ta MAC_REZERV ile ayrıldı). `owner` {id: <negatif bot kimliği>, name}. Dönüş SimSession. Hata BridgeHata."""
+    if drone['type'] not in TIP_ESLEME or drone['type'] in ROVER_TYPES:
+        raise BridgeHata(422, 'invalid', 'Dron tipi geçersiz')
+    launch = launch_dogrula(launch or {'method': 'wheels'})
+    try:
+        camera = flightsim.kamera_dogrula(camera)
+        core_power, _ = guc.ucus_power(drone, None)
+    except (flightsim.SimHata, guc.GucHata) as e:
+        raise BridgeHata(422, 'invalid', str(e))
+    params = params_dogrula(db.j(drone.get('params')))
+    ctip = TIP_ESLEME[drone['type']]
+    try:
+        mdl = await asyncio.get_running_loop().run_in_executor(None, _cekirdek_hazirla, drone, params, host_id)
+    except flightsim.SimHata as e:
+        raise BridgeHata(422, 'invalid', str(e))
+    center = {'id': track['id'], 'name': track['name'], 'lat': float(track['lat']), 'lon': float(track['lon']), 'alt': None}
+    core_drone = {'id': drone['id'], 'code': drone['name'], 'name': drone['name'], 'model': drone['model_key'], 'protocol': 'sanal'}
+    try:
+        s = await flightsim.MANAGER.ac(ctip, center, _world(track, drone['type'], launch), dict(owner), None, mdl, core_drone, {'bin': False}, power=core_power,
+                                      layout=drone_airframe(drone), camera=camera, start=start, match_id=match_id)
+    except flightsim.SimHata as e:
+        raise BridgeHata({'invalid': 422, 'limit': 429, 'sitl': 503}.get(e.kod, 400), e.kod, str(e))
+    if launch['method'] == 'hand':
+        s.launch = {**s.launch, 'hand': True, 'hand_speed_ms': launch['hand_speed_ms'], 'hand_pitch_deg': launch['hand_pitch_deg']}
+    return s
+
+
 async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None, power=None, speedup=None, camera=None, targets=None, site=None, defend=None,
                       drive=None, start=None, match_id=None):
     """Kotalar → çekirdek oturum → flights satırı → MP köprüsü. Dönüş: {flight_id, sim_id, mp, ws, power, speedup}. Hatalar BridgeHata.
@@ -676,23 +724,8 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
             raise BridgeHata(503, 'no_port', 'Boş Mission Planner portu yok')
         ctip = TIP_ESLEME[drone['type']]
         loop = asyncio.get_running_loop()
-
-        def hazirla():
-            with core_db.connect() as conn:
-                mdl = flightsim_models.coz(conn, ctip, {'id': _core_model_id(drone['model_key'])})
-            # Kullanıcının parametreleri çekirdeğin kalıcı parametre tablosuna (SITL defaults + ilk kalp atışında PARAM_SET); dron id'si tekil
-            # drone_params.kaydet TKOFF_* gibi oturum adlarını hariç tutar; SIMUMAV beyaz listesi geçerli → doğrudan yazılır (aynı tablo, çekirdek yukle() okur)
-            with core_db.connect() as conn:
-                conn.execute('DELETE FROM drone_sitl_params WHERE drone_id = ?', (int(drone['id']),))
-                # §10: çekirdeğin dron seçenekleri (ölçüm önerileri) SIMUMAV'da kullanılmaz — güç ayarı drones.power'dan TAM gelir; kimlik yeniden
-                # kullanılırsa önceki sahibin ölçümü kalmasın
-                conn.execute('DELETE FROM drone_sitl_options WHERE drone_id = ?', (int(drone['id']),))
-                conn.executemany('INSERT INTO drone_sitl_params (drone_id, name, value, ptype, updated_at, updated_by, source) VALUES (?,?,?,?,?,?,?)',
-                                 [(int(drone['id']), ad, float(deger), 9, core_db.now(), user['id'], 'hepgo') for ad, deger in params.items()])
-                conn.commit()
-            return mdl
         try:
-            mdl = await loop.run_in_executor(None, hazirla)
+            mdl = await loop.run_in_executor(None, _cekirdek_hazirla, drone, params, user['id'])
         except flightsim.SimHata as e:
             raise BridgeHata(422, 'invalid', str(e))
         center = {'id': track['id'], 'name': track['name'], 'lat': float(track['lat']), 'lon': float(track['lon']), 'alt': None}

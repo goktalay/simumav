@@ -11,6 +11,9 @@
   istemci → ping, ready. Oyuncu değilse 4403.
 - HEPGO §41 İT DALAŞI: oluşturma/önizleme gövdesinde `kind: 'dogfight'` + `dogfight {distance_m, alt_m, time_limit_min, range_m, cone_deg, hold_s,
   area_radius_m, roles}` (oyuncu sayısı 2'ye sabitlenir); WS ek olarak `dogfight {kind}` ve `pos.df` (HUD); anlık görüntüde `kind`, `dogfight`.
+- HEPGO §44 YAPAY ZEKÂ PİLOT: `POST /api/match/{id}/bot {level}` (kurucu, salonda; çıkarma `/kick {user_id: <negatif>}`) ·
+  `POST /api/match/ai {drone_id, track_id, launch?, camera?, kind?, rings?, dogfight?, level, bots?}` "Yapay zekâya karşı" hızlı başlat (davet yok;
+  hemen HAZIRLIK). Oyuncu satırlarında `is_bot`, `level`, `color`.
 """
 import asyncio
 import json
@@ -74,6 +77,22 @@ class CreateIn(BaseModel):
     dogfight: Optional[DogfightIn] = None
 
 
+class BotIn(BaseModel):
+    level: str = Field(..., max_length=16)
+
+
+class AiIn(BaseModel):
+    drone_id: int
+    track_id: int
+    launch: Optional[dict] = None
+    camera: Optional[str] = Field(None, max_length=8)
+    rings: Optional[RingsIn] = None
+    kind: Optional[str] = Field(None, max_length=16)
+    dogfight: Optional[DogfightIn] = None
+    level: str = Field('normal', max_length=16)
+    bots: int = Field(1, ge=1, le=7)
+
+
 class JoinIn(BaseModel):
     code: str = Field(..., max_length=64)
     password: str = Field(..., max_length=64)
@@ -117,7 +136,8 @@ def _limits():
             'kinds': list(core.TURLER), 'dogfight': {'distance_m': list(core.IT_MESAFE), 'alt_m': list(core.IT_IRTIFA), 'time_limit_min': list(core.IT_SURE_DK),
                                                      'range_m': list(core.IT_MENZIL), 'cone_deg': list(core.IT_KONI), 'hold_s': list(core.IT_TUTMA),
                                                      'area_radius_m': list(core.IT_ALAN), 'roles': list(core.IT_ROLLER), 'guard_s': core.KORUMA_S,
-                                                     'defaults': {'dikey': core.it_ayar_varsayilan('multirotor'), 'ucak': core.it_ayar_varsayilan('sabit_kanat')}}}
+                                                     'defaults': {'dikey': core.it_ayar_varsayilan('multirotor'), 'ucak': core.it_ayar_varsayilan('sabit_kanat')}},
+            'bot': {'levels': list(core.BOT_SEVIYELER), 'names': list(core.BOT_ADLARI), 'colors': list(core.BOT_RENKLERI), 'default': 'normal'}}
 
 
 def _mac(mid, user):
@@ -175,6 +195,30 @@ async def create(body: CreateIn, request: Request, user=User):
         m = await M.MANAGER.olustur(user, drone, track, launch, camera, cfg, sifre, body.max_players, auth.client_ip(request), tur=kind)
     except bridge.BridgeHata as e:
         _h(e)
+    return {**m.anlik(), 'me': user['id']}
+
+
+@router.post('/ai', status_code=201)
+async def vs_ai(body: AiIn, request: Request, user=User):
+    """HEPGO §44 "Yapay zekâya karşı" hızlı başlat (davet bağlantısı/şifre gerekmez)."""
+    auth.oran('match_create', 10, 3600, user_id=user['id'])
+    with db.connect() as conn:
+        drone = sahip(conn, 'drones', body.drone_id, user)
+        track = sahip(conn, 'tracks', body.track_id, user)
+    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight)
+    try:
+        launch = bridge.launch_dogrula(body.launch or {'method': 'wheels'})
+        try:
+            camera = flightsim.kamera_dogrula(body.camera)
+        except flightsim.SimHata as e:
+            raise M.H(422, 'invalid', str(e))
+        diger = M.MANAGER.kullanici_maci(user['id'])
+        if diger is not None:
+            raise M.H(409, 'match_open', 'Zaten bitmemiş bir karşılaşmanız var; önce ondan ayrılın', match_id=diger.id)
+        m = await M.MANAGER.yapay_zekaya_karsi(user, drone, track, launch, camera, cfg, body.level, body.bots, auth.client_ip(request), tur=body.kind or core.TUR_HALKA)
+    except bridge.BridgeHata as e:
+        _h(e)
+    db.audit_bagimsiz('match_ai', user['id'], auth.client_ip(request), f'match {m.id} · {body.kind or core.TUR_HALKA} · {body.level} × {len(m.k.botlar()) if m.k else 0}')
     return {**m.anlik(), 'me': user['id']}
 
 
@@ -279,6 +323,17 @@ async def ready(mid: int, body: ReadyIn, user=User):
 async def leave(mid: int, user=User):
     m = _canli(mid, user)
     m.ayril(user['id'], time.time())
+    return {**m.anlik(), 'me': user['id']}
+
+
+@router.post('/{mid}/bot')
+async def add_bot(mid: int, body: BotIn, user=User):
+    """HEPGO §44: kurucu salonda yapay zekâ pilot ekler (oyuncu sınırı içinde; BAŞLAT'ta o da bir SITL yuvası sayılır)."""
+    m = _canli(mid, user)
+    try:
+        m.bot_ekle(user['id'], body.level)
+    except bridge.BridgeHata as e:
+        _h(e)
     return {**m.anlik(), 'me': user['id']}
 
 
