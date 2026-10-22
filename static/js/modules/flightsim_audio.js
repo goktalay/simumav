@@ -478,6 +478,16 @@ export function createEngineAudio(stage, opts = {}) {
         return dest.stream;
       } catch { return null; }
     },
+    // §42 uçuş uyarı sesleri: master kazancına (ses düzeyi, sessiz kip, sekme gizli, hızlı oynatma) bağlı ayrı yol → ekran kaydına da girer.
+    // Ses kapalı / etkileşim yok / sessizse null (uyarı yalnız görsel kalır).
+    alertBus() {
+      if (disposed || prefs.effective() <= 0) return null;
+      build();
+      if (!ctx || !G || ctx.state !== 'running') return null;
+      if (!G.alert) { const g = ctx.createGain(); g.gain.value = 1; g.connect(G.master); G.alert = g; }
+      return { ctx, bus: G.alert };
+    },
+    get menu() { return menu; },   // §42 ses kapsülü menüsü (uçuş uyarıları satırı buraya eklenir)
     get enabled() { return prefs.enabled; }, get context() { return ctx; }, get graph() { return G; }, get smooth() { return { ...sm }; }, get stats() { return { ...stats }; },
     dispose() {
       if (disposed) return;

@@ -429,6 +429,8 @@ class GorevIzleyici:
             'defend': s.savunma.ozet() if getattr(s, 'savunma', None) is not None else None,
             # §34 servo tetik: kanal/eşik/gecikme + tetik anı ve çarpma anı (AGL, MSL, evden mesafe, konum, hız, uçuş süresi); dinlenmediyse None
             'servo_trigger': s.servo_tetik.ozet() if getattr(s, 'servo_tetik', None) is not None else None,
+            # §42 uçuş uyarıları: tür başına adet / süre / ilk görülme + "uçuş disiplini" puanı (istemci bildirmediyse None)
+            'alerts': s.uyarilar.ozet() if getattr(s, 'uyarilar', None) is not None else None,
         }
         out['safety_note'] = guvenlik_notu(out)
         return out
@@ -458,8 +460,8 @@ class GorevIzleyici:
         self.ended = time.time()
         if self._aday_task is not None and not self._aday_task.done():
             self._aday_task.cancel()
-        if not self.track and not self.crashes and not self.s.route:
-            return   # hiç telemetri gelmedi (SITL açılamadı): rapor anlamsız
+        if not self.track and not self.crashes and not self.s.route and not self.summary_id:
+            return   # hiç telemetri gelmedi (SITL açılamadı): rapor anlamsız (Bitir'de üretilmiş rapor varsa bitiş alanları + §42 uyarıları yine güncellenir)
         try:
             son = getattr(self, '_son_ozet', None)
             if son is not None and self.summary_id:
@@ -467,6 +469,8 @@ class GorevIzleyici:
                 son = dict(son)
                 son.update(ended_at=db.now(), end_reason=self.s.end_reason)
                 son['flight'] = {**son.get('flight', {}), 'end_ts': round(self.ended, 1), 'duration_s': int(self.ended - self.started)}
+                if getattr(self.s, 'uyarilar', None) is not None:   # §42 Bitir'den sonra gelen son bölümler (istemci flush) de sayılsın
+                    son['alerts'] = self.s.uyarilar.ozet()
                 await asyncio.get_running_loop().run_in_executor(None, self.ozet_kaydet_sync, son)
             else:
                 await self.ozet_kaydet()
@@ -569,6 +573,13 @@ def rapor_metni(d):
         if (pw.get('speedup') or {}).get('max', 1) > 1:
             parca.append(f"simülasyon hızı en çok {pw['speedup']['max']:g}×")
         sat.append('Güç ve yakıt: ' + ' · '.join(parca))
+    al = d.get('alerts') or {}
+    if al:   # §42 uçuş uyarıları
+        if al.get('mode') == 'off':
+            sat.append('Uçuş uyarıları: kapalıydı')
+        else:
+            sat.append(f"Uçuş uyarıları: kırmızı {al.get('warnings', 0)} · sarı {al.get('cautions', 0)} · toplam {al.get('total_s', 0)} sn · "
+                       f"uçuş disiplini {al.get('score')}/100 ({al.get('grade') or '—'})")
     if d.get('safety_note'):
         sat.append(f"Güvenlik notu: {d['safety_note']}")
     return '\n'.join(sat)

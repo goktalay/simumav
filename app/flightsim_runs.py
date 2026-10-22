@@ -25,7 +25,7 @@ RUNS_DIR = config.DATA_DIR / 'sim_runs'
 SCRIPT_DIZINLERI = ('scripts', 'APM/scripts')
 SCRIPT_MAX_BYTES = 50 * 1024 * 1024
 PER_PAGE = 25
-SIRALAMA = {'started_at': 'r.started_at', 'owner': 'r.owner_name COLLATE NOCASE', 'type': 'r.type', 'center': 'r.center_name COLLATE NOCASE',
+SIRALAMA = {'alert_score': 'r.alert_score', 'started_at': 'r.started_at', 'owner': 'r.owner_name COLLATE NOCASE', 'type': 'r.type', 'center': 'r.center_name COLLATE NOCASE',
             'duration_s': 'r.duration_s', 'result': 'r.result', 'mode': 'r.mode', 'id': 'r.id'}
 SONUCLAR = ('tamam', 'carpisma', 'hata')
 
@@ -109,6 +109,13 @@ def _servo_trig(s):
     return json.dumps(k, ensure_ascii=False) if k else None
 
 
+def _uyarilar(s):
+    """§42 → (özet JSON | None, puan | None)."""
+    u = getattr(s, 'uyarilar', None)
+    o = u.ozet() if u is not None else None
+    return (json.dumps(o, ensure_ascii=False) if o else None), (o.get('score') if o else None)
+
+
 def _oturum_alanlari(s):
     """SimSession / ReplaySession → ortak sütunlar."""
     owner = getattr(s, 'owner', None) or {}
@@ -150,6 +157,7 @@ def _oturum_alanlari(s):
                               ensure_ascii=False, default=str)
         if getattr(s, 'hedefler', None) or getattr(s, 'gcs', None) or getattr(s, 'savunma', None) is not None else None,
         'intercept_count': s.hedef_iz.ozet()['total'] if getattr(s, 'hedef_iz', None) is not None else None,
+        'alerts': _uyarilar(s)[0], 'alert_score': _uyarilar(s)[1],   # §42 uçuş uyarıları özeti (JSON) + disiplin puanı — bildirim yoksa NULL
         'servo_trig': _servo_trig(s),   # §34 servo tetik kısa özeti (JSON; tetik/çarpma AGL + evden mesafe) — kullanılmadıysa NULL
         'layout': getattr(s, 'layout_etkin', None) or getattr(s, 'layout', None),   # §13.1 kontrol düzeni (SITL'de fiilen uçan; kayıttan oynatmada None)
         'started_at': s.created_at, 'ended_at': bitis, 'duration_s': sure, 'mode': mode, 'result': _sonuc(s, crashes),
@@ -166,8 +174,9 @@ def kaydet(s):
     """Oturum kapanışında satır + dosyalar (iş parçacığında çağrılır; bloklar). Dönüş: {id, params_count, scripts_count} | None."""
     from . import drone_sitl, flightsim_rec
     a = _oturum_alanlari(s)
-    if a.get('servo_trig') is None:   # §34: yalnız doluysa yazılır (eski çekirdek DB'sinde sütun olmayabilir)
-        a.pop('servo_trig', None)
+    for k in ('servo_trig', 'alerts', 'alert_score'):   # §34 / §42: yalnız doluysa yazılır (eski çekirdek DB'sinde sütun olmayabilir)
+        if a.get(k) is None:
+            a.pop(k, None)
     if not a['video_rec_id']:   # Bitir'den önce bitirilmemiş (yarım ya da saklanacak) ekran kaydı: sim_rec meta'sından
         m = flightsim_rec.oturum_kaydi(a['session_id'], a['started_at'])
         if m:
@@ -253,7 +262,7 @@ _SELECT = ('SELECT r.*, l.status AS bin_status, l.file_name AS bin_file_name, sl
 
 def _satir(r, user):
     r = dict(r)
-    for k in ('world', 'launch', 'power', 'servo_trig'):
+    for k in ('world', 'launch', 'power', 'servo_trig', 'alerts'):   # §42 uyarı özeti de JSON
         try:
             r[k] = json.loads(r[k]) if r.get(k) else None
         except ValueError:

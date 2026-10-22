@@ -11,6 +11,7 @@ import { defendReportBody } from './flightsim_gcs_ui.js';   // §26 "Yer kontrol
 import { ensureServoCss, servoMapPoints, servoReportLines, servoSection } from './flightsim_servotrig.js';   // §34 servo tetik bölümü + harita işaretleri
 import { engagementRows, makeEngT } from './flightsim_engage.js';   // §40 angajman listesi
 import { ENGAGE_BONUS } from './flightsim_targets.js';
+import { gpwsReportLine, gpwsReportSection } from './flightsim_gpws_ui.js';   // §42 uçuş uyarıları + disiplin puanı
 
 const REASON = { terrain: 'arazi', water: 'su', building: 'bina', sitl_hit: 'SITL yer teması (fizik)', sitl: 'SITL (otopilot çarpışma algısı)', manual: 'el ile', servo_trigger: 'servo tetik' };
 const SOURCE = { mp: 'Mission Planner', hepgo: 'HEPGO paneli' };
@@ -48,6 +49,7 @@ export function buildReportText(sum, tr) {
   const dv = sum.defend;   // §26
   if (dv) out.push(`${tr('Yer kontrolünü koru')}: ${tr(dv.ended ? (dv.success ? 'BAŞARILI' : 'BAŞARISIZ') : 'SÜRÜYOR')} · ${tr('Önlenen / doğan')} ${(dv.kills || []).length}/${dv.spawned ?? 0} · ${tr('İstasyon sağlığı')} %${Math.round(dv.health ?? 100)} · ${tr('Puan')} ${dv.score ?? 0} · ${tr({ colonel: 'Albay', major: 'Binbaşı', captain: 'Yüzbaşı', lieutenant: 'Teğmen', sergeant: 'Çavuş', corporal: 'Onbaşı', private: 'Er' }[dv.rank] || 'Er')}`);
   out.push(...servoReportLines(sum, tr));   // §34
+  if (sum.alerts) out.push(gpwsReportLine(sum.alerts, tr));   // §42
   const sn = safetyText(sum, tr);
   if (sn) out.push(`${tr('Güvenlik notu')}: ${sn}`);
   return out.join('\n');
@@ -121,6 +123,9 @@ function engagementsTable(T, tr) {
       h('tbody', null, rows.map(r => h('tr', { class: r.cls }, h('td', null, r.target), h('td', null, r.start), h('td', null, r.dur), h('td', { class: r.cls ? 'ok' : '' }, r.result), h('td', null, r.min))))),
     T.engaged_hits ? h('div', { class: 'small muted' }, E('eng.bonus', { p: ENGAGE_BONUS })) : null);
 }
+
+// ---------- §42 uçuş uyarıları ----------
+export const gpwsSection = (sum, tr) => gpwsReportSection(sum?.alerts, { tr });
 
 // ---------- 2B mini harita ----------
 export function drawMiniMap(canvas, sum, tr) {
@@ -256,6 +261,7 @@ export function reportBody(sum, tr, { canWrite = false, be = null } = {}) {
     servoSection(sum, tr, h),   // §34 servo tetik: tetik anı / çarpma anı irtifası ve evden mesafesi
     powerSection(sum, tr),   // §23
     targetsSection(sum, tr),   // §24
+    gpwsSection(sum, tr),   // §42 uçuş uyarıları: tür başına adet / süre / ilk görülme + uçuş disiplini puanı
     sum.defend ? h('div', { class: 'fs-rp-sec fs-rp-defend' }, h('h4', null, '◈ ', tr('Görev raporu — Yer kontrolünü koru')), defendReportBody(sum.defend, { tr })) : null,   // §26
     crash, safety);
   requestAnimationFrame(() => { try { drawMiniMap(canvas, sum, tr); } catch { /* harita hatası raporu bozmasın */ } });

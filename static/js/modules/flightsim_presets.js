@@ -84,6 +84,7 @@ export function runFacts(r) {
   else if (r.elec_wh != null) out.push({ key: 'elec', label: 'Batarya', value: `${Number(r.elec_wh).toFixed(1)} Wh` });
   if (pw.max_speed_seen != null) out.push({ key: 'vmax', label: 'En yüksek hız', value: `${Math.round(pw.max_speed_seen * 3.6)} km/h`, sub: set.max_speed_ms ? `azami ${Math.round(set.max_speed_ms * 3.6)} km/h` : null });
   if (r.speedup_max > 1) out.push({ key: 'speedup', label: 'Simülasyon hızı', value: `${r.speedup_max}×` });
+  if (r.alert_score != null) out.push({ key: 'discipline', label: 'Uçuş disiplini', value: `${r.alert_score}/100`, tone: r.alert_score >= 75 ? 'ok' : r.alert_score >= 60 ? 'warn' : 'alert' });   // §42 uçuş uyarıları puanı
   out.push({ key: 'end', label: 'Kapanış', value: END_REASON[r.end_reason] || r.end_reason || '—' });
   return out;
 }

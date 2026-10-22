@@ -104,9 +104,14 @@ export async function createGoogleTiles(opts) {
   const { tiles, draco } = entry;
   const reused = !!entry.camera;
   entry.camera = camera;
-  tiles.errorTarget = preview ? 36 : 16;      // piksel; küçük = daha ince LOD, daha çok istek
-  tiles.lruCache.minBytesSize = (preview ? 80 : 250) * 1e6;
-  tiles.lruCache.maxBytesSize = (preview ? 120 : 350) * 1e6;
+  // §43 grafik kalitesi: karo hata eşiği (px; maximumScreenSpaceError eşleniği — küçük = daha ince LOD, daha çok istek) + önbellek (MB)
+  const setQuality = ({ errorTarget = 16, cacheMB = 350 } = {}) => {
+    tiles.errorTarget = preview ? 36 : Math.max(4, Math.min(40, Number(errorTarget) || 16));
+    const mb = preview ? 120 : Math.max(100, Math.min(1000, Number(cacheMB) || 350));
+    tiles.lruCache.minBytesSize = mb * 0.7 * 1e6;
+    tiles.lruCache.maxBytesSize = mb * 1e6;
+  };
+  setQuality({ errorTarget: opts.errorTarget, cacheMB: opts.cacheMB });
   tiles.setCamera(camera);
   tiles.setResolutionFromRenderer(camera, renderer);
   // ECEF → ENU: (lat, lon, homeElev) orijin; TilesGroup matrisi decompose ile (matrixAutoUpdate açık)
@@ -283,7 +288,8 @@ export async function createGoogleTiles(opts) {
   }
 
   return {
-    group, tiles, height, heightFine, hasSurface, surfaceAt, update, attribution, dispose, setAuxCameras,
+    group, tiles, height, heightFine, hasSurface, surfaceAt, update, attribution, dispose, setAuxCameras, setQuality,
+    get quality() { return { errorTarget: tiles.errorTarget, cacheMB: Math.round(tiles.lruCache.maxBytesSize / 1e6) }; },
     get auxCameras() { return aux.size; },
     get rootRequests() { return entry.rootRequests; },
     setTime(t) { time = t || 'day'; retint(); },

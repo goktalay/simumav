@@ -100,6 +100,23 @@ export async function openReplay(root, ctx, id) {
     sc.append(box);
   }
 
+  // HEPGO §42 uçuş uyarıları: kayıt karelerinden YENİDEN hesaplanır (aynı değerlendirici; AGL = alt_rel, ses yok, sunucuya gönderilmez)
+  let gpws = null, gpLast = null;
+  try {
+    const MG = await import('/sim/flightsim_gpws_ui.js');
+    if (getComputedStyle(sc).position === 'static') sc.style.position = 'relative';
+    gpws = MG.createGpwsCtl(sc, { tr: t, keyed: true, vehicle: flight.drone?.type, replay: true, canWrite: false, storage: { get: () => { try { return JSON.parse(localStorage.getItem('sm.gpws')); } catch { return null; } }, set: v => { try { localStorage.setItem('sm.gpws', JSON.stringify(v)); } catch { /* */ } } } });
+  } catch (e) { console.warn('uçuş uyarıları yok:', e.message); }
+  const gpwsStep = (fr, tt) => {
+    if (!gpws) return;
+    if (gpLast != null && (tt < gpLast - 0.5 || tt - gpLast > 2)) gpws.seek();   // atlama / başa dönüş
+    if (gpLast === tt) return;
+    gpLast = tt;
+    const md = get(fr, 'mode');
+    gpws.update({ t: tt, armed: !!get(fr, 'armed'), mode: (data.modes || [])[md] ?? md ?? null, roll: get(fr, 'roll'), pitch: get(fr, 'pitch'), vd: get(fr, 'vd'), vn: get(fr, 'vn'), ve: get(fr, 've'),
+      groundspeed: get(fr, 'gs'), airspeed: get(fr, 'as'), alt_rel: get(fr, 'alt_rel'), batt_pct: get(fr, 'batt_pct'), gps_fix: get(fr, 'fix'), sats: get(fr, 'sats'), ...(psim ? psim.state() : {}) });
+  };
+
   // HEPGO §26 "Yer kontrolünü koru": görev sonu raporu — katlanır kart
   try { const dc = await defendCard(flight); if (dc) sc.append(dc); } catch (e) { console.warn('görev raporu yok:', e.message); }
 
@@ -108,12 +125,12 @@ export async function openReplay(root, ctx, id) {
     if (playing) { tcur += dt * speed; if (tcur > T1) tcur = T0; }
     const fr = frameAt(tcur);
     slider.value = Math.round(((tcur - T0) / dur) * 1000); timeEl.textContent = fmtDur(tcur - T0);
-    view.update(fr, tcur); powerStep(fr, tcur); updateTele(fr);
+    view.update(fr, tcur); powerStep(fr, tcur); updateTele(fr); gpwsStep(fr, tcur);
     raf = requestAnimationFrame(loop);
   };
   raf = requestAnimationFrame(loop);
-  window.__smReplay = { get t() { return tcur; }, seek: v => { tcur = v; }, get power() { return psim?.summary() || null; }, gauges };   // teşhis (Playwright)
-  return () => { cancelAnimationFrame(raf); view.dispose(); gauges?.dispose(); delete window.__smReplay; };
+  window.__smReplay = { get t() { return tcur; }, seek: v => { tcur = v; }, get power() { return psim?.summary() || null; }, gauges, get gpws() { return gpws?.state() || null; } };   // teşhis (Playwright)
+  return () => { cancelAnimationFrame(raf); view.dispose(); gauges?.dispose(); gpws?.dispose(); delete window.__smReplay; };
 }
 
 async function cesiumView(stage, data, frames, ix, flight) {

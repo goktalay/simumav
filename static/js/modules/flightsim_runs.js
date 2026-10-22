@@ -203,11 +203,44 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
         btn(tr('Rapor'), RUN_ICON.report, { disabled: !r.has_summary, 'data-act': 'report', title: r.has_summary ? tr('Özet raporu aç') : tr('Özet rapor yok'), onclick: async () => { try { await onReport?.(r); } catch (err) { toastError(err); } } }),
         r.has_video ? btn(tr('Video'), RUN_ICON.video, { 'data-act': 'video', title: tr('Ekran kaydını izle'), onclick: () => videoDialog(r) }) : null),
       dl,
-      r.can_delete ? h('button', { class: 'icon-btn xs fs-runs-del', type: 'button', 'data-act': 'del', title: tr('Kaydı sil'), 'aria-label': tr('Kaydı sil'), html: RUN_ICON.trash, onclick: async () => {
-        if (!await confirmDialog(tr('Kaydı sil'), tr('Simülasyon kaydı ve parametre/script dosyaları silinir; özet rapor, .bin uçuş logu ve video kendi yerlerinde kalır.'), { okLabel: tr('Sil'), danger: true })) return;
-        try { await be.runDelete(r.id); toast(tr('Kayıt silindi')); refresh(); } catch (err) { toastError(err); }
-      } }) : null);
+      r.can_delete ? h('button', { class: 'icon-btn xs fs-runs-del', type: 'button', 'data-act': 'del', title: tr('Kaydı sil (Del)'), 'aria-label': tr('Kaydı sil'), html: RUN_ICON.trash, onclick: () => delRun(r) }) : null);
   };
+
+  // Seçili satır (fare üzerinde / tıklanan): Del tuşu onu siler; silindikten sonra listede aynı sıradaki (yoksa bir önceki) kayıt seçilir.
+  // Onay penceresinde "Bir daha sorma" (localStorage DEL_NOASK) — işaretlenirse sonraki silmeler sormadan yapılır.
+  let curId = null;
+  let deleting = false;
+  let wasOn = false;
+  const setCur = (id, scroll = false) => {
+    curId = id;
+    tableBox.querySelectorAll('tr[data-run]').forEach(tr_ => tr_.classList.toggle('fs-runs-cur', Number(tr_.dataset.run) === id));
+    if (scroll) tableBox.querySelector(`tr[data-run="${id}"]`)?.scrollIntoView({ block: 'nearest' });
+  };
+  const delRun = async r => {
+    if (deleting || !r?.can_delete) return;
+    if (!await confirmDialog(tr('Kaydı sil'), tr('Simülasyon kaydı ve parametre/script dosyaları silinir; özet rapor, .bin uçuş logu ve video kendi yerlerinde kalır.'), { okLabel: tr('Sil'), danger: true, dontAsk: DEL_NOASK })) return;
+    const idx = data.items.findIndex(x => x.id === r.id);
+    deleting = true;
+    try {
+      await be.runDelete(r.id);
+      toast(tr('Kayıt silindi'));
+      await refresh();
+      const next = data.items[Math.min(Math.max(idx, 0), data.items.length - 1)];
+      if (next) setCur(next.id, true); else curId = null;
+    } catch (err) { toastError(err); } finally { deleting = false; }
+  };
+  const onDelKey = e => {
+    if (!el.isConnected) { if (wasOn) document.removeEventListener('keydown', onDelKey); return; }   // sayfadan ayrıldı (henüz takılmadıysa bekle)
+    wasOn = true;
+    if (e.key !== 'Delete' || e.repeat || curId == null) return;
+    const tg = e.target;
+    if (tg?.closest?.('input, textarea, select, [contenteditable="true"]') || document.querySelector('.modal-back')) return;
+    const r = data.items.find(x => x.id === curId);
+    if (!r?.can_delete) return;
+    e.preventDefault();
+    delRun(r);
+  };
+  document.addEventListener('keydown', onDelKey);
 
   const draw = () => {
     let cols = powerCols ? [...COLS.slice(0, 8), ...POWER_COLS, ...COLS.slice(8)] : COLS;   // §23: Sonuç'tan sonra Yakıt · Batarya
@@ -221,7 +254,8 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
     }));
     const rows = data.items.map(r => {
       const [cls, txt] = RESULT[r.result] || ['gray', r.result];
-      return h('tr', { 'data-run': r.id, class: r.result === 'carpisma' ? 'row-alert' : '' },
+      return h('tr', { 'data-run': r.id, class: `${r.result === 'carpisma' ? 'row-alert' : ''} ${r.id === curId ? 'fs-runs-cur' : ''}`.trim(),
+        onmouseenter: () => setCur(r.id), onclick: () => setCur(r.id) },
         h('td', null, h('b', null, fmtDateTime(r.started_at)), h('div', { class: 'small muted' }, `#${r.session_id}${r.end_reason && END_REASON[r.end_reason] ? ` · ${tr(END_REASON[r.end_reason])}` : ''}`)),
         h('td', null, r.owner_name || '—'),
         h('td', null, h('b', null, tr(TYPE_NAME[r.type] || r.type || '—')), r.mode === 'replay' ? h('span', { class: 'badge purple fs-runs-mode' }, tr('Kayıt')) : null,
@@ -268,5 +302,7 @@ export function runsTable({ be, tr, canWrite = false, user = null, onPlay = null
   const setFilter = (patch = {}) => { Object.entries(patch).forEach(([k, v]) => { if (k in F) F[k] = v ?? ''; }); F.page = 1; syncPill(); refresh(); };
   return { el, refresh, filters: F, setPeriod, setFilter };
 }
+
+const DEL_NOASK = 'fs.runs.del.noask';   // "Bir daha sorma" (kayıt silme onayı)
 
 export const runsQuery = F => Object.entries(F).filter(([, v]) => v !== '' && v != null).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');

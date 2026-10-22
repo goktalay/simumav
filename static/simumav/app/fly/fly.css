@@ -179,3 +179,4 @@
 .sm-tg-row { display: grid; grid-template-columns: 24px 1fr auto; gap: 10px; align-items: center; font-size: 13px; color: #cbd5e1; padding: 4px 6px; border-radius: 8px; background: rgba(255,255,255,.04); }
 .sm-tg-row.hit { background: rgba(52,211,153,.12); color: #d1fae5; }
 @media (max-width: 760px) { .sm-tg-list { grid-template-columns: 1fr; } }
+.sm-report .fs-rp > .fs-rp-gpws { display: none; }   /* HEPGO §42 bölümü gizli: aynı veri anahtarlı (7 dil) kartta */

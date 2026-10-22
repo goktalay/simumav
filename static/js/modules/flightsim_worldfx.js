@@ -337,17 +337,23 @@ const WATER_VERT = `varying vec3 vW;
 void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vec4 mvPosition = viewMatrix * w; gl_Position = projectionMatrix * mvPosition;
 #include <fog_vertex>
 }`;
-const WATER_FRAG = `uniform float uTime, uRain, uNight; uniform vec3 uSky, uZenith, uSunDir, uSunCol, uDeep;
+const WATER_FRAG = `uniform float uTime, uRain, uNight, uWQ; uniform vec3 uSky, uZenith, uSunDir, uSunCol, uDeep;
 varying vec3 vW;
 #include <fog_pars_fragment>
 ${GLSL_NOISE}
-float wh(vec2 p){ return wfxNoise(p * 0.045 + uTime * vec2(0.03, 0.018)) + 0.45 * wfxNoise(p * 0.12 - uTime * vec2(0.02, 0.045)) + 0.2 * wfxNoise(p * 0.31 + uTime * vec2(0.06, -0.035)); }
+// §43 su kalitesi uWQ: 0 basit (iki oktav, yağmur halkası yok), 1 normal (üç oktav), 2 ayrıntılı (dördüncü ince oktav, daha uzağa dek dalga)
+float wh(vec2 p){
+  float h = wfxNoise(p * 0.045 + uTime * vec2(0.03, 0.018)) + 0.45 * wfxNoise(p * 0.12 - uTime * vec2(0.02, 0.045));
+  if (uWQ > 0.5) h += 0.2 * wfxNoise(p * 0.31 + uTime * vec2(0.06, -0.035));
+  if (uWQ > 1.5) h += 0.09 * wfxNoise(p * 0.83 - uTime * vec2(0.11, 0.07));
+  return h;
+}
 void main(){
   vec2 p = vW.xy;
   float h0 = wh(p), hx = wh(p + vec2(1.2, 0.0)), hy = wh(p + vec2(0.0, 1.2));
-  float dk = 1.0 - smoothstep(60.0, 1500.0, length(cameraPosition - vW));   // uzakta düzleşir (piksel altı dalga parıltısı yok)
+  float dk = 1.0 - smoothstep(60.0, uWQ > 1.5 ? 3000.0 : 1500.0, length(cameraPosition - vW));   // uzakta düzleşir (piksel altı dalga parıltısı yok)
   vec3 n = normalize(vec3((h0 - hx) * 0.9 * dk, (h0 - hy) * 0.9 * dk, 1.0));
-  if (uRain > 0.0) {   // yağmur: halka dalgacıkları
+  if (uRain > 0.0 && uWQ > 0.5) {   // yağmur: halka dalgacıkları
     vec2 g = floor(p / 1.6); vec2 f = fract(p / 1.6) - 0.5;
     float r = fract(uTime * 0.9 + wfxHash(g) * 7.0);
     float ring = sin(clamp((length(f) - r * 0.5) * 40.0, -3.14, 3.14)) * (1.0 - r) * step(abs(length(f) - r * 0.5), 0.08);
@@ -426,6 +432,7 @@ export function createWorldFx(T, { renderer, scene, preview = false } = {}) {
     grassA: { value: new T.Color(0x4c7a32) }, grassB: { value: new T.Color(0x7c8f45) }, dirt: { value: new T.Color(0x7a6448) }, rock: { value: new T.Color(0x7b766d) },
     snow: { value: new T.Color(0xf1f4f7) }, sand: { value: new T.Color(0xc9b588) },
     wet: { value: 0 }, snowCover: { value: 0 }, snowLine: { value: 1e6 }, waterZ: { value: -1e6 }, relH: { value: 300 },
+    waterQ: { value: 1 },   // §43 su kalitesi 0/1/2
     time: { value: 0 }, windDir: { value: new T.Vector2(1, 0) }, windMs: { value: 0 }, night: { value: 0 },
     glass: { value: new T.Color(0x3a4c60) }, litCol: { value: new T.Color(1.0, 0.72, 0.38) },
   };
@@ -510,7 +517,7 @@ export function createWorldFx(T, { renderer, scene, preview = false } = {}) {
     const c = fx.colors || skyColors(T, fx.time, fx.P || { key: 'clear', haze: 0, cloud: 0 });
     const night = fx.time === 'night';
     const wu = T.UniformsUtils.merge([T.UniformsLib.fog, { uRain: { value: 0 }, uNight: { value: 0 }, uSky: { value: new T.Color() }, uZenith: { value: new T.Color() }, uSunDir: { value: new T.Vector3() }, uSunCol: { value: new T.Color() }, uDeep: { value: new T.Color() } }]);
-    wu.uTime = U.time;
+    wu.uTime = U.time; wu.uWQ = U.waterQ;   // §43 su kalitesi (paylaşılan; setGraphics canlı değiştirir)
     wu.uRain.value = fx.P?.rain || 0; wu.uNight.value = night ? 1 : fx.time === 'dusk' ? 0.5 : 0;
     wu.uSky.value.copy(c.fog); wu.uZenith.value.copy(c.zenith); wu.uSunDir.value.copy(skyU.uSunDir.value); wu.uSunCol.value.copy(c.sun).multiplyScalar(fx.P?.light ?? 1);
     wu.uDeep.value.set(night ? 0x02070f : fx.time === 'dusk' ? 0x14283a : 0x0d3346);

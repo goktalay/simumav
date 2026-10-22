@@ -24,6 +24,7 @@ import time
 
 from . import db, drone_params, drone_sitl, flightsim_gcs, flightsim_hub, flightsim_icept, flightsim_launcher, flightsim_mission, flightsim_power, flightsim_targets
 from . import flightsim_servotrig   # §34 servo tetik (kanal PWM komutu → gecikme → çarpma → özet)
+from . import flightsim_gpws   # §42 uçuş uyarı sistemi (istemci hesaplar; sunucu bölümleri toplar → özet + disiplin puanı)
 
 SITL_ENABLED = os.environ.get('HEPGO_SITL', '1') != '0'
 UDP_BASE = int(os.environ.get('SIM_UDP_BASE', '14550'))
@@ -67,7 +68,7 @@ ROVER_TIPLERI = ('rover',)
 DRIVES = ('ackermann', 'skid')
 MAV_TYPE_GROUND_ROVER = 10
 KOMUTLAR = ('arm', 'disarm', 'mode', 'takeoff', 'rtl', 'reset', 'crash', 'set_home', 'rc', 'speed', 'camera', 'defend', 'motor_cut', 'wind', 'launch_aim')   # speed: §23 SIM_SPEEDUP {factor: 0.25|0.5|1|2|4|8} (§35 ağır çekim); camera: §22.3 {type}; defend: §26 {action: 'next'}; motor_cut: {on: bool}; wind: §31 {ms, dir, gust, turb} (uçuşta rüzgâr); launch_aim: §31 {azimuth_deg, angle_deg} (rampa, ARM öncesi)
-KOMUTLAR += ('servo_trigger', 'servo_set', 'engage')   # §34: servo_trigger {on, ch, pwm, cmp, tol, delay_ms} · servo_set {ch, pwm} (DO_SET_SERVO; sahte kipte sanal çıkış) · engage §40 {action: 'lock', i} | {action: 'release', reason}
+KOMUTLAR += ('servo_trigger', 'servo_set', 'engage', 'gpws')   # §34: servo_trigger {on, ch, pwm, cmp, tol, delay_ms} · servo_set {ch, pwm} (DO_SET_SERVO; sahte kipte sanal çıkış) · engage §40 {action: 'lock', i} | {action: 'release', reason} · gpws §42 {events: [{code, level, t0, start_s, dur_s}], cfg?: {mode, off}}
 # Motor kesme (`motor_cut {on}`; yalnız uçak tipleri): ARM'lı kalır, motor durur, kumanda yüzeyleri ve uçuş kipi çalışmaya devam eder → süzülme.
 # Gerçek ArduPlane 4.7.2 SITL'de ölçüldü (100–145 m AGL; FBWA/FBWB/CRUISE/AUTO/RTL/MANUAL):
 #   · zorla DISARM (400, 21196): yüzeyler stabilize etmeye devam eder ve fizik süzülür, AMA ArduPlane disarm'lıyken HOME'u anlık konuma taşır →
@@ -1029,6 +1030,7 @@ class SimSession:
         self.komutcu = flightsim_hub.MavKomut(self)
         self.gorev = flightsim_mission.GorevIzleyici(self)   # §18: görev izleme (MP yüklemesi algılama), iz, çarpışma/özet kayıtları
         self.servo_tetik = flightsim_servotrig.ServoTetik(self)   # §34 servo tetik (sunucu tarafı kenar algısı + sim zamanı gecikme + çarpma)
+        self.uyarilar = flightsim_gpws.UyariKaydi()   # §42 uçuş uyarıları: istemcinin bildirdiği bölümler (özet + disiplin puanı)
         self.servo_tetik.oneri_oku()
         self._bekleyenler = []           # [(types, cond, asyncio.Queue)] — _isle içinde dağıtılır (MavKomut ACK/ACK bekleyicileri)
         # §18 arazi sunumu: SITL TERRAIN_REQUEST → sim_terrain → TERRAIN_DATA (gerçek arazi / Google 3B; SIM_TERRAIN_SERVE); sayaçlar + son TERRAIN_REPORT
@@ -1602,6 +1604,13 @@ class SimSession:
         elif t == 'SYS_STATUS':
             te['batt_v'] = m.voltage_battery / 1000.0 if m.voltage_battery != 65535 else None
             te['batt_pct'] = m.battery_remaining if m.battery_remaining >= 0 else None
+            # §42 sağlık: mevcut + etkin ama sağlıksız sensör bitleri (MAV_SYS_STATUS_SENSOR: 1 gyro · 2 ivmeölçer · 0x200000 AHRS …) → istemci IMU uyarısı
+            te['sens_bad'] = int(m.onboard_control_sensors_present & m.onboard_control_sensors_enabled & ~m.onboard_control_sensors_health) & 0xFFFFFFFF
+        elif t == 'EKF_STATUS_REPORT':   # §42 en büyük normalleştirilmiş varyans (≥ 0,5 sarı, ≥ 0,8 kırmızı — ArduPilot FS_EKF_THRESH varsayılanı 0,8)
+            te['ekf'] = round(max(float(m.velocity_variance), float(m.pos_horiz_variance), float(m.pos_vert_variance), float(m.compass_variance)), 3)
+        elif t == 'VIBRATION':   # §42 titreşim (m/s², eksenlerin en büyüğü; ArduPilot 30 üstünü sorunlu sayar) + ivmeölçer kırpma sayısı
+            te['vibe'] = round(max(float(m.vibration_x), float(m.vibration_y), float(m.vibration_z)), 1)
+            te['clip'] = int(m.clipping_0) + int(m.clipping_1) + int(m.clipping_2)
         elif t == 'GPS_RAW_INT':
             te['gps_fix'] = m.fix_type
             te['sats'] = m.satellites_visible if m.satellites_visible != 255 else None
@@ -2364,6 +2373,11 @@ class SimSession:
             p = {'on': p['on']}
         if name == 'engage':   # §40 Boşluk ile kilit → angajman (hedef görünürlüğü istemcide; önleme / en yakın mesafe sunucuda)
             return self._angajman_komut(p)
+        if name == 'gpws':   # §42 biten uyarı bölümleri (istemci telemetriden hesaplar); SITL'e gitmez, oturum durumundan bağımsız
+            try:
+                return self.uyarilar.ekle(p)
+            except flightsim_gpws.GpwsHata as e:
+                raise SimHata('invalid', str(e))
         if name == 'wind':   # §31 uçuşta rüzgâr (hazırlık sırasında da dünyaya yazılır; SITL kalp atışında uygulanır)
             return {'ok': True, 'wind': await self.ruzgar_degistir(p)}
         if name == 'launch_aim':   # §31 rampa yön/açı (ARM öncesi; yön değişirse SITL yeniden konuşlandırılır)

@@ -985,6 +985,15 @@ def _ucus_kapanis(fid, s):
             ozet['targets'] = s.hedef_iz.ozet()
         except Exception:   # noqa: BLE001
             pass
+    # HEPGO §42 uçuş uyarıları: tür başına adet / süre + uçuş disiplini puanı (istemci bildirdiyse)
+    if getattr(s, 'uyarilar', None) is not None:
+        try:
+            u = s.uyarilar.ozet()
+            if u is not None:
+                ozet = dict(ozet or {'v': 1})
+                ozet['alerts'] = u
+        except Exception:   # noqa: BLE001
+            pass
     t = db.now()
     sure = int(time.time() - s.started)
     with db.connect() as conn:

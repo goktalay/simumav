@@ -116,7 +116,11 @@ export function createRecorder(stage, opts = {}) {
   const badgeTxt = h('span', null, `${tr('KAYIT')} 00:00`);
   const badge = h('span', { class: 'fs-rec-badge', hidden: true, title: tr('Ekran kaydı sürüyor; Bitir ile Şirketten Haberler\'e paylaşılır') }, dot, badgeTxt);
   const toggleBtn = h('button', { class: 'btn sm fs-rec-btn', type: 'button', title: tr('Ekran kaydı aç/kapa (R): Başlat\'tan Bitir\'e ekran + ses kaydedilir, Bitir\'de Şirketten Haberler\'e paylaşılır'), onclick: () => onToggle() }, '⏺ ', tr('Kayıt'));
+  // §43 grafik kalitesi: kayıt sürerken 3B tuvalin piksel oranına taban (tampon ≥ kayıt hedefi; düşük çözünürlük ölçeği kaydı bulanıklaştırmasın)
+  let floorOn = false;
+  const syncFloor = () => { const on = !disposed && (state === 'starting' || state === 'recording'); if (on !== floorOn) { floorOn = on; try { opts.getSim?.()?.setRecordFloor?.(on); } catch { /* sim yok */ } } };
   const drawBtn = () => {
+    syncFloor();
     const on = state === 'recording' || state === 'starting';
     toggleBtn.classList.toggle('primary', on);
     toggleBtn.classList.toggle('danger', on);
@@ -355,7 +359,7 @@ export function createRecorder(stage, opts = {}) {
       if (hasData()) toast(tr('Kayıt yarım kaldı; ana sayfadaki "Yarım kayıt" kutusundan paylaşabilir ya da silebilirsiniz'));
     },
     get active() { return state === 'recording'; }, get state() { return state; }, get seconds() { return seconds; }, get hasData() { return hasData(); }, get source() { return source; }, get mime() { return mime; },
-    dispose() { if (disposed) return; disposed = true; window.removeEventListener('keydown', onKey); stopRecorder(); badge.remove(); toggleBtn.remove(); },
+    dispose() { if (disposed) return; disposed = true; syncFloor(); window.removeEventListener('keydown', onKey); stopRecorder(); badge.remove(); toggleBtn.remove(); },
   };
 }
 

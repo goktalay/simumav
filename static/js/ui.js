@@ -156,15 +156,23 @@ export function modal({ title, body, actions = [], wide = false, onClose }) {
   return { close, el: box };
 }
 
-export function confirmDialog(title, message, { okLabel = 'Onayla', danger = false } = {}) {
+// `dontAsk` (isteğe bağlı localStorage anahtarı): pencerede "Bir daha sorma" kutusu; işaretlenip onaylanırsa sonraki çağrılar sormadan true döner.
+export function confirmDialog(title, message, { okLabel = 'Onayla', danger = false, dontAsk = null } = {}) {
+  if (dontAsk) { try { if (localStorage.getItem(dontAsk) === '1') return Promise.resolve(true); } catch { /* */ } }
   return new Promise(resolve => {
     let answered = false;
+    const skip = dontAsk ? h('input', { type: 'checkbox' }) : null;
     modal({
-      title, body: h('p', { style: { margin: 0 } }, message),
+      title, body: h('div', null, h('p', { style: { margin: 0 } }, message),
+        skip ? h('label', { class: 'small muted', style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '12px', cursor: 'pointer' } }, skip, t('Bir daha sorma')) : null),
       onClose: () => { if (!answered) resolve(false); },
       actions: [
         { label: 'Vazgeç' },
-        { label: okLabel, class: danger ? 'danger' : 'primary', onClick: () => { answered = true; resolve(true); } },
+        { label: okLabel, class: danger ? 'danger' : 'primary', onClick: () => {
+          answered = true;
+          if (skip?.checked) { try { localStorage.setItem(dontAsk, '1'); } catch { /* */ } }
+          resolve(true);
+        } },
       ],
     });
   });

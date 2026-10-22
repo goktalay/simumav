@@ -364,6 +364,15 @@ export function createMilHud(stage, ctx = {}, { tr = s => s, keyed } = {}) {
       let wx = cx - total / 2;
       for (const w of warns) { box(wx, wy, bw, 24 * S, RED, on ? 'rgba(190,20,20,.9)' : 'rgba(60,0,0,.6)'); text(w, wx + bw / 2, wy + 12 * S, { align: 'center', px: F * 1.05, bold: true, color: on ? '#fff' : RED }); wx += bw + gap; }
     }
+    // §42 uçuş uyarısı (GPWS): merkezin üstünde çerçeveli HUD yazısı (kırmızı WARNING / sarı CAUTION; onaylanmamışken dolgu yanıp söner)
+    const ga = typeof ctx.gpws === 'function' ? ctx.gpws() : null;
+    if (ga?.text) {
+      const on = !ga.blink || blink(400), col = ga.level === 'warning' ? RED : '#ffc53d';
+      const gw = Math.max(150 * S, ga.text.length * F * 1.05 + 30 * S), gh = 34 * S, gy = cy - 118 * S;
+      box(cx - gw / 2, gy, gw, gh, col, on ? (ga.level === 'warning' ? 'rgba(170,16,16,.85)' : 'rgba(120,84,0,.85)') : 'rgba(0,0,0,.45)');
+      text(ga.text, cx, gy + gh / 2, { align: 'center', px: F * 1.55, bold: true, color: on ? '#fff' : col });
+      if (ga.more) text(ga.more, cx, gy + gh + 12 * S, { align: 'center', px: F * 0.9, bold: true, color: '#ffc53d' });
+    }
     // --- §24.5 hedef sembolojisi: her hedefe tel kafes prizma (3B sınır kutusunun izdüşümü, en küçük boyut sınırlı), kilitli hedefe TD kutusu + veri bloğu,
     //     boresight'tan Target Locator Line; ekran dışındakilere HUD kenarında (bantların içinde elips) yön oku + kilitliye sapma açısı ---
     if (tgd) { tgSym = symbology(tgd, W, H, { S, bx: cx, by: cy, inset: { l: 64 * S, r: 64 * S, t: hsY + hsH + 34 * S, b: lay.bar + 46 * S } }); drawSymbology(g, tgSym, { color: C, S, F, tr, W, H }); } else tgSym = null;

@@ -346,6 +346,13 @@ export function createFpvOsd(stage, ctx = {}, { tr = s => s, storage = null, key
       let wy = cy + 60 * S;
       for (const w of warns) { text(labels[w] || w, cx, wy, { align: 'center', px: F * 1.35, bold: true, color: on ? RED : 'rgba(255,74,74,.45)' }); wy += 24 * S; }
     }
+    // §42 uçuş uyarısı (GPWS): merkezin üstünde OSD yazısıyla (kırmızı WARNING / sarı CAUTION; onaylanmamışken yanıp söner) — büyük kutu bu kipte gizli
+    const ga = typeof ctx.gpws === 'function' ? ctx.gpws() : null;
+    if (ga?.text) {
+      const on = !ga.blink || blink(400), col = ga.level === 'warning' ? RED : '#ffc53d';
+      text(ga.text, cx, cy - 78 * S, { align: 'center', px: F * 1.9, bold: true, color: on ? col : 'rgba(255,255,255,.35)' });
+      if (ga.more) text(ga.more, cx, cy - 52 * S, { align: 'center', px: F * 0.95, bold: true, color: 'rgba(255,214,120,.9)' });
+    }
     // ipucu (sağ alt, küçük)
     // --- §24.5 hedef sembolojisi (askeri HUD ile aynı; OSD beyazı) — merkez işaretinden TLL; ekran dışı oklar üst/alt satırların içinde elipste ---
     const tgd = typeof ctx.targets === 'function' ? ctx.targets() : null;
