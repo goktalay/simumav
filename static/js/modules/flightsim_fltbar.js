@@ -108,7 +108,106 @@ const CSS = `
 .fs-flt-banner small{font:600 11px/1.2 system-ui,sans-serif;letter-spacing:0;color:#ffe7a3}
 .fs-flt-banner[hidden]{display:none}
 @media (max-width:900px){.fs-flt-mode small{display:none}}
+.fs-stage:not(.fs-mob) .fs-bar[data-fit="1"],.fs-stage:not(.fs-mob) .fs-bar[data-fit="2"],.fs-stage:not(.fs-mob) .fs-bar[data-fit="3"]{gap:6px;padding:7px 8px}
+.fs-stage:not(.fs-mob) .fs-bar:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .pill-group{gap:2px}
+.fs-stage:not(.fs-mob) .fs-bar:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) .btn.sm{padding:0 8px}
+.fs-stage:not(.fs-mob) .fs-bar:is([data-fit="1"],[data-fit="2"],[data-fit="3"]) :is(.fs-gimbal-hint,.fs-view-btn kbd){display:none}
+.fs-stage:not(.fs-mob) .fs-bar:is([data-fit="2"],[data-fit="3"]) [data-fit-hide="2"]{display:none}
+.fs-stage:not(.fs-mob) .fs-bar[data-fit="3"] [data-fit-hide="3"]{display:none}
+.fs-stage:not(.fs-mob) .fs-bar[data-fit="3"] .btn.sm{padding:0 6px;font-size:12.5px}
+.fs-stage:not(.fs-mob) .fs-bar[data-fit-wrap] .fs-playbar{flex-basis:100%;order:3;min-width:0}
 `;
+/** Gimbal etiketi (§22.4 alt bant): "Gimbal −10° (↑↓ / tekerlek)" → açı + ipucu ayrı span (sığdırma kademesinde ipucu gizlenir; tam metin title'da). */
+export function setGimbalLabel(elm, txt) {
+  if (!elm) return;
+  const t = String(txt ?? ''), i = t.indexOf(' (');
+  if (elm.title === t && elm.childNodes.length) return;
+  elm.title = t;
+  if (typeof document === 'undefined') { elm.textContent = t; return; }
+  const main = document.createElement('span'); main.textContent = i > 0 ? t.slice(0, i) : t;
+  const hint = document.createElement('span'); hint.className = 'fs-gimbal-hint'; hint.textContent = i > 0 ? t.slice(i) : '';
+  elm.replaceChildren(main, hint);
+}
+/** Alt bant sığdırma kademesi (saf): bant ölçüsü ölçer(k) → satır sayısı; 0…max arasında tek satıra sığan ilk kademe, sığmazsa max. */
+export function pickFitLevel(rowsAt, max = 3) {
+  for (let k = 0; k < max; k++) if (rowsAt(k) <= 1) return k;
+  return max;
+}
+// Sığdırma kademelerinde gizlenecek ETİKETLER (düğmenin kendisi değil; simge kalır, ad title/aria-label'da): 2 = ikincil, 3 = son çare
+const FIT_LABELS = [
+  ['.fs-rc-grp > .btn:first-child', 2], ['.fs-rcf-btn .fs-rcf-lbl', 2], ['.fs-pad-btn > span:last-child', 2], ['.fs-rec-btn', 2],
+  ['.fs-flt-mode small', 2], ['.fs-cam-btn .fs-cam-lbl', 2], ['.fs-reset-btn', 2],
+  ['.fs-srv-btn .fs-srv-btn-txt', 3], ['.fs-view-btn .fs-view-lbl', 3],
+];
+const hasLetters = t => /\p{L}/u.test(t);
+function markFitLabels(bar) {
+  for (const [sel, lvl] of FIT_LABELS) {
+    for (const e of bar.querySelectorAll(sel)) {
+      if (e.tagName !== 'BUTTON') { e.setAttribute('data-fit-hide', String(lvl)); const b = e.closest('button'); if (b && !b.getAttribute('aria-label')) b.setAttribute('aria-label', b.title || b.textContent.trim()); continue; }
+      if (e.dataset.fitMarked) continue;
+      e.dataset.fitMarked = '1';
+      // düğmenin harf içeren düz metin düğümleri (ör. "🎮 " + "Sanal kumanda", "⏺ " + "Kayıt", "↺ Sıfırla") ayrı span'a; simge/emoji kalır
+      for (const n of [...e.childNodes]) {
+        if (n.nodeType !== 3 || !hasLetters(n.textContent)) continue;
+        const m = n.textContent.match(/^(\P{L}*)(.*)$/su);
+        const sp = document.createElement('span'); sp.setAttribute('data-fit-hide', String(lvl)); sp.textContent = m[2];
+        if (m[1]) e.insertBefore(document.createTextNode(m[1]), n);
+        e.replaceChild(sp, n);
+      }
+      if (!e.getAttribute('aria-label')) e.setAttribute('aria-label', e.textContent.replace(/^\P{L}+/u, '').trim() || e.title || '');
+    }
+  }
+}
+// taşma: doğrudan çocuk bandın sağ kenarını aşıyor ya da oynatma çubuğunun içeriği kutusuna sığmıyor (açılır menüler — mutlak konumlu — sayılmaz)
+const overflows = bar => {
+  const right = bar.getBoundingClientRect().right - (parseFloat(getComputedStyle(bar).paddingRight) || 0) + 1;
+  for (const e of bar.children) if (e.offsetWidth && e.getBoundingClientRect().right > right) return true;
+  const pb = bar.querySelector(':scope > .fs-playbar');
+  return !!pb && pb.scrollWidth > pb.clientWidth + 1;
+};
+const barRows = bar => {
+  if (overflows(bar)) return 99;   // içerik kutusundan taşan kapsül (ör. kayıt oynatma çubuğu zaman kaydırıcısı) da "sığmadı" sayılır
+  const tops = [];
+  for (const e of bar.children) {
+    if (!e.offsetWidth || !e.offsetHeight) continue;
+    const c = e.offsetTop + e.offsetHeight / 2;
+    if (!tops.some(t => Math.abs(t - c) < 10)) tops.push(c);
+  }
+  return Math.max(1, tops.length);
+};
+/** ALT BANT SIĞDIRMA (HEPGO + SIMUMAV ortak): bant bir satıra sığmıyorsa kademeli sıkıştırır — data-fit="1": boşluk/iç boşluk küçülür, gimbal ipucu
+ *  ve görünüm kısayolu gizlenir; "2": ikincil etiketler (Sanal kumanda, Hassasiyet, Kumanda, Kayıt, Mod, kamera türü, Sıfırla) simgeye iner;
+ *  "3": Dinle + görünüm adı da simge, yazı 12,5 px. ≥ 1280 px'te TR/EN/DE tek satır; daha darda en çok iki satır (bant flex-wrap). Mobil (.fs-mob, §39
+ *  ☰ menü) hiç sıkıştırılmaz. Bant ve doğrudan çocukları ResizeObserver ile izlenir (metin/kip değişimi, panel aç/kapa, pencere boyutu). */
+export function fitFlightBar(bar, { stage = null, max = 3 } = {}) {
+  if (!bar || typeof window === 'undefined' || typeof ResizeObserver === 'undefined') return { refit() {}, dispose() {} };
+  ensureCss();
+  let raf = 0, busy = false, disposed = false;
+  const set = k => { bar.dataset.fit = String(k); };
+  function refit() {
+    raf = 0;
+    if (disposed || busy || !bar.isConnected) return;
+    busy = true;
+    try {
+      markFitLabels(bar);
+      delete bar.dataset.fitWrap;
+      if ((stage || bar.closest('.fs-stage'))?.classList.contains('fs-mob') || !bar.offsetWidth) { set(0); return; }
+      const k = pickFitLevel(j => { set(j); return barRows(bar); }, max);
+      set(k);
+      if (overflows(bar)) bar.dataset.fitWrap = '1';   // son kademede de taşıyorsa geniş kapsül (oynatma çubuğu) kendi satırına iner
+    } finally { busy = false; }
+  }
+  const schedule = () => { if (!raf && !disposed) raf = requestAnimationFrame(refit); };
+  const ro = new ResizeObserver(schedule);
+  const watch = () => { ro.disconnect(); ro.observe(bar); for (const e of bar.children) ro.observe(e); };
+  const mo = new MutationObserver(() => { watch(); schedule(); });   // sonradan eklenen kapsüller (ses, kayıt, grafik) — yalnız doğrudan çocuklar
+  mo.observe(bar, { childList: true });
+  const mobMo = stage ? new MutationObserver(schedule) : null;   // §39 mobil kipe geçiş (.fs-mob)
+  mobMo?.observe(stage, { attributes: true, attributeFilter: ['class'] });
+  watch(); set(0); schedule();
+  return { refit, get level() { return Number(bar.dataset.fit || 0); }, dispose() { disposed = true; if (raf) cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); mobMo?.disconnect(); } };
+}
+
 function ensureCss() {
   if (typeof document === 'undefined' || document.getElementById('fs-flt-css')) return;
   const s = document.createElement('style'); s.id = 'fs-flt-css'; s.textContent = CSS; document.head.appendChild(s);

@@ -480,8 +480,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   function runwayMesh(hdg, L, Wd, night, dusk) {
     const rw = new T.Group();
     rw.rotation.z = -hdg * DEG;
-    const asphalt = new T.Mesh(new T.PlaneGeometry(Wd, L), new T.MeshLambertMaterial({ color: night ? 0x1c1f24 : 0x3a3d42 }));
-    asphalt.receiveShadow = true;   // dron gölgesi piste düşer
+    const asphalt = new T.Mesh(new T.PlaneGeometry(Wd, L, 1, Math.max(1, Math.ceil(L / 50))), new T.MeshLambertMaterial({ color: night ? 0x1c1f24 : 0x3a3d42 }));
+    asphalt.receiveShadow = true;   // dron gölgesi piste düşer · §22.4: ≤ 50 m dilimler (yere çok yakın kamerada dev üçgenin derinlik kararsızlığı yok)
     rw.add(asphalt);
     const white = new T.MeshBasicMaterial({ color: night ? 0x9aa3ad : 0xf5f5f5 });
     for (let y = -L / 2 + 60; y < L / 2 - 60; y += 60) { const d = new T.Mesh(new T.PlaneGeometry(1.2, 30), white); d.position.set(0, y, 0.02); rw.add(d); }
@@ -646,7 +646,11 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       gWorld.add(rm);
     }
     if (waterZ > -Infinity) {
-      const water = new T.Mesh(new T.PlaneGeometry(ring ? ring * 2 : size * 1.02, ring ? ring * 2 : size * 1.02), wfx.waterMaterial());
+      // §22.4 düzeltme: su düzlemi TEK dörtgen (iki üçgen, ~19 km) iken kamera zemine çok yakınsa (yerdeki uçağın gimbal kamerası, z ≈ 0,3 m) yakın
+      // düzlemle kırpılan dev üçgenin derinlik enterpolasyonu bozuluyor → arazinin ~1,5 m altındaki su, küçük render hedeflerinde (PiP 81×46 …) pistin/arazinin
+      // ÜSTÜNE çiziliyordu (PiP'in alt yarısı düz mavi; çözünürlüğe bağlı: dpr / ön ayar değişince görünüp kayboluyordu). Hücre ≤ ~500 m'ye bölünür.
+      const ws = ring ? ring * 2 : size * 1.02, wseg = clamp(Math.ceil(ws / 500), 8, 64);
+      const water = new T.Mesh(new T.PlaneGeometry(ws, ws, wseg, wseg), wfx.waterMaterial());
       water.position.z = waterZ;
       water.renderOrder = 2;
       water.userData.heat = 0.05; heatWorld.push(water);   // termal: su soğuk (§22.3)
@@ -2288,6 +2292,8 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       controls.update();
     } else if (camMode === 'fpv') {
       poseGimbal(camera);
+      const nn = vehCamNear(camera);   // §22.4: yerdeyken yakın düzlem zemini kesmesin (PiP ile aynı)
+      if (Math.abs(nn - camera.near) > 1e-3) { camera.near = nn; camera.updateProjectionMatrix(); }
     } else if (camMode === 'pilot') {
       posePilot(camera);
     } else if (camMode === 'free') {
@@ -2365,6 +2371,20 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     tmpQ.setFromAxisAngle(tmpV2.set(1, 0, 0), (90 + gimbal) * DEG);
     cam.quaternion.copy(vq).multiply(tmpQ);
   }
+  // §22.4 düzeltme — yere yakın araç kamerası: yerdeki sabit kanadın gimbal kamerası zeminden ~0,3 m yüksekte; sabit 0,5 m yakın düzlem önündeki zemini
+  // kesiyordu → alt yarıdaki ışınlar zeminin "altına" geçip su düzlemini / gökyüzünü gösteriyordu (PiP'in alt yarısı düz mavi; dpr / ön ayardan bağımsız).
+  // Yakın düzlem kameranın yerden yüksekliğine (AGL) göre küçülür: near = clamp(0,35·AGL, 0,05, 0,5) — düz zeminde görünen en yakın nokta derinliği
+  // ≥ ~0,7·AGL (78° FOV köşe ışını) olduğundan pay kalır; uçuşta (AGL ≥ 1,5 m) 0,5 aynen (uzak derinlik hassasiyeti değişmez). Zemin: arazi yüksekliği;
+  // araç yere yakınsa (gövde altı araziden ≤ 3 m) gövde altı da aday (Google 3B: hücre önbellekli DEM ışını karo yüzeyinden sapabilir; araç karoya oturur).
+  // Prosedürel/gerçek arazide kamera zeminin 0,1 m altına inmez (analitik yükseklik ↔ üçgen örgü farkı).
+  function vehCamNear(cam, maxNear = 0.5) {
+    const p = cam.position, tz = terrainHeight(p.x, p.y);
+    if (!g3d && p.z < tz + 0.1) p.z = tz + 0.1;
+    let agl = p.z - tz;
+    const vb = drone.group.position.z - (drone.ground || 0);
+    if (vb - tz <= 3) agl = Math.min(agl, p.z - vb);
+    return clamp(0.35 * agl, 0.05, maxNear);
+  }
   // GERÇEK FPV (§22): kamera burna sabit (burun noktası + küçük ileri ofset; 'burun görünür' açıkken biraz geride ve üstte → gövde ucu/pervane kadrajda),
   // gövdeyle birlikte döner: roll/pitch/yaw TAM uygulanır (ufuk yatar); gimbal yok. Gösterilen (kilit/düzenek dahil) gövde konumu kullanılır.
   // ofsetler model yarıçapına oranlı (kopter 0,75 m → birkaç cm; Caymaz ~3,8 m → ~30 cm geride): burun görünürken gövde ucu kadrajın altında
@@ -2396,7 +2416,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (!pip.rt || pip.rt.width !== rw || pip.rt.height !== rh) { pip.rt?.dispose(); pip.rt = new T.WebGLRenderTarget(rw, rh, { depthBuffer: true, stencilBuffer: false }); pip.lastAt = 0; }
     if (now - pip.lastAt >= Math.max(pipInterval(frameMs), 1000 / (gfx.pipFps || 30) - 2) || pip.src !== src) {   // §43 PiP güncelleme hızı
       pip.lastAt = now; pip.src = src;
-      if (src === 'fpv') { poseGimbal(pip.cam); pip.cam.fov = gimbalZoomFov(GIMBAL_FOV, camFx.zoom); pip.cam.near = 0.5; }
+      if (src === 'fpv') { poseGimbal(pip.cam); pip.cam.fov = gimbalZoomFov(GIMBAL_FOV, camFx.zoom); pip.cam.near = vehCamNear(pip.cam); }   // yerde: yakın düzlem AGL'ye göre
       else if (src === 'pilot') { posePilot(pip.cam); pip.cam.fov = fpv.fov; pip.cam.near = 0.05; }
       else {
         tmpV.copy(lastFollowOff || tmpV2.copy(followOff).multiplyScalar(Math.max(2, drone.radius)));
@@ -2949,7 +2969,24 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     playIntro, endIntro, introActive: () => intro.on,   // §27.2 giriş sekansı
     // FPV (pilot) kipi (§22): görüş açısı 90–150 (tekerlek), analog efekt (gölgelendirici doygunluğu), burun görünür, PiP (takip kamerası sağ üst, 20 fps)
     setPilotFov, getPilotFov: () => fpv.fov, setFpvAnalog: v => { fpv.analog = !!v; }, getFpvAnalog: () => fpv.analog, setFpvNose: v => { fpv.nose = !!v; }, getFpvNose: () => fpv.nose,
-    setPip: v => { pip.on = !!v; }, getPip: () => pip.on, pipRect, pipStats: () => ({ ...pipStats, interval: pipInterval(frameMs), frameMs, rt: pip.rt ? [pip.rt.width, pip.rt.height] : null }),
+    setPip: v => { pip.on = !!v; }, getPip: () => pip.on, pipRect,
+    pipPose: () => { const p = pip.cam.position; return { x: p.x, y: p.y, z: p.z, ground: terrainHeight(p.x, p.y), near: pip.cam.near, fov: pip.cam.fov, src: pip.src || null, gimbal }; },   // teşhis (§22.4 PiP regresyonu)
+    // teşhis (§22.4 regresyon, tests/pip_shots_hepgo.py): PiP render hedefinin alt yarısından örnekler + AYNI kamerayla 4× çözünürlükte başvuru çizimi
+    // (termal/gece efekti öncesi ham sahne). Hata sınıfı çözünürlüğe bağlı olduğundan iki çizim aynı noktalarda aynı yüzeyi göstermeli.
+    pipProbe: () => {
+      if (!pip.rt) return null;
+      const pts = []; for (let j = 0; j < 4; j++) for (let i = 0; i < 8; i++) pts.push([(i + 0.5) / 8, 0.06 + j * 0.12]);   // alt yarı: 8×4 ızgara (y=0 alt)
+      const read = rt => { const buf = new Uint8Array(rt.width * rt.height * 4); renderer.readRenderTargetPixels(rt, 0, 0, rt.width, rt.height, buf);
+        return pts.map(([x, y]) => { const k = (Math.floor(rt.height * y) * rt.width + Math.floor(rt.width * x)) * 4; return [buf[k], buf[k + 1], buf[k + 2]]; }); };
+      const ref = new T.WebGLRenderTarget(pip.rt.width * 4, pip.rt.height * 4, { depthBuffer: true });
+      const sh = renderer.shadowMap.autoUpdate; renderer.shadowMap.autoUpdate = false;
+      try {
+        const thermal = camFxApplies(pip.src) && camFx.type === 'thermal';
+        withHeat(thermal, performance.now(), () => { renderer.setRenderTarget(pip.rt); renderer.render(scene, pip.cam); renderer.setRenderTarget(ref); renderer.render(scene, pip.cam); renderer.setRenderTarget(null); });
+        return { pip: read(pip.rt), ref: read(ref), size: [pip.rt.width, pip.rt.height] };
+      } finally { renderer.shadowMap.autoUpdate = sh; ref.dispose(); }
+    },
+pipStats: () => ({ ...pipStats, interval: pipInterval(frameMs), frameMs, rt: pip.rt ? [pip.rt.width, pip.rt.height] : null }),
     // §22.4 kamera PiP'i (sürüklenebilir pencere: flightsim_camera.js createCameraPip) + §22.3 kamera türü
     setPipRect: r => { pip.rect = r && r.w > 0 && r.h > 0 ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } : null; },
     getPipSource: pipSource, getPrevCamera: () => prevMode,

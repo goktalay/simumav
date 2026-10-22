@@ -334,7 +334,7 @@ export async function openSession(view, start, picked, ctx = {}) {
         : h('button', { class: 'btn sm fs-takeoff-btn', type: 'button', onclick: () => takeoffDialog() }, LAUNCH_BTN[launch?.method] || 'Kalkış'),
       h('button', { class: 'btn sm', type: 'button', onclick: () => cmd('rtl') }, 'RTL')),
     h('div', { class: 'pill-group fs-rc-grp' }, rcBtn, rcFeel.el, padCtl.el),   // HEPGO §27.1 ⚙ hassasiyet · §37 fiziksel kumanda
-    h('div', { class: 'pill-group' }, h('button', { class: 'btn sm', type: 'button', title: 'SITL aynı ayarlarla yeniden başlar; çarpışma kaldırılır', onclick: () => reset() }, '↺ Sıfırla'), endBtn));
+    h('div', { class: 'pill-group' }, h('button', { class: 'btn sm fs-reset-btn', type: 'button', title: 'SITL aynı ayarlarla yeniden başlar; çarpışma kaldırılır', onclick: () => reset() }, '↺ Sıfırla'), endBtn));
   // Sanal kumanda katmanı (HEPGO birebir): sol çubuk gaz/yaw, sağ çubuk pitch/roll (Mode 2); klavye ipucu; Mission Planner joystick uyarısı
   const stickL = h('div', { class: 'fs-stick', 'data-side': 'l', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? LT('rover.rc_left', RVT.left) : 'Gaz / Yaw'));
   const stickR = h('div', { class: 'fs-stick', 'data-side': 'r', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? LT('rover.rc_right', RVT.right) : 'Pitch / Roll'));
@@ -356,6 +356,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const pwAlert = h('div', { class: 'sm-pw-alert', hidden: true, role: 'alert' }, h('b'), h('small'));
   stage.append(mount, msg, crash, events, sticks, bar, nav, ended, countdown, gauge.el, gauges.el, pwAlert, attrib, netLbl);
   const mobMenu = MMob.createMobileMenu(stage, { tr, keyed: true });   // HEPGO §39 mobil: üst şerit + alt bant ☰ menüsünde
+  const barFit = MFlt.fitFlightBar(bar, { stage });   // HEPGO alt bant sığdırma: ≥ 1280 px tek satır (kademeli sıkıştırma; mobilde kapalı)
   // HEPGO §31 rüzgâr göstergesi (baş/yan/kuyruk; akış çizgileri aç/kapa) — SIMUMAV'ta rüzgâr parkur ayarıdır (uçuşta değiştirilmez) +
   // rampa yön/açı paneli (rampaya tıklayınca; ARM öncesi; çekirdek `launch_aim` — yön değişirse SITL yeniden konuşlandırılır)
   const streakPref = { get: () => pref('windStreaks', true) !== false, set: v => { setPref('windStreaks', !!v); sim?.setWindStreaks(!!v); } };
@@ -494,7 +495,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   };
   const onCamChange = mode => {
     camCtl.setView(mode); gimbalLbl.hidden = mode !== 'fpv'; mhudBtn.hidden = mode !== 'fpv'; fpvCtl.hidden = mode !== 'pilot';
-    milHud?.setCamMode(mode); osd?.setCamMode(mode); ops?.setFpv(mode === 'fpv' || mode === 'pilot'); gimbalLbl.textContent = tr('Gimbal {d}° (↑↓ / tekerlek)', { d: sim?.getGimbal() ?? 0 }); fpvPrefs.setCam(mode); drawFpv();
+    milHud?.setCamMode(mode); osd?.setCamMode(mode); ops?.setFpv(mode === 'fpv' || mode === 'pilot'); MFlt.setGimbalLabel(gimbalLbl, tr('Gimbal {d}° (↑↓ / tekerlek)', { d: sim?.getGimbal() ?? 0 })); fpvPrefs.setCam(mode); drawFpv();
   };
   try {
     if (realMode) { msg.hidden = false; msg.textContent = tr('Arazi planı alınıyor…'); }
@@ -784,7 +785,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const dispose = () => {
     if (destroyed) return; destroyed = true;
     clearInterval(netTick); clearInterval(introTick); clearTimeout(alertTimer);
-    safe(() => gauges.dispose()); safe(() => rcFeel.dispose()); safe(() => fltBar.dispose()); safe(() => srvTrig.dispose()); safe(() => padCtl.dispose()); safe(() => mobMenu.dispose()); clearTimeout(autoEndTimer); safe(() => intro.dispose()); safe(() => matchUi?.dispose());
+    safe(() => gauges.dispose()); safe(() => rcFeel.dispose()); safe(() => fltBar.dispose()); safe(() => srvTrig.dispose()); safe(() => padCtl.dispose()); safe(() => mobMenu.dispose()); safe(() => barFit.dispose()); clearTimeout(autoEndTimer); safe(() => intro.dispose()); safe(() => matchUi?.dispose());
     safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();

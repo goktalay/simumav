@@ -38,7 +38,7 @@ import { createDefendHud, createSiteScreens, createSiteSection, defendReportBody
 import { aimWaypoint, isIceptLauncher, rackCountFor } from './flightsim_launcher.js';   // §27 INTERCEPTOR fırlatıcıları (saf)
 import { createLauncherUi } from './flightsim_scope_ui.js';   // §27 hücre envanteri + el fırlatıcısı nişangâh penceresi   // §26 yer kontrol sahası: sihirbaz, radar/EO ekranları, görev şeridi, rapor
 import { defendStateAt } from './flightsim_gcs.js';   // §26 kayıtta görev şeridi durumu
-import { createFlightBar, flightModesFor, modeKind } from './flightsim_fltbar.js';
+import { createFlightBar, fitFlightBar, flightModesFor, modeKind, setGimbalLabel } from './flightsim_fltbar.js';
 import { createGamepadCtl, makePadT } from './flightsim_gamepad.js';   // §37 fiziksel kumanda (Gamepad API → sanal kumandanın RC yolu)
 import { createMobileMenu } from './flightsim_mobile.js';
 import { createGfxCtl, createGfxPicker } from './flightsim_gfx_ui.js';   // §43 grafik kalitesi: alt bant "Grafik ▾" menüsü + sihirbaz özet adımı seçici (fs.gfx)   // §39 telefonda üst şerit + alt bant ☰ menüsünde
@@ -1382,7 +1382,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       h('button', { class: 'btn sm', type: 'button', onclick: () => cmd('rtl') }, 'RTL')) : null,
     canWrite && !replay ? h('div', { class: 'pill-group fs-rc-grp' }, rcBtn, rcFeel.el, padCtl?.el) : null,   // §27.1 ⚙ hassasiyet · §37 fiziksel kumanda
     h('div', { class: 'pill-group' },
-      replay ? null : h('button', { class: 'btn sm', type: 'button', title: 'SITL aynı ayarlarla yeniden başlar; çarpışma kaldırılır', onclick: () => reset() }, '↺ Sıfırla'),
+      replay ? null : h('button', { class: 'btn sm fs-reset-btn', type: 'button', title: 'SITL aynı ayarlarla yeniden başlar; çarpışma kaldırılır', onclick: () => reset() }, '↺ Sıfırla'),
       h('button', { class: 'btn sm danger', type: 'button', onclick: () => endSession() }, 'Bitir')));
   const ended = h('div', { class: 'fs-ended', hidden: true });
   // Sanal kumanda katmanı: sol çubuk gaz/yaw, sağ çubuk pitch/roll (Mode 2); klavye ipucu; Mission Planner joystick uyarısı
@@ -1404,6 +1404,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     onTheme: t => addEvent(tr('Gösterge tasarımı: {t}', { t: tr(gaugeThemeLabel(t)) })) });   // §27.3 tasarım (sihirbaz seçimi; uçuşta G / kadran kutusu)
   stage.append(mount, msg, crash, hud, ...(mp ? [mp] : []), events, sticks, gauges.el, bar, nav, ended);
   const mobMenu = createMobileMenu(stage, { tr });   // §39 mobil: üst şerit + alt bant varsayılan gizli, ☰ ile açılır
+  const barFit = fitFlightBar(bar, { stage });   // alt bant ≥ 1280 px tek satır: kademeli sıkıştırma (§29.6; mobilde kapalı)
   if (attrib) stage.append(attrib);
   // §31 rüzgâr göstergesi (sol üst; baş/yan/kuyruk bileşenleri uçağın burnuna göre, akış çizgileri aç/kapa, yazma izniyle uçuşta rüzgâr) +
   // rampa yön/açı paneli (rampaya tıklayınca; ARM öncesi; sunucu `launch_aim` — yön değişirse SITL yeniden konuşlandırılır)
@@ -1589,7 +1590,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
           onPilotFov: v => { fpvPrefs.setFov(v); drawFpvBtns(); },
           // Kamera değişimi: gimbal kamerası ('fpv') → gimbal etiketi + askeri HUD; FPV ('pilot') → OSD + FPV düğmeleri; ikisinde de harekât kartları gizli
           // (kullanıcı: "kamera görünümünde kontrol panelim gizlensin"), sanal kumanda çubukları görünür kalır (§14/§22)
-          onCameraChange: mode => { camCtl.setView(mode); gimbalLbl.hidden = mode !== 'fpv'; mhudBtn.hidden = mode !== 'fpv'; fpvCtl.hidden = mode !== 'pilot'; milHud?.setCamMode(mode); osd?.setCamMode(mode); ops?.setFpv(mode === 'fpv' || mode === 'pilot'); gimbalLbl.textContent = tr('Gimbal {d}° (↑↓ / tekerlek)', { d: sim?.getGimbal() ?? 0 }); fpvPrefs.setCam(mode); drawFpvBtns(); },
+          onCameraChange: mode => { camCtl.setView(mode); gimbalLbl.hidden = mode !== 'fpv'; mhudBtn.hidden = mode !== 'fpv'; fpvCtl.hidden = mode !== 'pilot'; milHud?.setCamMode(mode); osd?.setCamMode(mode); ops?.setFpv(mode === 'fpv' || mode === 'pilot'); setGimbalLabel(gimbalLbl, tr('Gimbal {d}° (↑↓ / tekerlek)', { d: sim?.getGimbal() ?? 0 })); fpvPrefs.setCam(mode); drawFpvBtns(); },
           onCollision: replay ? null : info => onCrash(info),   // kayıt: gerçek uçuş → çarpışma denetimi yok
           windStreaks: streakPref.get(),   // §31 rüzgâr akış çizgileri (kalıcı tercih fs.windStreaks)
           onRigClick: rampUi ? ev => { if (ev.aim) rampUi.open(ev.aim); } : null,   // §31 rampaya tıklama → yön/açı paneli
@@ -1665,7 +1666,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   };
   const gimbalTick = setInterval(() => {
     maybeIntro();
-    if (!gimbalLbl.hidden && sim) gimbalLbl.textContent = tr('Gimbal {d}° (↑↓ / tekerlek)', { d: sim.getGimbal() });
+    if (!gimbalLbl.hidden && sim) setGimbalLabel(gimbalLbl, tr('Gimbal {d}° (↑↓ / tekerlek)', { d: sim.getGimbal() }));
     if (g3dMode && sim?.google) {   // Google atfı canlı (görünür karoların veri sağlayıcıları) + yükleme yüzdesi
       const a = sim.g3dAttribution();
       if (a) { const t = a.loading < 100 ? `${a.text} · ${tr('yükleniyor %{p}', { p: a.loading })}` : a.text; if (attribTxt.textContent !== t) attribTxt.textContent = t; }
@@ -2015,7 +2016,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     socket?.close();
     milHud?.dispose(); osd?.dispose(); engage?.dispose(); gpws?.dispose(); camPip?.dispose(); camCtl.dispose(); siteUi?.dispose(); defHud?.dispose(); launcherUi?.dispose();   // §26 + §27
     if (rec) { rec.abandon(); rec.dispose(); }   // §17: Bitir'siz çıkış → kayıt durur, parçalar akıtılır, sunucuda yarım kayıt (24 sa)
-    padCtl?.dispose(); mobMenu.dispose(); gfxCtl.dispose(); audio.dispose(); ops?.dispose(); gauges.dispose(); rcFeel.dispose(); intro.dispose(); fltBar?.dispose(); srvTrig?.dispose(); matchUi?.dispose(); sfx.dispose(); clearTimeout(autoEndTimer);
+    padCtl?.dispose(); mobMenu.dispose(); barFit.dispose(); gfxCtl.dispose(); audio.dispose(); ops?.dispose(); gauges.dispose(); rcFeel.dispose(); intro.dispose(); fltBar?.dispose(); srvTrig?.dispose(); matchUi?.dispose(); sfx.dispose(); clearTimeout(autoEndTimer);
     sim?.dispose();
     if (window.__fsSim === sim) delete window.__fsSim;
     if (player && window.__fsPlayer === player) delete window.__fsPlayer;
