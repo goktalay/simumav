@@ -13,8 +13,18 @@
 //                         (MOT_SPIN_ARM öykünmesi); disarm = sessiz.
 //   helikopter            ana rotor "wop-wop": 20–30 Hz LFO ile genlik modülasyonlu alçak gürültü + rotor harmoniği; türbin ıslığı (900–1500 Hz);
 //                         kuyruk rotoru (BPF × 5,5). Armed → rotor %70 devir, gaz ile %100.
-//   sabit_kanat (delta/caymaz aynı)  benzinli tek silindirli iki zamanlı: devir 1500 (rölanti) → 7500 (tam gaz); ateşleme f = devir/60 × silindir;
-//                         testere (ana) + kare (alt harmonik) + egzoz gürültüsü (lowpass gazla açılır) + pervane (2 pala sinüs). Armed + gaz 0 = rölanti.
+//   sabit_kanat (delta/caymaz aynı)  benzinli tek silindirli İKİ ZAMANLI (CAYMAZ 220 cc): devir 2200 (rölanti) → 7600 (tam gaz) — gaz ile eşlenir,
+//                         gecikmeli devir tepkisi (TWO_STROKE_TAU: yukarı 0,45 / aşağı 0,9 sn; hava hızı pervaneyi boşaltır: +%4'e kadar devir);
+//                         ateşleme f = devir/60 (iki zamanlıda HER devir bir ateşleme; 37 → 127 Hz). Katmanlar (twoStrokeParams):
+//                         • ana: dar darbe dizisi (PeriodicWave %12 doluluk → zengin harmonikler; yoksa testere) + f/2 alt harmonik (rölantide
+//                           "dört zamanlama" düzensizliği; gazla azalır) → gazla açılan lowpass;
+//                         • egzoz "pat-pat": geniş bantlı gürültü × ateşleme darbesi (AM; her ateşlemede kısa gürültü patlaması) → egzoz rezonansı
+//                           (bandpass Q 3, frekans devirle 215 → 450 Hz; genişleme odası) + kuru yol;
+//                         • hafif rastgele zamanlama: alçak geçiren gürültü → ateşleme osilatörlerinin detune'u (±~35 cent; rölantide daha çok);
+//                         • mekanik tıkırtı: 3,4 kHz bant gürültüsü × ateşleme darbesi (piston/rulman), kısık;
+//                         • pervane: 2 pala sinüs (f × pala) + pala geçişi "hışırtısı" (bandpass gürültü, gaz + hava hızıyla).
+//                         Motor tipi: `opts.engine` ('fuel' | 'electric'; SIMUMAV power.engine) — 'electric' sabit kanatlar (ve stroke:2 olmayan modeller,
+//                         ör. SIMUMAV jet) eski sentezi kullanır: testere + kare + lowpass egzoz + pervane. Armed + gaz 0 = rölanti.
 //   vtol                  kopter + uçak; karışım hava hızına göre (5 → 20 m/s arasında kopterden uçağa).
 //   rover (§31)           elektrikli kara aracı: motor/inverter uğultusu (üçgen + 2,97× dişli ıslığı; frekans yer hızıyla 90 → 850 Hz), armed + duruşta
 //                         alçak inverter vızıltısı (100 Hz kare, kısık), lastik / zemin gürültüsü (lowpass, hızla açılır ve yükselir). Pervane yok.
@@ -51,8 +61,8 @@ export const AUDIO_MODELS = {
   multirotor: { kind: 'copter', motors: 4, blades: 2 },
   hexarotor: { kind: 'copter', motors: 6, blades: 2 },
   helikopter: { kind: 'heli', blades: 3 },
-  sabit_kanat: { kind: 'plane', cylinders: 1, blades: 2, idleRpm: 1500, maxRpm: 7500 },
-  vtol: { kind: 'vtol', motors: 4, blades: 2, cylinders: 1, idleRpm: 1500, maxRpm: 7500 },
+  sabit_kanat: { kind: 'plane', cylinders: 1, stroke: 2, blades: 2, idleRpm: 2200, maxRpm: 7600 },   // CAYMAZ: 220 cc benzinli iki zamanlı tek silindir
+  vtol: { kind: 'vtol', motors: 4, blades: 2, cylinders: 1, stroke: 2, idleRpm: 2200, maxRpm: 7600 },   // itki motoru benzinli iki zamanlı (elektrikli → opts.engine)
   interceptor: { kind: 'copter', motors: 4, blades: 3 },   // §25 tailsitter: 4 elektrik motoru (askıda ve yatayda aynı motorlar)
   rover: { kind: 'rover', gear: 2.97 },                     // §31 elektrikli kara aracı: motor + redüktör ıslığı, lastik gürültüsü
 };
@@ -64,7 +74,32 @@ export const MOTOR_RATIOS = { 4: [1, 1.027, 0.981, 1.052], 6: [1, 1.019, 0.986, 
 export const copterBpf = (thr, battPct = 100) => (150 + 4.5 * clamp(thr, 0, 100)) * (1 - 0.04 * clamp((30 - num(battPct, 100)) / 30, 0, 1));
 // Uçak devri (d/dk): rölanti → tam gaz doğrusal
 export const planeRpm = (thr, m = AUDIO_MODELS.sabit_kanat) => m.idleRpm + (m.maxRpm - m.idleRpm) * clamp(thr, 0, 100) / 100;
-export const firingHz = (rpm, cyl = 1) => rpm / 60 * cyl;          // iki zamanlı: her devirde ateşleme
+export const firingHz = (rpm, cyl = 1, stroke = 2) => rpm / 60 * cyl * (stroke === 4 ? 0.5 : 1);   // iki zamanlı: her devirde ateşleme (dört zamanlı: iki devirde bir)
+// İki zamanlı benzinli motor (yakıtlı sabit kanat / VTOL itki motoru) mi? model.stroke === 2 ve motor tipi elektrik değil (opts.engine).
+export const isTwoStroke = (m, engine = null) => !!m && (m.kind === 'plane' || m.kind === 'vtol') && m.stroke === 2 && engine !== 'electric';
+// Devir tepkisi (sn): krank + pervane ataleti — gaz açılınca 0,45, kapanınca 0,9 (elektrikten yavaş)
+export const TWO_STROKE_TAU = { up: 0.45, down: 0.9 };
+// İki zamanlı devir hedefi: gaz → rölanti…tam gaz doğrusal; hava hızı pervaneyi boşaltır (40 m/s'de +%4), tavan maxRpm × 1,04
+export const twoStrokeRpm = (thr, airspeed = 0, m = AUDIO_MODELS.sabit_kanat) => Math.min(m.maxRpm * 1.04, planeRpm(thr, m) * (1 + 0.04 * clamp(num(airspeed) / 40, 0, 1)));
+// Dar darbe dizisi Fourier katsayıları (doluluk d): a_n = 2·sin(nπd)/(nπ) — PeriodicWave 'real' dizisi (imag 0). Ateşleme anındaki basınç darbesi.
+export function pulseCoeffs(duty = 0.12, n = 40) {
+  const real = new Float32Array(n + 1), imag = new Float32Array(n + 1);
+  for (let k = 1; k <= n; k++) real[k] = 2 * Math.sin(k * Math.PI * duty) / (k * Math.PI);
+  return { real, imag };
+}
+// İki zamanlı ses parametreleri (saf; birim testi): devir + gaz (0–100) → ateşleme/pervane/egzoz rezonansı frekansları ve katman kazançları.
+export function twoStrokeParams(rpm, thr = 0, m = AUDIO_MODELS.sabit_kanat) {
+  const r = Math.max(0, num(rpm)), g = clamp(num(thr), 0, 100) / 100;
+  const fire = firingHz(r, m.cylinders || 1, 2);
+  const load = clamp((r - m.idleRpm) / Math.max(1, m.maxRpm - m.idleRpm), 0, 1);   // 0 rölanti → 1 tam devir
+  return {
+    fire, sub: fire / 2, prop: fire * (m.blades || 2),
+    exhaustHz: 120 + 2.6 * fire, exhaustQ: 3,                        // genişleme odası rezonansı: 37 Hz ateşlemede ~215 Hz, 127 Hz'de ~450 Hz
+    lowpass: 700 + 2600 * Math.max(g, load * 0.8),                   // gazla açılır (rölantide boğuk)
+    pulse: 0.2 + 0.08 * load, pop: 0.22 + 0.3 * g, subGain: 0.1 * (1 - 0.75 * load),   // rölantide alt harmonik belirgin
+    jitterCents: 35 * (1 - 0.6 * load), mech: 0.025 + 0.03 * load, propNoise: 0.03 + 0.09 * g, propNoiseHz: 600 + 9 * fire,
+  };
+}
 // Helikopter ana rotor pala geçiş frekansı (Hz): rotor devri 400 (%70) → 450 d/dk (tam) × 3 pala → 20…22,5; gaz ile +%30'a kadar (sim. gerçekçilik için 20–30)
 export const heliBpf = thr => 20 + 10 * clamp(thr, 0, 100) / 100;
 // VTOL karışımı: 0 = kopter, 1 = uçak (hava hızı 5 → 20 m/s)
@@ -86,7 +121,9 @@ export function engineTargets(type, t, ctx = {}) {
     out.copter = armed ? COPTER_IDLE + 0.5 * thr / 100 : 0;    // armed + gaz 0 = rölanti (belirgin); disarm = sessiz
   }
   if (m.kind === 'plane' || m.kind === 'vtol') {
-    out.rpm = armed ? planeRpm(thr, m) : 0;
+    const two = isTwoStroke(m, ctx.engine);
+    out.twoStroke = two;
+    out.rpm = armed ? (two ? twoStrokeRpm(thr, air, m) : planeRpm(thr, m)) : 0;
     out.fire = firingHz(out.rpm || m.idleRpm, m.cylinders);
     out.plane = armed ? 0.3 + 0.6 * thr / 100 : 0;        // armed + gaz 0 = rölanti
   }
@@ -155,6 +192,9 @@ export function createEngineAudio(stage, opts = {}) {
   const tr = opts.tr || (s => s);
   const type = opts.type || 'multirotor', model = audioModel(type);
   const launchMethod = opts.launch?.method || null;
+  const engine = opts.engine || null, twoStroke = isTwoStroke(model, engine);   // 'fuel' | 'electric' | null (null: tipin varsayılanı — sabit kanat benzinli)
+  let seed = 0x2f6b1d;   // ateşleme zamanlaması titreşimi için tohumlu rastgele (testte belirlenimci)
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
   const prefs = createAudioPrefs(opts.storage);
   const AC = opts.AudioContextClass || (typeof AudioContext !== 'undefined' ? AudioContext : null);
   const doc = opts.doc === undefined ? (typeof document !== 'undefined' ? document : null) : opts.doc;
@@ -200,7 +240,29 @@ export function createEngineAudio(stage, opts = {}) {
       const whirr = noise('bandpass', 420, 0.8, bus, 0.12);
       g.copter = { bus, motors, ratios, esc, whirr };
     }
-    if (model.kind === 'plane' || model.kind === 'vtol') {
+    if ((model.kind === 'plane' || model.kind === 'vtol') && twoStroke) {
+      // İKİ ZAMANLI benzinli (CAYMAZ 220 cc): darbe dizisi + alt harmonik → lowpass → kuru + egzoz rezonansı; gürültü × darbe = "pat-pat"; mekanik tıkırtı; pervane
+      const bus = ctx.createGain(); bus.gain.value = 0; bus.connect(src);
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900; lp.Q.value = 0.8; lp.connect(bus);
+      const exRes = ctx.createBiquadFilter(); exRes.type = 'bandpass'; exRes.frequency.value = 215; exRes.Q.value = 3;
+      const exG = ctx.createGain(); exG.gain.value = 0.9; exRes.connect(exG); exG.connect(bus); lp.connect(exRes);   // genişleme odası rezonansı (paralel)
+      let pw = null;
+      if (typeof ctx.createPeriodicWave === 'function') { try { const c = pulseCoeffs(0.12, 40); pw = ctx.createPeriodicWave(c.real, c.imag); } catch { pw = null; } }
+      const pulseOsc = (f, dest, g) => { const o = osc('sawtooth', f, dest, g); if (pw && typeof o.o.setPeriodicWave === 'function') o.o.setPeriodicWave(pw); return o; };
+      const fire = pulseOsc(37, lp, 0.2);
+      const sub = osc('square', 18.5, lp, 0.1);
+      const popAM = ctx.createGain(); popAM.gain.value = 0; popAM.connect(lp); popAM.connect(exRes);
+      const popN = noise('highpass', 350, 0.5, popAM, 1);          // geniş bantlı egzoz gürültüsü (genliği ateşleme darbesiyle)
+      const pop = pulseOsc(37, popAM.gain, 0.25);                  // darbe dizisi → gürültü genliği (AM): her ateşlemede kısa patlama
+      const mechAM = ctx.createGain(); mechAM.gain.value = 0; mechAM.connect(bus);
+      const mechN = noise('bandpass', 3400, 2, mechAM, 1);
+      const mechD = ctx.createGain(); mechD.gain.value = 0.03; pop.o.connect(mechD); mechD.connect(mechAM.gain);   // piston/rulman tıkırtısı (aynı darbe)
+      const prop = osc('sine', 74, bus, 0.06);
+      const propN = noise('bandpass', 900, 1.2, bus, 0.03);        // pala geçişi hışırtısı
+      const starter = osc('sawtooth', 90, src, 0);
+      const starterN = noise('bandpass', 700, 1.5, src, 0);
+      g.plane = { two: true, bus, lp, exRes, exG, fire, sub, popAM, popN, pop, mechAM, mechN, mechD, prop, propN, starter, starterN, periodic: !!pw };
+    } else if (model.kind === 'plane' || model.kind === 'vtol') {
       const bus = ctx.createGain(); bus.gain.value = 0; bus.connect(src);
       const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1800; lp.Q.value = 0.7; lp.connect(bus);
       const fire = osc('sawtooth', 25, lp, 0.22);
@@ -319,10 +381,11 @@ export function createEngineAudio(stage, opts = {}) {
     prefs.setPlaybackSpeed(sp);
     // hedefler + yumuşatma (devir gazı gecikmeli izler; disarm → hızlı düşüş yine tauDown ile)
     const vehSpeed = phase === 'launch' ? num(t.groundspeed) : 0;
-    const tg = engineTargets(type, t, { launchMethod, launchPhase: phase, vehicleSpeed: vehSpeed });
+    const tg = engineTargets(type, t, { launchMethod, launchPhase: phase, vehicleSpeed: vehSpeed, engine });
     sm.thr = smoothFollow(sm.thr, tg.thr, dt);
     sm.bpf = smoothFollow(sm.bpf, tg.bpf || 150, dt);
-    sm.rpm = smoothFollow(sm.rpm, model.kind === 'rover' ? tg.roverHz : tg.rpm, dt);   // §31 kara aracında motor uğultusu frekansı
+    sm.rpm = twoStroke ? smoothFollow(sm.rpm, tg.rpm, dt, TWO_STROKE_TAU.up, TWO_STROKE_TAU.down)   // krank + pervane ataleti: gecikmeli devir
+      : smoothFollow(sm.rpm, model.kind === 'rover' ? tg.roverHz : tg.rpm, dt);   // §31 kara aracında motor uğultusu frekansı   // §31 kara aracında motor uğultusu frekansı
     sm.vehRpm = smoothFollow(sm.vehRpm, tg.vehicleRpm || 800, dt, 0.5, 1.2);
     sm.veh = smoothFollow(sm.veh, tg.vehicle, dt, 0.3, 1.5);
     sm.spin = spinStep(sm.spin, tg.armed, dt, model.kind);   // ARM → motor başlatma rampası; DISARM → 1 sn sönme
@@ -357,7 +420,27 @@ export function createEngineAudio(stage, opts = {}) {
       P(G.copter.esc.o.frequency, f * 2.01, 0.08);
       P(G.copter.whirr.fl.frequency, 300 + 3 * sm.thr, 0.1);
     }
-    if (G.plane) {
+    if (G.plane?.two) {
+      // İki zamanlı: marş (spin < 1) → devir 0 → rölanti; sonra gecikmeli devir; ateşleme f = devir/60 (her devir bir ateşleme)
+      const pl = G.plane, cranking = armed && spin < 1;
+      const rpm = Math.max(sm.rpm, model.idleRpm) * (0.12 + 0.88 * spin);
+      const tp = twoStrokeParams(rpm, sm.thr, model);
+      const f = Math.max(5, tp.fire) * doppler * wob;
+      P(pl.bus.gain, (0.3 + 0.6 * sm.thr / 100) * (model.kind === 'vtol' ? 0.25 + 0.75 * tg.mix : 1) * spin * (cranking ? 0.6 : 1));
+      P(pl.starter.g.gain, cranking ? 0.22 : 0, 0.03); P(pl.starterN.g.gain, cranking ? 0.12 : 0, 0.03);
+      P(pl.starter.o.frequency, (80 + 40 * spin) * wob, 0.05);
+      P(pl.fire.o.frequency, f, 0.04); P(pl.fire.g.gain, tp.pulse, 0.1);
+      P(pl.sub.o.frequency, f / 2, 0.04); P(pl.sub.g.gain, tp.subGain, 0.15);
+      P(pl.pop.o.frequency, f, 0.04); P(pl.pop.g.gain, tp.pop, 0.1);
+      P(pl.exRes.frequency, tp.exhaustHz * doppler, 0.08);
+      P(pl.lp.frequency, tp.lowpass, 0.1);
+      P(pl.mechD.gain, tp.mech, 0.15);
+      P(pl.prop.o.frequency, tp.prop * doppler * wob, 0.06);
+      P(pl.propN.fl.frequency, tp.propNoiseHz, 0.1); P(pl.propN.g.gain, tp.propNoise + 0.05 * tg.wind, 0.15);
+      // hafif rastgele ateşleme zamanlaması: her güncellemede (≤ 25 Hz) küçük detune sıçraması (rölantide daha düzensiz)
+      const j = (rnd() * 2 - 1) * tp.jitterCents;
+      P(pl.fire.o.detune, j, 0.02); P(pl.pop.o.detune, j, 0.02); P(pl.sub.o.detune, j, 0.02);
+    } else if (G.plane) {
       // marş (cranking): armed ve spin < 1 iken marş motoru duyulur, ateşleme devri 0 → rölantiye çıkar; sonra gaz izlenir. DISARM: devir ve kazanç spin ile söner.
       const cranking = armed && spin < 1;
       const rpm = Math.max(sm.rpm, model.idleRpm) * (0.12 + 0.88 * spin);

@@ -183,3 +183,17 @@ body.gamepad .mcard.hot::after { content: ""; position: absolute; inset: -6px; b
   .mico *, .mcard-border::before, .radar-dish::before, .radar-dish i, .ldr-bar i, .wind-fx i, .menu-live .dot, .flip-ghost::after { animation: none !important; }
   .mcard, .mcard.hot { transform: none !important; }
 }
+
+/* Bölüm başına hareketli "soft" arka plan (ui/backdrop.js; Canvas2D, düşük çözünürlükte çizilip büyütülür → doğal yumuşaklık).
+   #view'in ARKASINDA; içerik okunurluğu için düşük opaklık + yumuşak giriş. Açık temada silik. */
+#backdrop { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; opacity: 0; transition: opacity .9s ease; filter: saturate(.9) blur(.4px); }
+#backdrop.on { opacity: .9; }
+[data-theme="light"] #backdrop.on { opacity: .2; filter: saturate(.6) blur(1px); }
+#backdrop[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { #backdrop { transition: none; } }
+/* Ayarlar › Ses düzeyleri: kanal satırı (aç/kapa + kaydırıcı + yüzde) */
+.mix-row { display: flex; align-items: center; gap: 12px; min-width: min(360px, 100%); }
+.mix-row input[type="range"] { flex: 1; min-width: 120px; }
+.mix-row .mix-out { min-width: 3.2em; text-align: end; font-variant-numeric: tabular-nums; color: var(--fg-dim); }
+.mix-row.off input[type="range"], .mix-row.off .mix-out { opacity: .45; }
+.setting.mix-head { background: transparent; border-style: dashed; }

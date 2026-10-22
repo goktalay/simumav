@@ -56,7 +56,10 @@ export async function mount(root, ctx) {
   grid.append(...cards); stagger(cards, 70, { rise: true });
   const live = h('div', { class: 'menu-live', hidden: true }, h('i', { class: 'dot' }), h('b', {}, t('menu.live')), h('small', {}, t('menu.live_loading')));
   const hint = h('p', { class: 'menu-hint' }, t('menu.hint'));
-  sc.append(grid, live, hint);
+  // §25 TOP 10 PİLOT (oturumsuz uç; maskeli liste) — pencere menu/top10.js
+  const top10 = h('button', { class: 'menu-top10-btn', type: 'button', onclick: async () => { sfx.select(); (await import('./top10.js')).openTop10(); } }, '🏆 ', t('top10.title'));
+  import('../crew/avatar3d.js').then(m => m.ensureAvatarCss()).catch(() => {});
+  sc.append(grid, top10, live, hint);
   clear(root, sc);
 
   // Klavye: ok tuşları + Enter; Gamepad: d-pad / sol çubuk + A

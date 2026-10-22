@@ -1,6 +1,9 @@
 // Ses tasarımı: Web Audio SENTEZ (dosya/CDN yok). Arayüz efektleri: hover tık, seçim, geçiş süpürme, hata, kalkış, iniş;
 // motor sesi (menü uçuş sahnesi; ayarlardan, varsayılan KAPALI). Ayarlar: configure({ sound, volume, engine }); kabuk ayarlarından okunur.
 // AudioContext ilk kullanıcı etkileşiminde açılır (autoplay politikası); kapalıysa hiç kurulmaz. Saf kısımlar (SFX_DEFS, env) node ile test edilir.
+// Kanal düzeyleri (ui/audiomix.js): arayüz efektleri sm.sfx {on, vol} ile, §10 alarm/caution uyarı düzeyiyle (sm.alertvol) ölçeklenir;
+// müzik (ui/music.js) aynı bağlamı ve ana kazancı `bus()` ile paylaşır (tek AudioContext).
+import { readMix, gainOf } from './audiomix.js';
 
 export const SFX_DEFS = {
   hover: { type: 'sine', f0: 1900, f1: 1500, dur: 0.045, gain: 0.18 },
@@ -20,7 +23,7 @@ export const env = (t, dur, g = 1) => (t < 0 || t > dur ? 0 : g * Math.min(1, t 
 export const sweepFreq = (t, dur, f0, f1) => f0 * Math.pow(f1 / f0, Math.min(1, Math.max(0, t / dur)));
 
 const cfg = { sound: true, volume: 0.8, engine: false };
-export function configure(o = {}) { if (o.sound != null) cfg.sound = !!o.sound; if (o.volume != null) cfg.volume = Math.max(0, Math.min(1, Number(o.volume))); if (o.engine != null) cfg.engine = !!o.engine; master && (master.gain.value = cfg.volume); if (!cfg.sound || !cfg.engine) for (const e of engines) e.mute(); }
+export function configure(o = {}) { if (o.sound != null) cfg.sound = !!o.sound; if (o.volume != null) cfg.volume = Math.max(0, Math.min(1, Number(o.volume))); if (o.engine != null) cfg.engine = !!o.engine; master && (master.gain.value = cfg.sound ? cfg.volume : 0); if (!cfg.sound || !cfg.engine) for (const e of engines) e.mute(); try { globalThis.dispatchEvent?.(new CustomEvent('sm:sound', { detail: { ...cfg } })); } catch { /* node */ } }
 export const config = () => ({ ...cfg });
 
 let ctx = null, master = null, noiseBuf = null, unlocked = false;
@@ -29,7 +32,7 @@ function ensure() {
   if (!cfg.sound || !AC()) return null;
   if (!ctx) {
     try { ctx = new (AC())(); } catch { return null; }
-    master = ctx.createGain(); master.gain.value = cfg.volume; master.connect(ctx.destination);
+    master = ctx.createGain(); master.gain.value = cfg.sound ? cfg.volume : 0; master.connect(ctx.destination);
     const n = ctx.sampleRate * 1.5; noiseBuf = ctx.createBuffer(1, n, ctx.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
   }
   if (ctx.state === 'suspended') ctx.resume().catch(() => {});
@@ -41,11 +44,21 @@ if (typeof window !== 'undefined') {
   for (const ev of ['pointerdown', 'keydown', 'touchstart']) window.addEventListener(ev, unlock, { passive: true, capture: true });
 }
 
+/** Ortak ses yolu (müzik): { ctx, master } ya da null (ses kapalı / etkileşim yok). */
+export function bus() { const c = ensure(); return c ? { ctx: c, master } : null; }
+
+// Kanal çarpanları (sm.sfx / uyarı düzeyi); 'sm:mix' olayında tazelenir
+let mixK = null;
+const chanK = kind => { mixK ??= (() => { const m = readMix(); return { fx: gainOf(m.sfx), alert: gainOf({ on: true, vol: m.alert.vol }), engine: gainOf(m.engine) }; })(); return mixK[kind === true ? 'alert' : kind || 'fx']; };
+if (typeof window !== 'undefined') window.addEventListener('sm:mix', () => { mixK = null; });
+export const ALERT_SFX = new Set(['alarm', 'caution']);
+
 function play(name, { detune = 0 } = {}) {
   const def = SFX_DEFS[name]; if (!def) return;
+  const k = chanK(ALERT_SFX.has(name)); if (!(k > 0.001)) return;
   const c = ensure(); if (!c) return;
   const t0 = c.currentTime, g = c.createGain(); g.connect(master);
-  g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(def.gain, t0 + def.dur * 0.08); g.gain.exponentialRampToValueAtTime(0.0001, t0 + def.dur);
+  g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, def.gain * k), t0 + def.dur * 0.08); g.gain.exponentialRampToValueAtTime(0.0001, t0 + def.dur);
   if (def.type === 'noise') {
     const src = c.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
     const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.1;
@@ -58,7 +71,7 @@ function play(name, { detune = 0 } = {}) {
   }
   if (def.tone) {
     const o = c.createOscillator(), g2 = c.createGain(); o.type = 'sine'; g2.connect(master);
-    g2.gain.setValueAtTime(0.0001, t0); g2.gain.exponentialRampToValueAtTime(def.gain * 0.7, t0 + def.dur * 0.15); g2.gain.exponentialRampToValueAtTime(0.0001, t0 + def.dur);
+    g2.gain.setValueAtTime(0.0001, t0); g2.gain.exponentialRampToValueAtTime(Math.max(0.0002, def.gain * 0.7 * k), t0 + def.dur * 0.15); g2.gain.exponentialRampToValueAtTime(0.0001, t0 + def.dur);
     o.frequency.setValueAtTime(def.tone.f0, t0); o.frequency.exponentialRampToValueAtTime(def.tone.f1, t0 + def.dur);
     o.connect(g2); o.start(t0); o.stop(t0 + def.dur + 0.02);
   }
@@ -93,7 +106,7 @@ export function engine() {
     update(dt, { rpm = 0.7, gain = 1 } = {}) {
       if (!cfg.sound || !cfg.engine) { if (nodes) me.mute(); return; }
       if (!nodes) { nodes = build(); if (!nodes) return; }
-      target = 0.16 * gain;
+      target = 0.16 * gain * chanK('engine');   // motor kanalı (fs.audio.on/vol) ile ölçeklenir
       const k = Math.min(1, dt * 4);
       nodes.g.gain.value += (target - nodes.g.gain.value) * k;
       nodes.o1.frequency.value += (70 + rpm * 60 - nodes.o1.frequency.value) * k;

@@ -490,6 +490,20 @@ img, svg, canvas { display: block; }
 .mini-btn.kind.gate { color: var(--accent-2); border-color: var(--accent-2); }
 .map-fallback { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--fg-dim); text-align: center; padding: 20px; }
 .map-fallback img { max-width: 60%; max-height: 60%; border-radius: var(--radius-s); opacity: .8; }
+/* Google Haritalar yedeği (tracks/satmap.js): uydu karolu 2B seçici + bilgi notu */
+.sat-map { position: absolute; inset: 0; overflow: hidden; background: #0b1220; touch-action: none; }
+.sat-map-canvas { position: absolute; inset: 0; display: block; cursor: crosshair; outline: none; }
+.sat-zoom-box { position: absolute; right: 10px; bottom: 28px; display: flex; flex-direction: column; gap: 4px; z-index: 2; }
+.sat-zoom { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--glass); color: var(--fg); font-size: 18px; font-weight: 700; cursor: pointer; backdrop-filter: blur(8px); }
+.sat-zoom:hover { border-color: var(--accent, #38bdf8); }
+.sat-attr { position: absolute; right: 0; bottom: 0; padding: 1px 6px; font-size: 10px; color: #e2e8f0; background: rgba(0,0,0,.45); z-index: 2; }
+.sat-note { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 24px); padding: 7px 14px; border-radius: 999px; background: rgba(15,23,42,.82); border: 1px solid rgba(251,191,36,.55); color: #fde68a; font-size: 12px; text-align: center; z-index: 3; pointer-events: none; }
+.g3d-note { margin: 6px 0 0; color: #fbbf24; }
+/* Hangar şeridi: kart başına yavaşça dönen mini 3B model (paylaşılan tek çizici; core/three.js) */
+.strip-card .thumb.drone-thumb { position: relative; }
+.strip-card .thumb.drone-thumb canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+.strip-card .thumb.drone-thumb .badge { position: absolute; top: 6px; left: 6px; z-index: 1; }
+.strip-card .thumb.drone-thumb .swatch { position: absolute; right: 6px; bottom: 6px; z-index: 1; width: 12px !important; height: 12px !important; }
 .sub.small { font-size: 12px; }
 .kv-list { display: flex; flex-direction: column; gap: 6px; }
 .replay-head { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin-bottom: 6px; }

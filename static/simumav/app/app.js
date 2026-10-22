@@ -9,6 +9,8 @@ import { initAnalytics } from '/js/analytics.js';   // GA4 + çerez rızası (ta
 import { sweep } from './ui/transition.js';
 import { toast, toastErr } from './ui/components.js';
 import * as sfx from './ui/sfx.js';
+import * as backdrop from './ui/backdrop.js';   // bölüm başına hareketli Canvas2D arka plan (#backdrop; içerik kodu değişmez)
+import * as music from './ui/music.js';         // prosedürel arka plan müziği (ilk etkileşimde; uçuş oturumunda susar)
 
 // Rota tablosu: modül `mount(root, ctx)` (oyun arayüzü modülleri) YA DA `render(view, params, ctx)` (fly/index.js) dışa aktarır; router ikisini de destekler.
 export const ROUTES = {
@@ -68,6 +70,20 @@ function renderChip() {
   gear.setAttribute('aria-label', t('menu.settings'));
 }
 
+// ---------- Ortam: arka plan sahnesi + müzik (bölüm → sahne; uçuş oturumu (#view.sm-fly-session) → ikisi de durur) ----------
+function syncAmbience() {
+  const name = (state.current || 'menu').split('/')[0], inFlight = view.classList.contains('sm-fly-session');
+  backdrop.setScene(backdrop.sceneFor(name, { inFlight, enabled: backdrop.bgEnabled() }));
+  music.setScene(name, { inFlight });
+}
+new MutationObserver(syncAmbience).observe(view, { attributes: true, attributeFilter: ['class'] });
+addEventListener('sm:bgfx', syncAmbience);
+// Arayüz düğmelerine hafif üzerine gelme / tıklama sesleri (efekt düzeyine bağlı; kendi sesi olan menü kartları ve uçuş oturumu hariç)
+const UI_BTN = 'button, .btn, [role="button"], .sm-mode-card, .sm-card';
+const uiBtn = e => { const b = e.target?.closest?.(UI_BTN); return b && !b.disabled && view.contains(b) && !b.closest('.mcard, .sm-fly-session, [data-nosfx]') ? b : null; };
+view.addEventListener('pointerover', e => { const b = uiBtn(e); if (b && !b.contains(e.relatedTarget)) sfx.hover(); });
+view.addEventListener('click', e => { if (uiBtn(e)) sfx.tick(); });
+
 // ---------- Router ----------
 const ctx = {
   state, api, t,
@@ -76,9 +92,11 @@ const ctx = {
   toast: (msg, kind) => toast(msg, kind === 'err' || kind === 'error' ? 'err' : kind === 'ok' || kind === 'success' ? 'ok' : ''),
   // Hedef rota şu anki adresle aynıysa (ör. #/missions içinde görev düzenleyicisi → "Görevler"; #/tracks, #/hangar sihirbazı) hash değişmez,
   // hashchange gelmez ve düğme hiçbir şey yapmazdı → aynı rotada modül yeniden kurulur (alt ekran kapanır, liste açılır).
+  // target işlev olabilir: modül kendi içinde geri gider (Uç: sihirbaz adımı → önceki adım, ilk adımda #/fly seçimine).
   setBack: (label, target = 'menu') => {
     back.hidden = !label; document.getElementById('back-label').textContent = label || '';
     back.onclick = () => {
+      if (typeof target === 'function') { target(); return; }   // modül içi geri (ör. Uç sihirbazında bir önceki adım)
       const hash = String(target).startsWith('#') ? target : `#/${target}`;
       if (location.hash === hash || (target === 'menu' && !location.hash)) route(true); else ctx.go(target);
     };
@@ -126,6 +144,7 @@ async function route(force = false) {
       state.unmount = typeof r === 'function' ? r : r?.unmount || r?.dispose || (typeof mod.unmount === 'function' ? () => mod.unmount() : null);
       if (name !== 'menu' && back.hidden && name !== 'fly') ctx.setBack(t('common.menu'));
     } catch (e) { console.error(e); toastErr(e); sfx.error(); }
+    syncAmbience();
   }, { dir, duration: prev ? (dir === 'back' ? 480 : 620) : 400 });
   routing = false;
 }
@@ -149,6 +168,8 @@ async function boot() {
   help.addEventListener('pointerenter', () => sfx.hover());
   chip.addEventListener('click', () => { sfx.select(); ctx.go('crew'); });
   back.addEventListener('pointerenter', () => sfx.hover()); gear.addEventListener('pointerenter', () => sfx.hover()); chip.addEventListener('pointerenter', () => sfx.hover());
+  music.initMusic();
+  window.__smBackdrop = backdrop.state; window.__smMusic = music.state;   // teşhis (kare süresi / müzik düzeyi)
   window.addEventListener('hashchange', () => route());
   window.addEventListener('sm:session', () => ctx.refreshSession());
   if (!location.hash) location.hash = '#/menu'; else route();

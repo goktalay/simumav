@@ -163,7 +163,9 @@ ok('tek paylaşılan WebGLRenderer; Uç sahnesi öncesi bağlam bırakılır; sa
   assert.equal(g.stats().level, 'medium');
   assert.equal(fc.QUALITY_LEVELS.at(-1).particles, 0);
   // model yolu TEK sabitten: önce gerçekçi GLB yolu (static/simumav/models/<tip>.glb), sonra HEPGO caymaz, en son procmodels (kodda)
-  assert.deepEqual(fc.modelCandidates('plane'), ['/static/simumav/models/plane.glb', '/static/models/caymaz-sim.glb']);
+  assert.deepEqual(fc.modelCandidates('plane'), ['/static/models/caymaz-sim.glb']);   // plane.glb hiç yoktu (konsolda 404)
+  // her aday dosya depoda gerçekten var (menü açılışında 404 gürültüsü olmasın)
+  for (const urls of Object.values(fc.MODEL_URLS)) for (const u of urls) assert.ok(existsSync(new URL(`..${u}`, import.meta.url)), `model dosyası yok: ${u}`);
   assert.ok(fc.modelCandidates('bilinmeyen').length >= 1);
   const flightSrc = readFileSync(join(APP, 'menu/flight.js'), 'utf8');
   assert.ok(!/\.glb'/.test(flightSrc.replace(/\/\/.*$/gm, '')), 'flight.js model yolunu kendisi yazmaz; flightcore MODEL_URLS kullanır');

@@ -65,6 +65,26 @@ export async function modelViewer(host, { speed = 0.6, env = true } = {}) {
   return { setModel, dispose: () => stage.dispose(), stage };
 }
 
+// Hangar şeridi kartları: her kartta küçük, yavaşça dönen 3B model (dronun kendi GLB'si ya da prosedürel şablonu, kullanıcı rengi).
+// WebGL bağlamı AÇILMAZ: makeStage görünümleri paylaşılan TEK çiziciyle sırayla render edilip kartın 2B tuvaline kopyalanır (core/three.js);
+// ekran dışındaki kartlar (IntersectionObserver) render edilmez. En çok MAX_CARD_VIEWS kart canlı; fazlası statik tür rozetiyle kalır.
+export const MAX_CARD_VIEWS = 12, CARD_SPIN = 0.45;   // rad/sn (büyük önizleme 0,6)
+export async function miniDroneView(host, d) {
+  const lib = await loadThree();
+  const { THREE } = lib;
+  let model = null;
+  const stage = makeStage(lib, host, { alpha: true, fov: 30, env: true, pixelRatioMax: 1.25, onFrame: (dt, tm) => { if (model) { model.rotation.y += dt * CARD_SPIN; animateDrone(model, dt, tm); } } });
+  stage.camera.position.set(0, 0.75, 3.2); stage.camera.lookAt(0, -0.05, 0);
+  lights(THREE, stage.scene);
+  let m = d?.glb || d?.preview ? await loadGlb(lib, d.glb || d.preview, d?.color || null) : null;
+  if (!m) m = buildDrone(THREE, d?.model_key, d?.color || '#38bdf8', d?.type);
+  if (m.userData.wheels) m.scale.multiplyScalar(0.78);
+  model = m; model.rotation.y = (Number(d?.id) || 0) * 0.9;   // kartlar aynı açıda dönmesin
+  stage.scene.add(model);
+  stage.start();
+  return { dispose: () => stage.dispose(), stage };
+}
+
 // Modül düzeyinde etkin temizleyici: mount() içten yeniden çağrılabilir ("Hangara dön"); router hangi mount etkinse onu kapatır
 let active = null;
 export async function mount(root, ctx) {
@@ -81,6 +101,8 @@ export async function mount(root, ctx) {
   ctx.setBack(t('common.menu'));
 
   let drones = [], selected = null, viewer = null, catalog = null, wizDispose = null, dead = false, viewerWanted = true;
+  const cardViews = []; let cardGen = 0;   // kart mini 3B görünümleri (şerit yenilenince/çıkışta bırakılır)
+  const dropCardViews = () => { cardGen++; cardViews.splice(0).forEach(v => v.dispose()); };
   const viewerP = modelViewer(stageBox).then(v => { if (dead || !viewerWanted) { v.dispose(); return; } viewer = v; if (selected) v.setModel(selected); }).catch(e => console.warn(e));
 
   // Model alt yazısı: sunucunun model_label'ı (GLB kataloğu / yükseltilmiş eski anahtar); yoksa prosedürel etiketi ya da anahtar
@@ -94,24 +116,26 @@ export async function mount(root, ctx) {
   };
   const editPower = d => openPowerEditor(d, { limits: powerInfo?.limits, onSaved: async () => { await load(); } });
 
-  const card = d => {
+  const card = (d, idx) => {
     const c = h('div', { class: 'card lift strip-card', tabindex: '0', role: 'button', dataset: { id: String(d.id) }, onclick: () => select(d), onkeydown: e => { if (e.key === 'Enter') select(d); } },
       h('div', { class: 'row-actions' },
         miniBtn(svg('0 0 24 24', STAR_SVG), () => setDefault(d), d.is_default ? 'on' : '', t('common.default')),
         miniBtn(svg('0 0 24 24', EDIT_SVG), () => rename(d), '', t('common.rename')),
         miniBtn(svg('0 0 24 24', BOLT_SVG), () => editPower(d), 'pw', t('power.edit')),
         miniBtn(svg('0 0 24 24', TRASH_SVG), () => remove(d), 'danger', t('common.delete'))),
-      h('div', { class: 'thumb' }, h('span', { class: 'badge', style: null }, t(`types.${d.type}`))),
+      h('div', { class: 'thumb drone-thumb', dataset: { ty: d.type } }, h('span', { class: 'badge', style: null }, t(`types.${d.type}`))),
       h('b', {}, d.name), h('small', {}, d.is_default ? `★ ${t('common.default')}` : modelLabel(d)), d.airframe ? h('small', { class: 'airframe-tag' }, t(`airframe.${d.airframe}`)) : null,   // §13.1
       d.type === 'rover' ? h('small', { class: 'airframe-tag drive-tag' }, roverStat(d.drive)) : null,   // §15
       powerTag({ h, p: d.power }));   // §10
-    const sw = h('i', { class: 'swatch on' }); sw.style.background = d.color || '#38bdf8'; sw.style.width = '22px'; sw.style.height = '22px';
-    c.querySelector('.thumb').append(sw);
+    const thumb = c.querySelector('.thumb'), g = cardGen;
+    if (idx < MAX_CARD_VIEWS) miniDroneView(thumb, d).then(v => { if (dead || g !== cardGen) { v.dispose(); return; } cardViews.push(v); }).catch(e => console.warn(e));
+    else { const sw = h('i', { class: 'swatch on' }); sw.style.background = d.color || '#38bdf8'; thumb.append(sw); }   // sınır üstü: renk noktası
     c.addEventListener('pointerenter', () => sfx.takeoff());   // kart hover: kalkış sesi
     return c;
   };
 
   const renderStrip = () => {
+    dropCardViews();
     clear(strip, drones.map(card), plusButton(t('hangar.add'), openWizard, { small: true }));
     stagger([...strip.children], 50);
     if (!drones.find(d => d.id === selected?.id)) select(drones.find(d => d.is_default) || drones[0] || null);
@@ -136,7 +160,7 @@ export async function mount(root, ctx) {
     wiz.append(head, body);
     clear(root, wiz);
     ctx.setBack(t('hangar.title'), 'hangar');
-    viewer?.dispose(); viewer = null; viewerWanted = false;   // sihirbazda ana dönen model yok (tek paylaşılan önizleme)
+    viewer?.dispose(); viewer = null; viewerWanted = false; dropCardViews();   // sihirbazda ana dönen model yok (tek paylaşılan önizleme)
     const setStep = n => [...head.querySelectorAll('.steps i')].forEach((i, k) => { i.classList.toggle('on', k === n); i.classList.toggle('done', k < n); });
     // Türün varsayılan modeli: katalogdaki ilk model (gerçekçi GLB); katalog yoksa prosedürel şablon
     const firstModel = ty => (catalog.types || []).find(x => x.key === ty)?.models?.[0] || { key: `proc:${TYPE_TEMPLATE[ty]}`, glb: null };
@@ -223,6 +247,6 @@ export async function mount(root, ctx) {
   await load();
   if (ctx.param === 'new') openWizard();
   // unmount: 3B görünümler (dönen model + sihirbaz önizlemesi) kesin bırakılır; router Promise'i bekler
-  active = async () => { dead = true; viewer?.dispose(); viewer = null; wizDispose?.(); wizDispose = null; await viewerP; };
+  active = async () => { dead = true; dropCardViews(); viewer?.dispose(); viewer = null; wizDispose?.(); wizDispose = null; await viewerP; };
   return () => { const f = active; active = null; return f?.(); };
 }

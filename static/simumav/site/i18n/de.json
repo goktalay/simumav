@@ -218,5 +218,20 @@
   "type.rover": "Bodenfahrzeug",
   "fleet.rover_4x4.d": "4×4-Aufklärer mit Ackermann-Lenkung und EO/IR- + LIDAR-Mast; bis 72 km/h mit ArduRover.",
   "fleet.rover_ugv.d": "Unbemanntes Kettenfahrzeug: dreht auf der Stelle (Differenziallenkung), Sensorturm.",
-  "fleet.rover_bot.d": "Sechsrädriger Gehweg-Lieferroboter (0,78 m), Differenziallenkung, Fahnenmast."
+  "fleet.rover_bot.d": "Sechsrädriger Gehweg-Lieferroboter (0,78 m), Differenziallenkung, Fahnenmast.",
+  "top10.title": "TOP 10 PILOTEN",
+  "top10.p_30d": "Letzte 30 Tage",
+  "top10.p_all": "Gesamt",
+  "top10.formula": "Punkte = Matchpunkte (Ring ×100, Ziel +250, Platzbonus; Dogfight-Sieg 1000) + Sieg +300 + Ringtempo (≤200) + Flugdisziplin (Ø-Wert ×1,5 × bis 20 Flüge) + Zielabfang (beste 10 Flüge ×0,5). Matches nur gegen KI zählen halb.",
+  "top10.privacy": "Namen und E-Mails werden maskiert. Austragen: Einstellungen → „In der Bestenliste ausblenden“.",
+  "top10.empty": "Noch keine Piloten in der Wertung — gewinne das erste Match!",
+  "top10.error": "Liste konnte nicht geladen werden; bitte später erneut versuchen.",
+  "nav.top10": "TOP 10",
+  "top10.kicker": "Bestenliste",
+  "top10.sub": "Die zehn besten Piloten nach Matchsiegen, Ringtempo, Flugdisziplin und Zielabfang — mit 3D-Avataren.",
+  "top10.period": "Zeitraum",
+  "top10.loading": "Wird geladen…",
+  "top10.pts": "Pkt.",
+  "top10.wins": "{n} Siege",
+  "top10.flights": "{n} Flüge"
 }

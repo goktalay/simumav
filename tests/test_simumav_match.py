@@ -109,7 +109,7 @@ def main():
     db.init()
     db.init()
     with db.connect() as conn:
-        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 5
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == db.SCHEMA_VERSION >= 5   # §25 v6
         assert {'is_bot', 'level'} <= {r[1] for r in conn.execute('PRAGMA table_info(match_players)')}
         assert [r[2] for r in conn.execute('PRAGMA foreign_key_list(match_players)')] == ['matches'], 'user_id FK kalktı'
         # v4 → v5: eski tablo (users FK'li) satırlarıyla yeniden kurulur
@@ -125,7 +125,7 @@ def main():
         n_insan = conn.execute('SELECT COUNT(*) FROM match_players').fetchone()[0]
     db.init()
     with db.connect() as conn:
-        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 5
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == db.SCHEMA_VERSION
         assert {'is_bot', 'level'} <= {r[1] for r in conn.execute('PRAGMA table_info(match_players)')}
         assert conn.execute('SELECT COUNT(*) FROM match_players').fetchone()[0] == n_insan <= n0 and n_insan > 0
         assert {'kind', 'game_cfg'} <= {r[1] for r in conn.execute('PRAGMA table_info(matches)')}
@@ -184,6 +184,7 @@ def calis(c):
     assert r.status_code == 429 and r.json()['detail']['error'] == 'too_many_attempts' and r.json()['detail']['retry_after'] > 0, r.text
     j = ok(veli.post(f'{A}/join', json={'code': code, 'password': 'Gizli-42'}))
     assert {p['id'] for p in j['players']} == {ali.id, veli.id} and j['me'] == veli.id and not j['can_start']
+    assert all(p['avatar'] and p['avatar']['v'] == 1 and p['avatar']['helmet'].startswith('#') for p in j['players'])   # §25 salon avatarı (varsayılan pilot)
     assert ok(veli.get(f'{A}/invite/{code}'))['joined'] is True
     ok(veli.post(f'{A}/join', json={'code': code, 'password': 'Gizli-42'}))   # yeniden: değişiklik yok
     # 3. oyuncu can katılır, dora dolu
@@ -223,6 +224,7 @@ def calis(c):
         assert st['state'] == 'HAZIRLIK', st
         ws_bekle(wv, lambda x: x['t'] == 'state' and x['state'] == 'HAZIRLIK')
         d = bekle(lambda: (lambda x: x if all(p['session_id'] and p['flight_id'] for p in x['players']) else None)(ok(ali.get(f'{A}/{mid}'))))
+        assert all(p.get('avatar') for p in d['players']), 'yarışta da avatar (lobi kaydından)'
         assert d, d
         sids = {p['id']: p['session_id'] for p in d['players']}
         fids = {p['id']: p['flight_id'] for p in d['players']}

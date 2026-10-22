@@ -6,7 +6,8 @@ import { t, lang } from '../i18n/i18n.js';
 import { screen, plusButton, btn, miniBtn, segment, switchEl, range, dial, toast, toastErr, confirmDlg, EDIT_SVG, TRASH_SVG, STAR_SVG, CHEV_L, CHEV_R } from '../ui/components.js';
 import { stagger } from '../ui/transition.js';
 import { terrainViewer } from './terrain3d.js';
-import { loadGoogleMaps, pickerMap } from './gmap.js';
+import { loadGoogleMaps, pickerMap, gmapsAuthFailed, GMAPS_AUTH_EVENT } from './gmap.js';
+import { satPickerMap } from './satmap.js';
 
 export const WORLD_DEFAULTS = { size_m: 4000, tree_density: 0.3, building_count: 40, runway: true, runway_heading: 0, fog: 0.2 };
 const WORLD_KEYS = ['seed', 'size_m', 'tree_density', 'mountain_height', 'mountain_count', 'building_count', 'runway', 'runway_heading', 'water', 'fog', 'landing_circle_m'];
@@ -95,7 +96,10 @@ export async function mount(root, ctx) {
     const nameInp = h('input', { class: 'input big', placeholder: t('tracks.name_ph'), maxlength: '40', value: T.name });
     nameInp.addEventListener('input', () => { T.name = nameInp.value; });
     const procBox = h('div', { class: 'proc-box' });
-    const worldSeg = segment([{ value: 'real', label: t('world.real') }, { value: 'google3d', label: t('world.google3d') }, { value: 'procedural', label: t('world.procedural') }], T.world_mode, v => { T.world_mode = v; procBox.hidden = v !== 'procedural'; if (v === 'real' && T.world.building_count === WORLD_DEFAULTS.building_count) T.world.building_count = 0; dirty(); });
+    // Google anahtarı reddedildiyse (gm_authFailure) aynı anahtarla Google 3B karoları da 403 verir → bilgi notu (uçuşta Gerçek araziye düşülür)
+    const g3dNote = h('p', { class: 'sub small g3d-note', role: 'status', hidden: true }, t('tracks.g3d_unavailable'));
+    const refreshG3dNote = () => { g3dNote.hidden = !(T.world_mode === 'google3d' && gmapsAuthFailed()); };
+    const worldSeg = segment([{ value: 'real', label: t('world.real') }, { value: 'google3d', label: t('world.google3d') }, { value: 'procedural', label: t('world.procedural') }], T.world_mode, v => { T.world_mode = v; procBox.hidden = v !== 'procedural'; if (v === 'real' && T.world.building_count === WORLD_DEFAULTS.building_count) T.world.building_count = 0; refreshG3dNote(); dirty(); });
     const sl = (key, label, min, max, step, fmt) => { const r = range({ min, max, step, value: T.world[key], format: fmt, onInput: v => { T.world[key] = v; dirty(); } }); return h('div', { class: 'field' }, h('label', {}, label, ' ', r.out), r.inp); };
     procBox.append(
       sl('size_m', t('world.size'), 1000, 10000, 500, v => `${v} m`),
@@ -136,7 +140,7 @@ export async function mount(root, ctx) {
     panel.append(
       h('div', { class: 'field' }, nameInp),
       h('h3', {}, t('tracks.location')), search, h('div', { class: 'two' }, latInp, lonInp), presetSel, h('div', { class: 'kv' }, h('span', {}, t('tracks.center')), coordOut),
-      h('h3', {}, t('tracks.world_mode')), worldSeg, procBox,
+      h('h3', {}, t('tracks.world_mode')), worldSeg, g3dNote, procBox,
       h('h3', {}, t('tracks.wind')), h('div', { class: 'wind-row' }, windDial, h('div', { class: 'col' }, h('div', { class: 'field' }, h('label', {}, t('tracks.wind_speed'), ' ', windSpd.out), windSpd.inp), h('div', { class: 'field' }, h('label', {}, t('tracks.gust'), ' ', windGust.out), windGust.inp))),
       h('div', { class: 'field' }, h('label', {}, t('tracks.time_of_day')), todSeg),
       h('div', { class: 'field' }, h('label', {}, t('tracks.weather')), weatherSeg),
@@ -146,18 +150,29 @@ export async function mount(root, ctx) {
     );
     ed.append(note);
 
-    // Harita (Google) ya da yedek
+    // Harita: Google (anahtar varsa) → reddedilirse / yüklenemezse / anahtar yoksa uydu karolu yedek (satmap.js) — kutu asla boş hata ekranında kalmaz
+    let edDead = false;
     const key = ctx.state.meta?.maps_key;
+    const onGateMove = (g, p) => { g.lat = p.lat; g.lon = p.lon; dirty(); };
+    const useSat = note => {
+      if (edDead || gmap?.kind === 'sat') return;
+      gmap?.dispose(); gmap = null; clear(mapBox); mapBox.classList.add('ed-map-sat');
+      gmap = satPickerMap(mapBox, { lat: T.lat, lon: T.lon, radius_m: T.radius_m, onPick, onGateMove, note });
+      gmap.setGates(T.gates); refreshG3dNote();
+    };
+    const onAuthFail = () => useSat(t('tracks.maps_unavailable'));   // betik yüklendikten SONRA da gelebilir (harita kurulmuşken)
+    window.addEventListener(GMAPS_AUTH_EVENT, onAuthFail);
+    edDispose = () => { edDead = true; window.removeEventListener(GMAPS_AUTH_EVENT, onAuthFail); terrain?.dispose(); terrain = null; gmap?.dispose(); gmap = null; };   // yükleme sürerken iptal/çıkışta da temizlenir
     mapBox.append(h('div', { class: 'loading' }, t('common.loading')));
     try {
       const google = await loadGoogleMaps(key, lang());
-      if (google) { clear(mapBox); gmap = await pickerMap(google, mapBox, { lat: T.lat, lon: T.lon, radius_m: T.radius_m, onPick, onGateMove: (g, p) => { g.lat = p.lat; g.lon = p.lon; dirty(); }, dark: document.documentElement.dataset.theme !== 'light' }); gmap.setGates(T.gates); }
-      else clear(mapBox, h('div', { class: 'map-fallback' }, h('p', {}, t('tracks.no_maps')), h('img', { src: existing ? `/api/tracks/${existing.id}/preview.png` : '/app/img/icons/tracks.svg', alt: '' })));
-    } catch (e) { clear(mapBox, h('div', { class: 'map-fallback' }, h('p', {}, e.message))); }
-    let edDead = false;
+      if (edDead) return;
+      if (google && !gmapsAuthFailed()) { clear(mapBox); const gm = await pickerMap(google, mapBox, { lat: T.lat, lon: T.lon, radius_m: T.radius_m, onPick, onGateMove, dark: document.documentElement.dataset.theme !== 'light' });
+        if (edDead || gmap?.kind === 'sat') gm.dispose(); else { gmap = gm; gmap.setGates(T.gates); } }
+      else useSat(key ? t('tracks.maps_unavailable') : t('tracks.no_maps'));
+    } catch (e) { console.warn('Google Haritalar:', e?.message || e); useSat(t('tracks.maps_unavailable')); }
     terrainViewer(prevBox, { spin: 0.15, onPick, tilt: 1.0 }).then(v => { if (edDead) { v.dispose(); return; } terrain = v; v.setTrack(T); }).catch(() => {});
     dirty();
-    edDispose = () => { edDead = true; terrain?.dispose(); terrain = null; gmap?.dispose(); gmap = null; };
 
     async function save() {
       if (!T.name.trim()) { nameInp.focus(); toast(t('tracks.name_req'), 'err'); return; }

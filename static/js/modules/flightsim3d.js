@@ -900,8 +900,10 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
         }
       } catch (err) {
         if (seq !== buildSeq) return;
-        onFallback?.(err?.message || String(err));
-        Wn.mode = 'procedural';
+        // opts.g3dFallback: 'real' → Gerçek araziye (yükseklik + uydu; o da alınamazsa prosedürel) — SIMUMAV; varsayılan prosedürel (HEPGO)
+        const to = opts.g3dFallback === 'real' ? 'real' : 'procedural';
+        onFallback?.(err?.message || String(err), { from: 'google3d', to });
+        Wn.mode = to;
       }
     }
     if (Wn.mode !== 'google3d' && g3d) { g3d.dispose(); g3d = null; }
@@ -918,7 +920,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       } catch (err) {
         if (seq !== buildSeq) return;
         realCache = null;
-        onFallback?.(err?.message || String(err));
+        onFallback?.(err?.message || String(err), { from: 'real', to: 'procedural' });
         Wn.mode = 'procedural';
       }
     }

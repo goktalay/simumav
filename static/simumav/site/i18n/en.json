@@ -218,5 +218,20 @@
   "type.rover": "Ground vehicle",
   "fleet.rover_4x4.d": "Ackermann-steered 4×4 scout with an EO/IR + LIDAR mast; up to 72 km/h on ArduRover.",
   "fleet.rover_ugv.d": "Tracked unmanned ground vehicle: turns on the spot (skid steering), sensor turret.",
-  "fleet.rover_bot.d": "Six-wheeled sidewalk delivery robot (0.78 m), skid steering, flag mast."
+  "fleet.rover_bot.d": "Six-wheeled sidewalk delivery robot (0.78 m), skid steering, flag mast.",
+  "top10.title": "TOP 10 PILOTS",
+  "top10.p_30d": "Last 30 days",
+  "top10.p_all": "All time",
+  "top10.formula": "Score = match points (ring ×100, finish +250, place bonus; dogfight win 1000) + win +300 + ring pace (≤200) + flight discipline (avg score ×1.5 × up to 20 flights) + target intercepts (best 10 flights ×0.5). Matches played only against AI count half.",
+  "top10.privacy": "Names and e-mails are masked. To leave the list: Settings → “Hide me from the leaderboard”.",
+  "top10.empty": "No ranked pilots yet — win the first match!",
+  "top10.error": "Could not load the list; try again shortly.",
+  "nav.top10": "TOP 10",
+  "top10.kicker": "Leaderboard",
+  "top10.sub": "The ten best pilots by match wins, ring-race pace, flight discipline and target intercepts — with their 3D avatars.",
+  "top10.period": "Period",
+  "top10.loading": "Loading…",
+  "top10.pts": "pts",
+  "top10.wins": "{n} wins",
+  "top10.flights": "{n} flights"
 }

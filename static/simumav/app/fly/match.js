@@ -17,6 +17,7 @@ import { aiTag, dfResultTable, resultTable } from './match_hud.js';
 import { isBot } from '/sim/flightsim_match.js';   // HEPGO §44 bot rozeti
 import { DF_LIMITS, dfDefaults, dfError, dfSummary, dfSvg, makeDfT } from '/sim/flightsim_dogfight.js';   // HEPGO §41 it dalaşı (ortak)
 import { TYPE_LABEL, WORLD_MODE_LABEL } from './wizard.js';
+import { ensureAvatarCss, playerImg, precacheAvatars } from '../crew/avatar3d.js';   // §25 3B avatar (salon; yarış öncesi önbelleğe)
 
 const PW_KEY = id => `sm.match.pw.${id}`;   // kurucunun şifresi (yalnız bu tarayıcı oturumu; sunucu düz şifreyi saklamaz)
 const NOAUTO_KEY = id => `sm.match.noauto.${id}`;   // yarış ekranından salona elle dönüldü: salon yeniden yarışa atmasın
@@ -233,9 +234,10 @@ export async function createMatch(payload) {
 
 // ---------------------------------------------------------------- ortak sayfa iskeleti
 function page(view, ctx, { title, sub, body, back = '#/fly' }) {
-  const go = ctx.go || (hh => { location.hash = hh; });
+  // geri: kabuğun üst sol "← Geri" düğmesi (app.js setBack; diğer bölümlerle aynı kalıp) — sayfa içinde ayrı düğme yok
+  if (ctx.setBack) ctx.setBack(tr('common.back'), back);
   const root = h('div', { class: 'sm-fly sm-mt-page' },
-    h('div', { class: 'sm-mt-head' }, h('button', { class: 'btn sm-mt-backbtn', type: 'button', onclick: () => go(back) }, '← ', tr('common.back')),
+    h('div', { class: 'sm-mt-head' },
       h('div', null, h('h1', null, title), sub ? h('p', { class: 'muted' }, sub) : null)), body);
   clear(view, root);
   return root;
@@ -307,6 +309,7 @@ export async function renderLobby(view, id, ctx = {}) {
     return;
   }
   const me = M.me;
+  ensureAvatarCss();
   let left = false, ws = null, wsT = 0, pollT = 0, closed = false, entering = false;
   const players = h('ul', { class: 'sm-mt-players' });
   const side = h('div', { class: 'sm-mt-side' });
@@ -323,7 +326,7 @@ export async function renderLobby(view, id, ctx = {}) {
     root.dataset.state = M.state;
     clear(stateBadge, tr(STATE_KEY[M.state] || M.state)); stateBadge.className = `sm-mt-state s-${M.state}`;
     clear(players, (M.players || []).map((p, i) => h('li', { class: `${p.id === me ? 'me' : ''} ${OUT.has(p.status) ? 'out' : ''} ${isBot(p) ? 'bot' : ''}`.trim(), 'data-uid': String(p.id) },
-      h('span', { class: 'dot', style: { background: p.color || COLORS[i % COLORS.length] } }),
+      h('span', { class: 'dot', style: { background: p.color || COLORS[i % COLORS.length] } }), playerImg(p),
       h('span', { class: `online ${p.online ? 'on' : ''}`, title: tr(isBot(p) ? 'ai.pilot' : p.online ? 'match.online' : 'match.offline') }),
       h('span', { class: 'nm' }, isBot(p) ? '🤖 ' : '', p.name, p.id === me ? ` (${tr('match.you')})` : ''), aiTag(p),
       p.host ? h('span', { class: 'sm-mt-badge host' }, tr('match.host')) : null,
@@ -375,7 +378,9 @@ export async function renderLobby(view, id, ctx = {}) {
     clear(banner, ph === 'race' ? tr(M.state === 'HAZIRLIK' ? 'match.banner_prep' : 'match.banner_race') : ph === 'cancel' ? tr('match.banner_cancel', { r: tr(REASON_KEY[M.reason] || 'match.reason_server') })
       : ph === 'done' ? tr('match.banner_done') : '');
     resBox.hidden = ph !== 'done';
-    if (ph === 'done') clear(resBox, h('h3', null, '⚑ ', tr('match.result_title')), isDf(M) ? h('p', { class: 'muted' }, DT(`df.r_${M.result?.reason || M.reason}`)) : null, isDf(M) ? dfResultTable(M, me) : resultTable(resultRows(M), me));
+    if (ph === 'done') clear(resBox, h('h3', null, '⚑ ', tr('match.result_title')), isDf(M) ? h('p', { class: 'muted' }, DT(`df.r_${M.result?.reason || M.reason}`)) : null, isDf(M) ? dfResultTable(M, me) : resultTable(resultRows(M), me, M.players));
+    // §25: yarış ekranına geçmeden oyuncu avatarları 3B → PNG önbelleğine (uçuş sırasında WebGL açılmaz; HUD yalnız <img>)
+    if (ph === 'lobby' || ph === 'race') precacheAvatars(M.players || []);
     // HAZIRLIK: kendi uçuşum açıldıysa yarış ekranına (yarış ekranından "Geri" ile dönüldüyse kendiliğinden geçilmez → "Yarışa dön" düğmesi)
     let noAuto = false; try { noAuto = sessionStorage.getItem(NOAUTO_KEY(M.id)) === '1'; } catch { /* */ }
     if (!entering && !left && !noAuto && shouldEnterRace(M, me)) { entering = true; setTimeout(() => go(raceHref(M.id)), 400); }

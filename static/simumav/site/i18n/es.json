@@ -218,5 +218,20 @@
   "type.rover": "Vehículo terrestre",
   "fleet.rover_4x4.d": "Explorador 4×4 con dirección Ackermann y mástil EO/IR + LIDAR; hasta 72 km/h con ArduRover.",
   "fleet.rover_ugv.d": "Vehículo terrestre no tripulado de orugas: gira sobre sí mismo (diferencial), torreta de sensores.",
-  "fleet.rover_bot.d": "Robot de reparto de acera de seis ruedas (0,78 m), dirección diferencial, mástil con bandera."
+  "fleet.rover_bot.d": "Robot de reparto de acera de seis ruedas (0,78 m), dirección diferencial, mástil con bandera.",
+  "top10.title": "TOP 10 PILOTOS",
+  "top10.p_30d": "Últimos 30 días",
+  "top10.p_all": "Histórico",
+  "top10.formula": "Puntos = puntos de partida (aro ×100, llegada +250, bonus de puesto; victoria en dogfight 1000) + victoria +300 + ritmo (≤200) + disciplina de vuelo (media ×1,5 × hasta 20 vuelos) + interceptaciones (10 mejores vuelos ×0,5). Las partidas solo contra IA cuentan la mitad.",
+  "top10.privacy": "Nombres y correos se enmascaran. Para salir: Ajustes → «Ocultarme de la clasificación».",
+  "top10.empty": "Aún no hay pilotos clasificados: ¡gana la primera partida!",
+  "top10.error": "No se pudo cargar la lista; inténtalo de nuevo en breve.",
+  "nav.top10": "TOP 10",
+  "top10.kicker": "Clasificación",
+  "top10.sub": "Los diez mejores pilotos por victorias, ritmo en carreras de aros, disciplina de vuelo e interceptaciones, con sus avatares 3D.",
+  "top10.period": "Periodo",
+  "top10.loading": "Cargando…",
+  "top10.pts": "pts",
+  "top10.wins": "{n} victorias",
+  "top10.flights": "{n} vuelos"
 }

@@ -1,7 +1,26 @@
 // Google Maps JS yükleyici (anahtar /api/meta.maps_key). Anahtar yoksa null döner → modüller yedek arayüzü kullanır.
-let loadingP = null;
+// Anahtar reddi: Maps JS betiği 200 ile yüklenir ama kimlik doğrulama başarısız olursa (RefererNotAllowedMapError / ApiNotActivatedMapError /
+// InvalidKeyMapError) haritanın yerine gri "Bu sayfa Google Haritalar'ı düzgün şekilde yükleyemedi" kutusu çizer ve küresel `gm_authFailure()`
+// çağırır. Onu yakalarız: `gmapsAuthFailed()` true olur, 'sm:gmaps-auth' olayı yayılır → parkur editörü uydu yedeğine (satmap.js) geçer;
+// sonraki yüklemeler hemen reddedilir (aynı sayfada yeniden denemek aynı hatayı verir). Aynı anahtar ve kısıt Google 3B karolarını da (403) etkiler.
+let loadingP = null, authFailed = false;
+export const gmapsAuthFailed = () => authFailed;
+export const GMAPS_AUTH_EVENT = 'sm:gmaps-auth';
+function hookAuthFailure() {
+  if (typeof window === 'undefined' || window.__smGmAuthHooked) return;
+  window.__smGmAuthHooked = true;
+  const prev = window.gm_authFailure;
+  window.gm_authFailure = () => {
+    authFailed = true;
+    try { prev?.(); } catch { /* */ }
+    console.warn('Google Haritalar anahtarı reddedildi (gm_authFailure) → uydu yedeği');
+    window.dispatchEvent(new CustomEvent(GMAPS_AUTH_EVENT));
+  };
+}
 export function loadGoogleMaps(key, lang = 'tr') {
   if (!key) return Promise.resolve(null);
+  if (authFailed) return Promise.reject(Object.assign(new Error('Google Haritalar anahtarı reddedildi'), { code: 'gmaps_auth' }));
+  hookAuthFailure();
   if (window.google?.maps?.importLibrary) return window.google.maps.importLibrary('maps').then(() => window.google);
   loadingP ??= new Promise((resolve, reject) => {
     // `loading=async` ile API, betik onload'unda henüz hazır değildir (importLibrary yok) → `callback` ile hazır sinyali (inline script yok; CSP uyumlu)

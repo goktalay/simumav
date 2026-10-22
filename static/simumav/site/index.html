@@ -33,6 +33,7 @@
   <script src="js/theme-boot.js"></script>
   <link rel="stylesheet" href="css/site.css">
   <link rel="stylesheet" href="css/consent.css">
+  <link rel="stylesheet" href="css/top10.css">
   <script type="module" src="js/site.js"></script>
 </head>
 <body data-scene="hero">
@@ -43,6 +44,7 @@
     <nav class="nav-links" aria-label="Site">
       <a href="#modules" data-i18n="nav.modules">Modüller</a>
       <a href="#hangar" data-i18n="nav.hangar">Hangar</a>
+      <a href="#top10" data-i18n="nav.top10">TOP 10</a>
       <a href="#systems" data-i18n="nav.systems">EO · Radar</a>
       <a href="#physics" data-i18n="nav.physics">Fizik</a>
     </nav>
@@ -106,6 +108,23 @@
           <li class="mod-card" data-reveal data-mod="fly"><span class="mod-ico"><img src="/brand/icons/fly.svg" alt="" width="64" height="64" loading="lazy"></span><h3><a class="mod-link" href="#fly" data-i18n="mod.fly.t">Uç</a></h3><p data-i18n="mod.fly.d">Tam HUD ve FPV.</p><span class="mod-more" aria-hidden="true" data-i18n="mod.more">Ayrıntılar</span></li>
           <li class="mod-card" data-reveal data-mod="ops"><span class="mod-ico"><img src="/brand/icons/ops.svg" alt="" width="64" height="64" loading="lazy"></span><h3><a class="mod-link" href="#ops" data-i18n="mod.ops.t">Operasyon</a></h3><p data-i18n="mod.ops.d">Tekrar oynat, analiz et.</p><span class="mod-more" aria-hidden="true" data-i18n="mod.more">Ayrıntılar</span></li>
         </ol>
+      </div>
+    </section>
+
+    <!-- TOP 10 PİLOT (§25): oturumsuz /api/leaderboard — sunucu maskeli ad/e-posta; 3B avatarlar tek WebGL bağlamı (js/top10.js) -->
+    <section class="scene top10" id="top10" aria-labelledby="top10-title">
+      <div class="wrap">
+        <p class="kicker" data-reveal data-i18n="top10.kicker">Liderlik tablosu</p>
+        <h2 id="top10-title" data-reveal data-i18n="top10.title">TOP 10 PİLOT</h2>
+        <p class="lead" data-reveal data-i18n="top10.sub">Karşılaşma galibiyetleri, halka yarışı temposu, uçuş disiplini ve hedef önleme puanı.</p>
+        <div class="t10-tabs" role="tablist" data-i18n-attr="aria-label:top10.period">
+          <button type="button" role="tab" aria-selected="true" data-top10-period="30d" data-i18n="top10.p_30d">Son 30 gün</button>
+          <button type="button" role="tab" aria-selected="false" data-top10-period="all" data-i18n="top10.p_all">Tüm zamanlar</button>
+        </div>
+        <ol class="t10-podium" data-top10-podium aria-live="polite"></ol>
+        <ol class="t10-list" data-top10-list start="4"></ol>
+        <p class="small t10-note" data-i18n="top10.formula">Puan = karşılaşma puanı + galibiyet bonusu + tempo + disiplin + önleme.</p>
+        <p class="small t10-note" data-i18n="top10.privacy">Adlar ve e-postalar maskelenir; ayarlardan listeden çıkabilirsin.</p>
       </div>
     </section>
 

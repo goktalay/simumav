@@ -12,6 +12,7 @@ import { countSteps, createSfx, rankChange } from '/sim/flightsim_sfx.js';   // 
 import { createMatchLayer } from '/sim/flightsim_match3d.js';
 import { createDogfightHud, dfResultRows, makeDfT, roleOf } from '/sim/flightsim_dogfight.js';   // HEPGO §41 it dalaşı HUD'u (ortak)
 import { fmtClock, fmtDist, lobbyHref, REASON_KEY, resultRows, STATUS_KEY } from './match_core.js';
+import { ensureAvatarCss, playerImg, rowImg } from '../crew/avatar3d.js';   // §25: uçuşta YALNIZ önbellekli PNG / 2B yedek (ikinci WebGL bağlamı yok)
 
 // HEPGO §44 yapay zekâ pilot rozeti 'AI · Zor' (seviye 7 dilde ai.level_*)
 export const aiTag = p => (isBot(p) ? h('span', { class: 'sm-ai-badge', title: tr('ai.pilot') }, `AI${p.level ? ` · ${tr(`ai.level_${p.level}`)}` : ''}`) : null);
@@ -20,6 +21,7 @@ const DT = makeDfT(tr, true);
 const isDf = m => (m?.kind || 'rings') === 'dogfight';
 export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele = () => null, mid, me, go = hash => { location.hash = hash; }, sfx = null }) {
   const clock = createClock();
+  ensureAvatarCss();
   const fx = sfx || createSfx({ key: 'sm.sfx', keyed: true });   // HEPGO §44: oturumun efekt yolu (yoksa yedek bağlam)
   let prevRank = null, lastRankT = 0;
   let M = null, layer = null, worldReady = false, introDone = false, resultShown = false, disposed = false, ringsSig = '', dfHud = null;
@@ -57,7 +59,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     if (!M || isDf(M)) return;
     const rows = liveStandings(M.players, pos), total = (M.rings || []).length;
     clear(board.querySelector('ol'), rows.map((p, i) => h('li', { class: `${p.id === me ? 'me' : ''} ${ACTIVE.has(p.status) ? '' : 'out'}`.trim() },
-      h('span', { class: 'v' }, `${i + 1}.`), h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }), h('span', { class: 'nm' }, isBot(p) ? '🤖 ' : '', p.name),
+      h('span', { class: 'v' }, `${i + 1}.`), h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }), playerImg(p), h('span', { class: 'nm' }, isBot(p) ? '🤖 ' : '', p.name),
       h('span', { class: 'v' }, p.finished ? '⚑' : `${p.rings ?? 0}/${total}`))));
   };
   const drawWait = () => {
@@ -70,7 +72,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
       clear(box, h('div', { class: 'ttl' }, tr(st === 'GERI_SAYIM' ? 'match.wait_go' : 'match.wait_title')),
         h('div', { class: 'sub' }, st === 'GERI_SAYIM' ? (isDf(M) ? DT('df.wait_go') : tr('match.wait_go_sub')) : tr('match.wait_ready', { r: ready, t: act.length })),
         ph ? h('div', { class: 'big' }, String(Math.ceil(ph.remain))) : null,
-        h('ul', null, (M.players || []).filter(p => ACTIVE.has(p.status) || p.status === 'dustu').map(p => h('li', null, h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }),
+        h('ul', null, (M.players || []).filter(p => ACTIVE.has(p.status) || p.status === 'dustu').map(p => h('li', null, h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }), playerImg(p),
           h('span', { class: 'nm' }, p.name, p.id === me ? ` (${tr('match.you')})` : ''), h('span', { class: `sm-mt-badge st-${p.status}` }, tr(STATUS_KEY[p.status] || p.status))))));
     } else wait.hidden = true;
   };
@@ -118,9 +120,10 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     clear(resEl, h('div', { class: 'box', role: 'dialog', 'aria-modal': 'true' },
       h('div', { class: 'trophy', 'aria-hidden': 'true' }, '★'),
       h('h2', null, win ? (win.id === me ? tr('match.result_you_won') : tr('match.result_winner', { n: win.name })) : tr('match.result_title')),
+      podium(df ? dfResultRows(M).filter(r => r.won).map(r => ({ ...r, rank: 1 })) : rows.slice(0, 3), M.players),
       score != null ? h('div', { class: 'sm-mt-score' }, h('span', { class: 'muted' }, tr('ai.your_score')), scoreEl) : null,
       h('p', { class: 'sub' }, df ? DT(`df.r_${M.result?.reason || M.reason}`) : tr(REASON_KEY[M.result?.reason || M.reason] || 'match.reason_first')),
-      df ? dfResultTable(M, me) : resultTable(rows, me),
+      df ? dfResultTable(M, me) : resultTable(rows, me, M.players),
       h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: () => { resEl.hidden = true; } }, tr('common.ok')),
         h('button', { class: 'btn primary', type: 'button', onclick: () => go(lobbyHref(mid)) }, tr('match.back_lobby')))));
     if (row) {
@@ -219,17 +222,25 @@ export function dfResultTable(M, me) {
     h('table', { class: 'sm-mt-table' },
       h('thead', null, h('tr', null, [DT('df.role'), tr('match.col_player'), DT('df.result'), tr('match.col_speed')].map(x => h('th', null, x)))),
       h('tbody', null, rows.map(r => h('tr', { class: `${r.id === me ? 'me' : ''} ${r.won ? 'win' : ''}`.trim() },
-        h('td', null, r.role ? h('span', { class: `sm-df-badge ${r.role}` }, DT(`df.${r.role}`)) : '—'), h('td', null, h('b', null, r.name), aiTag((M.players || []).find(p => p.id === r.id) || r)),
+        h('td', null, r.role ? h('span', { class: `sm-df-badge ${r.role}` }, DT(`df.${r.role}`)) : '—'), h('td', null, rowImg(M.players, r), h('b', null, r.name), aiTag((M.players || []).find(p => p.id === r.id) || r)),
         h('td', null, h('span', { class: `sm-mt-badge ${r.won ? 'st-hazir' : 'st-dustu'}` }, DT(r.won ? 'df.won' : 'df.lost'))),
         h('td', { class: 'mono' }, r.max_speed_ms != null ? `${Math.round(r.max_speed_ms * 3.6)} km/h` : '—'))))));
 }
 
-// Sonuç tablosu (yarış ekranı + salon sayfası ortak)
-export function resultTable(rows, me) {
+// §25 sonuç podyumu: ilk üç (it dalaşında kazanan) 3B avatar görüntüsü (önbellek / 2B yedek)
+export function podium(rows, players) {
+  const top = (rows || []).filter(r => r && (r.finished || r.winner || r.won || (r.rings ?? 0) > 0)).slice(0, 3);
+  if (!top.length) return null;
+  const order = top.length === 3 ? [top[1], top[0], top[2]] : top;
+  return h('div', { class: 'sm-mt-podium' }, order.map(r => { const k = top.indexOf(r) + 1; return h('div', { class: `pd p${k}` }, rowImg(players, r), h('b', null, r.name), h('span', { class: 'muted' }, `${k}.`)); }));
+}
+
+// Sonuç tablosu (yarış ekranı + salon sayfası ortak); players: avatar için oyuncu listesi (§25)
+export function resultTable(rows, me, players = null) {
   return h('table', { class: 'sm-mt-table' },
     h('thead', null, h('tr', null, ['#', tr('match.col_player'), tr('match.col_time'), tr('match.col_rings'), tr('match.col_next'), tr('match.col_speed'), tr('match.col_status')].map(x => h('th', null, x)))),
     h('tbody', null, rows.map(r => h('tr', { class: `${r.id === me ? 'me' : ''} ${r.winner ? 'win' : ''}`.trim() },
-      h('td', null, r.winner ? '★' : String(r.rank)), h('td', null, h('b', null, r.name), aiTag(r)), h('td', { class: 'mono' }, r.time_s != null ? fmtClock(r.time_s) : '—'),
+      h('td', null, r.winner ? '★' : String(r.rank)), h('td', null, rowImg(players, r), h('b', null, r.name), aiTag(r)), h('td', { class: 'mono' }, r.time_s != null ? fmtClock(r.time_s) : '—'),
       h('td', { class: 'mono' }, `${r.rings}/${r.total}`), h('td', { class: 'mono' }, r.time_s != null ? '—' : fmtDist(r.dist_next_m)),
       h('td', { class: 'mono' }, r.max_speed_ms != null ? `${Math.round(r.max_speed_ms * 3.6)} km/h` : '—'),
       h('td', null, h('span', { class: `sm-mt-badge st-${r.status}` }, r.finished ? tr('match.st_finished') : (ACTIVE.has(r.status) ? tr('match.st_dnf') : tr(STATUS_KEY[r.status] || r.status))))))));

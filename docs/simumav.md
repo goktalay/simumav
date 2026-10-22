@@ -853,3 +853,135 @@ anlık görüntüde adları durur); `snapshot.match = {id, start}`.
   yenilgi / puan sayacı (`ai.your_score`), it dalaşında angajman tonu; önleme ve angajman başarısında "coin"; uçuş özetinde disiplin puanı sayacı.
 - Metinler `ai.*`, `sfx.*` (7 dil). Testler: `tests.test_simumav_match` (`yapay_zeka`), `node tests/test_flightsim_sfx.mjs`. Görsel:
   `./.venv/bin/python -m tests.simumav_aibot_shots` → `/tmp/aibot-shots/sm-*.png`.
+
+## 25. Düzeltmeler (smfix): Google harita yedeği, hangar kart 3B, Uç geri düğmesi, iki zamanlı motor sesi
+- **Yeni Parkur harita hatası (PROD konsolu: `tile.googleapis.com 403`, `GoogleCloudAuth … 403`, Maps JS gri hata kutusu)** — kök neden: SIMUMAV tarayıcıya
+  HEPGO ile AYNI `GOOGLE_MAPS_API_KEY`'i verir (`/api/meta.maps_key`, ortak `.env`); anahtarın **HTTP yönlendiren (referrer) kısıtında simumav.com yok**
+  (caymaz.app / *.hepgo.com izinli; simumav.com ve www.simumav.com → `PERMISSION_DENIED: Requests from referer … are blocked`). CSP doğru (maps.googleapis.com,
+  maps.gstatic.com, *.googleapis.com, tile.googleapis.com, *.gstatic.com, *.ggpht.com). googletagmanager/google.com/doubleclick CSP reddi GA4 + Google Ads
+  etiketinden (rıza sonrası) — haritayla ilgisiz, zararsız; CSP'ye eklenmedi.
+  Kod: `tracks/gmap.js` küresel `gm_authFailure` yakalanır (`gmapsAuthFailed()`, olay `sm:gmaps-auth`); `tracks/satmap.js` anahtarsız uydu karolu
+  (Esri World Imagery, img-src) 2B seçici — pickerMap ile aynı arabirim (tıkla = konum, sürükle = kaydır, tekerlek/+− yakınlaştır, işaretçi ve halkalar
+  sürüklenir, arama kutusu "enlem, boylam" kabul eder); parkur editörü Google reddinde / yüklenemezse / anahtar yoksa ona geçer + bilgi notu
+  (`tracks.maps_unavailable`); Google 3B seçiliyken `tracks.g3d_unavailable` notu. Uçuşta `flightsim3d` `opts.g3dFallback: 'real'` (yalnız SIMUMAV; HEPGO
+  prosedürel kalır): Google 3B alınamazsa **Gerçek araziye** düşer (`onFallback(msg, {from, to})`; `fly.g3d_fallback_real`; atıf gerçek arazi kaynaklarına).
+  Menü uçuş sahnesi `MODEL_URLS`: var olmayan `plane.glb`/`vtol.glb`/`fpv.glb`… adayları kaldırıldı (her açılışta 404) — yalnız depoda olan GLB'ler.
+- **Hangar şeridi**: her kartta yavaşça dönen mini 3B model (`miniDroneView`: dronun GLB'si / prosedürel şablonu, kullanıcı rengi; 0,45 rad/sn); `makeStage`
+  görünümleri paylaşılan TEK çiziciyle (core/three.js) — ek WebGL bağlamı yok; ekran dışı kartlar render edilmez; en çok `MAX_CARD_VIEWS` 12 kart canlı.
+- **Uç geri düğmesi**: kabuk `#back` (app.js `setBack`; hedef işlev de olabilir): `#/fly` seçim → "Ana Menü"; sihirbaz (solo / multi / ai) → bir önceki
+  adım, ilk adımda `#/fly`; davet / salon → `#/fly`; uçuş ve yarış tam ekran → gizli (kendi geri düğmeleri). Sayfa içi `.sm-mt-backbtn` kaldırıldı.
+- **Motor sesi**: CAYMAZ (yakıtlı sabit kanat / VTOL) iki zamanlı benzinli sentez — ayrıntı HEPGO docs/ucus-simulatoru.md §16; `fly/session.js`
+  `createEngineAudio({ engine: power.engine })`.
+- Testler: `node tests/test_flightsim_audio.mjs`, `node tests/test_simumav_ui.mjs`; e2e + görseller: `./.venv/bin/python -m tests.simumav_smfix_e2e` → `/tmp/smfix-shots`.
+
+## 26. Arka plan müziği, kanal başına ses düzeyleri ve bölüm başına hareketli "soft" arka planlar (oyun arayüzü)
+
+**Dosyalar:** `static/simumav/app/ui/audiomix.js` (kanal tercihleri, saf), `ui/music.js` (prosedürel müzik), `ui/backdrop.js` (sahne yöneticisi,
+saf eşleme/bütçe), `ui/backdrop/scenes.js` (5 Canvas2D sahne), `ui/backdrop/caymaz_atlas.webp` (+ üretici `tools/simumav_caymaz_sprites.py`),
+kabuk bağlantısı `app.js` (`syncAmbience`), ayarlar `settings/index.js`, §42 uyarı yolu `fly/session.js` (tek satır: `audio: withAlertGain(audio)`),
+stiller `fx.css`, lisans kaydı `static/simumav/LICENSES.md`. Bölüm modüllerinin içerik kodu DEĞİŞMEDİ (birleştirme kolay).
+
+**Ses kanalları (cihazda saklanır; mevcut anahtarlarla uyumlu):**
+
+| Kanal | Anahtar | Etkisi |
+|---|---|---|
+| Ana ses + Ana düzey | sunucu ayarı `sound`, `volume` | hepsinin üstünde çarpan (`ui/sfx.js` master; ses kapalı → master 0, müzik durur) |
+| Müzik | `sm.music` `{on, vol}` (vars. açık, 55) | arka plan müziği |
+| Oyun efektleri | `sm.sfx` `{on, vol}` (HEPGO §44 `createSfxPrefs` ile AYNI biçim) | menü/düğme hover-tık sesleri, geçiş süpürmesi + uçuşta §44 halka/sıralama/puan |
+| Uyarı sesleri | `sm.gpws.mode` (açık = `full`, sessiz = `visual`; `off`/`lang` alanları korunur) + `sm.alertvol` `{vol}` | §42 uyarı tonu ve sesli okuma (`withAlertGain` vekili `alertBus` kazancını ve konuşma düzeyini ölçekler), §10 yakıt/batarya alarmı |
+| Motor ve uçuş sesi | `fs.audio.on` `'1'/'0'`, `fs.audio.vol` `0..100` (HEPGO `createAudioPrefs`) | uçuşta motor/rüzgâr/çarpışma; menü uçuş sahnesi uğultusu (`sm:engine` açıksa) da bu düzeyle ölçeklenir |
+
+Kazanç eğrisi `(vol/100)^1.5`. Değişiklikte `sm:mix` olayı → müzik/efekt anında güncellenir. Ayarlar › "Ses düzeyleri" başlığı altında her
+kanal: aç/kapa anahtarı + %5 adımlı kaydırıcı + yüzde; efekt ve uyarı kanalında bırakınca önizleme sesi.
+
+**Müzik (`ui/music.js`) — dosya/CDN/üçüncü taraf varlık YOK:** Web Audio sentezi, La minör `Am7 → Fmaj7 → Cmaj7 → G6`, 76 BPM, akor başına 2 ölçü
+(128 adımlık ≈ 25 sn döngü). Katmanlar: pad (akor notası başına ±7 cent iki testere, yavaş süzgeç LFO'su), bas, tohumlu arpej (her döngüde hafif
+değişir; dotted-8'lik gecikme), 2 ölçüde bir çan; üretilmiş dürtü yanıtıyla yankı, kompresör → ortak ana kazanç (tek `AudioContext`, `sfx.bus()`).
+Zamanlayıcı 120 ms'de bir 0,5 sn ileriyi planlar. Otomatik oynatma kuralı: ilk `pointerdown`/`keydown`/`touchend`'de 2,5 sn fade-in.
+Bastırma (`musicDuck`, saf): menü/bölümler 1 · Uç seçimi/sihirbaz/salon 0,7 · **uçuş oturumu (`#view.sm-fly-session`) 0** · sekme gizli 0;
+0'a inince 1,2 sn fade-out ve zamanlayıcı DURUR (CPU 0). Bölüm geçişlerinde kesintisiz (kabuk düzeyinde yaşar). Teşhis `window.__smMusic()`.
+
+**Hareketli arka planlar (`ui/backdrop.js` + `scenes.js`):** tek `<canvas id="backdrop">` (JS ile `#view`'in önüne eklenir; `position:fixed; z-index:0`,
+`#view` z-index 1), **Canvas2D — WebGL bağlamı açmaz** (uçuşun tek paylaşılan WebGL renderer kuralına dokunmaz; `__smGl()` değişmez).
+Eşleme (`sceneFor`, saf): `menu` → yok (menünün kendi canlı uçuş sahnesi `#stage`), `hangar` → hangar, `crew` → brifing sınıfı, `tracks` → tel kafes
+küre, `missions` → ilaçlama tarlası, `fly` (Tek/Çok seçimi, sihirbaz, salon) → CAYMAZ; `ops`/`settings`/`support` → yok; uçuş oturumu → yok
+(döngü durur, önbellek tuvalleri bırakılır). Ayarlar › "Hareketli arka planlar" (`sm:bgfx`, eskiden yalnız menü uçuşu) ikisini birlikte kapatır.
+
+| Sahne | İçerik |
+|---|---|
+| hangar | perspektif hangar: açık kapıdan gece göğü + pist ışıkları, kemer tavan makasları, derinlik boyunca kayan dalga hâlinde tavan ışıkları ve zemindeki dikey yansımaları, süpürülen projektör, biri içeri (önden) biri dışarı (arkadan) taksi yapan CAYMAZ'lar (kapı dışındayken açıklığa kırpılır, zeminde ayna yansıması), toz zerreleri |
+| crew | brifing sınıfı: projeksiyon perdesinde ızgara, aşamalı çizilen 3 uçuş rotası + üstünde uçak simgesi, yavaş dönen rüzgâr okları alanı, radar süpürmesi, lazer imleç; yan tahtalarda silik şemalar; arkadan sıralar/sandalye sırtları; perde ışıması + projektör tozu |
+| tracks | dönen tel kafes küre (enlem/boylam; arka yüz silik), şehir ışıkları, büyük daire yörüngelerinde 6 uçak simgesi + solan izler (yörüngeden analitik; durum yok), atmosfer halesi, yıldızlar |
+| missions | alacakaranlık tarla (yakınsayan ekin şeritleri, kamera ilerlemesi), mekik deseninde sıra sıra geçen ilaçlama dronu (dönen pervaneler, seyir ışıkları, gölge), iki memeden püskürtme bulutu (havuzlu ≤ 240 parçacık, yan rüzgârla sürüklenip çöker) |
+| caymaz | gökyüzü + güneş ışıması, iki katman paralaks tepe, üç derinlikte bulutlar, yavaş sinematik kamera yörüngesi (atlas kareleri arası karışım, 52°–128°), hafif yatış, ince hız çizgileri |
+
+CAYMAZ görüntüsü çalışma anında WebGL'siz çizilsin diye `static/models/caymaz-sim.glb` (HEPGO'nun kendi modeli) **önceden** 32 yörünge açısından
+saydam zeminli bir WebP atlasına çizilir (`tools/simumav_caymaz_sprites.py`: headless Chromium + three.js; 2560×800, ≈ 132 KB). Sahne ışığına uysun
+diye çalışma anında bir kez renklendirilmiş kopyası önbelleğe alınır.
+
+**Performans:** düşük çözünürlükte çizilir (ölçek 0,7; düşük güçte 0,5; en çok 1400 px genişlik) ve büyütülür (doğal yumuşaklık + `blur(.4px)`),
+30 fps sınırı (düşük güç: mobil dokunmatik < 900 px, ≤ 4 çekirdek, ≤ 4 GB, Save-Data → 24 fps, yoğunluk 0,55). Durağan katmanlar boyut
+değişince bir kez önbellek tuvaline çizilir. `prefers-reduced-motion` → tek durağan kare (döngü yok); sekme gizli → döngü durur. Kare süresi
+teşhisi `window.__smBackdrop()` (`avgMs`, `worstMs`). Açık temada katman %20 opaklıkta silik.
+
+**Arayüz sesleri:** `#view` içindeki düğmelere (`button`, `.btn`, `[role=button]`, `.sm-mode-card`, `.sm-card`) devredilmiş hover/tık sesleri
+(menü kartları kendi seslerini çalar; uçuş oturumu ve `[data-nosfx]` hariç), efekt düzeyine bağlı.
+
+**Testler:** `node tests/test_simumav_sound.mjs` (kanal tercihleri + mevcut anahtar uyumu, kazanç/bastırma, uyarı vekili, müzik kuramı, bölüm→sahne,
+reduced-motion/düşük güç bütçesi, atlas, WebGL/dış dosya yok statik denetimi, lisans kaydı); görsel/davranış `tests/simumav_sound_shots.py`
+(her bölüm × masaüstü/mobil × TR/EN → `/tmp/smsound-shots`, müzik fade-in, uçuş oturumunda müzik 0 + arka plan kapalı, gizli sekme, ayar kaydırıcıları,
+reduced-motion).
+
+## 27. 3B pilot avatarları + TOP 10 PİLOT (SIMUMAV'a özgü)
+### 25.1 Avatar (Mürettebat)
+- **Model**: prosedürel düşük poli büst (`static/simumav/app/crew/avatar_mesh.js`, three.js ile üretilir; harici model/doku/yazı tipi YOK → lisans
+  kaydı: tümü proje kodu, CC0 eşdeğeri; yama ve "AI" yazıları çalışma anında CanvasTexture). Parçalar: tulum (lathe gövde, yaka, fermuar), göğüste
+  yama + isim bandı, boyun, yüz (ten tonu, gözler), kask (kapak + vizör açıklı bant + kenar + kulaklık), vizör (aynalı: metal; değilse yarı saydam,
+  gözler görünür), aksesuar (mikrofon | tepe sırtı | anten | yarış şeridi). Yapay zekâ pilot (§24): gri kask, kırmızı aynalı vizör, alın + iki yanda
+  "AI", anten, seviye renginde şerit (`botAvatar(level)`).
+- **Ayar** (`pilots.avatar` JSON; sunucu `app/simumav/avatar.py` doğrular, istemci eşi `crew/avatar_core.js` — sabitler node testinde birebir
+  karşılaştırılır): `{v:1, helmet, visor, mirror, suit, skin: s1…s8, patch: none|star|wing|bolt|chevron|target|shield|cross, patch_color,
+  accessory: none|mic|crest|antenna|stripe}`; renkler `#rrggbb` (palet + serbest seçici). Bilinmeyen alan atılır; geçersiz alan → 422; kısmi PUT
+  mevcut ayarla birleşir; eksik alan karakter varsayılanı. 600 bayt üst sınırı.
+- **Eski 2B karakterler** (`img/pilots/p01…p10.svg`) `LEGACY` ile 3B karşılığa eşlenir (SVG renklerinden: kask/tulum/ten/vizör); düzenleyicide
+  "Hazır pilotlar" olarak da seçilir. `character` sütunu korunur (geri uyum; `svg` alanı API'de duruyor).
+- **API**: `POST /api/crew {name, character, avatar?}`, `PUT /api/crew/{id} {avatar?}` (+ ad/varsayılan), `GET /api/crew/avatar-options`;
+  pilot yanıtlarında `avatar` (normalize). Karşılaşma anlık görüntüsünde (`GET /api/match/{id}`, WS `match`) her oyuncuda `avatar` (varsayılan
+  pilotun; botta `null` → istemci AI avatarı; `match.pilot_avatari`).
+- **Düzenleyici** (`crew/index.js`): kart ✎ / çift tık / "+" → geniş pencere: solda canlı dönen 3B önizleme (`avatar3d.mountAvatarStage`,
+  paylaşılan çizicinin `makeStage` görünümü; sürükleyerek döndür), "Rastgele"; sağda ad, hazır pilotlar, kask, vizör + aynalı, tulum, ten tonu (8),
+  yama (çizimli seçenekler) + rozet rengi, aksesuar. Kartlarda 256 px 3B PNG.
+### 25.2 Avatar görüntüleri ve WebGL kuralı
+- `crew/avatar3d.js`: `avatarImage(cfg, size)` → paylaşılan çizici (`core/three.js snapshot`: tek render, 2B tuvale kopya, görünüm kaydı yok,
+  boşta bırakma kuralı) → PNG dataURL; bellek + `sessionStorage` (48 girdi) önbelleği, anahtar `avatarKey` (ayar + boyut).
+- **Uçuş ekranı açıkken** (`.sm-fly-session`) WebGL'e hiç dokunulmaz: önbellekte yoksa aynı ayardan **2B yedek portre** (`drawAvatar2D`, bellekte
+  tutulur). Salon (`renderLobby`) oyuncu avatarlarını yarıştan önce `precacheAvatars` ile 128 px'e render eder → yarış ekranındaki canlı sıralama,
+  bekleme kutusu, sonuç podyumu ve tablosu yalnız `<img>` kullanır (`playerImg` / `rowImg`). Doğrulama: e2e'de uçuşta `__smGl() ≤ 1`.
+### 25.3 TOP 10 PİLOT — sıralama formülü (v1; `avatar.siralama`, sabitler `avatar.PUAN`)
+Dönem: **son 30 gün** (`period=30d`, karşılaşma bitişi / uçuş başlangıcı) ya da **tüm zamanlar** (`all`). Kullanıcı başına:
+- **Karşılaşma puanı** = Σ ağırlık × (§44 sonuç puanı + galibiyet bonusu 300). Halka yarışı: halka × 100 + bitirdiyse 250 + sıra bonusu
+  max(0, 200 − 50·sıra); it dalaşı: kazanana 1000 + kovalayanın en uzun tutması × 100 (≤ 500). Yalnız `BITTI` karşılaşmalar.
+  **Ağırlık** 1; rakiplerin hepsi yapay zekâysa 0,5 (bota karşı puan çiftliği sınırlanır).
+- **Tempo** (halka yarışı süreleri) = Σ ağırlık × clamp(20 × (15 − süre/halka sayısı), 0, 200) — halka başına 5 sn → 200, ≥ 15 sn → 0.
+- **Uçuş disiplini** (§42 `summary.alerts.score`, yalnız ≥ 60 sn uçuşlar) = round(ortalama × 1,5 × min(uçuş sayısı, 20)) — en çok 3000.
+- **Hedef önleme** (§24 `summary.targets.score`) = round(en iyi 10 uçuşun toplamı × 0,5).
+- **Toplam** = karşılaşma + tempo + disiplin + önleme; 0 puanlılar listelenmez. Eşitlikte galibiyet, sonra uçuş sayısı, sonra eski hesap önde.
+- **Hariç**: botlar (`match_players.is_bot`, negatif kimlik) hiç sayılmaz/listelenmez; `users.settings.lb_hidden` (Ayarlar → "Liderlik tablosunda
+  görünme", `PUT /api/settings {leaderboard_hidden}`; varsayılan görünür) olan kullanıcı listede yer almaz (değişince önbellek hemen düşer).
+### 25.4 Uç nokta ve gizlilik
+- `GET /api/leaderboard?period=30d|all` (oturumsuz) → `{period, generated_at, ttl_s: 300, formula: 'v1', pilots: [{rank, name, email, avatar,
+  score, wins, matches, flights, parts: {match, pace, discipline, intercept}}]}`. **Kullanıcı kimliği, ham ad/e-posta dönmez**; maske sunucuda:
+  ad → ad + soyadın baş harfi + sabit 5 yıldız (`M***** K*****`; orta adlar atılır, tek kelime `E*****`, Türkçe büyük harf İ/I, e-posta biçimli ad →
+  yerel kısmın baş harfi), e-posta → ilk 2 harf + `***@` + alan adının (ilk etiket) ilk 2 harfi + `***.` + TLD (`mk***@gm***.com`, alt alan adı
+  `ab***@ma***.tr`). Bellek önbelleği dönem başına 5 dk (`Cache-Control: public, max-age=300`), IP başına 30 istek/dk (429).
+- **Gösterim**: tanıtım sitesi `#top10` bölümü (`site/js/top10.js`, `css/top10.css`; tembel yükleme; ilk üç podyum + 4–10 liste; avatarlar sitenin
+  tek paylaşılan bağlamıyla tuvale; 1. pilot görünürken döner; WebGL yoksa 2B yedek) + oyun menüsünde "🏆 TOP 10 PİLOT" penceresi (`menu/top10.js`).
+### 25.5 DB göçü v6 (idempotent)
+- `pilots.avatar TEXT` — `init()` PRAGMA denetimiyle ALTER (yalnız yoksa); `avatar IS NULL` satırlar `LEGACY[character]` ile doldurulur
+  (kullanıcı değişikliği ezilmez). Yeni kullanıcının varsayılan pilotu p01 karşılığıyla oluşur. `SCHEMA_VERSION = 6`.
+### 25.6 Metinler, testler, görseller
+- Metinler: oyun `avatar.*`, `top10.*`, `settings.lb_hidden*`; site `nav.top10`, `top10.*` (7 dil).
+- Testler: `./.venv/bin/python -m tests.test_simumav_avatar` (maske kenar durumları, avatar doğrulama/kısmi PUT, v6 göçü, formül, 30 gün / tüm
+  zamanlar, botlar hariç, gizlilik ayarı, maskeli/kimliksiz yanıt, önbellek, 429), `tests.test_simumav_match` (salon/yarış avatarı),
+  `node tests/test_simumav_avatar.mjs` (sabitler sunucuyla birebir, tüm parça birleşimleri gerçek three.js ile, WebGL kuralı, i18n).
+- Görseller: `./.venv/bin/python -m tests.simumav_avatar_shots` → `/tmp/smavatar-shots/*.png`.

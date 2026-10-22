@@ -218,5 +218,20 @@
   "type.rover": "Kara aracı",
   "fleet.rover_4x4.d": "Ön tekerden dönen (Ackermann) 4×4 keşif aracı, EO/IR + LIDAR direği; ArduRover ile 72 km/h’e kadar.",
   "fleet.rover_ugv.d": "Paletli insansız kara aracı: yerinde döner (diferansiyel sürüş), sensör kulesi.",
-  "fleet.rover_bot.d": "6 tekerli kaldırım teslimat robotu (0,78 m), diferansiyel sürüş, bayrak direği."
+  "fleet.rover_bot.d": "6 tekerli kaldırım teslimat robotu (0,78 m), diferansiyel sürüş, bayrak direği.",
+  "top10.title": "TOP 10 PİLOT",
+  "top10.p_30d": "Son 30 gün",
+  "top10.p_all": "Tüm zamanlar",
+  "top10.formula": "Puan = karşılaşma puanı (halka ×100, bitiriş +250, sıra bonusu; it dalaşı galibiyeti 1000) + galibiyet +300 + halka temposu (≤200) + uçuş disiplini (ort. puan ×1,5 × en çok 20 uçuş) + hedef önleme (en iyi 10 uçuş ×0,5). Yalnız yapay zekâya karşı oynanan karşılaşmalar yarım sayılır.",
+  "top10.privacy": "Adlar ve e-postalar maskelenir. Listede görünmek istemiyorsan Ayarlar → “Liderlik tablosunda görünme”.",
+  "top10.empty": "Henüz puan alan pilot yok — ilk karşılaşmayı sen kazan!",
+  "top10.error": "Liste alınamadı; biraz sonra tekrar dene.",
+  "nav.top10": "TOP 10",
+  "top10.kicker": "Liderlik tablosu",
+  "top10.sub": "Karşılaşma galibiyetleri, halka yarışı temposu, uçuş disiplini ve hedef önleme puanıyla en iyi on pilot. 3B avatarlarıyla.",
+  "top10.period": "Dönem",
+  "top10.loading": "Yükleniyor…",
+  "top10.pts": "puan",
+  "top10.wins": "{n} galibiyet",
+  "top10.flights": "{n} uçuş"
 }

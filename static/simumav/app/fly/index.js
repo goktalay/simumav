@@ -55,6 +55,12 @@ export async function render(view, params = {}, ctx = {}) {
   // `/match/<id>/race` yarış · `/<uçuş id>` süren uçuşa dönüş
   const P = params.flight != null ? { kind: 'flight', id: params.flight } : parseFlyParam(params.id ?? '');
   const c = { ...ctx, go };
+  // Kabuk "← Geri" düğmesi (app.js setBack; diğer bölümlerle aynı kalıp): seçim sayfası → ana menü; alt sayfalar (sihirbaz/kurucu/davet/salon)
+  // → Uç seçimi (sihirbazda bir önceki adım, renderWizard ayarlar); uçuş ve yarış tam ekran — kendi geri düğmeleri var, kabuk düğmesi gizli.
+  const T = k => { const f = ctx.t || tr, r = f(k); return r && r !== k ? r : (k === 'common.menu' ? 'Ana Menü' : 'Geri'); };
+  if (P.kind === 'flight' || P.kind === 'race') ctx.setBack?.(null);
+  else if (P.kind === 'choice' && !ctx.preset) ctx.setBack?.(T('common.menu'), 'menu');
+  else ctx.setBack?.(T('common.back'), '#/fly');
   if (P.kind === 'flight') return resumeFlight(view, P.id, ctx);
   if (P.kind === 'join') return renderJoin(view, P.code, c);
   if (P.kind === 'lobby') return renderLobby(view, P.id, c);
@@ -145,7 +151,7 @@ async function renderWizard(view, ctx) {
   const foot = h('div', { class: 'sm-wizard-foot' }, prevBtn, h('div', { class: 'sm-summary' }), nextBtn, startBtn);
   const countdown = h('div', { class: 'sm-countdown', hidden: true }, h('b', null, '3'), h('small', null, ''));
   const openBox = h('div', { class: 'sm-open-flight-holder' });
-  root.append(h('div', { class: 'sm-wizard-head' }, h('button', { class: 'btn sm sm-mt-backbtn', type: 'button', onclick: () => ctx.go('#/fly') }, '← ', tr('match.mode_back')),
+  root.append(h('div', { class: 'sm-wizard-head' },
     h('h1', null, isAi ? tr('ai.title') : isMatch ? tr('match.multi_title') : 'UÇ'), h('p', { class: 'muted' }, isAi ? tr('ai.wizard_sub') : isMatch ? tr('match.multi_sub') : 'Dronunu seç, parkuru belirle, kalk.')), openBox, stepsBar, body, foot, countdown);
   clear(view, root);
 
@@ -434,11 +440,15 @@ async function renderWizard(view, ctx) {
     s.camera = payload.camera;
     toast(tr('Uçuş başladı · MP tcp:{h}:{p}', { h: s.mp?.host || location.hostname, p: s.mp?.port ?? '—' }));
     preview?.dispose(); preview = null; destroyed = true; dropTargetsUi();
+    ctx.setBack?.(null);   // tam ekran uçuş: kendi geri düğmesi (session.js fs-back)
     runLeave();
     ctx.track?.('flight_start', { drone_type: W.drone()?.type || 'unknown', launch: payload.launch?.method || payload.launch || 'wheels', world_mode: W.track()?.world_mode || 'unknown', mission: W.mission() ? 1 : 0 });
     await openSession(view, s, { drone: W.drone(), track: W.track(), pilot: W.pilot(), mission: W.mission(), launch: W.drone()?.type === 'interceptor' ? W.state.ilaunch : W.state.launch, record: W.state.record, power: s.power || W.state.power, speedup: s.speedup || W.state.speedup, targets: W.state.targets, site: s.site || null, drive: s.drive || payload.drive || null }, { ...ctx, meta: data.meta });
   };
   onLeave(() => { destroyed = true; preview?.dispose(); preview = null; dropTargetsUi(); });
+  // Kabuk "← Geri": bir önceki sihirbaz adımı; ilk adımda Uç seçim sayfası (Tek / Çok oyunculu)
+  const backLbl = (() => { const f = ctx.t || tr, r = f('common.back'); return r && r !== 'common.back' ? r : 'Geri'; })();
+  ctx.setBack?.(backLbl, () => { if (starting || destroyed) return; if (W.prev()) draw(); else ctx.go('#/fly'); });
   drawOpen();
   draw();
   return { wizard: W, draw, start, get openFlight() { return openFlight; } };

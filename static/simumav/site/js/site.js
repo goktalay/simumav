@@ -170,6 +170,21 @@ function initSections() {
   document.querySelectorAll('main section[id]').forEach(s => io.observe(s));
 }
 
+// ---------- TOP 10 PİLOT (§25; tembel: bölüm yaklaşınca) ----------
+function initTop10Lazy() {
+  const root = document.getElementById('top10');
+  if (!root) return;
+  let done = false;
+  const go = async () => {
+    if (done) return; done = true;
+    const { initTop10 } = await import('./top10.js');
+    window.__smTop10 = initTop10(root, { t, lang: () => lang, reduced, onView: p => track('top10_period', { period: p }) });
+  };
+  if (!('IntersectionObserver' in window)) { go(); return; }
+  const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { io.disconnect(); go(); } }, { rootMargin: '400px 0px' });
+  io.observe(root);
+}
+
 function initEo() {
   const card = document.querySelector('.sys-card.eo');
   if (!card) return;
@@ -191,7 +206,7 @@ async function main() {
   document.getElementById('lang')?.addEventListener('change', e => setLang(e.target.value));
   const y = document.getElementById('year'); if (y) y.textContent = String(new Date().getFullYear());
   initTheme();
-  initReveal(); initScenes(); initParallax(); initSections(); initEo(); initHangarLazy();
+  initReveal(); initScenes(); initParallax(); initSections(); initEo(); initHangarLazy(); initTop10Lazy();
   const auth = initAuth({ t, onEvent: (name, params) => analytics?.track(name, params) });
   initHero();
   analytics = await initAnalytics({ t, i18nAttr: true, privacyHref: `${base}legal/gizlilik.html` });

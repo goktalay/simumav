@@ -1,11 +1,13 @@
 """`/api/crew` — pilotlar (≤ 20) ve 10 karakter (p01 pilot şapkalı erkek; en az 4 kadın). SVG'ler static/simumav/app/img/pilots/<key>.svg
-(tek doğruluk kaynağı: `common.PILOT_SVG`; /app/img/pilots/<key>.svg)."""
+(tek doğruluk kaynağı: `common.PILOT_SVG`; /app/img/pilots/<key>.svg).
+§25: pilotun 3B avatarı `avatar` (avatar.py doğrular; verilmezse karakterin 3B karşılığı). `GET /api/crew/avatar-options` seçenek listeleri."""
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from .. import auth, bridge, config, db
+from .. import auth, avatar, bridge, config, db
 from .common import PILOT_SVG, User, kota, pilot_api, sahip
 
 router = APIRouter(prefix='/api/crew')
@@ -22,12 +24,29 @@ KEYS = {c['key'] for c in CHARACTERS}
 class PilotIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=40)
     character: str = Field('p01', max_length=4)
+    avatar: Optional[dict] = None
 
 
 class PilotPatch(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=40)
     character: Optional[str] = Field(None, max_length=4)
     is_default: Optional[bool] = None
+    avatar: Optional[dict] = None
+
+
+def _avatar_json(a, character):
+    if a is not None and len(json.dumps(a)) > 600:
+        raise auth.hata(422, 'invalid', 'avatar çok büyük')
+    try:
+        return avatar.dump(avatar.normalize(a, character, strict=True))
+    except avatar.AvatarHata as e:
+        raise auth.hata(422, 'invalid', str(e))
+
+
+@router.get('/avatar-options')
+def avatar_options(user=User):
+    return {'skins': avatar.SKINS, 'patches': list(avatar.PATCHES), 'accessories': list(avatar.ACCESSORIES), 'default': avatar.DEFAULT,
+            'legacy': {k: avatar.legacy(k) for k in avatar.LEGACY}}
 
 
 @router.get('/characters')
@@ -49,8 +68,8 @@ def add_pilot(body: PilotIn, request: Request, user=User):
     t = db.now()
     with db.connect() as conn:
         kota(conn, 'pilots', user, request)
-        pid = conn.execute('INSERT INTO pilots (user_id, name, character, created_at, updated_at) VALUES (?,?,?,?,?)',
-                           (user['id'], body.name.strip(), body.character, t, t)).lastrowid
+        pid = conn.execute('INSERT INTO pilots (user_id, name, character, avatar, created_at, updated_at) VALUES (?,?,?,?,?,?)',
+                           (user['id'], body.name.strip(), body.character, _avatar_json(body.avatar, body.character), t, t)).lastrowid
         conn.commit()
         return pilot_api(sahip(conn, 'pilots', pid, user))
 
@@ -63,9 +82,11 @@ def update_pilot(pid: int, body: PilotPatch, user=User):
         p = sahip(conn, 'pilots', pid, user)
         if body.is_default:
             conn.execute('UPDATE pilots SET is_default = 0 WHERE user_id = ?', (user['id'],))
-        conn.execute('UPDATE pilots SET name = ?, character = ?, is_default = ?, updated_at = ? WHERE id = ?',
-                     ((body.name or p['name']).strip(), body.character or p['character'],
-                      1 if body.is_default else (0 if body.is_default is False else p['is_default']), db.now(), pid))
+        ch = body.character or p['character']
+        av = _avatar_json({**avatar.normalize(p.get('avatar'), ch), **body.avatar}, ch) if body.avatar is not None else p.get('avatar')
+        conn.execute('UPDATE pilots SET name = ?, character = ?, is_default = ?, avatar = ?, updated_at = ? WHERE id = ?',
+                     ((body.name or p['name']).strip(), ch,
+                      1 if body.is_default else (0 if body.is_default is False else p['is_default']), av, db.now(), pid))
         conn.commit()
         return pilot_api(sahip(conn, 'pilots', pid, user))
 

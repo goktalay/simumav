@@ -1,7 +1,7 @@
 """Router ortak yardımcıları: sahiplik, kota, hata çevirimi, yanıt biçimleri."""
 from fastapi import Depends, HTTPException
 
-from .. import auth, bridge, config, db, power
+from .. import auth, avatar, bridge, config, db, power
 
 User = Depends(auth.require_user)
 
@@ -50,7 +50,9 @@ PILOT_SVG = '/app/img/pilots/{key}.svg'
 
 
 def pilot_api(p):
-    return {**p, 'is_default': bool(p.get('is_default')), 'svg': PILOT_SVG.format(key=p.get('character') or 'p01')}
+    # §25: avatar — 3B avatar ayarı (normalize: NULL/bozuk → 2B karakterin 3B karşılığı); svg eski 2B görsel (geri uyum)
+    return {**p, 'is_default': bool(p.get('is_default')), 'svg': PILOT_SVG.format(key=p.get('character') or 'p01'),
+            'avatar': avatar.normalize(p.get('avatar'), p.get('character'))}
 
 
 def track_api(t):

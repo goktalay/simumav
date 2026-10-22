@@ -218,5 +218,20 @@
   "type.rover": "Véhicule terrestre",
   "fleet.rover_4x4.d": "Éclaireur 4×4 à direction Ackermann, mât EO/IR + LIDAR ; jusqu’à 72 km/h sous ArduRover.",
   "fleet.rover_ugv.d": "Véhicule terrestre sans pilote à chenilles : pivote sur place (différentiel), tourelle capteurs.",
-  "fleet.rover_bot.d": "Robot de livraison de trottoir à six roues (0,78 m), direction différentielle, mât à fanion."
+  "fleet.rover_bot.d": "Robot de livraison de trottoir à six roues (0,78 m), direction différentielle, mât à fanion.",
+  "top10.title": "TOP 10 PILOTES",
+  "top10.p_30d": "30 derniers jours",
+  "top10.p_all": "Depuis toujours",
+  "top10.formula": "Score = points de match (anneau ×100, arrivée +250, bonus de place ; victoire en dogfight 1000) + victoire +300 + rythme (≤200) + discipline de vol (moyenne ×1,5 × jusqu’à 20 vols) + interceptions (10 meilleurs vols ×0,5). Les matchs uniquement contre l’IA comptent à moitié.",
+  "top10.privacy": "Noms et e-mails sont masqués. Pour quitter la liste : Réglages → « Me masquer du classement ».",
+  "top10.empty": "Aucun pilote classé — remporte le premier match !",
+  "top10.error": "Impossible de charger la liste ; réessaie plus tard.",
+  "nav.top10": "TOP 10",
+  "top10.kicker": "Classement",
+  "top10.sub": "Les dix meilleurs pilotes selon victoires, rythme de course, discipline de vol et interceptions — avec leurs avatars 3D.",
+  "top10.period": "Période",
+  "top10.loading": "Chargement…",
+  "top10.pts": "pts",
+  "top10.wins": "{n} victoires",
+  "top10.flights": "{n} vols"
 }

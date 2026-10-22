@@ -8,6 +8,7 @@ from datetime import datetime
 
 from fastapi import Depends
 
+from . import avatar as _av
 from . import config
 
 SCHEMA = """
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS pilots (
     flights INTEGER NOT NULL DEFAULT 0,
     hours REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    -- v6 (ALTER, init): avatar TEXT — 3B avatar ayarı JSON (avatar.py; §25); NULL → karakterin 3B karşılığı
 );
 CREATE INDEX IF NOT EXISTS ix_pilots_user ON pilots(user_id);
 CREATE TABLE IF NOT EXISTS drones (
@@ -203,8 +205,11 @@ _MIGRATIONS = [
     # v5 (HEPGO §44 yapay zekâ pilot): match_players yeniden kurulur — user_id'deki users FK'si kalkar (bot kimlikleri negatif), is_bot + level
     # sütunları eklenir; satırlar aynen taşınır; kullanıcı silme temizliği tetikleyiciyle. init() içinde `is_bot` sütunu yoksa (idempotent).
     (5, []),
+    # v6 (§25 3B pilot avatarı): pilots.avatar (JSON) — init() içinde PRAGMA denetimiyle ALTER (yalnız yoksa); NULL satırlar eski 2B karakterin
+    # (p01…p10) varsayılan 3B karşılığıyla doldurulur (avatar.LEGACY; yalnız NULL → idempotent). Liderlik gizliliği users.settings.lb_hidden (göç yok).
+    (6, []),
 ]
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # TR TEST Kalecik (Ankara) UAV test sahası — tesisin resmî koordinatı kamuya açık kaynaklarda yok; Kalecik ilçe merkezi (40.0972N 33.4083E,
 # 725 m) yakınındaki sözleşme değeri kullanılır. Kullanıcı parkuru düzenleyip kaydırabilir.
@@ -254,6 +259,10 @@ def init():
                 CREATE INDEX IF NOT EXISTS ix_match_players_user ON match_players(user_id);
                 CREATE TRIGGER IF NOT EXISTS tr_match_players_user_sil AFTER DELETE ON users BEGIN DELETE FROM match_players WHERE user_id = OLD.id; END;
             """)
+        if 'avatar' not in {r[1] for r in conn.execute('PRAGMA table_info(pilots)')}:   # v6 (§25)
+            conn.execute('ALTER TABLE pilots ADD COLUMN avatar TEXT')
+        for pid, ch in conn.execute('SELECT id, character FROM pilots WHERE avatar IS NULL').fetchall():
+            conn.execute('UPDATE pilots SET avatar = ? WHERE id = ? AND avatar IS NULL', (_av.dump(_av.legacy(ch)), pid))
         cur = conn.execute('SELECT version FROM schema_version').fetchone()
         ver = cur[0] if cur else 0
         for v, sqls in _MIGRATIONS:
@@ -330,7 +339,8 @@ def kullanici_esle(conn, mt_user_id, email, display_name):
         return row(conn.execute('SELECT * FROM users WHERE id = ?', (u['id'],)))
     uid = conn.execute('INSERT INTO users (mt_user_id, email, display_name, created_at, updated_at, last_login) VALUES (?,?,?,?,?,?)',
                        (int(mt_user_id), email, name, t, t, t)).lastrowid
-    conn.execute('INSERT INTO pilots (user_id, name, character, is_default, created_at, updated_at) VALUES (?,?,?,1,?,?)', (uid, name, 'p01', t, t))
+    conn.execute('INSERT INTO pilots (user_id, name, character, is_default, avatar, created_at, updated_at) VALUES (?,?,?,1,?,?,?)',
+                 (uid, name, 'p01', _av.dump(_av.legacy('p01')), t, t))
     conn.execute('INSERT INTO drones (user_id, name, type, model_key, params, color, is_default, created_at, updated_at) VALUES (?,?,?,?,?,?,1,?,?)',
                  (uid, DEFAULT_DRONE['name'], DEFAULT_DRONE['type'], DEFAULT_DRONE['model_key'], '{}', DEFAULT_DRONE['color'], t, t))
     conn.execute('INSERT INTO tracks (user_id, name, lat, lon, radius_m, wind, time_of_day, weather, is_default, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?)',

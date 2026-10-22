@@ -33,7 +33,7 @@ import time
 from .. import flightsim
 from .. import flightsim_match_bot as mbot
 from .. import flightsim_match_core as core
-from . import bridge, config, db
+from . import avatar, bridge, config, db
 
 POS_HZ = 10
 KAPANIS_GECIKME_S = 8.0          # BITTI/IPTAL → oyuncu uçuşları kapanır (sonuç ekranı SITL'e ihtiyaç duymaz)
@@ -80,6 +80,18 @@ def sifre_dogru(pw, kayit):
 
 def oyuncu_siniri():
     return max(2, min(core.OYUNCU_MAX, config.MATCH_MAX_PLAYERS, config.MAX_FLIGHTS))
+
+
+def pilot_avatari(uid):
+    """§25: oyuncunun varsayılan pilotunun 3B avatarı (normalize; salon/skor/sonuç avatarları). Bot (uid < 0) → None (istemci 'AI' kasklı avatar)."""
+    if uid is None or int(uid) <= 0:
+        return None
+    try:
+        with db.connect() as conn:
+            p = db.row(conn.execute('SELECT character, avatar FROM pilots WHERE user_id = ? ORDER BY is_default DESC, id LIMIT 1', (int(uid),)))
+    except Exception:   # noqa: BLE001
+        p = None
+    return avatar.normalize(p['avatar'], p['character']) if p else avatar.legacy('p01')
 
 
 def _iso(ts):
@@ -131,7 +143,8 @@ class Mac:
         self._durum = core.LOBI
         self.neden = None
         self.bitis_t = None
-        self.lobi = {self.host_id: {'id': self.host_id, 'name': host['display_name'], 'host': True, 'ready': True, 'joined_t': now, 'seen_t': now}}
+        self.lobi = {self.host_id: {'id': self.host_id, 'name': host['display_name'], 'host': True, 'ready': True, 'joined_t': now, 'seen_t': now,
+                                    'avatar': pilot_avatari(self.host_id)}}
         self.yasakli = set()              # çıkarılanlar (aynı karşılaşmaya yeniden katılamaz)
         self.k = None                     # core.Karsilasma (BAŞLAT sonrası)
         self.viewers = {}                 # ws → asyncio.Queue
@@ -189,12 +202,13 @@ class Mac:
             players = []
             for p in d['players']:
                 lp = self.lobi.get(p['id']) or {}
-                players.append({**p, 'ready': bool(lp.get('ready', True)), 'online': p['id'] in on or bool(p.get('is_bot')), 'flight_id': self.flights.get(p['id'])})
+                players.append({**p, 'ready': bool(lp.get('ready', True)), 'online': p['id'] in on or bool(p.get('is_bot')), 'flight_id': self.flights.get(p['id']),
+                                'avatar': lp.get('avatar')})
             out = {k: d[k] for k in ('prepare_at', 'start_at', 'ended_at', 'winner', 'result', 'countdown_s', 'dogfight')}
         else:
             players = [{'id': p['id'], 'name': p['name'], 'host': p['host'], 'status': core.GELDI, 'ready': p['ready'], 'online': p['id'] in on,
                         'joined_at': p['joined_t'], 'rings': 0, 'total': len(self.halkalar), 'finished': False, 'flight_id': None, 'session_id': None, 'role': None,
-                        'is_bot': bool(p.get('bot')), 'level': p.get('bot'), 'color': p.get('color')}
+                        'is_bot': bool(p.get('bot')), 'level': p.get('bot'), 'color': p.get('color'), 'avatar': p.get('avatar')}
                        for p in self.lobi.values()]
             out = {'prepare_at': None, 'start_at': None, 'ended_at': self.bitis_t, 'winner': None, 'result': None, 'countdown_s': core.GERI_SAYIM_S, 'dogfight': None}
         return {'id': self.id, 'code': self.code, 'state': self.durum, 'reason': self.k.neden if self.k is not None else self.neden, 'host_id': self.host_id,
@@ -238,7 +252,7 @@ class Mac:
             raise H(409, 'started', 'Karşılaşma başladı ya da bitti; artık katılınamaz')
         if len(self.lobi) >= self.max_players:
             raise H(409, 'full', f'Karşılaşma dolu ({self.max_players} oyuncu)')
-        self.lobi[uid] = {'id': uid, 'name': user['display_name'], 'host': False, 'ready': False, 'joined_t': now, 'seen_t': now}
+        self.lobi[uid] = {'id': uid, 'name': user['display_name'], 'host': False, 'ready': False, 'joined_t': now, 'seen_t': now, 'avatar': pilot_avatari(uid)}
         self.degisti()
         return True
 
@@ -782,6 +796,7 @@ def satir_dict(r, uid=None):
             'max_players': r['max_players'], 'settings': ayar_ozeti(st), 'rings_cfg': j(r.get('game_cfg'), {}) if kind == core.TUR_IT else j(r['rings_cfg'], {}), 'rings': j(r['rings'], []), 'kind': kind,
             'players': [{'id': p['user_id'], 'name': p['name'], 'host': bool(p['is_host']), 'status': p['status'], 'flight_id': p['flight_id'] if p['user_id'] == uid else None,
                          'rank': p['rank'], 'rings': p['rings'], 'time_s': p['time_s'], 'is_bot': bool(p.get('is_bot')), 'level': p.get('level'),
+                         'avatar': None if p.get('is_bot') else pilot_avatari(p['user_id']),
                          'role': ((res or {}).get('dogfight') or {}).get('roles', {}).get(str(p['user_id']))} for p in ps],
             'result': res, 'winner': r['winner_id'], 'created_at': r['created_at'], 'started_at': r['started_at'], 'ended_at': r['ended_at'], 'live': False,
             'can_start': False, 'now': time.time()}

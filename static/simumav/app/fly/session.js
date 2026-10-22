@@ -41,6 +41,7 @@ import { createGateLayer } from './gates.js';
 import { netsimDeliver, netsimFromLocation, parseNetsim, virtualRC } from './rc.js';
 import { releaseShared } from '../core/three.js';
 import * as sfx from '../ui/sfx.js';
+import { withAlertGain } from '../ui/audiomix.js';   // Ayarlar › Uyarı sesleri düzeyi (sm.alertvol) §42 uyarı yoluna
 import { localizeUnits, powerReportCard, trPower, warnInfo } from './power.js';
 import { camTr } from './camera_pick.js';   // kamera türü/PiP metinleri → camera.* i18n anahtarları
 
@@ -446,7 +447,9 @@ export async function openSession(view, start, picked, ctx = {}) {
   opsBtn.classList.toggle('primary', ops.enabled);
   patchMpBox(stage, mp);
   if (MAudio.AUDIO_MODELS && !MAudio.AUDIO_MODELS.jet) MAudio.AUDIO_MODELS.jet = { ...JET_AUDIO };   // jet modelleri: yüksek devirli ayrı ses modeli (dosyaya dokunmadan)
-  const audio = MAudio.createEngineAudio(stage, { type: audioTypeFor(dType, drone.model_key), launch: launch && !isHand ? launch : null, replay: false, tr, getSim: () => sim, getCrashed: () => !crash.hidden, getCrashSpeed: () => crashSpeed, getSpeed: () => 1 });
+  // motor tipi (§10 güç: 'fuel' | 'electric'): yakıtlı sabit kanat / VTOL → iki zamanlı benzinli motor sesi (CAYMAZ 220 cc), elektrikli → eski sentez
+  const engineKind = (picked.power || start.power || start.session?.power || drone.power)?.engine || null;
+  const audio = MAudio.createEngineAudio(stage, { type: audioTypeFor(dType, drone.model_key), engine: engineKind, launch: launch && !isHand ? launch : null, replay: false, tr, getSim: () => sim, getCrashed: () => !crash.hidden, getCrashSpeed: () => crashSpeed, getSpeed: () => 1 });
   const gfxCtl = MGfx.createGfxCtl({ tr, keyed: true, storageKey: 'sm.gfx', getSim: () => sim, stage, onEvent: t => addEvent(t) });   // HEPGO §43 grafik kalitesi: Panel/ses kapsülünde "Grafik ▾" (sm.gfx; gfx.* 7 dil)
   opsSnd.append(gfxCtl.el);
   const hudCtx = { world, session, replay: false, launch: launch && !isHand ? launch : null, fov: 78, t0: Date.now(),
@@ -463,7 +466,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   osd.setAnalog?.(fpvPrefs.analog);
   // HEPGO §42 uçuş uyarı sistemi (GPWS / stall / yatış / IMU …): büyük kutu + MASTER düğmeleri + vinyet + ses; ayar ses kapsülü menüsünde (sm.gpws);
   // biten uyarılar çekirdeğe (`cmd gpws`) → uçuş özetinde "Uçuş uyarıları" + disiplin puanı. Parkur yarıçapı sanal çit.
-  gpws = MGpws.createGpwsCtl(stage, { tr, keyed: true, vehicle: type, getSim: () => sim, audio, replay: false, canWrite: true, storage: gpwsStorage, menuHost: audio.menu,
+  gpws = MGpws.createGpwsCtl(stage, { tr, keyed: true, vehicle: type, getSim: () => sim, audio: withAlertGain(audio), replay: false, canWrite: true, storage: gpwsStorage, menuHost: audio.menu,
     send: p => cmd('gpws', p).then(r => { if (!r?.ok) throw new Error(r?.error || 'gpws'); return r; }), onEvent: (t, sev) => addEvent(t, sev, 'UYARI'),
     uiLang: () => document.documentElement.lang || 'en',
     getCtx: () => { const cm = sim?.getCamera?.(); return { crashed: !crash.hidden, phase: sim?.launchPhase ?? null, maxSpeed: session.power?.max_speed_ms ?? null,
@@ -505,7 +508,16 @@ export async function openSession(view, start, picked, ctx = {}) {
       onCameraChange: onCamChange, onCollision: info => cmd('crash', { kind: info.kind, speed: info.speed, dz: info.dz }).catch(() => {}),
       windStreaks: streakPref.get(), onRigClick: rampUi ? ev => { if (ev.aim) rampUi.open(ev.aim); } : null,   // HEPGO §31
       onProgress: progMsg, g3dKey: async () => meta?.maps_key || '',
-      onFallback: e => { const t = g3dMode ? tr('Google 3B verisi alınamadı: {e} → prosedürele düşüldü', { e }) : tr('Gerçek veri alınamadı, prosedürele düşüldü: {e}', { e }); addEvent(t, 'warning'); toast(t, 'err'); attrib.hidden = true; },
+      // Google 3B alınamazsa (ör. anahtar 403: HTTP yönlendiren kısıtı / Map Tiles API kapalı) Gerçek araziye düşülür; o da olmazsa prosedürel
+      g3dFallback: 'real',
+      onFallback: (e, info) => {
+        let t;
+        if (info?.from === 'google3d') {   // Gerçek araziye geçildi: atıf Google logosundan gerçek arazi kaynaklarına
+          t = LT('fly.g3d_fallback_real', 'Google 3B şu an kullanılamıyor → Gerçek araziye geçildi ({e})').replace('{e}', e);
+          attrib.className = 'fs-attrib'; attrib.replaceChildren(h('span', null, M3D.ATTRIBUTION)); attrib.hidden = false;
+        } else { t = g3dMode && !info ? tr('Google 3B verisi alınamadı: {e} → prosedürele düşüldü', { e }) : tr('Gerçek veri alınamadı, prosedürele düşüldü: {e}', { e }); attrib.hidden = true; }
+        addEvent(t, 'warning'); toast(t, 'err');
+      },
     });
     if (destroyed) { s3.dispose(); return { dispose() {} }; }
     sim = s3; window.__smSim = sim;

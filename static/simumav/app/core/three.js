@@ -100,6 +100,24 @@ function schedule(active = [...views].some(v => v.running)) {
 }
 if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (document.hidden) { cancelAnimationFrame(raf); raf = 0; } schedule(); });
 
+/** §25 avatar görüntü önbelleği: sahneyi paylaşılan çizici ile BİR KEZ w×h render edip yeni 2B tuvale kopyalar (görünüm kaydı yok; bağlam açılmaz —
+ *  paylaşılan yoksa kurulur, sonra boşta kuralıyla bırakılır). Uç sahnesi açıkken ÇAĞRILMAMALI (avatar3d.js denetler). Dönüş: HTMLCanvasElement | null. */
+export function snapshot(lib, scene, camera, w, h, { env = true } = {}) {
+  const s = ensureShared(lib), { renderer } = s;
+  if (s.lost) return null;
+  if (env) scene.environment = s.getEnv();   // her seferinde: çizici yeniden kurulduysa eski PMREM dokusu geçersiz
+  if (w > s.w || h > s.h) { s.w = Math.max(s.w, w); s.h = Math.max(s.h, h); renderer.setSize(s.w, s.h, false); }
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  renderer.setScissorTest(true); renderer.setViewport(0, 0, w, h); renderer.setScissor(0, 0, w, h);
+  renderer.setClearColor(0x000000, 0); renderer.clear();
+  renderer.render(scene, camera);
+  renderer.setScissorTest(false);
+  const out = document.createElement('canvas'); out.width = w; out.height = h;
+  try { out.getContext('2d').drawImage(s.canvas, 0, s.h - h, w, h, 0, 0, w, h); } catch { return null; }
+  schedule();
+  return out;
+}
+
 /** Bir kapsayıcıya (ya da 2B tuvale) bağlı görünüm. onFrame(dt, t) her karede çağrılır. Görünmezken/ekran dışında render edilmez.
  *  Dönüş eski API ile aynı: { THREE, renderer (paylaşılan), scene, camera, canvas (2B hedef), start, stop, dispose, resize, renderOnce }. */
 export function makeStage(lib, host, { fov = 40, near = 0.05, far = 2000, env = true, onFrame, pixelRatioMax = 1.75 } = {}) {

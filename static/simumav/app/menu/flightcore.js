@@ -6,16 +6,17 @@ export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 export const lerp = (a, b, k) => a + (b - a) * k;
 export const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
-// ---------- Dron modeli: TEK sabit — başka ajan gerçekçi GLB'leri `static/simumav/models/<tip>.glb` yoluna ekler; o gelene kadar
-// HEPGO sabit kanat GLB'si (caymaz-sim.glb: Y yukarı, burun +Z, pervane düğümü 'prop'), o da yoksa procmodels şablonu.
+// ---------- Dron modeli: TEK sabit — yalnız GERÇEKTE VAR OLAN dosyalar (static/simumav/models/*.glb kataloğu; eski `plane.glb` / `vtol.glb` /
+// `fpv.glb` … yer tutucuları hiç eklenmedi → her menü açılışında konsolda 404 veriyordu). Sabit kanat: HEPGO caymaz-sim.glb (Y yukarı, burun +Z,
+// pervane düğümü 'prop'); hiçbiri yüklenemezse procmodels şablonu.
 export const MENU_DRONE_TYPE = 'plane';
 export const MODEL_URLS = {
-  plane: ['/static/simumav/models/plane.glb', '/static/models/caymaz-sim.glb'],
-  vtol: ['/static/simumav/models/vtol.glb', '/static/models/caymaz-sim.glb'],
-  fpv: ['/static/simumav/models/fpv.glb'],
-  multirotor: ['/static/simumav/models/multirotor.glb'],
+  plane: ['/static/models/caymaz-sim.glb'],
+  vtol: ['/static/simumav/models/standard_vtol.glb', '/static/models/caymaz-sim.glb'],
+  fpv: ['/static/simumav/models/iris_fpv.glb'],
+  multirotor: ['/static/simumav/models/x500.glb'],
   heli: ['/static/simumav/models/heli.glb'],
-  interceptor: ['/static/simumav/models/interceptor.glb'],
+  interceptor: ['/static/simumav/models/icept_x4.glb'],
 };
 export const modelCandidates = type => MODEL_URLS[type] || MODEL_URLS.plane;
 
