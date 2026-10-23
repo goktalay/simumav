@@ -49,6 +49,18 @@ export const GIMBAL_ZOOM = { min: 1, max: 8, step: 1.25 };
 export const clampZoom = z => Math.min(GIMBAL_ZOOM.max, Math.max(GIMBAL_ZOOM.min, Number.isFinite(Number(z)) ? Number(z) : 1));
 export const gimbalZoomFov = (baseDeg, zoom) => 2 * Math.atan(Math.tan(baseDeg * Math.PI / 360) / clampZoom(zoom)) * 180 / Math.PI;
 
+// Araç kamerası stabilizasyonu (titreme düzeltmesi): gerçek ArduCopter SITL askıda gövde yönelimi ~16 Hz'de ±1,5–2° salınır (20 ms'lik ATTITUDE
+// karelerinde roll/pitch her 1–2 karede işaret değiştirir; açısal hız ±2 rad/s). Gövdeye sabit kamera bu salınımı tüm görüntüye taşıyordu (ekran kaydında
+// iki poz arasında gidip gelen kareler). Gerçek gimbal titreşimi yalıtır ve gövdeyi yumuşakça izler → kamera yönelimi gövdenin birinci dereceden
+// alçak geçiren süzgecidir: k = 1 − e^(−dt/τ) ile slerp (kare hızından bağımsız). Gimbal τ 0,2 s (kayıtta kare→kare titreme ~17× azalır: 1,08° → 0,06°,
+// 1080p'de < 2 px; kasıtlı manevrada ~0,2 s yumuşak gecikme — gerçek gimbal gibi); FPV (burna sabit kamera, yumuşak takoz) τ 0,05 s (~5× sönüm, gecikme
+// hissedilmez). Büyük sıçrama (> snapRad ≈ 34°; reset / ışınlanma) → doğrudan.
+export const CAM_STAB_TAU = { gimbal: 0.2, pilot: 0.05 };
+export function stabStep(cur, target, dt, tau, snapRad = 0.6) {
+  if (!(tau > 0) || !(dt >= 0) || cur.angleTo(target) > snapRad) return cur.copy(target);
+  return cur.slerp(target, 1 - Math.exp(-dt / tau));
+}
+
 // PiP kaynağı: ana kip gimbal değilse PiP gimbal kamerasını gösterir; ana kip gimbal ise önceki ana kipi (takip ya da FPV; serbest/yer → takip)
 const PIP_ALT = ['follow', 'pilot'];
 export const pipSourceFor = (main, prev) => (main === 'fpv' ? (PIP_ALT.includes(prev) ? prev : 'follow') : 'fpv');

@@ -50,7 +50,7 @@ import { createWorldFx } from './flightsim_worldfx.js';   // §31 gerçekçi dü
 import { GFX_LEGACY, frameGate, pixelRatioFor, recordFloor, resolveGfx } from './flightsim_gfx.js';   // §43 grafik kalitesi (saf: ön ayar → parametre, piksel oranı, kare sınırı)
 import { createGfxPipeline } from './flightsim_gfx3d.js';   // §43 son işlem hattı (MSAA hedefi, SSAO, bloom, ACES, FXAA) — aynı renderer
 import { PILOT_PLACE, createPilotLayer, placePilot, shoulderCam, sticksFromRc } from './flightsim_pilot.js';   // §46 sahnede yer pilotu (RC kumandalı; varsayılan kapalı — opts.pilot)
-import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget, isNoCam } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
+import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget, isNoCam, CAM_STAB_TAU, stabStep } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
 
 const LIB = '/static/vendor/three/';
 export const ATTRIBUTION = 'Uydu: Esri, Maxar, Earthstar Geographics · Yükseklik: Mapzen / AWS Terrain Tiles · Binalar: © OpenStreetMap';
@@ -2286,6 +2286,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (g3d) { try { g3d.setAuxCameras?.(preview ? [] : auxCameras()); g3d.update(camera, tele.has && tele.armed && tele.speed > 1, now); } catch { /* karo hatası kareyi durdurmasın */ } }
     if (pil.layer) pilotFrame(now, Math.min(0.5, rawDt));   // §46 yer pilotu (bakış, nefes, çubuklar)
     if (hol.layer && hol.spec) { holSync(now); hol.layer.update(now, rawDt, { wind: windNow(now) }); }   // bayram süsleri (koyun, bayrak, fişek …)
+    updateCamStab(Math.min(0.5, rawDt));   // araç kamerası stabilizasyonu (gövde titreşimi süzülür; gimbal + FPV + PiP + HUD ufku aynı yönelim)
     // Kamera kipleri
     if (preview && previewFocus === 'rig' && rig) {   // §27 / §13 sihirbaz Kalkış adımı: düzeneğin çevresinde yavaş tur
       previewAngle += dt * 0.22;
@@ -2367,6 +2368,14 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const viewQ = new T.Quaternion(), viewTmp = new T.Quaternion(), viewAx = new T.Vector3(1, 0, 0), viewNose = new T.Vector3();
   const hoverFactor = q => { if (drone.type !== 'interceptor') return 0; viewNose.set(0, 1, 0).applyQuaternion(q); const e = Math.asin(clamp(viewNose.z, -1, 1)) / DEG; return smooth(30, 70, e); };
   const viewQuat = q => { const hf = hoverFactor(q); return hf <= 0 ? viewQ.copy(q) : viewQ.copy(q).multiply(viewTmp.setFromAxisAngle(viewAx, -Math.PI / 2 * hf)); };
+  // Titreme düzeltmesi (flightsim_camera.js stabStep): gimbal (stab.g ← viewQuat(cur.q)) ve FPV (stab.p ← viewQuat(gösterilen gövde)) yönelimleri gövdenin
+  // alçak geçiren süzgecidir; her karede bir kez, kamera pozlarından önce güncellenir. getPose (HUD/OSD ufku) da etkin kipin süzülmüş yönelimini verir.
+  const stab = { g: new T.Quaternion(), p: new T.Quaternion(), has: false };
+  function updateCamStab(dt) {
+    if (!stab.has) { stab.g.copy(viewQuat(cur.q)); stab.p.copy(viewQuat(drone.group.quaternion)); stab.has = true; return; }
+    stabStep(stab.g, viewQuat(cur.q), dt, CAM_STAB_TAU.gimbal);
+    stabStep(stab.p, viewQuat(drone.group.quaternion), dt, CAM_STAB_TAU.pilot);
+  }
   function poseGimbal(cam) {
     if (drone.type === 'rover' && drone.rover) {   // §31: gimbal = aracın sensör başlığı (EO/IR topu / kule kamerası); gövde zemine oturmuş yönelimle
       const sp = drone.rover.sensor;
@@ -2376,11 +2385,10 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       cam.quaternion.copy(drone.group.quaternion).multiply(tmpQ);
       return;
     }
-    const vq = viewQuat(cur.q);
     tmpV.set(0, drone.nose, 0.12 * (drone.scale || MODEL_SCALE)).applyQuaternion(cur.q);
     cam.position.copy(cur.pos).add(tmpV);
     tmpQ.setFromAxisAngle(tmpV2.set(1, 0, 0), (90 + gimbal) * DEG);
-    cam.quaternion.copy(vq).multiply(tmpQ);
+    cam.quaternion.copy(stab.has ? stab.g : viewQuat(cur.q)).multiply(tmpQ);   // stabilize gimbal (titreme düzeltmesi)
   }
   // §22.4 düzeltme — yere yakın araç kamerası: yerdeki sabit kanadın gimbal kamerası zeminden ~0,3 m yüksekte; sabit 0,5 m yakın düzlem önündeki zemini
   // kesiyordu → alt yarıdaki ışınlar zeminin "altına" geçip su düzlemini / gökyüzünü gösteriyordu (PiP'in alt yarısı düz mavi; dpr / ön ayardan bağımsız).
@@ -2412,7 +2420,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     tmpV.set(0, drone.nose + back, up).applyQuaternion(drone.group.quaternion);
     cam.position.copy(drone.group.position).add(tmpV);
     tmpQ.setFromAxisAngle(tmpV2.set(1, 0, 0), 90 * DEG);   // gövde +Y (burun) → kamera −Z (bakış)
-    cam.quaternion.copy(viewQuat(drone.group.quaternion)).multiply(tmpQ);   // §25 tailsitter askıda: VTOL görünümü
+    cam.quaternion.copy(stab.has ? stab.p : viewQuat(drone.group.quaternion)).multiply(tmpQ);   // §25 tailsitter askıda: VTOL görünümü; süzülmüş (titreme düzeltmesi)
   }
   // Kamera PiP'i (§22.4): kaynak = pipSourceFor(ana kip, önceki ana kip) — ana gimbal değilse gimbal kamerası (tür efekti ve yakınlaştırma ile), gimbalse
   // önceki ana kip (takip: kullanıcının yörünge ofseti; FPV: balıkgözü). Render hedefi PiP'in CSS boyutu × min(dpr,1.5) × 0.75; pipInterval ile
@@ -3128,7 +3136,7 @@ pipStats: () => ({ ...pipStats, interval: pipInterval(frameMs), frameMs, rt: pip
     set onCollision(fn) { onCollision = fn; },
     position: () => ({ x: cur.pos.x, y: cur.pos.y, z: cur.pos.z }),
     cameraPose: () => { camera.updateMatrixWorld(); const e = camera.matrixWorld.elements; return { x: e[12], y: e[13], z: e[14], fx: -e[8], fy: -e[9], fz: -e[10], ux: e[4], uy: e[5], uz: e[6] }; },   // §16 uzaysal ses: dinleyici konumu + ileri/üst (ENU)
-    getPose: () => { if (drone.type === 'rover' && rov.fit) return { roll: rov.fit.roll, pitch: rov.fit.pitch, yaw: rov.yaw }; tmpE.setFromQuaternion(viewQuat(cur.q), 'ZXY'); return { roll: tmpE.y, pitch: tmpE.x, yaw: -tmpE.z }; },   // §31 kara aracı: zemine oturmuş gövde   // render edilen (enterpolasyonlu) yönelim, rad (FPV HUD; §25 tailsitter askıda VTOL görünümü)
+    getPose: () => { if (drone.type === 'rover' && rov.fit) return { roll: rov.fit.roll, pitch: rov.fit.pitch, yaw: rov.yaw }; tmpE.setFromQuaternion(!stab.has ? viewQuat(cur.q) : camMode === 'pilot' ? stab.p : camMode === 'fpv' ? stab.g : viewQuat(cur.q), 'ZXY'); return { roll: tmpE.y, pitch: tmpE.x, yaw: -tmpE.z }; },   // gimbal/FPV: kameranın süzülmüş yönelimi (HUD ufku görüntüyle örtüşür)   // §31 kara aracı: zemine oturmuş gövde   // render edilen (enterpolasyonlu) yönelim, rad (FPV HUD; §25 tailsitter askıda VTOL görünümü)
     getBodyPose: () => { tmpE.setFromQuaternion(cur.q, 'ZXY'); return { roll: tmpE.y, pitch: tmpE.x, yaw: -tmpE.z, hover: hoverFactor(cur.q) }; },   // §25 teşhis: gövde (SITL fiziği) yönelimi + askı oranı
     // §24 hedefler
     createModelViewer,   // §24.4 sihirbaz hedef önizlemesi (aynı bağlam)
