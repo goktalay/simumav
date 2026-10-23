@@ -91,11 +91,16 @@ export function clear(el, ...children) {
 // ---------- Bildirim ----------
 let toastBox;
 export function toast(message, type = '') {
+  if (message == null || (typeof message === 'string' && !message.trim()) || String(message) === '[object Object]' || (typeof message === 'string' && /^\s*\w+:\s*(undefined|null)?\s*$/.test(message))) {
+    console.warn('Boş bildirim bastırıldı', type, message);   // boş kırmızı kutu gösterilmez
+    if (type !== 'err') return;
+    message = 'Bir hata oluştu';
+  }
   if (!toastBox) toastBox = document.body.appendChild(h('div', { class: 'toasts' }));
   const t = toastBox.appendChild(h('div', { class: `toast ${type}` }, message));
   setTimeout(() => t.remove(), type === 'err' ? 6000 : 3500);
 }
-export const toastError = err => toast(err?.message || String(err), 'err');
+export const toastError = err => { if (!err?.message) console.error(err); toast(err?.message || (err?.status ? `HTTP ${err.status}` : String(err ?? '')), 'err'); };
 
 // Firma kısa adı (Firmalar modülü dışında): ilk kelime; "T. C. …", "4N …", "C TECH …" gibi kısaltmalarda anlamlı
 // bir kelimeye (3+ harf) ulaşana kadar devam edilir. Tam ad üzerine gelince (title) gösterilir.

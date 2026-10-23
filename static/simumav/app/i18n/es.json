@@ -1615,5 +1615,7 @@
   "top10.part_pace": "Ritmo",
   "top10.part_discipline": "Disciplina",
   "top10.part_intercept": "Intercepción",
-  "top10.part_fpv": "Circuito FPV"
+  "top10.part_fpv": "Circuito FPV",
+  "common.error_generic": "Se produjo un error",
+  "common.reload": "Recargar"
 }

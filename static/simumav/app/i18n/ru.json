@@ -1615,5 +1615,7 @@
   "top10.part_pace": "Темп",
   "top10.part_discipline": "Дисциплина",
   "top10.part_intercept": "Перехват",
-  "top10.part_fpv": "FPV-трасса"
+  "top10.part_fpv": "FPV-трасса",
+  "common.error_generic": "Произошла ошибка",
+  "common.reload": "Перезагрузить"
 }

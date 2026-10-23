@@ -1615,5 +1615,7 @@
   "top10.part_pace": "Tempo",
   "top10.part_discipline": "Disiplin",
   "top10.part_intercept": "Önleme",
-  "top10.part_fpv": "FPV parkur"
+  "top10.part_fpv": "FPV parkur",
+  "common.error_generic": "Bir hata oluştu",
+  "common.reload": "Yeniden yükle"
 }

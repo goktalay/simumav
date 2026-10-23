@@ -1615,5 +1615,7 @@
   "top10.part_pace": "Pace",
   "top10.part_discipline": "Discipline",
   "top10.part_intercept": "Intercept",
-  "top10.part_fpv": "FPV course"
+  "top10.part_fpv": "FPV course",
+  "common.error_generic": "Something went wrong",
+  "common.reload": "Reload"
 }

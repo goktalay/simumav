@@ -1615,5 +1615,7 @@
   "top10.part_pace": "الإيقاع",
   "top10.part_discipline": "الانضباط",
   "top10.part_intercept": "الاعتراض",
-  "top10.part_fpv": "مضمار FPV"
+  "top10.part_fpv": "مضمار FPV",
+  "common.error_generic": "حدث خطأ",
+  "common.reload": "إعادة التحميل"
 }

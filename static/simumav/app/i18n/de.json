@@ -1615,5 +1615,7 @@
   "top10.part_pace": "Tempo",
   "top10.part_discipline": "Disziplin",
   "top10.part_intercept": "Abfangen",
-  "top10.part_fpv": "FPV-Parcours"
+  "top10.part_fpv": "FPV-Parcours",
+  "common.error_generic": "Ein Fehler ist aufgetreten",
+  "common.reload": "Neu laden"
 }

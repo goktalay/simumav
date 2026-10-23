@@ -191,12 +191,22 @@ export function promptDlg(title, { value = '', placeholder = '', maxlength = 40 
 
 // ---------- Toast ----------
 export function toast(msg, kind = '') {
+  if (msg == null || !String(msg).trim() || String(msg) === '[object Object]' || /^\s*\w+:\s*(undefined|null)?\s*$/.test(String(msg))) {   // boş bildirim gösterilmez
+    console.warn('SIMUMAV: boş bildirim bastırıldı', kind, msg);
+    if (kind !== 'err') return;
+    msg = t('common.error_generic');
+  }
   const box = document.getElementById('toasts');
   const el = h('div', { class: `toast ${kind}` }, msg);
   box.append(el);
   setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 350); }, 2800);
 }
-export const toastErr = e => toast(typeof e === 'string' ? e : (e?.message || String(e)), 'err');
+// Boş metinli hata bildirimi olmasın: ileti yoksa sunucu ayrıntısı / HTTP durumu / genel metin; asıl nesne konsola yazılır (teşhis).
+export const toastErr = e => {
+  let msg = typeof e === 'string' ? e : (e?.message || e?.detail?.message || (typeof e?.detail === 'string' ? e.detail : '') || (e?.status ? `HTTP ${e.status}` : ''));
+  if (!msg || !String(msg).trim() || String(msg) === '[object Object]') { console.error('SIMUMAV hata (iletisiz):', e); msg = t('common.error_generic'); }
+  return toast(String(msg), 'err');
+};
 
 // Boş durum
 export function emptyState(text, plusLabel, onPlus) {

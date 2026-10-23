@@ -1615,5 +1615,7 @@
   "top10.part_pace": "Rythme",
   "top10.part_discipline": "Discipline",
   "top10.part_intercept": "Interception",
-  "top10.part_fpv": "Parcours FPV"
+  "top10.part_fpv": "Parcours FPV",
+  "common.error_generic": "Une erreur est survenue",
+  "common.reload": "Recharger"
 }

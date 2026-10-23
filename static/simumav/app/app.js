@@ -148,7 +148,7 @@ async function route(force = false) {
   let mod;
   try { mod = await ROUTES[name](); } catch (e) {
     console.error(e);
-    await sweep(async () => { try { await state.unmount?.(); } catch (e2) { console.error(e2); } state.unmount = null; view.className = ''; clear(view, h('div', { class: 'screen center-stack' }, h('div', { class: 'err-box' }, t('shell.module_missing', { name })))); ctx.setBack(t('common.back')); });
+    await sweep(async () => { try { await state.unmount?.(); } catch (e2) { console.error(e2); } state.unmount = null; view.className = ''; clear(view, h('div', { class: 'screen center-stack' }, h('div', { class: 'err-box' }, t('shell.module_missing', { name }), h('div', { class: 'err-detail', style: 'margin-top:8px;font-size:12px;opacity:.75;font-family:monospace;white-space:pre-wrap' }, String(e?.message || e || '').slice(0, 300)), h('button', { class: 'btn', style: 'margin-top:10px', onclick: () => location.reload() }, t('common.reload'))))); ctx.setBack(t('common.back')); });
     routing = false; return;
   }
   await sweep(async () => {
