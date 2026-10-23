@@ -194,9 +194,12 @@ def sitl_kayitlari(rows, sanal_montaj=True, tip=None, notr=0, varsayilan=None):
     'sensor_skipped': [adlar]})."""
     notr_mask = notr
     out, notr, ters, motor, sensor = [], [], [], [], []
+    cerceve_sabit = tip in ('multirotor', 'hexarotor')   # FRAME_CLASS/TYPE SITL fizik modeline bağlı (drone_sitl.CERCEVE_PARM): kayıt SITL'e gitmez
     for r in rows:
         if sensor_mu(r['name']):
             sensor.append(str(r['name']))
+            continue
+        if cerceve_sabit and r['name'] in ('FRAME_CLASS', 'FRAME_TYPE'):
             continue
         v = float(r['value'])
         if montaj_mi(r['name']) and v != 0.0:

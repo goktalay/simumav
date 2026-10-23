@@ -7,13 +7,17 @@ import { modal } from '../ui/components.js';
 import { avatarImg, ensureAvatarCss } from '../crew/avatar3d.js';
 
 export const fmtPts = n => Math.round(Number(n) || 0).toLocaleString();
+// Puan bileşenleri (sunucu parts; §29 "FPV parkur" = fpv): sıfır olmayanlar küçük çipler; FPV her zaman (0 dahil) görünür
+export const PARTS = ['match', 'pace', 'discipline', 'intercept', 'fpv'];
+export const partsList = parts => PARTS.filter(k => parts && (k === 'fpv' ? parts.fpv != null : Number(parts[k]) > 0)).map(k => ({ k, v: Math.round(Number(parts[k]) || 0) }));
+const partsEl = parts => { const l = partsList(parts); return l.length ? h('span', { class: 'parts' }, l.map(p => h('span', { class: `part p-${p.k}`, title: t(`top10.part_${p.k}`) }, h('i', null, t(`top10.part_${p.k}`)), fmtPts(p.v)))) : null; };
 
 export function top10Rows(list, el) {
   if (!list.length) { clear(el, h('li', { class: 'empty' }, t('top10.empty'))); return; }
   clear(el, list.map(p => h('li', { class: `r${p.rank}`, dataset: { rank: String(p.rank) } },
     h('span', { class: 'rk' }, String(p.rank)),
     avatarImg(p.avatar, { size: 128, alt: '' }),
-    h('span', { class: 'who' }, h('b', null, p.name, p.demo ? h('em', { class: 't10-demo', title: t('top10.demo_tip') }, t('top10.demo')) : null), h('small', null, p.email)),
+    h('span', { class: 'who' }, h('b', null, p.name, p.demo ? h('em', { class: 't10-demo', title: t('top10.demo_tip') }, t('top10.demo')) : null), h('small', null, p.email), partsEl(p.parts)),
     h('span', { class: 'pts' }, fmtPts(p.score), h('small', null, t('top10.wins_n', { n: p.wins ?? 0 }))))));
 }
 

@@ -20,6 +20,10 @@ HEPGO çalışma zamanı `app/flightsim_match.py` (SITL oturumları, WS yayını
     menzil + burun konisi içinde gerekli süre KESİNTİSİZ tutarsa ANGAJE → kovalayan kazanır; süre biterse kaçan; alan dışı / çarpan kaybeder;
     iki araç da başlangıç irtifasına yaklaşana dek — en geç KORUMA_S — angajman sayılmaz: SITL'de araçlar yerden kalkar). Kapsam: yalnız oyun
     mekaniği; araca güdüm/takip komutu yoktur.
+  · §47 FPV PARKUR YARIŞI (`tur='fpv'`): hazır parkurun (`flightsim_fpv`) kontrol noktaları halka yerine geçer (kapı türleri, tur, sektör);
+    oyuncu ilerlemesi `flightsim_fpv.ParkurIzleyici` (tur/sektör süreleri, kaçırılan kapı ve çarpma cezası, hayalet örnekleri); sıralama ceza dahil
+    süreyle; ilk bitirenden sonra diğerlerine SON_CAGRI_S tanınır (hepsi bitirince hemen biter).
+  · §47 TEK KİŞİLİK karşılaşma: halka yarışı ve FPV parkurunda davetli/bot olmadan da kurulur ve başlar (zaman denemesi); it dalaşı tam 2 oyuncu.
   · §44 YAPAY ZEKÂ PİLOT (bot oyuncu): seviye tablosu (`BOT_SEVIYE`: Kolay / Normal / Zor — hız oranı, tepki gecikmesi, dönüş oranı, sapma, ıskalama,
     önceden dönüş, tahmin hatası, kaçış manevrası), bot adları/renkleri, `Karsilasma` içinde bot oyuncular (negatif kimlik; "geldi" sayılır; kurucu
     ekler/çıkarır; insan kalmazsa karşılaşma biter). Pilot davranışı (oyun mantığı; gerçek güdüm yasası değildir) `flightsim_match_bot.py`'dedir.
@@ -51,8 +55,13 @@ UCAK_TIPLER = ('sabit_kanat',)
 TIPLER = DIKEY_TIPLER + UCAK_TIPLER   # kara aracı (rover) havadaki halkalardan geçemez → karşılaşmada yok
 
 # §41 karşılaşma türleri
-TUR_HALKA, TUR_IT = 'rings', 'dogfight'
-TURLER = (TUR_HALKA, TUR_IT)
+TUR_HALKA, TUR_IT, TUR_FPV = 'rings', 'dogfight', 'fpv'
+TURLER = (TUR_HALKA, TUR_IT, TUR_FPV)
+
+
+def min_oyuncu(tur):
+    """§47: başlatmak için en az oyuncu — it dalaşı 2, diğerleri 1 (tek kişilik zaman denemesi)."""
+    return 2 if tur == TUR_IT else 1
 IT_MESAFE = (300.0, 1500.0)      # başlangıçta aradaki mesafe (m)
 IT_IRTIFA = (20.0, 400.0)        # başlangıç irtifası (m, merkez zemininden)
 IT_SURE_DK = (2, 10)
@@ -67,6 +76,7 @@ KORUMA_S = 60.0                  # kalkış koruması: iki araç da başlangıç
 KORUMA_ORAN = 0.8
 TELE_BAYAT_S = 2.0               # iki oyuncunun konum örnekleri arasında en çok fark (daha eskisiyle angajman hesaplanmaz)
 KOVALAYAN, KACAN = 'chaser', 'evader'
+SON_CAGRI_S = 30.0               # §47 FPV çok oyunculu: ilk bitirenden sonra diğerlerine tanınan süre (flightsim_fpv.SON_CAGRI_S ile aynı)
 
 # §44 yapay zekâ pilot (bot oyuncu) — TEK seviye tablosu (davranış: flightsim_match_bot.BotPilot; testler: tests.test_flightsim_match_bot)
 #   hiz          : sınıfın azami seyir hızına oran (dikey 16 m/s, uçak 30 m/s hava hızı; uçakta en az BOT_UCAK_VMIN)
@@ -479,11 +489,13 @@ class Oyuncu:
         iz = self.iz
         return {'id': self.uid, 'name': self.ad, 'host': self.kurucu, 'status': self.durum, 'joined_at': self.geldi_t, 'slot': self.sira_no,
                 'start': dict(self.baslangic) if self.baslangic else None, 'session_id': self.oturum,
-                'rings': len(iz.gecisler) if iz else 0, 'total': halka_sayisi, 'next': (iz.sira + 1) if iz and not iz.bitti else None,
+                'rings': (iz.sira if hasattr(iz, 'ozet') else len(iz.gecisler)) if iz else 0, 'total': halka_sayisi,   # §47 FPV: ilerleme (kaçırılanlar dahil)
+                'next': (iz.sira + 1) if iz and not iz.bitti else None,
                 'dist_next_m': round(iz.mesafe, 1) if iz and iz.mesafe is not None else None,
                 'finished': bool(iz and iz.bitti), 'finish_t': iz.bitis_t if iz else None,
                 'max_speed_ms': round(self.azami_hiz, 1), 'crashes': self.carpisma, 'drop_reason': self.dusme_nedeni, 'role': self.rol,
-                'is_bot': bool(self.bot), 'level': self.bot, 'color': self.renk}
+                'is_bot': bool(self.bot), 'level': self.bot, 'color': self.renk,
+                **({'fpv': iz.ozet(), 'pen_s': round(iz.ceza, 2), 'lap': iz.tur} if iz is not None and hasattr(iz, 'ozet') else {})}
 
 
 class Karsilasma:
@@ -520,8 +532,15 @@ class Karsilasma:
             o = Oyuncu(uid, ad, bot=sev, renk=b[3] if len(b) > 3 else None)
             o.geldi_t = float(now)
             self.oyuncular[uid] = o
-        if len(self.oyuncular) - 1 < DAVET_MIN:
-            raise MacHata('invalid', 'En az bir kullanıcı davet edin ya da yapay zekâ pilot ekleyin')
+        if tur == TUR_FPV:
+            from . import flightsim_fpv as fpv
+            if self.ayar.get('type') is not None and self.ayar.get('type') not in fpv.FPV_TIPLER:
+                raise MacHata('invalid', 'FPV parkurları yalnız çok rotorlu araçlarla uçulur')
+            fpv.parkur(halka_ayar['course_id'])   # bilinmeyen parkur → FpvHata
+        self.min_oyuncu = min_oyuncu(tur)
+        self.tek_kurulum = len(self.oyuncular) == 1   # §47 tek kişilik kuruldu (davetli/bot yok) → zaman denemesi
+        self.zorla_istendi = False
+        self.son_cagri_t = None                  # §47 FPV: ilk bitirenden sonra yarışın en geç biteceği an
         if len(self.oyuncular) > OYUNCU_MAX:
             raise MacHata('limit', f'Karşılaşmada en çok {OYUNCU_MAX} oyuncu olabilir (siz dahil)')
         if tur == TUR_IT and len(self.oyuncular) != 2:
@@ -577,9 +596,9 @@ class Karsilasma:
         return [o for o in self.oyuncular.values() if o.durum == DAVETLI]
 
     def zorla_baslatilabilir(self, now):
-        """Kurucu "gelmeyenler olmadan başlat": LOBI'de, LOBI_ZORLA_S geçmiş, gelmeyen var, gelen ≥ 2."""
+        """Kurucu "gelmeyenler olmadan başlat": LOBI'de, LOBI_ZORLA_S geçmiş, gelmeyen var, gelen ≥ min_oyuncu (§47: tek kişilik olabilir)."""
         gelen = [o for o in self.aktifler() if o.durum != DAVETLI]
-        return self.durum == LOBI and bool(self.gelmeyenler()) and len(gelen) >= 2 and now - self.olusturma_t >= LOBI_ZORLA_S
+        return self.durum == LOBI and bool(self.gelmeyenler()) and len(gelen) >= self.min_oyuncu and now - self.olusturma_t >= LOBI_ZORLA_S
 
     # ---- geçişler (her biri olay listesi döndürür)
     def _durum(self, d, now, neden=None):
@@ -638,24 +657,29 @@ class Karsilasma:
         if int(istek_uid) != self.kurucu_id:
             raise MacHata('forbidden', 'Yalnız kurucu başlatabilir')
         if not self.zorla_baslatilabilir(now):
-            raise MacHata('conflict', f'Gelmeyenler olmadan başlatmak için en az 2 oyuncu gelmiş olmalı ve {int(LOBI_ZORLA_S)} sn beklenmeli')
+            raise MacHata('conflict', f'Gelmeyenler olmadan başlatmak için en az {self.min_oyuncu} oyuncu gelmiş olmalı ve {int(LOBI_ZORLA_S)} sn beklenmeli')
         ev = []
+        self.zorla_istendi = True
         for o in self.gelmeyenler():
             o.durum, o.dusme_nedeni = DUSTU, 'gelmedi'
             ev.append({'t': 'player', 'id': o.uid, 'status': o.durum})
         return ev + self._lobi_denetle(now)
 
     def _sayi_denetle(self, now):
-        """Yarışa katılabilecek oyuncu 2'nin altına düştüyse: LOBI dışındaki hazırlık durumlarında iptal; yarışta kalan tek kişiyse bitir."""
+        """Yarışa katılabilecek oyuncu min_oyuncu'nun (it dalaşı 2, diğerleri 1) altına düştüyse: hazırlık durumlarında iptal; yarışta kalmadıysa bitir."""
         if self.durum in SON_DURUMLAR:
             return []
         n = len(self.aktifler())
         if self.durum == LOBI:
-            return self.iptal(now, 'oyuncu_kalmadi') if n < 2 and not self.gelmeyenler() else []
-        if self.durum in (HAZIRLIK, GERI_SAYIM) and n < 2:
+            return self.iptal(now, 'oyuncu_kalmadi') if n < self._lobi_min() and not self.gelmeyenler() else []
+        if self.durum in (HAZIRLIK, GERI_SAYIM) and n < self.min_oyuncu:
             return self.iptal(now, 'oyuncu_kalmadi')
         if self.durum == YARIS and n == 0:
             return self.bitir(now, 'oyuncu_kalmadi')
+        if self.durum == YARIS and self.tur == TUR_FPV:   # §47 kalanların hepsi bitirdiyse
+            ev = self._fpv_bitis_denetle(now)
+            if ev:
+                return ev
         if self.durum == YARIS and self.tur == TUR_IT and n == 1:   # §41 rakip ayrıldı / düştü → kalan kazanır
             self.kazanan = self.aktifler()[0].uid
             return self.bitir(now, 'rakip_ayrildi')
@@ -667,11 +691,11 @@ class Karsilasma:
         return []
 
     def _lobi_denetle(self, now):
-        """LOBI → HAZIRLIK: davetli kalmadı (hepsi geldi / çıkarıldı / düştü) ve en az 2 oyuncu."""
+        """LOBI → HAZIRLIK: davetli kalmadı (hepsi geldi / çıkarıldı / düştü) ve en az min_oyuncu oyuncu (§47 tek kişilik: 1)."""
         if self.durum != LOBI or self.gelmeyenler():
             return []
         akt = self.aktifler()
-        if len(akt) < 2:
+        if len(akt) < self._lobi_min():
             return self.iptal(now, 'oyuncu_kalmadi')
         if self.tur == TUR_IT and len(akt) != 2:
             return self.iptal(now, 'oyuncu_kalmadi')
@@ -682,6 +706,11 @@ class Karsilasma:
         if self.tur == TUR_IT:
             self._roller_ata(akt)
         return self._durum(HAZIRLIK, now)
+
+    def _lobi_min(self):
+        """Lobide başlamak için en az oyuncu: tek kişilik kurulduysa ya da kurucu "gelmeyenler olmadan başlat" dediyse min_oyuncu (1); davetli/bot
+        ile kurulup herkes ayrıldıysa kendiliğinden tek kişilik başlamaz (2 → iptal)."""
+        return self.min_oyuncu if (self.tek_kurulum or self.zorla_istendi) else max(2, self.min_oyuncu)
 
     def _roller_ata(self, akt):
         """§41: kurucu seçimi ya da tohumlu rastgele (aynı tohum = aynı roller)."""
@@ -722,7 +751,7 @@ class Karsilasma:
         if self.durum != HAZIRLIK:
             return []
         akt = self.aktifler()
-        if len(akt) >= 2 and all(o.durum == HAZIR for o in akt):
+        if len(akt) >= self.min_oyuncu and all(o.durum == HAZIR for o in akt):
             self.baslangic_t = float(now) + GERI_SAYIM_S
             return self._durum(GERI_SAYIM, now) + [{'t': 'countdown', 'start_at': self.baslangic_t, 'ts': now}]
         return []
@@ -740,10 +769,16 @@ class Karsilasma:
         if self.durum == GERI_SAYIM and now >= self.baslangic_t:
             if self.tur == TUR_IT:
                 self.it = ItDalasi(self.halka_ayar, self.baslangic_t)
+            elif self.tur == TUR_FPV:   # §47
+                from . import flightsim_fpv as fpv
+                for o in self.aktifler():
+                    o.iz = fpv.ParkurIzleyici(self.halkalar or [], self.halka_ayar, self.merkez, self.baslangic_t)
             else:
                 for o in self.aktifler():
                     o.iz = HalkaIzleyici(self.halkalar or [])
             return self._durum(YARIS, now)
+        if self.durum == YARIS and self.tur == TUR_FPV and self.son_cagri_t is not None and now >= self.son_cagri_t:
+            return self.bitir(now, 'son_cagri')
         if self.durum == YARIS and now - self.baslangic_t >= float(self.halka_ayar.get('time_limit_min') or SURE_DK_VARSAYILAN) * 60:
             if self.tur == TUR_IT and self.kazanan is None:   # §41 süre bitti → kaçan kazanır
                 ka = self.rol_oyuncusu(KACAN)
@@ -751,11 +786,14 @@ class Karsilasma:
             return self.bitir(now, 'sure')
         return []
 
-    def konum(self, uid, lat, lon, alt_msl, now, hiz=None, heading=None, pitch=None):
-        """Oyuncu konumu (yalnız YARIS'ta işlenir). Olaylar: ring / finish (+ state BITTI); §41 it dalaşında dogfight olayları (+ BITTI)."""
+    def konum(self, uid, lat, lon, alt_msl, now, hiz=None, heading=None, pitch=None, roll=None, yaw=None):
+        """Oyuncu konumu (yalnız YARIS'ta işlenir). Olaylar: ring / finish (+ state BITTI); §41 it dalaşında dogfight olayları (+ BITTI);
+        §47 FPV parkurunda ring (+ lap, gate) / lap / sector / miss / hit / reset / finish."""
         o = self.oyuncu(uid)
         if o is not None and self.tur == TUR_IT:
             return self._it_konum(o, lat, lon, alt_msl, now, hiz, heading, pitch)
+        if o is not None and self.tur == TUR_FPV:
+            return self._fpv_konum(o, lat, lon, alt_msl, now, hiz, yaw if yaw is not None else (math.radians(float(heading)) if heading is not None else None), roll, pitch)
         if o is None or self.durum != YARIS or o.iz is None or o.durum in KATILMAYAN:
             return []
         if hiz is not None and math.isfinite(float(hiz)):
@@ -773,6 +811,44 @@ class Karsilasma:
             elif e['kind'] == 'wrong_way':
                 ev.append({'t': 'wrong_way', 'id': o.uid, 'i': e['i'], 'ts': now})
         return ev
+
+    # ---- §47 FPV parkuru
+    def _fpv_konum(self, o, lat, lon, alt_msl, now, hiz, yaw, roll, pitch):
+        if self.durum != YARIS or o.iz is None or o.durum in KATILMAYAN:
+            return []
+        if hiz is not None and math.isfinite(float(hiz)):
+            o.azami_hiz = max(o.azami_hiz, float(hiz))
+        x, y = enu(self.merkez['lat'], self.merkez['lon'], lat, lon)
+        ev = []
+        el = lambda: round(now - self.baslangic_t, 3)   # noqa: E731
+        for e in o.iz.konum(x, y, alt_msl, now, yaw, roll, pitch):
+            k = e['kind']
+            if k == 'ring':
+                ev.append({'t': 'ring', 'id': o.uid, 'i': e['i'], 'total': len(self.halkalar), 'elapsed_s': el(), 'lap': e['lap'], 'gate': e['gate'],
+                           'pen_s': round(o.iz.ceza, 2), 'ts': now})
+            elif k in ('lap', 'sector'):
+                ev.append({'t': k, 'id': o.uid, **{a: b for a, b in e.items() if a != 'kind'}, 'ts': now})
+            elif k == 'miss':
+                ev.append({'t': 'miss', 'id': o.uid, 'i': e['i'], 'gate': e['gate'], 'lap': e['lap'], 'pen_s': e['pen_s'], 'total_pen_s': round(o.iz.ceza, 2), 'ts': now})
+            elif k == 'hit':
+                o.carpisma = o.iz.carpma
+                ev.append({'t': 'hit', 'id': o.uid, 'rule': e['rule'], 'mat': e.get('mat'), 'pen_s': e.get('pen_s', 0.0), 'total_pen_s': round(o.iz.ceza, 2), 'ts': now})
+            elif k == 'reset':
+                ev.append({'t': 'reset', 'id': o.uid, 'ts': now})   # platform: oyuncu aracını başlangıca döndürür (Sıfırla)
+            elif k == 'wrong_way':
+                ev.append({'t': 'wrong_way', 'id': o.uid, 'i': e['i'], 'ts': now})
+            elif k == 'finish':
+                ev.append({'t': 'finish', 'id': o.uid, 'elapsed_s': el(), 'total_s': e['total_s'], 'pen_s': round(o.iz.ceza, 2), 'ts': now})
+                if self.son_cagri_t is None:
+                    self.son_cagri_t = float(now) + SON_CAGRI_S
+                ev += self._fpv_bitis_denetle(now)
+        return ev
+
+    def _fpv_bitis_denetle(self, now):
+        akt = [o for o in self.aktifler() if o.iz is not None]
+        if akt and all(o.iz.bitti for o in akt):
+            return self.bitir(now, 'hepsi_bitirdi' if len(self.oyuncular) > 1 else 'tamamlandi')
+        return []
 
     # ---- §41 it dalaşı
     def _it_konum(self, o, lat, lon, alt_msl, now, hiz, heading, pitch):
@@ -825,6 +901,8 @@ class Karsilasma:
         self.bitis_t = float(now)
         if self.tur == TUR_IT:
             return self._durum(BITTI, now, neden) + [{'t': 'result', 'result': self.sonuc(), 'ts': now}]
+        if self.tur == TUR_FPV:   # §47 kazanan: ceza dahil en kısa bitiş süresi (bitiren yoksa en çok ilerleyen)
+            self.kazanan = None
         if self.kazanan is None:
             sira = self.siralama()
             if sira and sira[0]['rings'] > 0 and sira[0]['status'] not in KATILMAYAN:
@@ -841,7 +919,10 @@ class Karsilasma:
     def sonuc(self):
         out = {'winner': self.kazanan, 'reason': self.neden, 'started_at': self.baslangic_t, 'ended_at': self.bitis_t,
                'duration_s': round(self.bitis_t - self.baslangic_t, 2) if self.bitis_t and self.baslangic_t else None,
-               'total': len(self.halkalar or []), 'standings': self.siralama(), 'kind': self.tur}
+               'total': len(self.halkalar or []), 'standings': self.siralama(), 'kind': self.tur,
+               'solo': sum(1 for o in self.oyuncular.values() if o.durum not in (CIKARILDI, DAVETLI)) == 1}
+        if self.tur == TUR_FPV:
+            out['fpv'] = {'course_id': self.halka_ayar.get('course_id'), 'laps': self.halka_ayar.get('laps'), 'crash_rule': self.halka_ayar.get('crash_rule')}
         if self.tur == TUR_IT:
             d = self.it.durum() if self.it is not None else {}
             out['dogfight'] = {'engage_s': (self.it_sonuc or {}).get('engage_s'), 'max_hold_s': d.get('max_hold_s'), 'min_dist_m': d.get('min_dist_m'),
@@ -867,13 +948,13 @@ def siralama(oyuncular, baslangic_t=None):
         yarisdi = p['status'] not in (CIKARILDI, DUSTU, DAVETLI)
         grup = 0 if (yarisdi and p['status'] != AYRILDI) else (1 if p['status'] == AYRILDI else 2)
         if p['finished'] and p.get('finish_t') is not None:
-            return (0, p['finish_t'])
+            return (0, p['finish_t'] + float(p.get('pen_s') or 0))   # §47 FPV: ceza süresi dahil
         d = p['dist_next_m'] if p['dist_next_m'] is not None else float('inf')
         return (1 + grup, -p['rings'], d, p['id'])
     out = []
     for k, p in enumerate(sorted(oyuncular, key=anahtar)):
         q = dict(p)
         q['rank'] = k + 1
-        q['time_s'] = round(p['finish_t'] - baslangic_t, 2) if p['finished'] and p.get('finish_t') is not None and baslangic_t else None
+        q['time_s'] = round(p['finish_t'] - baslangic_t + float(p.get('pen_s') or 0), 2) if p['finished'] and p.get('finish_t') is not None and baslangic_t else None
         out.append(q)
     return out

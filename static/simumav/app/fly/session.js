@@ -219,9 +219,13 @@ export async function openSession(view, start, picked, ctx = {}) {
   const mp = { host: start.mp?.host || location.hostname, port: start.mp?.port ?? '—', proto: 'tcp' };
   const sid = start.sim_id, fid = start.flight_id;
   const wsAddr = wsUrl(start.ws || `/ws/fly/${encodeURIComponent(sid)}`);
-  const world = worldFromTrack(track, meta?.maps_key);
+  // §29 FPV parkur karşılaşması: dünya sunucunun oturumundan (flightsim_fpv.dunya_ayari: düz prosedürel merkez + parkur ortamı, world.fpv_course) —
+  // parkur sahnesini (neon kapılar, mekan) yarış katmanı kurar; uçuşun `track` anlık görüntüsü sanal parkurdur (dünya alanı boş)
+  const fpvWorld = start.session?.world?.fpv_course ? start.session.world : null;
+  const world = fpvWorld ? { ...worldFromTrack(track, meta?.maps_key), ...fpvWorld, mode: 'procedural' } : worldFromTrack(track, meta?.maps_key);
   if (launch) world.launch = launch;
   const g3dMode = world.mode === 'google3d', realMode = world.mode === 'real';
+  const trackName = fpvWorld ? LT(`fpv.c_${fpvWorld.fpv_course}`, track.name) : track.name;   // §29 parkur adı (7 dil; fpv.c_*)
   const session = { id: sid, mode: 'sitl', state: start.session?.state || 'BASLIYOR', type, model: modelFor(drone), created_at: start.session?.created_at || new Date().toISOString(),
     center: { name: track.name || 'Parkur', lat: num(track.lat, 0), lon: num(track.lon, 0), alt: num(track.alt, null) },
     drone: { code: '', name: drone.name || 'Dron' }, hub: { bridge_id: start.session?.hub?.bridge_id ?? -(9000 + (Number(sid) || 0)), name: drone.name || 'Dron' },
@@ -260,7 +264,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   if (!session.targets && start.session?.targets) session.targets = start.session.targets;
   const driveRow = rover ? DRIVE_SM.find(r => r[0] === drive) : null;
   const typeName = (() => { const k = `types.${dType}`, r = tr(k); return r && r !== k ? r : TYPE_LABEL[dType] || dType; })();
-  const nav = h('div', { class: 'fs-nav' }, backBtn, h('b', null, 'SIMUMAV'), h('span', { class: 'fs-nav-sub' }, `${typeName} · ${drone.name || ''} · ${track.name || '—'}${pilot ? ` · ${pilot.name}` : ''} · ${WORLD_MODE_LABEL[world.mode] || world.mode}`), stateBadge, wsBadge,
+  const nav = h('div', { class: 'fs-nav' }, backBtn, h('b', null, 'SIMUMAV'), h('span', { class: 'fs-nav-sub' }, `${typeName} · ${drone.name || ''} · ${trackName || '—'}${pilot ? ` · ${pilot.name}` : ''} · ${WORLD_MODE_LABEL[world.mode] || world.mode}`), stateBadge, wsBadge,
     driveRow ? h('span', { class: 'badge gray fs-drive-badge', title: LT('drive.title', 'Sürüş biçimi') }, LT(driveRow[1], driveRow[2])) : null,   // §15
     launch ? h('span', { class: 'badge blue fs-launch-badge', title: tr('Kalkış yöntemi') }, isIcept ? iceptLaunchLabel(launch, tr) : launchLabelSm(launch)) : null, gates.length ? h('span', { class: 'badge purple', title: tr('FPV halkaları') }, `${gates.length} halka`) : null, scoreBadge.el, speedPill.el, fullBtn);   // §10 hız kapsülü üst çubukta (HEPGO nav kalıbı)
   const onFullChange = () => { const full = !!document.fullscreenElement; stage.classList.toggle('fs-full', full); document.body.classList.toggle('fs-full', full); fullBtn.title = tr(full ? 'Tam ekrandan çık' : 'Tam ekran'); };
@@ -770,10 +774,11 @@ export async function openSession(view, start, picked, ctx = {}) {
   if (pref('rcOn', true) !== false) rcToggle({ auto: true });   // HEPGO §37 varsayılan açık
   // HEPGO §27.2 giriş sekansı (eski sihirbaz COUNTDOWN_S geri sayımı burada): sahne + SITL hazır ve perde kalkınca bir kez — 100 m'den sinematik
   // iniş, büyük 3-2-1 + "dıt dıt dıt … diiit" (ayarlar › ses kapalıysa sessiz), sonra seçili kamera kipine yumuşak geçiş
-  const intro = MIntro.createIntro(stage, { getSim: () => sim, tr, keyed: true, sound: () => { const c = sfx.config?.() || {}; return { on: c.sound !== false, vol: c.volume ?? 0.8 }; }, sub: track.name || null });
+  const intro = MIntro.createIntro(stage, { getSim: () => sim, tr, keyed: true, sound: () => { const c = sfx.config?.() || {}; return { on: c.sound !== false, vol: c.volume ?? 0.8 }; }, sub: trackName || null });
   let introStarted = false;
   if (matchCfg) stage.classList.add('sm-match');   // §18: MP köprüsü yok → panel MP bölümü gizli (match.css)
-  if (matchCfg?.attach) matchUi = matchCfg.attach({ stage, getSim: () => sim, startIntro: () => { introStarted = true; intro.start(); }, getTele: () => last, sfx: gameFx });
+  if (matchCfg?.attach) matchUi = matchCfg.attach({ stage, getSim: () => sim, startIntro: () => { introStarted = true; intro.start(); }, getTele: () => last, sfx: gameFx,
+    getRc: () => rc?.channels?.() || null, fpvMenu });   // §29 FPV parkuru: çubuk göstergesi (sanal / fiziksel kumanda) + FPV menüsü satırı
   const maybeIntro = () => {
     if (matchUi) { if (!destroyed && sim && msg.hidden && session.state === 'HAZIR') matchUi.onWorldReady(); return; }   // §18: giriş sekansını sunucu geri sayımı başlatır
     if (introStarted || destroyed || !sim || !msg.hidden || session.state !== 'HAZIR') return; introStarted = true; intro.start();

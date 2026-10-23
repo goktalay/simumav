@@ -14,6 +14,10 @@
 - HEPGO §44 YAPAY ZEKÂ PİLOT: `POST /api/match/{id}/bot {level}` (kurucu, salonda; çıkarma `/kick {user_id: <negatif>}`) ·
   `POST /api/match/ai {drone_id, track_id, launch?, camera?, kind?, rings?, dogfight?, level, bots?}` "Yapay zekâya karşı" hızlı başlat (davet yok;
   hemen HAZIRLIK). Oyuncu satırlarında `is_bot`, `level`, `color`.
+- HEPGO §47 HAZIR FPV PARKURLARI: gövdelerde `kind: 'fpv'` + `fpv {course_id, laps?, crash_rule?, crash_penalty_s?, miss_penalty_s?, time_limit_min?}`
+  (yalnız çok rotorlu dron; `track_id` isteğe bağlı — parkurun yeri, yoksa TRTEST) · TEK KİŞİLİK: `max_players` 1 olabilir (halka/FPV) ve salonda
+  yalnız kurucu varken BAŞLAT · `POST /api/match/solo {drone_id, track_id?, kind, rings?, fpv?, launch?, camera?}` zaman denemesi hızlı başlat ·
+  `GET /api/fpv/courses` · `GET /api/fpv/courses/{cid}` (skor tablosu, maskeli adlar) · `GET /api/fpv/courses/{cid}/ghost` (kişisel rekor hayaleti).
 """
 import asyncio
 import json
@@ -24,8 +28,9 @@ from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from ... import flightsim
+from ... import flightsim_fpv as fpv
 from ... import flightsim_match_core as core
-from .. import auth, bridge, config, db
+from .. import auth, avatar, bridge, config, db
 from .. import match as M
 from .common import User, hata_cevir, sahip
 from .fly import _Oran, _sender, _ws_ac
@@ -56,25 +61,37 @@ class DogfightIn(BaseModel):
     seed: Optional[int] = None
 
 
+class FpvIn(BaseModel):
+    course_id: str = Field(..., max_length=16)
+    laps: Optional[int] = None
+    crash_rule: Optional[str] = Field(None, max_length=16)
+    crash_penalty_s: Optional[float] = None
+    miss_penalty_s: Optional[float] = None
+    time_limit_min: Optional[int] = None
+    seed: Optional[int] = None
+
+
 class PreviewIn(BaseModel):
     drone_id: int
-    track_id: int
+    track_id: Optional[int] = None
     rings: Optional[RingsIn] = None
     players: Optional[int] = Field(None, ge=1, le=8)
     kind: Optional[str] = Field(None, max_length=16)
     dogfight: Optional[DogfightIn] = None
+    fpv: Optional[FpvIn] = None
 
 
 class CreateIn(BaseModel):
     drone_id: int
-    track_id: int
+    track_id: Optional[int] = None                         # §47 FPV'de isteğe bağlı (parkurun yeri)
     launch: Optional[dict] = None
     camera: Optional[str] = Field(None, max_length=8)
     rings: Optional[RingsIn] = None
     password: str = Field(..., max_length=64)
-    max_players: int = Field(..., ge=2, le=8)
-    kind: Optional[str] = Field(None, max_length=16)       # HEPGO §41 'rings' | 'dogfight'
+    max_players: int = Field(..., ge=1, le=8)              # §47 1 = tek kişilik (halka / FPV)
+    kind: Optional[str] = Field(None, max_length=16)       # HEPGO §41 'rings' | 'dogfight' | §47 'fpv'
     dogfight: Optional[DogfightIn] = None
+    fpv: Optional[FpvIn] = None
 
 
 class BotIn(BaseModel):
@@ -83,14 +100,25 @@ class BotIn(BaseModel):
 
 class AiIn(BaseModel):
     drone_id: int
-    track_id: int
+    track_id: Optional[int] = None
     launch: Optional[dict] = None
     camera: Optional[str] = Field(None, max_length=8)
     rings: Optional[RingsIn] = None
     kind: Optional[str] = Field(None, max_length=16)
     dogfight: Optional[DogfightIn] = None
+    fpv: Optional[FpvIn] = None
     level: str = Field('normal', max_length=16)
     bots: int = Field(1, ge=1, le=7)
+
+
+class SoloIn(BaseModel):
+    drone_id: int
+    track_id: Optional[int] = None
+    launch: Optional[dict] = None
+    camera: Optional[str] = Field(None, max_length=8)
+    kind: str = Field('fpv', max_length=16)
+    rings: Optional[RingsIn] = None
+    fpv: Optional[FpvIn] = None
 
 
 class JoinIn(BaseModel):
@@ -114,12 +142,17 @@ def _h(e):
     hata_cevir(e)
 
 
-def _cfg(drone_type, rings, kind=None, dogfight=None):
+def _cfg(drone_type, rings, kind=None, dogfight=None, fpv_body=None):
     tip = M.ctip(drone_type)
     if drone_type not in M.TIPLER or tip is None:
         raise auth.hata(422, 'invalid', 'Karşılaşmada bu araç tipi seçilemez (halkalar havada; kara aracı yok)')
     if (kind or core.TUR_HALKA) not in core.TURLER:
-        raise auth.hata(422, 'invalid', "kind 'rings' | 'dogfight' olmalı")
+        raise auth.hata(422, 'invalid', "kind 'rings' | 'dogfight' | 'fpv' olmalı")
+    if kind == core.TUR_FPV:   # §47
+        try:
+            return fpv.fpv_ayar_dogrula(fpv_body.model_dump(exclude_none=True) if fpv_body else {}, tip)
+        except fpv.FpvHata as e:
+            raise auth.hata(422, 'invalid', str(e))
     try:
         if kind == core.TUR_IT:
             return core.it_ayar_dogrula(dogfight.model_dump(exclude_none=True) if dogfight else {}, tip)
@@ -128,8 +161,22 @@ def _cfg(drone_type, rings, kind=None, dogfight=None):
         raise auth.hata(422, 'invalid', str(e))
 
 
+def fpv_limits():
+    return {'types': [k for k, v in bridge.TIP_ESLEME.items() if v in fpv.FPV_TIPLER], 'laps': list(fpv.TUR), 'crash_rules': list(fpv.CARPMA_KURALLARI),
+            'penalty_s': list(fpv.CEZA_S), 'time_limit_min': list(fpv.SURE_DK), 'courses': fpv.parkur_listesi(), 'defaults': fpv.fpv_ayar_varsayilan()}
+
+
+def _track(conn, track_id, user, kind):
+    """Parkur satırı; §47 FPV'de isteğe bağlı (None → parkurun varsayılan yeri)."""
+    if track_id is None:
+        if kind == core.TUR_FPV:
+            return None
+        raise auth.hata(422, 'invalid', 'track_id gerekir')
+    return sahip(conn, 'tracks', track_id, user)
+
+
 def _limits():
-    return {'players': [2, M.oyuncu_siniri()], 'count': list(core.HALKA_SAYI), 'alt_m': list(core.YUKSEKLIK), 'diameter_m': list(core.CAP),
+    return {'players': [1, M.oyuncu_siniri()], 'min_players': {k: core.min_oyuncu(k) for k in core.TURLER}, 'fpv': fpv_limits(), 'count': list(core.HALKA_SAYI), 'alt_m': list(core.YUKSEKLIK), 'diameter_m': list(core.CAP),
             'radius_m': list(core.PARKUR), 'time_limit_min': list(core.SURE_DK), 'password': list(M.SIFRE), 'types': list(M.TIPLER),
             'defaults': {'dikey': core.halka_ayar_varsayilan('multirotor'), 'ucak': core.halka_ayar_varsayilan('sabit_kanat')},
             'countdown_s': core.GERI_SAYIM_S, 'lobby_timeout_s': core.LOBI_ZAMAN_ASIMI_S, 'attempts': M.DENEME_KULLANICI,
@@ -162,8 +209,13 @@ async def meta(user=User):
 async def rings_preview(body: PreviewIn, user=User):
     with db.connect() as conn:
         drone = sahip(conn, 'drones', body.drone_id, user)
-        track = sahip(conn, 'tracks', body.track_id, user)
-    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight)
+        track = _track(conn, body.track_id, user, body.kind)
+    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight, body.fpv)
+    if body.kind == core.TUR_FPV:   # §47: kontrol noktaları + başlangıç pedi + parkur özeti
+        tr = M.fpv_track(cfg['course_id'], track)
+        rings = fpv.kontrol_noktalari(cfg, {'lat': tr['lat'], 'lon': tr['lon'], 'alt': 0.0})
+        return {'cfg': cfg, 'rings': rings, 'starts': M.baslangic_onizleme(body.players or 1, drone['type'], tr, rings, fpv_cfg=cfg), 'kind': core.TUR_FPV,
+                'course': fpv.parkur_ozet(cfg['course_id'])}
     if not cfg.get('seed'):
         cfg['seed'] = 1 + int(time.time() * 1000) % (2 ** 31 - 2)
     if body.kind == core.TUR_IT:   # HEPGO §41: halka yok; iki başlangıç noktası (kovalayan, kaçan)
@@ -177,16 +229,16 @@ async def create(body: CreateIn, request: Request, user=User):
     auth.oran('match_create', 10, 3600, user_id=user['id'])
     with db.connect() as conn:
         drone = sahip(conn, 'drones', body.drone_id, user)
-        track = sahip(conn, 'tracks', body.track_id, user)
-    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight)
+        track = _track(conn, body.track_id, user, body.kind)
+    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight, body.fpv)
     kind = body.kind or core.TUR_HALKA
     try:
         sifre = M.sifre_dogrula(body.password)
         ust = M.oyuncu_siniri()
         if kind == core.TUR_IT and body.max_players != 2:
             raise M.H(422, 'invalid', 'İt dalaşı tam 2 oyunculu')
-        if not (2 <= body.max_players <= ust):
-            raise M.H(422, 'invalid', f'Bu sunucuda karşılaşma 2–{ust} oyunculu olabilir (her oyuncu kendi simülatörünü alır)')
+        if not (core.min_oyuncu(kind) <= body.max_players <= ust):
+            raise M.H(422, 'invalid', f'Bu sunucuda karşılaşma {core.min_oyuncu(kind)}–{ust} oyunculu olabilir (her oyuncu kendi simülatörünü alır)')
         launch = bridge.launch_dogrula(body.launch or {'method': 'wheels'})
         try:
             camera = flightsim.kamera_dogrula(body.camera)
@@ -204,8 +256,8 @@ async def vs_ai(body: AiIn, request: Request, user=User):
     auth.oran('match_create', 10, 3600, user_id=user['id'])
     with db.connect() as conn:
         drone = sahip(conn, 'drones', body.drone_id, user)
-        track = sahip(conn, 'tracks', body.track_id, user)
-    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight)
+        track = _track(conn, body.track_id, user, body.kind)
+    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight, body.fpv)
     try:
         launch = bridge.launch_dogrula(body.launch or {'method': 'wheels'})
         try:
@@ -222,11 +274,38 @@ async def vs_ai(body: AiIn, request: Request, user=User):
     return {**m.anlik(), 'me': user['id']}
 
 
+@router.post('/solo', status_code=201)
+async def solo(body: SoloIn, request: Request, user=User):
+    """§47 TEK KİŞİLİK zaman denemesi (Uç › Tek oyunculu › FPV parkuru; halka yarışında da): davet/şifre yok, hemen HAZIRLIK."""
+    auth.oran('match_create', 10, 3600, user_id=user['id'])
+    if body.kind not in (core.TUR_HALKA, core.TUR_FPV):
+        raise auth.hata(422, 'invalid', "Tek kişilik karşılaşma kind 'rings' | 'fpv' olabilir")
+    with db.connect() as conn:
+        drone = sahip(conn, 'drones', body.drone_id, user)
+        track = _track(conn, body.track_id, user, body.kind)
+    cfg = _cfg(drone['type'], body.rings, body.kind, None, body.fpv)
+    try:
+        launch = bridge.launch_dogrula(body.launch or {'method': 'wheels'})
+        try:
+            camera = flightsim.kamera_dogrula(body.camera)
+        except flightsim.SimHata as e:
+            raise M.H(422, 'invalid', str(e))
+        diger = M.MANAGER.kullanici_maci(user['id'])
+        if diger is not None:
+            raise M.H(409, 'match_open', 'Zaten bitmemiş bir karşılaşmanız var; önce ondan ayrılın', match_id=diger.id)
+        m = await M.MANAGER.tek_kisilik(user, drone, track, launch, camera, cfg, auth.client_ip(request), tur=body.kind)
+    except bridge.BridgeHata as e:
+        _h(e)
+    db.audit_bagimsiz('match_solo', user['id'], auth.client_ip(request), f'match {m.id} · {body.kind}' + (f" · {cfg['course_id']}" if body.kind == core.TUR_FPV else ''))
+    return {**m.anlik(), 'me': user['id']}
+
+
 @router.get('')
 async def mine(user=User):
     """Son 20 karşılaşmam (oyuncusu olduklarım)."""
     with db.connect() as conn:
         rs = db.rows(conn.execute('SELECT m.id, m.state, m.reason, m.host_id, m.settings, m.winner_id, m.created_at, m.ended_at, m.kind, mp.rank, mp.status, mp.flight_id, '
+                                  "CASE WHEN m.kind = 'fpv' AND json_valid(m.game_cfg) THEN json_extract(m.game_cfg, '$.course_id') END AS course_id, "
                                   '(SELECT COUNT(*) FROM match_players x WHERE x.match_id = m.id) AS n, '
                                   '(SELECT name FROM match_players x WHERE x.match_id = m.id AND x.user_id = m.winner_id) AS winner_name '
                                   'FROM matches m JOIN match_players mp ON mp.match_id = m.id AND mp.user_id = ? ORDER BY m.id DESC LIMIT 20', (user['id'],)))
@@ -431,3 +510,76 @@ async def ws_match(ws: WebSocket, mid: int):
         sender.cancel()
         if not m.bitti():
             m.degisti(kaydet=False)
+
+
+# ---------------------------------------------------------------- §47 hazır FPV parkurları: katalog, skor tablosu, hayalet
+fpv_router = APIRouter(prefix='/api/fpv')
+
+
+def _skor(conn, cid, laps, limit=10):
+    """Kullanıcı başına en iyi süre (aynı tur sayısı); adlar maskeli (TOP 10 gibi — kimlik/e-posta sızmaz)."""
+    rows = conn.execute('SELECT r.user_id, u.display_name, u.email, u.settings, MIN(r.time_s) AS time_s FROM fpv_records r JOIN users u ON u.id = r.user_id '
+                        'WHERE r.course_id = ? AND r.laps = ? GROUP BY r.user_id ORDER BY time_s', (cid, laps)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            if json.loads(r['settings'] or '{}').get('lb_hidden'):
+                continue
+        except ValueError:
+            pass
+        d = db.row(conn.execute('SELECT best_lap_s, misses, hits, penalty_s, created_at, drone_type FROM fpv_records WHERE course_id = ? AND laps = ? AND user_id = ? '
+                                'ORDER BY time_s LIMIT 1', (cid, laps, r['user_id']))) or {}
+        out.append({'rank': len(out) + 1, 'name': avatar.maske_ad(r['display_name'] or r['email']), 'time_s': r['time_s'], **d, '_uid': r['user_id']})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _benim(conn, cid, laps, uid):
+    return db.row(conn.execute('SELECT time_s, best_lap_s, lap_times, sectors, misses, hits, penalty_s, created_at FROM fpv_records WHERE course_id = ? AND laps = ? '
+                               'AND user_id = ? ORDER BY time_s LIMIT 1', (cid, laps, uid)))
+
+
+@fpv_router.get('/courses')
+async def fpv_courses(user=User):
+    out = []
+    with db.connect() as conn:
+        for c in fpv.parkur_listesi():
+            tab = _skor(conn, c['id'], c['laps'], 1)
+            me = _benim(conn, c['id'], c['laps'], user['id'])
+            n = conn.execute('SELECT COUNT(*) FROM fpv_records WHERE course_id = ?', (c['id'],)).fetchone()[0]
+            rec = {k: v for k, v in tab[0].items() if k != '_uid'} if tab else None
+            out.append({**c, 'record': rec, 'my_best': me['time_s'] if me else None, 'runs': n, 'points': fpv.fpv_puani(c['id'], me['time_s'] if me else None, c['laps'])})
+    return {'courses': out, 'limits': fpv_limits()}
+
+
+@fpv_router.get('/courses/{cid}')
+async def fpv_course(cid: str, laps: Optional[int] = None, user=User):
+    try:
+        c = fpv.parkur(cid)
+    except fpv.FpvHata:
+        raise auth.hata(404, 'not_found', 'Parkur bulunamadı')
+    n = int(laps or c['laps'])
+    with db.connect() as conn:
+        tab = _skor(conn, cid, n)
+        me = _benim(conn, cid, n, user['id'])
+    if me:
+        me = {**me, 'lap_times': json.loads(me['lap_times'] or '[]'), 'sectors': json.loads(me['sectors'] or '[]')}
+    return {'course': c, 'leaderboard': [{**{k: v for k, v in r.items() if k != '_uid'}, 'me': r['_uid'] == user['id']} for r in tab], 'my_best': me, 'laps': n}
+
+
+@fpv_router.get('/courses/{cid}/ghost')
+async def fpv_ghost(cid: str, laps: Optional[int] = None, user=User):
+    """Kişisel rekor hayaleti (yalnız kendi kaydım). Yoksa 404."""
+    try:
+        c = fpv.parkur(cid)
+    except fpv.FpvHata:
+        raise auth.hata(404, 'not_found', 'Parkur bulunamadı')
+    n = int(laps or c['laps'])
+    with db.connect() as conn:
+        r = db.row(conn.execute('SELECT time_s, splits, ghost, lap_times, best_lap_s, created_at FROM fpv_records WHERE course_id = ? AND laps = ? AND user_id = ? '
+                                'AND ghost IS NOT NULL ORDER BY time_s LIMIT 1', (cid, n, user['id'])))
+    if not r:
+        raise auth.hata(404, 'not_found', 'Bu parkurda kaydınız yok')
+    return {'course_id': cid, 'laps': n, 'time_s': r['time_s'], 'best_lap_s': r['best_lap_s'], 'lap_times': json.loads(r['lap_times'] or '[]'),
+            'splits': json.loads(r['splits'] or '[]'), 'ghost': r['ghost'], 'created_at': r['created_at'], 'name': user.get('display_name')}

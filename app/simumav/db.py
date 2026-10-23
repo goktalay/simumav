@@ -187,6 +187,26 @@ CREATE TABLE IF NOT EXISTS match_attempts (     -- şifre denemeleri (kaba kuvve
     ts REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_match_attempts ON match_attempts(ts);
+-- v7 (HEPGO §47 hazır FPV parkurları): kişisel süreler + hayalet. course_id kodla tanımlı parkur (app/flightsim_fpv.py). Biten karşılaşmada
+-- (tek kişilik zaman denemesi ya da çok oyunculu FPV yarışı) bitiren her insan oyuncu için bir satır; skor tablosu kullanıcı başına en iyi.
+CREATE TABLE IF NOT EXISTS fpv_records (
+    id INTEGER PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    match_id INTEGER REFERENCES matches(id) ON DELETE SET NULL,
+    drone_type TEXT,
+    laps INTEGER NOT NULL,
+    time_s REAL NOT NULL,                       -- ceza dahil toplam
+    best_lap_s REAL,
+    lap_times TEXT, sectors TEXT, splits TEXT,  -- JSON
+    misses INTEGER NOT NULL DEFAULT 0, hits INTEGER NOT NULL DEFAULT 0, penalty_s REAL NOT NULL DEFAULT 0,
+    crash_rule TEXT,
+    ghost TEXT,                                 -- flightsim_fpv.hayalet_kodla
+    solo INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_fpv_records_course ON fpv_records(course_id, laps, time_s);
+CREATE INDEX IF NOT EXISTS ix_fpv_records_user ON fpv_records(user_id, course_id);
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 """
 # [(sürüm, [sql, …])] — idempotent. v2 (HEPGO §25): "interceptor" artık 4 pervaneli tailsitter; eski sabit kanat jet/delta interceptor dronları
@@ -208,8 +228,11 @@ _MIGRATIONS = [
     # v6 (§25 3B pilot avatarı): pilots.avatar (JSON) — init() içinde PRAGMA denetimiyle ALTER (yalnız yoksa); NULL satırlar eski 2B karakterin
     # (p01…p10) varsayılan 3B karşılığıyla doldurulur (avatar.LEGACY; yalnız NULL → idempotent). Liderlik gizliliği users.settings.lb_hidden (göç yok).
     (6, []),
+    # v7 (HEPGO §47 hazır FPV parkurları): fpv_records tablosu SCHEMA'da (CREATE IF NOT EXISTS); matches.kind 'fpv' (game_cfg = parkur ayarı).
+    # Veri dönüşümü yok.
+    (7, []),
 ]
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # TR TEST Kalecik (Ankara) UAV test sahası — tesisin resmî koordinatı kamuya açık kaynaklarda yok; Kalecik ilçe merkezi (40.0972N 33.4083E,
 # 725 m) yakınındaki sözleşme değeri kullanılır. Kullanıcı parkuru düzenleyip kaydırabilir.

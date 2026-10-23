@@ -93,6 +93,9 @@ export function createMatchLayer(sim, { me = null } = {}) {
   }
   // players: [{id, name, color, plane}] — kendisi (me) çizilmez
   function setPlayers(players) {
+    // bayram 3B süsleri (flightsim_holiday3d) oyuncuların kalkış noktalarına düşmesin (kendisi dahil; start {lat, lon})
+    const starts = (players || []).filter(p => p.start && p.start.lat != null && sim.toLocal).map(p => { const l = sim.toLocal(Number(p.start.lat), Number(p.start.lon)); return { x: l.x, y: l.y, r: 12 }; });
+    sim.setDecorKeepouts?.('match-starts', starts.length ? starts : null);
     const want = new Set();
     for (const p of players || []) {
       if (p.id === me) continue;
@@ -133,6 +136,7 @@ export function createMatchLayer(sim, { me = null } = {}) {
   const unhook = sim.addFrameHook ? sim.addFrameHook(() => tick()) : null;
   function dispose() {
     unhook?.();
+    sim.setDecorKeepouts?.('match-starts', null);
     setRings([]);
     for (const gh of ghosts.values()) g.remove(gh.grp);
     ghosts.clear();

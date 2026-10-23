@@ -461,6 +461,11 @@ def world_dogrula(w):
         out['mode'] = w['mode']
     if out['mode'] == 'google3d' and not google3d_etkin():
         raise SimHata('invalid', 'Google 3B kipi sunucuda yapılandırılmamış (GOOGLE_MAPS_API_KEY)')
+    if w.get('fpv_course') is not None:   # §47 hazır FPV parkuru sahnesi (istemci 3B'de parkur sahnesini kurar)
+        from . import flightsim_fpv
+        if w['fpv_course'] not in flightsim_fpv.PARKUR_IDLER:
+            raise SimHata('invalid', 'world.fpv_course bilinmeyen parkur')
+        out['fpv_course'] = w['fpv_course']
     return out
 
 

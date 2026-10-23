@@ -623,6 +623,9 @@ def _world(track, drone_type, launch):
     out.update({k: tw[k] for k in WORLD_KEYS if k in tw and tw[k] is not None})   # parkurun dünya ayarları (seed, pist yönü, ağaç yoğunluğu …)
     if launch.get('method') == 'hand':
         out['launch'].update(angle_deg=launch.get('hand_pitch_deg', 12.0), release_kmh=40)
+    if track.get('fpv_course'):   # HEPGO §47 hazır FPV parkuru: düz prosedürel zemin + parkur ortamı (sahneyi istemci kurar)
+        from .. import flightsim_fpv
+        out = flightsim_fpv.dunya_ayari(track['fpv_course'], {'launch': out['launch']})
     return out
 
 

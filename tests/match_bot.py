@@ -72,3 +72,48 @@ def it_pilotu(s, merkez, yon_deg, bas, hiz=10.0, alt=40.0, gecikme_m=0.0, takip=
         k.vn, k.ve = math.cos(h) * hiz, math.sin(h) * hiz
     k.adim = adim
     return st
+
+
+def fpv_noktalari(noktalar, bas=None):
+    """§47 FPV parkuru: kontrol noktalarının yarış hattı parçaları (doğrulanmış engelsiz; z zeminden) art arda — başlangıçtan (bas: (x, y))
+    dikey kalkış + hat."""
+    pts = [(bas[0], bas[1], 0.0), (bas[0], bas[1], max(1.2, float(noktalar[0]['line'][0][2])))] if bas else []
+    for h in noktalar:
+        for p in h['line']:
+            if not pts or math.dist(pts[-1], p) > 1e-6:
+                pts.append(tuple(float(c) for c in p))
+    return pts
+
+
+def fpv_pilotu(s, noktalar, merkez, hiz=12.0, kadar=None):
+    """Sahte kinematikle FPV parkurunu yarış hattı boyunca uçurur (rota_pilotu gibi; `kadar` ilk N kontrol noktası)."""
+    k = s.sahte
+    bx, by = core.enu(merkez['lat'], merkez['lon'], k.lat0, k.lon0)
+    pts = fpv_noktalari(noktalar[:kadar] if kadar else noktalar, (bx, by))
+    st = {'i': 1, 'p': list(pts[0])}
+
+    def adim(dt):
+        k.sure_ms += dt * 1000
+        k.armed, k.mode = True, 'GUIDED'
+        kalan = hiz * dt
+        while kalan > 0 and st['i'] < len(pts):
+            hx, hy, hz = pts[st['i']]
+            dx, dy, dz = hx - st['p'][0], hy - st['p'][1], hz - st['p'][2]
+            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if d <= kalan:
+                st['p'] = [hx, hy, hz]
+                st['i'] += 1
+                kalan -= d
+            else:
+                f = kalan / d
+                st['p'] = [st['p'][0] + dx * f, st['p'][1] + dy * f, st['p'][2] + dz * f]
+                if math.hypot(dx, dy) > 0.01:
+                    k.yaw = math.atan2(dx, dy)
+                k.vn, k.ve = dy / d * hiz, dx / d * hiz
+                kalan = 0
+        lat, lon = core.latlon(merkez['lat'], merkez['lon'], st['p'][0], st['p'][1])
+        k.lat, k.lon, k.alt_rel = lat, lon, st['p'][2]
+        if st['i'] >= len(pts):
+            k.vn = k.ve = 0.0
+    k.adim = adim
+    return st

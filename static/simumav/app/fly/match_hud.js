@@ -11,7 +11,10 @@ import { createClock, countdownPhase, liveStandings, colorFor, bearingDeg, relAn
 import { countSteps, createSfx, rankChange } from '/sim/flightsim_sfx.js';   // HEPGO §44 oyun efektleri (ortak)
 import { createMatchLayer } from '/sim/flightsim_match3d.js';
 import { createDogfightHud, dfResultRows, makeDfT, roleOf } from '/sim/flightsim_dogfight.js';   // HEPGO §41 it dalaşı HUD'u (ortak)
-import { fmtClock, fmtDist, lobbyHref, REASON_KEY, resultRows, STATUS_KEY } from './match_core.js';
+import { fmtClock, fmtDist, fpvSummary, isSoloMatch, lobbyHref, REASON_KEY, resultRows, STATUS_KEY } from './match_core.js';
+import { fpvPoints } from '/sim/flightsim_fpvcourse.js';   // §29 FPV parkur puanı (sunucu fpv_puani ile aynı)
+import { FT, ensureFpvCss, fpvResultEl, soloRingsHead } from './fpv.js';   // §29 sonuç gövdesi + tek kişilik halka başlığı
+import { attachFpvRace } from './fpv_race.js';   // §29 ortak 3B parkur katmanı + HUD + hayalet
 import { ensureAvatarCss, playerImg, rowImg } from '../crew/avatar3d.js';   // §25: uçuşta YALNIZ önbellekli PNG / 2B yedek (ikinci WebGL bağlamı yok)
 import { playerAvatar } from '../crew/avatar_core.js';
 import { buildPilotRig } from '../crew/avatar_body.js';   // §28: diğer oyuncuların pilotları kendi kalkış noktalarında (aynı sahne/çizici; geometri yalnız)
@@ -21,7 +24,8 @@ export const aiTag = p => (isBot(p) ? h('span', { class: 'sm-ai-badge', title: t
 
 const DT = makeDfT(tr, true);
 const isDf = m => (m?.kind || 'rings') === 'dogfight';
-export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele = () => null, mid, me, go = hash => { location.hash = hash; }, sfx = null }) {
+const isFpv = m => (m?.kind || 'rings') === 'fpv';   // §29
+export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele = () => null, mid, me, go = hash => { location.hash = hash; }, sfx = null, getRc = () => null, fpvMenu = null }) {
   const clock = createClock();
   ensureAvatarCss();
   const fx = sfx || createSfx({ key: 'sm.sfx', keyed: true });   // HEPGO §44: oturumun efekt yolu (yoksa yedek bağlam)
@@ -29,6 +33,14 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
   let M = null, layer = null, worldReady = false, introDone = false, resultShown = false, disposed = false, ringsSig = '', dfHud = null;
   // HEPGO §41: it dalaşı HUD'u (rakip işaretçisi, angajman halkası, KİLİTLENİYOR uyarısı, rol/süre/mesafe şeridi). Yükseklikler sahne ölçeğine çevrilir (localPos).
   const ensureDf = () => { if (!M || !isDf(M) || dfHud) return; dfHud = createDogfightHud(stage, { getSim: () => getSim(), tr, keyed: true, me, sfx: fx }); board.hidden = true; window.__smDogfight = dfHud; };
+  // §29 FPV parkuru: ortak 3B parkur katmanı (neon kapılar, mekan sahnesi, hayalet) + HUD (tur/sektör/ceza/hayalet farkı/sıradaki kapı) + çubuk göstergesi
+  let fpv = null;
+  const ensureFpv = () => {
+    if (!M || !isFpv(M) || fpv) return;
+    ensureFpvCss();
+    fpv = attachFpvRace({ stage, getSim, me, sfx: fx, getRc, getTele, fpvMenu, onError: e => (fpvFailed = true, flashMsg(`${FT('fpv.load_err')}: ${e.message}`, 'bad')) });
+    fpv.setMatch(M, clock.now());
+  };
   const pos = {};
   const bar = h('div', { class: 'sm-mt-bar wait' }, tr('match.hud_connecting'));
   const board = h('div', { class: 'sm-mt-board' }, h('h6', null, tr('match.standings')), h('ol'));
@@ -52,12 +64,13 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     sim.setPilots(others.map(p => ({ id: p.id, look: playerAvatar(p), home: sim.toLocal(p.start.lat, p.start.lon), yaw: p.start.yaw_deg != null ? Number(p.start.yaw_deg) * Math.PI / 180 : null,
       target: () => layer?.ghostPos?.(p.id) || null })), buildPilotRig);
   };
-  const syncPlayers = () => { layer?.setPlayers((M?.players || []).filter(p => ACTIVE.has(p.status)).map(p => ({ id: p.id, name: p.name, color: colorFor(M.players, p.id), plane: plane() }))); if (layer) syncPilots(); };
+  const syncPlayers = () => { layer?.setPlayers((M?.players || []).filter(p => ACTIVE.has(p.status)).map(p => ({ id: p.id, name: p.name, start: p.start, color: colorFor(M.players, p.id), plane: plane() }))); if (layer) syncPilots(); };
   // Yükseklik ölçeği: sunucu halkaları/konumları ortak ev irtifası (SITL) + eve göre yükseklikle verir; 3B sahnenin ev irtifası (homeAlt) prosedürel
   // dünyada null olabilir → sahneye eve göre yükseklik (agl / alt_rel) + sahnenin kendi homeAlt'ı ile verilir (halka ve araç aynı zeminde)
   const H0 = () => Number(getSim()?.homeAlt ?? 0) || 0;
   const syncRings = () => {
     if (!layer || !M) return;
+    if (isFpv(M)) { if (ringsSig !== 'fpv') { ringsSig = 'fpv'; layer.setRings([]); } return; }   // §29: kontrol noktaları match3d halkası DEĞİL — neon kapılar parkur katmanında
     const sig = `${H0()}|${(M.rings || []).map(r => `${r.i}:${r.agl_m}`).join('|')}`;
     if (sig !== ringsSig) { ringsSig = sig; layer.setRings((M.rings || []).map(r => ({ ...r, alt_msl: H0() + Number(r.agl_m) }))); }
   };
@@ -71,6 +84,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
   };
   const drawBoard = () => {
     if (!M || isDf(M)) return;
+    board.hidden = (M.players || []).length <= 1;   // §29 tek kişilik: sıralama tablosu yok
     const rows = liveStandings(M.players, pos), total = (M.rings || []).length;
     clear(board.querySelector('ol'), rows.map((p, i) => h('li', { class: `${p.id === me ? 'me' : ''} ${ACTIVE.has(p.status) ? '' : 'out'}`.trim() },
       h('span', { class: 'v' }, `${i + 1}.`), h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }), playerImg(p), h('span', { class: 'nm' }, isBot(p) ? '🤖 ' : '', p.name),
@@ -84,7 +98,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
       wait.hidden = false;
       const act = (M.players || []).filter(p => ACTIVE.has(p.status)), ready = act.filter(p => p.status === 'hazir').length;
       clear(box, h('div', { class: 'ttl' }, tr(st === 'GERI_SAYIM' ? 'match.wait_go' : 'match.wait_title')),
-        h('div', { class: 'sub' }, st === 'GERI_SAYIM' ? (isDf(M) ? DT('df.wait_go') : tr('match.wait_go_sub')) : tr('match.wait_ready', { r: ready, t: act.length })),
+        h('div', { class: 'sub' }, st === 'GERI_SAYIM' ? (isDf(M) ? DT('df.wait_go') : isFpv(M) ? FT('fpv.wait_go') : tr('match.wait_go_sub')) : tr('match.wait_ready', { r: ready, t: act.length })),
         ph ? h('div', { class: 'big' }, String(Math.ceil(ph.remain))) : null,
         h('ul', null, (M.players || []).filter(p => ACTIVE.has(p.status) || p.status === 'dustu').map(p => h('li', null, h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }), playerImg(p),
           h('span', { class: 'nm' }, p.name, p.id === me ? ` (${tr('match.you')})` : ''), h('span', { class: `sm-mt-badge st-${p.status}` }, tr(STATUS_KEY[p.status] || p.status))))));
@@ -93,7 +107,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
   const drawBar = () => {
     if (!M) return;
     const st = M.state;
-    if (st === 'YARIS' && isDf(M)) { bar.hidden = true; return; }   // §41: şerit it dalaşı HUD'unda
+    if (st === 'YARIS' && (isDf(M) || isFpv(M))) { bar.hidden = true; return; }   // §41 / §29: şerit kendi HUD'unda
     bar.hidden = false;
     if (st === 'YARIS') {
       const my = pos[me] || {}, total = (M.rings || []).length, nxt = my.next !== undefined ? my.next : myP()?.next;
@@ -125,25 +139,32 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     resultShown = true;
     resEl.hidden = false;
     const rows = resultRows(M), win = rows.find(r => r.winner);
-    const df = isDf(M);
+    const df = isDf(M), fp = isFpv(M), solo = isSoloMatch(M);
     // HEPGO §44 puan: zafer / yenilgi sesi, sayaç tıklamalarla artar, sonunda "coin"
     const res = M.result || {};
     const row = df ? dfResultRows(M).find(r => r.id === me) : (res.standings || []).find(r => r.id === me);
-    const score = row ? matchScore(row, df ? 'dogfight' : 'rings', res.dogfight || {}) : null;
+    const fs = fp && row ? fpvSummary(row) : null;   // §29 FPV: puan parkurun hedef tur süresine göre (TOP 10 "FPV parkur" bileşeni)
+    const score = row ? (fp ? (fpv?.course ? fpvPoints(fpv.course, fs.finished ? fs.total : null, Number(M.rings_cfg?.laps || res.fpv?.laps) || null) : null) : solo ? null : matchScore(row, df ? 'dogfight' : 'rings', res.dogfight || {})) : null;
     const scoreEl = h('b', { 'data-score': score ?? '' }, '0');
-    clear(resEl, h('div', { class: 'box', role: 'dialog', 'aria-modal': 'true' },
-      h('div', { class: 'trophy', 'aria-hidden': 'true' }, '★'),
-      h('h2', null, win ? (win.id === me ? tr('match.result_you_won') : tr('match.result_winner', { n: win.name })) : tr('match.result_title')),
-      podium(df ? dfResultRows(M).filter(r => r.won).map(r => ({ ...r, rank: 1 })) : rows.slice(0, 3), M.players),
-      score != null ? h('div', { class: 'sm-mt-score' }, h('span', { class: 'muted' }, tr('ai.your_score')), scoreEl) : null,
+    const img = (ps, r) => rowImg(ps, r);
+    clear(resEl, h('div', { class: `box ${fp ? 'sm-fc-resbox' : ''} ${fs?.newPb ? 'pb' : ''}`.trim(), role: 'dialog', 'aria-modal': 'true' },
+      solo ? null : h('div', { class: 'trophy', 'aria-hidden': 'true' }, '★'),
+      solo ? null : h('h2', null, win ? (win.id === me ? tr('match.result_you_won') : tr('match.result_winner', { n: win.name })) : tr('match.result_title')),
+      solo ? null : podium(df ? dfResultRows(M).filter(r => r.won).map(r => ({ ...r, rank: 1 })) : rows.slice(0, 3), M.players),
+      fp ? fpvResultEl(M, me, { img, aiTag }) : solo && !df ? soloRingsHead(M, me) : null,   // §29 zaman denemesi sonucu / FPV sütunları
+      score != null ? h('div', { class: 'sm-mt-score' }, h('span', { class: 'muted' }, fp ? tr('fpvsm.points') : tr('ai.your_score')), scoreEl) : null,
       h('p', { class: 'sub' }, df ? DT(`df.r_${M.result?.reason || M.reason}`) : tr(REASON_KEY[M.result?.reason || M.reason] || 'match.reason_first')),
-      df ? dfResultTable(M, me) : resultTable(rows, me, M.players),
+      fp ? null : df ? dfResultTable(M, me) : resultTable(rows, me, M.players),
       h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: () => { resEl.hidden = true; } }, tr('common.ok')),
         h('button', { class: 'btn primary', type: 'button', onclick: () => go(lobbyHref(mid)) }, tr('match.back_lobby')))));
     if (row) {
       const won = (res.winner ?? M.winner) === me;
-      fx.play(won ? 'win' : 'lose');
-      const steps = countSteps(score), t0 = won ? 1.1 : 1.3;
+      // §29: KİŞİSEL REKOR fanfarı (new_pb); tek kişilikte bitirdiyse zafer, bitiremediyse yenilgi
+      const done = fs ? fs.finished : !!row.finished || row.time_s != null;
+      fx.play(fs?.newPb ? 'pb' : solo ? (done ? 'win' : 'lose') : won ? 'win' : 'lose');
+      if (fs?.newPb && !solo) setTimeout(() => { if (!disposed) fx.play(won ? 'win' : 'lose'); }, 1500);
+      if (score == null) { try { if (document.fullscreenElement) document.exitFullscreen?.(); } catch { /* */ } return; }
+      const steps = countSteps(score), t0 = won || fs?.newPb ? 1.6 : 1.3;
       steps.forEach((st, k) => setTimeout(() => { if (disposed) return; scoreEl.textContent = String(st.v); if (k === steps.length - 1) { if (st.v > 0) fx.play('coin'); } else fx.play('tick'); }, (t0 + st.t) * 1000));
     }
     try { if (document.fullscreenElement) document.exitFullscreen?.(); } catch { /* */ }
@@ -165,9 +186,9 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
       const prev = M?.state;
       M = m.match;
       if (M?.now) clock.sample(M.now);
-      ensureLayer(); syncRings(); syncPlayers(); ensureDf(); dfHud?.update(M, clock.now());
+      ensureLayer(); syncRings(); syncPlayers(); ensureDf(); dfHud?.update(M, clock.now()); ensureFpv(); fpv?.setMatch(M, clock.now());
       if (layer && myP()) layer.setNext(myP().finished ? null : myP().next ?? 1);
-      if (prev && prev !== 'YARIS' && M.state === 'YARIS') flashMsg(isDf(M) ? DT(roleOf(M, me) === 'chaser' ? 'df.go_chaser' : 'df.go_evader') : tr('match.go_flash'), 'go');
+      if (prev && prev !== 'YARIS' && M.state === 'YARIS') flashMsg(isDf(M) ? DT(roleOf(M, me) === 'chaser' ? 'df.go_chaser' : 'df.go_evader') : isFpv(M) ? FT('fpv.go') : tr('match.go_flash'), 'go');
       if (M.state === 'BITTI' && M.result) showResult();
       drawBoard(); drawWait(); drawBar(); maybeIntro();
       return;
@@ -177,7 +198,14 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
       for (const p of m.p || []) pos[p.id] = p;
       layer?.pushPos(localPos(m));
       if (dfHud) { dfHud.setPos(localPos(m)); dfHud.update(M, clock.now()); }
-      if (layer && pos[me]) layer.setNext(pos[me].next ?? null);
+      if (layer && pos[me] && !fpv) layer.setNext(pos[me].next ?? null);
+      fpv?.event(m, clock.now());   // §29 sıradaki kapı + ceza
+      return;
+    }
+    if (fpv && ['ring', 'lap', 'sector', 'miss', 'hit', 'reset', 'wrong_way', 'finish'].includes(m.t)) {   // §29 FPV olayları: HUD + 3B efekt + ses (HUD'da)
+      if (m.t === 'ring') { pos[m.id] = { ...(pos[m.id] || {}), rings: Math.max(Number(pos[m.id]?.rings) || 0, m.i), next: m.i + 1 > m.total ? null : m.i + 1 }; rankSound(); }
+      if (m.t === 'finish' && m.id !== me) { const nm = (M?.players || []).find(p => p.id === m.id)?.name || ''; flashMsg(tr('match.finished', { n: nm }), 'warn'); }
+      fpv.event(m, clock.now());
       return;
     }
     if (m.t === 'ring') {
@@ -190,7 +218,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     }
     if (m.t === 'wrong_way' && m.id === me) { flashMsg(tr('match.wrong_way'), 'bad'); fx.play('wrong'); return; }
     if (m.t === 'finish') { const nm = (M?.players || []).find(p => p.id === m.id)?.name || ''; flashMsg(m.id === me ? tr('match.you_finished', { t: fmtClock(m.elapsed_s) }) : tr('match.finished', { n: nm }), 'warn'); return; }
-    if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; dfHud?.update(M, clock.now()); showResult(); drawBar(); }
+    if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; dfHud?.update(M, clock.now()); fpv?.setMatch(M, clock.now()); showResult(); drawBar(); }
     if (m.t === 'dogfight') {   // §41 olaylar
       if (m.kind === 'engaged') flashMsg(DT('df.engaged'), 'bad');   // §44 zafer/yenilgi sesi sonuçta
       else if (m.kind === 'area') flashMsg(DT('df.r_alan_disi'), 'bad');
@@ -206,7 +234,7 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
   const open = () => {
     if (closed) return;
     try { ws = new WebSocket(wsUrl(`/ws/match/${encodeURIComponent(mid)}`)); } catch { return; }
-    ws.onopen = () => { retry = 0; for (let i = 0; i < 4; i++) setTimeout(ping, i * 300); pingIv = setInterval(ping, 5000); if (worldReady) send({ t: 'ready' }); };
+    ws.onopen = () => { retry = 0; for (let i = 0; i < 4; i++) setTimeout(ping, i * 300); pingIv = setInterval(ping, 5000); if (worldReady && readyOk()) send({ t: 'ready' }); };
     ws.onmessage = e => {
       let m; try { m = JSON.parse(e.data); } catch { return; }
       if (m.t === 'pong') { const keys = [...sent.keys()]; const s0 = keys.length ? keys[keys.length - 1] : null; sent.clear(); clock.sample(m.now, s0, Date.now()); return; }
@@ -216,14 +244,23 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
     ws.onclose = ev => { clearInterval(pingIv); if (closed || ev.code === 4403) return; timer = setTimeout(open, Math.min(8000, 500 * 2 ** Math.min(retry++, 4))); };
   };
   open();
-  const iv = setInterval(() => { ensureLayer(); syncRings(); drawBar(); drawBoard(); if (M?.state === 'GERI_SAYIM') drawWait(); maybeIntro(); }, 250);
+  // §29 FPV: parkur katmanı (neon kapılar + mekan) kurulmadan sunucuya `ready` gitmez — geri sayım parkur görünmeden bitmesin
+  let readySent = false;
+  let fpvFailed = false, worldAt = 0;   // yedek: katman yüklenemezse ya da 120 sn içinde kurulmazsa yine de hazır bildirilir
+  const readyOk = () => !!M && (!isFpv(M) || !!fpv?.layer || fpvFailed || (worldAt && performance.now() - worldAt > 120000));
+  const trySendReady = () => {
+    if (readySent || !worldReady || !readyOk()) return;
+    readySent = true; send({ t: 'ready' }); setTimeout(() => send({ t: 'ready' }), 1500); setTimeout(() => send({ t: 'ready' }), 5000);
+  };
+  const iv = setInterval(() => { trySendReady(); ensureLayer(); syncRings(); drawBar(); drawBoard(); if (M?.state === 'GERI_SAYIM') drawWait(); maybeIntro(); fpv?.tick(clock.now()); }, 250);
   return {
-    onWorldReady() { if (worldReady) return; worldReady = true; ensureLayer(); send({ t: 'ready' }); setTimeout(() => send({ t: 'ready' }), 1500); setTimeout(() => send({ t: 'ready' }), 5000); maybeIntro(); },
+    onWorldReady() { if (worldReady) return; worldReady = true; worldAt = performance.now(); ensureLayer(); trySendReady(); maybeIntro(); },
     backHref: lobbyHref(mid),
     get state() { return M?.state || null; },
     get match() { return M; },
     get sfx() { return fx; },
-    dispose() { disposed = true; closed = true; if (!sfx) fx.dispose(); clearInterval(iv); clearInterval(pingIv); clearTimeout(timer); clearTimeout(flashT); try { ws?.close(); } catch { /* */ } layer?.dispose(); dfHud?.dispose(); bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__smMatch?.layer === layer) delete window.__smMatch; if (window.__smDogfight === dfHud) delete window.__smDogfight; },
+    get fpv() { return fpv; },   // §29
+    dispose() { disposed = true; closed = true; if (!sfx) fx.dispose(); clearInterval(iv); clearInterval(pingIv); clearTimeout(timer); clearTimeout(flashT); try { ws?.close(); } catch { /* */ } layer?.dispose(); dfHud?.dispose(); fpv?.dispose(); bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__smMatch?.layer === layer) delete window.__smMatch; if (window.__smDogfight === dfHud) delete window.__smDogfight; },
   };
 }
 

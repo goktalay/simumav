@@ -222,7 +222,7 @@
   "top10.title": "TOP 10 PILOTES",
   "top10.p_30d": "30 derniers jours",
   "top10.p_all": "Depuis toujours",
-  "top10.formula": "Score = points de match (anneau ×100, arrivée +250, bonus de place ; victoire en dogfight 1000) + victoire +300 + rythme (≤200) + discipline de vol (moyenne ×1,5 × jusqu’à 20 vols) + interceptions (10 meilleurs vols ×0,5). Les matchs uniquement contre l’IA comptent à moitié.",
+  "top10.formula": "Score = points de match (anneau ×100, arrivée +250, bonus de place ; victoire en combat 1000) + victoire +300 + rythme anneaux (≤200) + discipline de vol (moy. ×1,5 × jusqu'à 20 vols) + interception (10 meilleurs vols ×0,5) + parcours FPV (par parcours prêt 250 × tour de référence ÷ ton tour moyen, max 375). Les matchs uniquement contre l'IA comptent pour moitié ; le contre-la-montre solo ne donne pas de points de match.",
   "top10.privacy": "Noms et e-mails sont masqués. Pour quitter la liste : Réglages → « Me masquer du classement ».",
   "top10.empty": "Aucun pilote classé — remporte le premier match !",
   "top10.error": "Impossible de charger la liste ; réessaie plus tard.",

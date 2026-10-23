@@ -119,7 +119,7 @@ def goc_testi():
         with db.connect() as conn:
             av = [json.loads(r[0]) for r in conn.execute('SELECT avatar FROM pilots ORDER BY id')]
             assert av[0]['helmet'] == '#111111' and av[0]['skin'] == 's8' and av[1]['suit'] == '#be185d', av
-            assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == db.SCHEMA_VERSION == 6
+            assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == db.SCHEMA_VERSION >= 6
             conn.execute("UPDATE pilots SET avatar = ? WHERE id = 1", (avatar.dump({**avatar.legacy('p03'), 'helmet': '#00ff00'}),)); conn.commit()
         db.init()
         with db.connect() as conn:
@@ -253,8 +253,8 @@ def main():
         L = r.json()['pilots']
         assert [p['name'] for p in L] == ['M***** K*****', 'Z***** İ*****', 'V*****'], L
         assert [p['score'] for p in L] == [1540, 1270, 400], [p['score'] for p in L]
-        assert L[0]['parts'] == {'match': 1200, 'pace': 100, 'discipline': 240, 'intercept': 0} and L[0]['wins'] == 1 and L[0]['rank'] == 1
-        assert L[1]['parts'] == {'match': 600, 'pace': 70, 'discipline': 0, 'intercept': 600}
+        assert L[0]['parts'] == {'match': 1200, 'pace': 100, 'discipline': 240, 'intercept': 0, 'fpv': 0} and L[0]['wins'] == 1 and L[0]['rank'] == 1
+        assert L[1]['parts'] == {'match': 600, 'pace': 70, 'discipline': 0, 'intercept': 600, 'fpv': 0}
         assert L[0]['email'] == 'mk***@gm***.com' and L[2]['email'] == 've***@ma***.tr'
         assert L[0]['avatar']['helmet'] == '#ff00ff'   # varsayılan pilotun avatarı
         txt = r.text

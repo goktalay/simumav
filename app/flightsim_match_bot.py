@@ -53,6 +53,9 @@ class BotPilot:
         self.gecti_t = {}             # sıra → halka düzlemini (sayılmadan) geçtiği an
         self.gecmis = []              # it dalaşı: [(t, rakip)] (tepki gecikmesi)
         self.manevra = None           # kaçış: {'t', 'aci', 'dz'}
+        self.geri = {}                # §47 FPV: kapının arkasına düşünce dönüş fazı (sıra → 'cikis' | 'giris')
+        self._sd = {}                 # §47 FPV: sıra → kapı düzlemine son işaretli uzaklık (sayılmadan geçişi yakalamak için)
+        self.ivme = 6.0               # §47 FPV: öngörülü dönüş hızı için yanal ivme (m/s²; gerçek ArduCopter GUIDED'da BotSurucu düşürür)
         self.faz = (self.rng.uniform(0, 6.28), self.rng.uniform(0, 6.28), self.rng.uniform(0, 6.28))
 
     # ---------------------------------------------------------------- ortak
@@ -155,6 +158,140 @@ class BotPilot:
             d = math.hypot(hedef[0] - ben['x'], hedef[1] - ben['y'])
             hiz = min(hiz, max(3.0, d * 0.7))
         return self._yonlen(t, ben, hedef, hiz)
+
+    # ---------------------------------------------------------------- §47 FPV parkuru
+    def parkur_adim(self, t, ben, noktalar, sira, vmax=None):
+        """FPV parkuru komutu: sıradaki kontrol noktasının yarış hattı parçasını (önceki çıkış → ara noktalar → giriş → merkez → çıkış) 3B
+        izleme (ileri bakış noktası; seviye: hız, tepki gecikmesi, dönüş oranı, kapı merkezinden kaçıklık). `vmax` parkurun bot hız tavanı (m/s;
+        seviyenin hız oranıyla ölçeklenir). Yükseklik z merkez zemininden."""
+        v = float(vmax or 7.0) * min(1.0, self.p['hiz'] / 0.95)
+        if not noktalar or sira >= len(noktalar):   # bitti: olduğu yerde dur
+            return self._komut3(t, ben, (ben['x'], ben['y'], ben['z']), 0.0)
+        if self.sira is not None and sira != self.sira:
+            self.bekle_t = t + self.p['gecikme_s'] * 0.4   # FPV: kısa tepki gecikmesi (kapıdan sonra çizgide sürer)
+        self.sira = sira
+        if t < self.bekle_t and self.son is not None:
+            self.son_t = t
+            return self.son
+        h = noktalar[sira]
+        hat = [tuple(map(float, q)) for q in (h.get('line') or [[h['x'], h['y'], h.get('z', h.get('agl_m', 2))]])]
+        # kapı merkezinden seviye kaçıklığı (yalnız giriş-merkez-çıkış noktalarına; açıklığın yarısına oranla küçük)
+        key = (sira, 0)
+        if key not in self.kacik:
+            r = min(float(h.get('w') or 3), float(h.get('h') or 3)) / 2 * self.p['sapma'] * 0.45 * math.sqrt(self.rng.random())
+            a = self.rng.uniform(0, 2 * math.pi)
+            self.kacik[key] = (r * math.cos(a), r * math.sin(a))
+        du, dv = self.kacik[key]
+        n = (float(h.get('nx') or 0), float(h.get('ny') or 0), float(h.get('nz') or 0))
+        u = (n[1], -n[0], 0.0) if abs(n[2]) < 0.9 else (1.0, 0.0, 0.0)
+        w = (0.0, 0.0, 1.0) if abs(n[2]) < 0.9 else (0.0, 1.0, 0.0)
+        for k in range(max(0, len(hat) - 3), len(hat)):
+            q = hat[k]
+            hat[k] = (q[0] + u[0] * du + w[0] * dv, q[1] + u[1] * du + w[1] * dv, q[2] + u[2] * du + w[2] * dv)
+        p = (ben['x'], ben['y'], ben['z'])
+        # kapının ARKASINA (sayılmadan) geçtiyse: önce eksendeki çıkış noktasına, oradan girişe dön (açıklıktan geri geçer; ters yön uyarısı
+        # sayılmaz), sonra yeniden ileri — düzlemi açıklığın yakınından (eksene < 8 m) sayılmadan geçtiyse ya da hattın sonunu aştıysa
+        if len(hat) >= 3:
+            c, ex, en = hat[-2], hat[-1], hat[-3]
+            d = (p[0] - c[0], p[1] - c[1], p[2] - c[2])
+            sd = d[0] * n[0] + d[1] * n[1] + d[2] * n[2]
+            yan = math.sqrt(max(0.0, d[0] ** 2 + d[1] ** 2 + d[2] ** 2 - sd * sd))
+            faz = self.geri.get(sira)
+            # en yakın parça izdüşümü (geri dönüş kararı için de: hattın sonunu aştı mı)
+            j, s_ = self._izdusum(hat, p)
+            sona = j == len(hat) - 2 and s_ >= 0.999
+            onceki = self._sd.get(sira)
+            self._sd[sira] = sd
+            kacirdi = onceki is not None and onceki < 0.0 <= sd and yan < 8.0   # düzlemi açıklığın yakınından geçti ama sayılmadı
+            if (faz is None and (kacirdi or (sona and 0.3 < sd and yan < 15.0))) or faz is not None:
+                if sd < -0.5 and faz == 'giris':   # yeniden önüne geçti: normal izlemeye dön
+                    self.geri.pop(sira, None)
+                else:
+                    if faz is None or (faz == 'cikis' and math.dist(p, ex) < 1.5):
+                        faz = self.geri[sira] = 'giris' if faz == 'cikis' else 'cikis'
+                    return self._komut3(t, ben, ex if faz == 'cikis' else en, min(v * 0.6, 4.0))
+        j, s_ = self._izdusum(hat, p)
+        L = 2.5 + 0.35 * v
+        hedef = self._hat_ileri(hat, j, s_, L)
+        # öngörülü dönüş hızı: hedef → (2L) doğrultu değişimi θ ile gereken yarıçap R ≈ L / (2 sin(θ/2)); v ≤ √(ivme · R)
+        h2 = self._hat_ileri(hat, j, s_, 2 * L)
+        a1 = (hedef[0] - p[0], hedef[1] - p[1], hedef[2] - p[2])
+        a2 = (h2[0] - hedef[0], h2[1] - hedef[1], h2[2] - hedef[2])
+        n1, n2 = math.sqrt(sum(c * c for c in a1)), math.sqrt(sum(c * c for c in a2))
+        if n1 > 0.3 and n2 > 0.3:
+            cth = _sinir(sum(x * y for x, y in zip(a1, a2)) / (n1 * n2), -1.0, 1.0)
+            th = math.acos(cth)
+            if th > 0.05:
+                R = L / (2 * math.sin(th / 2))
+                v = min(v, max(2.0, math.sqrt(self.ivme * R)))
+        # yaklaşırken (merkeze < 6 m) hız seviyenin %80'ine iner — dar açıklıkta savrulmasın
+        c = hat[-2] if len(hat) >= 2 else hat[-1]
+        if math.dist(p, c) < 6.0:
+            v *= 0.8
+        return self._komut3(t, ben, hedef, v)
+
+    @staticmethod
+    def _izdusum(hat, p):
+        """Çoklu doğruda en yakın nokta: (parça sırası, parça üstünde oran 0…1); eşit uzaklıkta ilerideki parça."""
+        best = (1e18, 0, 0.0)
+        for j in range(len(hat) - 1):
+            a_, b_ = hat[j], hat[j + 1]
+            ab = (b_[0] - a_[0], b_[1] - a_[1], b_[2] - a_[2])
+            L2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2 or 1e-9
+            s = _sinir(((p[0] - a_[0]) * ab[0] + (p[1] - a_[1]) * ab[1] + (p[2] - a_[2]) * ab[2]) / L2, 0.0, 1.0)
+            q = (a_[0] + ab[0] * s, a_[1] + ab[1] * s, a_[2] + ab[2] * s)
+            d2 = (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2
+            if d2 < best[0] - 1e-9 or (abs(d2 - best[0]) < 1e-9 and j > best[1]):
+                best = (d2, j, s)
+        return best[1], best[2]
+
+    @staticmethod
+    def _hat_ileri(hat, j, s, kalan):
+        """İzdüşümden hat boyunca `kalan` m ilerideki nokta; hattın sonunda son doğrultuda uzatılır (kapı düzlemini geçsin)."""
+        if len(hat) < 2:
+            return tuple(hat[-1])
+        q, nxt = hat[j], hat[j + 1]
+        hedef = (q[0] + (nxt[0] - q[0]) * s, q[1] + (nxt[1] - q[1]) * s, q[2] + (nxt[2] - q[2]) * s)
+        k = j
+        while True:
+            b_ = hat[k + 1] if k + 1 < len(hat) else None
+            if b_ is None:
+                a_ = hat[-2]
+                d = math.dist(a_, hat[-1]) or 1.0
+                return tuple(hedef[i] + (hat[-1][i] - a_[i]) / d * kalan for i in range(3))
+            d = math.dist(hedef, b_)
+            if d >= kalan:
+                return tuple(hedef[i] + (b_[i] - hedef[i]) * kalan / d for i in range(3))
+            kalan -= d
+            hedef = b_
+            k += 1
+
+    def _komut3(self, t, ben, hedef, v):
+        """3B hedefe hız vektörü (FPV): yatay yön dönüş oranı sınırlı (FPV kopteri ×2,5), dikey hız ±(3,5 ↑ / 3 ↓) m/s."""
+        dt = 0.2 if self.son_t is None else _sinir(t - self.son_t, 0.0, 1.0)
+        self.son_t = t
+        dx, dy, dz = hedef[0] - ben['x'], hedef[1] - ben['y'], hedef[2] - ben['z']
+        L = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if L < 0.05 or v <= 0:
+            out = {'vx': 0.0, 'vy': 0.0, 'vz': round(_sinir(dz * 0.8, -3.0, 3.5), 3), 'hedef': tuple(round(c, 2) for c in hedef), 'hiz': 0.0,
+                   'yaw_deg': round(math.degrees(self.yon or 0) % 360, 1)}
+            self.son = out
+            return out
+        yatay = math.hypot(dx, dy)
+        istenen = math.atan2(dx, dy) if yatay > 0.05 else (self.yon if self.yon is not None else 0.0)
+        if self.yon is None:
+            hd = ben.get('heading')
+            self.yon = math.radians(hd) if hd is not None else istenen
+        fark = _sar(istenen - self.yon)
+        azami = math.radians(self.p['donus_dps'] * 2.5) * dt
+        self.yon = _sar(self.yon + _sinir(fark, -azami, azami))
+        kalan = abs(_sar(istenen - self.yon))
+        vh = v * yatay / L * (0.3 + 0.7 * max(0.0, math.cos(kalan)))
+        vz = _sinir(v * dz / L * 1.2, -3.0, 3.5)
+        out = {'vx': round(math.sin(self.yon) * vh, 3), 'vy': round(math.cos(self.yon) * vh, 3), 'vz': round(vz, 3),
+               'hedef': tuple(round(c, 2) for c in hedef), 'hiz': round(math.hypot(vh, vz), 2), 'yaw_deg': round(math.degrees(self.yon) % 360, 1)}
+        self.son = out
+        return out
 
     # ---------------------------------------------------------------- it dalaşı
     def _rakip_gor(self, t, rakip):
@@ -267,6 +404,8 @@ class BotSurucu:
         self.tip = tip
         o = k.oyuncu(uid)
         self.pilot = BotPilot(o.bot if o else 'normal', core.sinif(tip), tohum=(int(k.halka_ayar.get('seed') or 1) * 31 + abs(int(uid))))
+        if getattr(s, 'sahte', 1) is None:   # gerçek SITL: GUIDED hız denetimi ivmesi sınırlı (WPNAV_ACCEL) → dönüşlerde daha erken yavaşla
+            self.pilot.ivme = 3.0
         self.faz = 'bekle'
         self.kalkis_t = None
         self.arm_t = 0.0
@@ -287,6 +426,8 @@ class BotSurucu:
         return {'x': x, 'y': y, 'z': z, 'heading': te.get('heading'), 'gs': te.get('groundspeed'), 'armed': bool(te.get('armed')), 'mode': te.get('mode')}
 
     def _kalkis_irtifasi(self):
+        if self.k.tur == core.TUR_FPV:   # §47 parkur: başlangıç kapısının yüksekliği (kapalı alan — düşük)
+            return max(1.5, float((self.k.halkalar or [{}])[0].get('agl_m') or 2.0))
         if self.k.tur == core.TUR_IT:
             return float(self.k.halka_ayar.get('alt_m') or 40)
         h = (self.k.halkalar or [{}])[0]
@@ -342,6 +483,13 @@ class BotSurucu:
                     continue
                 if self.faz == 'kalkis':
                     alt = self._kalkis_irtifasi()
+                    if self.k.tur == core.TUR_FPV and ben['armed'] and getattr(self.s, 'sahte', None) is not None:
+                        # §47 sahte kinematik: yerinde tırman (hız komutu) — sahte aracın "havada daire" davranışı alçak irtifada devreye girmesin.
+                        # Gerçek ArduCopter'da GÖNDERİLMEZ (yerdeyken hız hedefi GUIDED kalkışını iptal eder).
+                        try:
+                            self.s.bot_yonlendir(self.pilot._komut3(now, ben, (ben['x'], ben['y'], alt), 0.0), merkez=self.k.merkez)
+                        except Exception:   # noqa: BLE001
+                            pass
                     hazir = ben['z'] >= alt * 0.7 if core.sinif(self.tip) == 'dikey' else (ben['z'] >= min(alt, 30.0) * 0.8 and str(ben.get('mode') or '').upper() != 'TAKEOFF')
                     if not ben['armed'] and now - self.kalkis_t > 6.0:   # kalkış tutmadı (ARM düştü): baştan
                         self.faz = 'bekle'
@@ -356,7 +504,11 @@ class BotSurucu:
                                 pass
                     continue
                 o = self.k.oyuncu(self.uid)
-                if self.k.tur == core.TUR_IT:
+                if self.k.tur == core.TUR_FPV:   # §47
+                    from . import flightsim_fpv as fpv
+                    sira = o.iz.sira if o.iz is not None else 0
+                    cmd = self.pilot.parkur_adim(now, ben, self.k.halkalar or [], sira, fpv.parkur(self.k.halka_ayar['course_id']).get('bot_vmax'))
+                elif self.k.tur == core.TUR_IT:
                     rakip, _ = self._rakip(now)
                     cmd = self.pilot.it_adim(now, ben, rakip, o.rol or core.KOVALAYAN, self.k.halka_ayar)
                 else:

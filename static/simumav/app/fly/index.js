@@ -14,12 +14,13 @@ import { openSession, startFlight, fetchMeta, gpwsStorage } from './session.js';
 import { canFuel, createPowerStep, powerOf } from './power.js';
 import { createCameraPick } from './camera_pick.js';   // kamera türü kartları (pilot adımı; HEPGO §22.3)
 import { createTargetsStep } from './targets.js';   // HEDEFLER adımı (HEPGO §24)
-import { isMatchType, lobbyHref, parseFlyParam, ringsLine } from './match_core.js';   // §18 çok oyunculu karşılaşma (saf)
-import { createAiMatch, createAiStep, createInviteStep, createMatch, createRingsStep, matchMeta, renderJoin, renderLobby, renderRace } from './match.js';
+import { isFpvType, isMatchType, lobbyHref, parseFlyParam, ringsLine } from './match_core.js';   // §18 çok oyunculu karşılaşma (saf)
+import { createAiMatch, createAiStep, createInviteStep, createMatch, createRingsStep, createSoloMatch, historyEl, matchMeta, renderJoin, renderLobby, renderRace } from './match.js';
+import { FT, TT, courseName, createCourseStep, createRulesStep, ensureFpvCss, fpvApi } from './fpv.js';   // §29 hazır FPV parkurları (galeri, kurallar)
 
 const here = new URL('.', import.meta.url);
 function ensureCss() {
-  for (const f of ['fly-sim.css', 'fly.css', 'power.css', 'match.css']) {
+  for (const f of ['fly-sim.css', 'fly.css', 'power.css', 'match.css', 'fpv.css']) {
     const href = new URL(f, here).href;
     if (!document.querySelector(`link[href="${href}"]`)) document.head.append(h('link', { rel: 'stylesheet', href }));
   }
@@ -65,6 +66,7 @@ export async function render(view, params = {}, ctx = {}) {
   if (P.kind === 'join') return renderJoin(view, P.code, c);
   if (P.kind === 'lobby') return renderLobby(view, P.id, c);
   if (P.kind === 'race') return renderRace(view, P.id, c, { openSession });
+  if (P.kind === 'fpv') return renderWizard(view, { ...c, fpvSolo: true, course: P.course });   // §29 Tek oyunculu › FPV parkuru (zaman denemesi)
   if (P.kind === 'solo' || ctx.preset) return renderWizard(view, c);
   if (P.kind === 'multi') return renderWizard(view, { ...c, match: true });
   if (P.kind === 'ai') return renderWizard(view, { ...c, match: true, ai: true });   // HEPGO §44 yapay zekâya karşı
@@ -75,6 +77,7 @@ export async function render(view, params = {}, ctx = {}) {
 // En başta: TEK OYUNCULU / ÇOK OYUNCULU (§18) + davet bağlantısı/kodu ile katıl + süren karşılaşmaya dön
 // ======================================================================
 const SOLO_ICON = '<svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="6"/><circle cx="10" cy="10" r="6"/><circle cx="38" cy="10" r="6"/><circle cx="10" cy="38" r="6"/><circle cx="38" cy="38" r="6"/><path d="M14 14l6 6M34 14l-6 6M14 34l6-6M34 34l-6-6"/></svg>';
+const FPV_ICON = '<svg viewBox="0 0 48 48"><rect x="6" y="10" width="16" height="16" rx="2"/><rect x="26" y="20" width="16" height="16" rx="2"/><path d="M14 18c6 0 8 10 14 10"/><path d="M8 42V30M8 30h7l-2 3 2 3H8"/></svg>';
 const MULTI_ICON = '<svg viewBox="0 0 48 48"><ellipse cx="24" cy="24" rx="9" ry="14"/><ellipse cx="24" cy="24" rx="4" ry="7"/><path d="M4 40l8-6M44 40l-8-6M24 4v6"/><circle cx="8" cy="42" r="3"/><circle cx="40" cy="42" r="3"/></svg>';
 async function renderChoice(view, ctx) {
   const go = ctx.go;
@@ -93,11 +96,14 @@ async function renderChoice(view, ctx) {
     cur,
     h('div', { class: 'sm-mode-grid' },
       choice('solo', SOLO_ICON, LT('match.mode_solo', 'Tek oyunculu'), LT('match.mode_solo_desc', 'Kendi dronun ve parkurunla serbest uçuş, görevler, hedefler.'), '#/fly/solo'),
+      // §29 Tek oyunculu › FPV parkuru: hazır neon kapılı parkurda zaman denemesi (POST /api/match/solo)
+      choice('fpv', FPV_ICON, TT('fpvsm.mode', null, 'FPV parkuru'), TT('fpvsm.mode_desc', null, 'Hazır parkurlarda tek başına zaman denemesi.'), '#/fly/fpv'),
       choice('multi', MULTI_ICON, LT('match.mode_multi', 'Çok oyunculu'), LT('match.mode_multi_desc', 'Halka yarışı: arkadaşlarını davet bağlantısı ve şifreyle çağır, ilk bitiren kazanır.'), '#/fly/multi')),
     // HEPGO §44: Çok oyunculu altında "Yapay zekâya karşı" hızlı başlat (davet bağlantısı / şifre gerekmez)
     h('button', { type: 'button', class: 'sm-mode-ai', onclick: () => go('#/fly/ai') }, h('span', { class: 'sm-mode-ai-ico', 'aria-hidden': 'true' }, '🤖'),
       h('span', null, h('b', null, LT('ai.mode', 'Yapay zekâya karşı')), h('small', null, LT('ai.mode_desc', 'Davet gerekmeden hemen başla: Kolay / Normal / Zor yapay zekâ pilotlarla halka yarışı ya da it dalaşı.'))), h('em', null, LT('match.choose', 'Seç'), ' ›')),
-    h('form', { class: 'sm-mode-join', onsubmit: joinCode }, h('span', { class: 'muted' }, LT('match.have_invite', 'Davetin mi var?')), code, h('button', { class: 'btn', type: 'submit' }, LT('match.join_btn', 'Katıl')))));
+    h('form', { class: 'sm-mode-join', onsubmit: joinCode }, h('span', { class: 'muted' }, LT('match.have_invite', 'Davetin mi var?')), code, h('button', { class: 'btn', type: 'submit' }, LT('match.join_btn', 'Katıl'))),
+    historyEl({ go })));   // §29 karşılaşmalarım: tür (FPV parkur …) + tek kişilik rozeti
   try {
     const m = await matchMeta(true);
     if (m?.current && cur.isConnected) {
@@ -124,20 +130,31 @@ async function resumeFlight(view, fid, ctx) {
 async function renderWizard(view, ctx) {
   const isMatch = !!ctx.match;   // §18 çok oyunculu karşılaşma kurucusu (#/fly/multi)
   const isAi = isMatch && !!ctx.ai;   // HEPGO §44 yapay zekâya karşı (#/fly/ai)
-  let matchLimits, currentMatch = null;
-  const root = h('div', { class: `sm-fly sm-wizard ${isMatch ? 'sm-wizard-match' : ''}` });
+  const isFpv = !isMatch && !!ctx.fpvSolo;   // §29 Tek oyunculu › FPV parkuru (#/fly/fpv[/<parkur>])
+  if (isFpv) ensureFpvCss();
+  let matchLimits, currentMatch = null, fpvCourses = [];
+  const root = h('div', { class: `sm-fly sm-wizard ${isMatch ? 'sm-wizard-match' : ''} ${isFpv ? 'sm-wizard-match sm-wizard-fpv' : ''}` });
   clear(view, h('div', { class: 'sm-fly sm-loading' }, tr('Hangar, parkurlar ve mürettebat yükleniyor…')));
   let data, openFlight = null;
   try {
     const [hangar, tracks, crew, missions, meta, cur, mm] = await Promise.all([net.get('/api/hangar'), net.get('/api/tracks'), net.get('/api/crew'), net.get('/api/missions').catch(() => ({ missions: [] })), ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), fetchCurrent(),
-      isMatch ? matchMeta(true) : Promise.resolve(null)]);
+      isMatch || isFpv ? matchMeta(true) : Promise.resolve(null)]);
     data = { drones: hangar?.drones || hangar || [], tracks: tracks?.tracks || tracks || [], pilots: crew?.pilots || crew || [], missions: missions?.missions || missions || [], meta: meta || {} };
     if (isMatch) { data.drones = data.drones.filter(d => isMatchType(d.type)); data.missions = []; matchLimits = mm?.limits || undefined; currentMatch = mm?.current || null; }   // §18: kara aracı yok
+    if (isFpv) {   // §29: yalnız FPV parkuruna uygun tipler (multikopter / FPV / helikopter) + hazır parkur kataloğu
+      data.drones = data.drones.filter(d => isFpvType(d.type, mm?.limits)); data.missions = []; matchLimits = mm?.limits || undefined; currentMatch = mm?.current || null;
+      fpvCourses = (await fpvApi.courses(true)).courses || [];
+    }
     openFlight = cur;
   } catch (err) { toastError(err); clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr('Veriler alınamadı: {e}', { e: err.message })), h('button', { class: 'btn primary', type: 'button', onclick: () => renderWizard(view, ctx) }, 'Yeniden dene'))); return; }
-  if (isMatch && currentMatch) { ctx.go(lobbyHref(currentMatch.id)); return; }   // bitmemiş karşılaşma: salona
-  if (!data.drones.length) { clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr(isMatch ? 'match.no_drone' : 'Hangarınız boş. Önce bir dron ekleyin.')), h('button', { class: 'btn primary', type: 'button', onclick: () => ctx.go('#/hangar') }, 'Hangar\'a git'))); return; }
-  const W = createWizard(data, ctx.preset || {}, { match: isMatch, ai: isAi });
+  if ((isMatch || isFpv) && currentMatch) { ctx.go(lobbyHref(currentMatch.id)); return; }   // bitmemiş karşılaşma: salona
+  if (!data.drones.length) { clear(view, h('div', { class: 'sm-fly sm-loading' }, h('p', null, tr(isFpv ? 'fpvsm.no_drone' : isMatch ? 'match.no_drone' : 'Hangarınız boş. Önce bir dron ekleyin.')), h('button', { class: 'btn primary', type: 'button', onclick: () => ctx.go('#/hangar') }, 'Hangar\'a git'))); return; }
+  const W = createWizard(data, { ...(ctx.preset || {}), ...(isFpv && ctx.course ? { course_id: ctx.course } : {}) }, { match: isMatch, ai: isAi, fpv: isFpv });
+  if (isFpv) {   // parkur seçili gelmediyse / bilinmiyorsa: ilk parkur; tur sayısı parkurun varsayılanı
+    const c0 = fpvCourses.find(c => c.id === W.state.fpv.course_id) || fpvCourses[0];
+    let pl = null; try { pl = JSON.parse(sessionStorage.getItem('sm.fpv.laps') || 'null'); sessionStorage.removeItem('sm.fpv.laps'); } catch { /* */ }   // Parkur ayrıntısında seçilen tur sayısı
+    if (c0) W.set('fpv', { course_id: c0.id, laps: pl?.cid === c0.id && Number(pl.laps) ? Number(pl.laps) : Number(c0.laps) || W.state.fpv.laps });
+  }
   const camPick = createCameraPick({ h, tr, getDrone: () => W.drone() });
   const PREVIEW_URL = '/sim/flightsim3d.js';
   let preview = null, previewBox = null, previewType = null, previewModelId = null, destroyed = false;
@@ -147,12 +164,12 @@ async function renderWizard(view, ctx) {
   const body = h('div', { class: 'sm-step-body' });
   const prevBtn = h('button', { class: 'btn sm-nav-btn', type: 'button', onclick: () => { if (W.prev()) draw(); } }, '‹ ', 'Geri');
   const nextBtn = h('button', { class: 'btn primary sm-nav-btn', type: 'button', onclick: () => { if (W.next()) draw(); } }, 'İleri', ' ›');
-  const startBtn = h('button', { class: `sm-start-btn ${isMatch ? 'sm-mt-create' : ''}`, type: 'button', hidden: true, onclick: () => start() }, h('span', { class: 'sm-start-ring' }), h('b', null, isAi ? tr('ai.start_btn') : isMatch ? tr('match.create_btn') : 'BAŞLA'));
+  const startBtn = h('button', { class: `sm-start-btn ${isMatch || isFpv ? 'sm-mt-create' : ''}`, type: 'button', hidden: true, onclick: () => start() }, h('span', { class: 'sm-start-ring' }), h('b', null, isFpv ? TT('fpvsm.start_btn') : isAi ? tr('ai.start_btn') : isMatch ? tr('match.create_btn') : 'BAŞLA'));
   const foot = h('div', { class: 'sm-wizard-foot' }, prevBtn, h('div', { class: 'sm-summary' }), nextBtn, startBtn);
   const countdown = h('div', { class: 'sm-countdown', hidden: true }, h('b', null, '3'), h('small', null, ''));
   const openBox = h('div', { class: 'sm-open-flight-holder' });
   root.append(h('div', { class: 'sm-wizard-head' },
-    h('h1', null, isAi ? tr('ai.title') : isMatch ? tr('match.multi_title') : 'UÇ'), h('p', { class: 'muted' }, isAi ? tr('ai.wizard_sub') : isMatch ? tr('match.multi_sub') : 'Dronunu seç, parkuru belirle, kalk.')), openBox, stepsBar, body, foot, countdown);
+    h('h1', null, isFpv ? TT('fpvsm.title') : isAi ? tr('ai.title') : isMatch ? tr('match.multi_title') : 'UÇ'), h('p', { class: 'muted' }, isFpv ? TT('fpvsm.sub') : isAi ? tr('ai.wizard_sub') : isMatch ? tr('match.multi_sub') : 'Dronunu seç, parkuru belirle, kalk.')), openBox, stepsBar, body, foot, countdown);
   clear(view, root);
 
   // ---------- "Süren uçuşunuz var" kartı: GET /api/fly/current ya da BAŞLA → 409 flight_open ----------
@@ -195,7 +212,10 @@ async function renderWizard(view, ctx) {
     const siteTxt = sv ? `◈ ${sv}${W.state.defend || m?.kind === 'defend' ? ` · ${tr('site.defend')}` : ''}` : null;   // HEPGO §26
     const drv = d && isRover(d.type) ? DRIVE_SM.find(r => r[0] === W.drive()) : null;
     const drvTxt = drv ? (() => { const r = tr(drv[1]); return r && r !== drv[1] ? r : drv[2]; })() : null;   // §15 sürüş biçimi
-    if (isMatch) { clear(foot.querySelector('.sm-summary'), [d ? d.name : null, t ? t.name : null, W.state.kind === 'dogfight' ? `✈ ${tr('df.kind_dogfight')}` : W.state.rings && !W.state.rings_err ? `◎ ${ringsLine({ time_limit_min: 15, diameter_m: '—', radius_m: '—', ...W.state.rings })}` : null, isAi ? `🤖 ${W.state.kind === 'dogfight' ? 1 : W.state.ai_bots} × ${tr('ai.pilot')} · ${tr(`ai.level_${W.state.ai_level}`)}` : W.state.max_players ? `${W.state.max_players} ${tr('match.players').toLocaleLowerCase()}` : null].filter(Boolean).join(' · ')); return; }
+    const fpvTxt = W.isFpvKind() && W.state.fpv?.course_id ? `⚑ ${courseName(W.state.fpv.course_id)} · ${FT('fpv.laps_n', { n: W.state.fpv.laps })} · ${FT(`fpv.rule_${W.state.fpv.crash_rule}`)}` : null;   // §29
+    if (isFpv) { clear(foot.querySelector('.sm-summary'), [d ? d.name : null, fpvTxt, W.state.ghost === 'pb' ? FT('fpv.ghost_pb') : null].filter(Boolean).join(' · ')); return; }
+    if (isMatch && W.state.kind === 'fpv') { clear(foot.querySelector('.sm-summary'), [d ? d.name : null, fpvTxt, isAi ? `${W.state.ai_bots} × ${tr('ai.pilot')} · ${tr(`ai.level_${W.state.ai_level}`)}` : W.state.max_players === 1 ? FT('fpv.solo') : W.state.max_players ? `${W.state.max_players} ${tr('match.players').toLocaleLowerCase()}` : null].filter(Boolean).join(' · ')); return; }
+    if (isMatch) { clear(foot.querySelector('.sm-summary'), [d ? d.name : null, t ? t.name : null, W.state.kind === 'dogfight' ? `✈ ${tr('df.kind_dogfight')}` : W.state.rings && !W.state.rings_err ? `◎ ${ringsLine({ time_limit_min: 15, diameter_m: '—', radius_m: '—', ...W.state.rings })}` : null, isAi ? `🤖 ${W.state.kind === 'dogfight' ? 1 : W.state.ai_bots} × ${tr('ai.pilot')} · ${tr(`ai.level_${W.state.ai_level}`)}` : W.state.max_players === 1 ? FT('fpv.solo') : W.state.max_players ? `${W.state.max_players} ${tr('match.players').toLocaleLowerCase()}` : null].filter(Boolean).join(' · ')); return; }
     clear(foot.querySelector('.sm-summary'), [d ? `${d.name}` : null, t ? t.name : null, d && needsLaunch(d.type) ? launchLabelSm(W.state.launch) : d?.type === 'interceptor' ? iceptLaunchLabel(W.state.ilaunch, tr) : drvTxt, pwTxt, m ? m.name : null, siteTxt, tg, p ? p.name : null].filter(Boolean).join(' · '));
   };
   // ---------- §10 güç ve yakıt adımı (dron değişince ön ayar sıfırlanır) ----------
@@ -265,7 +285,7 @@ async function renderWizard(view, ctx) {
     };
     const drawInfo = () => { const d = W.drone(); clear(info, d ? [h('h2', null, d.name), h('p', { class: 'muted' }, `${typeLbl(d.type)} · ${d.model_label || d.model_key || ''}${d.type === 'interceptor' ? ` · ${tr('targets.icept_info')}` : ''}${d.type === 'fpv' ? ' · FPV kamera + OSD' : ''}${needsAirframe(d.type) ? ` · ${tr('Kontrol düzeni')}: ${airframeLabel(airframeOf(d), tr)}` : ''}`), isRover(d.type) ? driveBox() : null] : null); };   // §13.1 düzen (hangar kaydı)
     drawList(); drawInfo();
-    body.append(h('div', { class: 'sm-two' }, h('div', null, list), h('div', { class: 'sm-preview-col' }, previewBox, info)));
+    body.append(h('div', { class: 'sm-two' }, h('div', null, isFpv ? h('p', { class: 'muted small sm-fc-note' }, TT('fpvsm.drone_note')) : null, list), h('div', { class: 'sm-preview-col' }, previewBox, info)));
     ensurePreview();
   };
   const stepTrack = () => {
@@ -399,7 +419,9 @@ async function renderWizard(view, ctx) {
     dropTargetsUi();   // hedef adımına dönülürse yeniden kurulur
     body.dataset.step = k;
     ({ drone: stepDrone, track: stepTrack, launch: stepLaunch, power: stepPower, mission: stepMission, site: stepSite, targets: stepTargets, pilot: stepPilot,
-      rings: () => body.append(createRingsStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el),          // §18 halkalar
+      rings: () => body.append(createRingsStep({ W, limits: matchLimits, onChange: () => { drawSteps(); drawFoot(); } }).el),          // §18 halkalar (+ §29 FPV türü: parkur adımı gizlenir)
+      course: () => body.append(createCourseStep({ W, courses: fpvCourses, onChange: () => drawFoot() }).el),   // §29 hazır parkur galerisi
+      rules: () => body.append(createRulesStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el),      // §29 kurallar
       invite: () => body.append(createInviteStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el),   // §18 davet (oyuncu sayısı + şifre)
       ai: () => body.append(createAiStep({ W, limits: matchLimits, onChange: () => drawFoot() }).el) })[k]?.();   // HEPGO §44 yapay zekâ (seviye + bot sayısı)
     drawSteps(); drawFoot();
@@ -409,11 +431,11 @@ async function renderWizard(view, ctx) {
   // ---------- BAŞLA: tam ekran → POST /api/fly/start → sahne. 3-2-1 geri sayımı artık sahnede (HEPGO §27.2 giriş sekansı: 100 m bakış + bip;
   // eski sihirbaz geri sayımı COUNTDOWN_S onunla birleştirildi) — burada yalnız "Hazır ol…" perdesi ----------
   let starting = false;
-  const startMatch = async () => {   // §18: POST /api/match → bekleme salonu
+  const startMatch = async () => {   // §18: POST /api/match → bekleme salonu (§29 FPV zaman denemesi: POST /api/match/solo → salon → yarış)
     starting = true; startBtn.disabled = true;
     try {
-      const m = isAi ? await createAiMatch(W.payload()) : await createMatch(W.payload());
-      toast(tr(isAi ? 'ai.started_toast' : 'match.created_toast'));
+      const m = isFpv ? await createSoloMatch(W.payload()) : isAi ? await createAiMatch(W.payload()) : await createMatch(W.payload());
+      toast(isFpv ? TT('fpvsm.started_toast') : tr(isAi ? 'ai.started_toast' : 'match.created_toast'));
       preview?.dispose(); preview = null; destroyed = true;
       ctx.go(lobbyHref(m.id));
     } catch (err) {
@@ -423,7 +445,7 @@ async function renderWizard(view, ctx) {
   };
   const start = async () => {
     if (starting || !W.ready()) return;
-    if (isMatch) return startMatch();
+    if (isMatch || isFpv) return startMatch();
     starting = true; startBtn.disabled = true;
     document.documentElement.requestFullscreen?.().catch(() => {});   // kullanıcı tıklaması içinde (reddedilirse sessiz)
     const payload = { ...W.payload(), camera: camPick.value };   // §22.3 kamera türü

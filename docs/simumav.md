@@ -1029,3 +1029,49 @@ Dönem: **son 30 gün** (`period=30d`, karşılaşma bitişi / uçuş başlangı
   saç × başlık × beden tam boy, 2B yedek, i18n), `node tests/test_flightsim_pilot.mjs` (ortak katman: RC → çubuk, yerleşim, bakış, katman, ≤ 5k üçgen),
   `./.venv/bin/python -m tests.test_simumav_avatar` (sunucu doğrulaması, v1 → v2, API kısmi PUT, 422, `MAX_JSON`, `enums`).
 - Görseller: `./.venv/bin/python -m tests.simumav_pilot3d_shots` → `/tmp/pilot3d-shots/*.png` (`PILOT_ONLY=editor|fly|match|replay`).
+
+## 29. HAZIR FPV PARKURLARI + TEK KİŞİLİK KARŞILAŞMA — HEPGO docs/ucus-simulatoru.md §47'nin SIMUMAV karşılığı
+Ortak çekirdek `app/flightsim_fpv.py` (8 parkur: hangar, orman, yarı yıkık şehir, gece stadyumu, rafineri, kanyon, tepedeki ahşap ev iskeleti, yarım
+beton bina; kapı geçişi, çarpışma, tur/sektör/ceza, hayalet, doğrulama) + `flightsim_match_core` (`kind: 'fpv'`, `min_oyuncu`) + bot
+(`BotPilot.parkur_adim`). Kapsam yalnız spor/yarış ve beceri parkurudur (§47 giriş).
+
+### 29.1 Sunucu (`app/simumav/match.py`, `routers/match.py`, `bridge._world`, `avatar.siralama`)
+- **Parkurun yeri**: FPV karşılaşmasında `track_id` isteğe bağlı; verilirse o parkurun merkezi, yoksa TRTEST. `match.fpv_track(cid, track)` çekirdek
+  oturumu için sanal "parkur" sözlüğü kurar (DB satırı değil; `flights.track_id` NULL); `bridge._world` `fpv_course` görünce dünyayı
+  `flightsim_fpv.dunya_ayari` ile kurar (prosedürel düz zemin + parkur ortamı; Google 3B değil). Başlangıç pedi ızgarası, kontrol noktaları ilk
+  oyuncu oturumunun ev irtifasıyla yeniden üretilir (halka yarışındaki `alt_ok` düzeltmesi).
+- **Uçlar**: `POST /api/match` ve `/ai` ve `/rings-preview` gövdelerinde `kind: 'fpv'` + `fpv {course_id, laps?, crash_rule?, crash_penalty_s?,
+  miss_penalty_s?, time_limit_min?}` (yalnız `multirotor | fpv | heli` dronlar; önizleme `{cfg, rings, starts, course}`); `max_players` 1…sınır (it
+  dalaşı 2); **`POST /api/match/solo {drone_id, track_id?, kind: 'fpv' | 'rings', fpv?, rings?, launch?, camera?}`** — Uç › Tek oyunculu › FPV
+  parkuru (zaman denemesi): rastgele şifre, tek oyuncu, hemen BAŞLAT (`Yonetici.tek_kisilik`). Salonda yalnız kurucu varken BAŞLAT da tek kişilik
+  başlatır (`baslatilabilir`/`baslat`: `core.min_oyuncu(tur)`; eskiden "Başlatmak için en az 2 oyuncu gerekir"). Meta `limits.players [1, n]`,
+  `limits.min_players`, `limits.fpv`.
+- **Katalog / skor / hayalet** (`match.fpv_router`, `/api/fpv`): `GET /courses` (özet + genel rekor (maskeli ad) + benim en iyim + koşu sayısı +
+  `points` = FPV puanım) · `GET /courses/{cid}?laps=` (tam tanım + TOP 10 skor tablosu: kullanıcı başına en iyi, maskeli ad, `lb_hidden` olan gizli,
+  `me` işareti) · `GET /courses/{cid}/ghost?laps=` (yalnız kendi kişisel rekor hayaletim; başkasınınki yok).
+- **Kayıt**: BITTI'de bitiren her insan oyuncu için `fpv_records` satırı (süre ceza dahil, tur/sektör/ara süreler, kaçırma/çarpma/ceza, hayalet,
+  solo); sonuç satırında `pb_prev`, `new_pb`. Çarpma kuralı `reset` → oyuncu oturumuna Sıfırla.
+- **DB v7 (idempotent)**: `fpv_records (id, course_id, user_id → users CASCADE, match_id → matches SET NULL, drone_type, laps, time_s, best_lap_s,
+  lap_times, sectors, splits, misses, hits, penalty_s, crash_rule, ghost, solo, created_at)` + indeksler (SCHEMA `CREATE TABLE IF NOT EXISTS`);
+  `matches.kind = 'fpv'`, ayar `game_cfg`'de (`rings_cfg '{}'`), `rings` = kontrol noktaları.
+- **TOP 10 formülü (§27) — yeni "FPV parkur" bileşeni** (`parts.fpv`): her hazır parkurda VARSAYILAN tur sayısıyla kişisel en iyi süreden
+  `fpv_puani = 250 × par_tur_süresi / ortalama_tur_süresi` (en çok 375; bitirmeyen 0), parkurlar toplanır (dönem filtresi kayıt tarihine göre).
+  Tek kişilik karşılaşmalar (oyuncu sayısı 1) "karşılaşma/tempo" bileşenine artık GİRMEZ (zaman denemesi galibiyet sayılmaz). Çok oyunculu FPV
+  yarışı karşılaşma puanı: bitirene 250 + sıra bonusu (kontrol noktası sayısı puana girmez).
+
+### 29.2 Ön yüz (`static/simumav/app/fly/fpv.js`, `fpv_race.js`, `fpv.css`; ortak HEPGO modülleri `flightsim_fpvcourse*.js` — docs/ucus-simulatoru.md §47.7)
+- **Parkur** bölümü: "Parkurlarım | Hazır FPV parkurları" sekmeleri (`#/tracks/fpv[/<parkur>]`): 8 parkur galerisi (kuş bakışı `courseSvg`, mekan,
+  uzunluk, kapı, zorluk yıldızları, tur, rekor + maskeli ad, en iyim, FPV puanım); ayrıntıda tur sayısı seçici, TOP 10 (siz vurgulu), en iyi tur /
+  tur / sektörlerim, "Uç (zaman denemesi)".
+- **Uç**: Tek oyunculu / Çok oyunculu yanında üçüncü kart **"FPV parkuru"** (`#/fly/fpv[/<parkur>]`): Dron (yalnız multikopter/FPV/helikopter) →
+  Parkur → Kurallar (tur, Cezalı / Başlangıca dön / Devam, ceza süreleri, süre sınırı, hayalet) → BAŞLAT = `POST /api/match/solo` → salon → yarış.
+  Çok oyunculu kurucuda üçüncü tür "FPV parkur yarışı" (parkur + kalkış adımı gizlenir); 1 oyunculu kurulum = tek kişilik; salonda yalnız kurucu varken
+  "Tek başına başlat" (it dalaşı hariç). Yapay zekâya karşı da FPV.
+- **Yarış** (`fpv_race.js`): ortak 3B parkur katmanı (neon kapılar, yerde başlangıç halkası, kılavuz çizgi), HUD (tur/sektör/en iyi/± hayalet/ceza,
+  sıradaki kapı), çubuk-konumu göstergesi (FPV menüsünde aç/kapa), kişisel rekor hayaleti; match3d halkaları FPV'de kapalı. SIMUMAV prosedürel
+  sahnesinde `homeAlt` boş olduğundan kontrol noktaları `alt_msl − center.alt` ile zemine oturtulur. İstemci parkur katmanı kurulmadan WS `ready`
+  göndermez (en geç 120 sn ya da hata → yine gönderir).
+- **Sonuç**: tek kişilikte "Zaman denemesi sonucu" + KİŞİSEL REKOR rozeti/fanfar, önceki rekorla fark, skor tablosundaki yer; çok oyunculuda FPV
+  sütunları; geçmişte tür + "tek kişilik" rozeti (liste satırında `course_id`). TOP 10'da puan bileşeni çipleri ("FPV parkur" dahil), `top10.formula`.
+- Metinler 7 dil (ortak 127 `fpv.*` + `fpvsm.*` / `top10.part_*`). Testler `node tests/test_simumav_match.mjs` (+7 §29). Görseller
+  `./.venv/bin/python -m tests.simumav_fpvcourse_shots` (`SHOT_PHASES=race,venues,ui,top10,mobile`) → `/tmp/fpvcourse-shots/sm-*.png`.

@@ -89,7 +89,7 @@ async def _genel(request, e):
 
 
 for r in (session.router, settings.router, hangar.router, crew.router, tracks.router, missions.router, fly.router, fly.compat, ops.router, support.router, meta.router,
-          match.router, leaderboard.router, holiday.router, fly.ws_router, match.ws_router):
+          match.router, match.fpv_router, leaderboard.router, holiday.router, fly.ws_router, match.ws_router):   # match.fpv_router: §47 hazır FPV parkurları
     app.include_router(r)
 
 

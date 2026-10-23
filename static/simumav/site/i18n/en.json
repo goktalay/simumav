@@ -222,7 +222,7 @@
   "top10.title": "TOP 10 PILOTS",
   "top10.p_30d": "Last 30 days",
   "top10.p_all": "All time",
-  "top10.formula": "Score = match points (ring ×100, finish +250, place bonus; dogfight win 1000) + win +300 + ring pace (≤200) + flight discipline (avg score ×1.5 × up to 20 flights) + target intercepts (best 10 flights ×0.5). Matches played only against AI count half.",
+  "top10.formula": "Score = match points (ring ×100, finish +250, place bonus; dogfight win 1000) + win +300 + ring pace (≤200) + flight discipline (avg. score ×1.5 × up to 20 flights) + intercept (best 10 flights ×0.5) + FPV course (per ready course 250 × par lap ÷ your average lap, max 375). Matches played only against AI count half; solo time trials do not add match points.",
   "top10.privacy": "Names and e-mails are masked. To leave the list: Settings → “Hide me from the leaderboard”.",
   "top10.empty": "No ranked pilots yet — win the first match!",
   "top10.error": "Could not load the list; try again shortly.",

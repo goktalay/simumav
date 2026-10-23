@@ -1,5 +1,7 @@
 // Parkur: kartlar (dönen mini 3B arazi + neon halkalar), yeni/düzenle: konum (Google harita / koordinat + hazır konumlar),
 // dünya kipi (Gerçek arazi · Google 3B · Prosedürel + HEPGO Dünya adımı alanları), rüzgâr kadranı, saat, hava, yarıçap, FPV halkaları editörü.
+// §29 üstte iki sekme: "Parkurlarım" (bu ekran) · "Hazır FPV parkurları" (#/tracks/fpv[/<parkur>]: 8 hazır parkur galerisi + ayrıntı / skor tablosu;
+// fly/fpv.js mountFpvTracks) — "Uç (zaman denemesi)" → #/fly/fpv/<parkur>.
 import * as api from '../core/api.js';
 import { h, clear, svg } from '../core/dom.js';
 import { t, lang } from '../i18n/i18n.js';
@@ -8,6 +10,7 @@ import { stagger } from '../ui/transition.js';
 import { terrainViewer } from './terrain3d.js';
 import { loadGoogleMaps, pickerMap, gmapsAuthFailed, GMAPS_AUTH_EVENT } from './gmap.js';
 import { satPickerMap } from './satmap.js';
+import { parseTracksParam } from '../fly/match_core.js';   // §29 sekme rotası (saf)
 
 export const WORLD_DEFAULTS = { size_m: 4000, tree_density: 0.3, building_count: 40, runway: true, runway_heading: 0, fog: 0.2 };
 const WORLD_KEYS = ['seed', 'size_m', 'tree_density', 'mountain_height', 'mountain_count', 'building_count', 'runway', 'runway_heading', 'water', 'fog', 'landing_circle_m'];
@@ -31,7 +34,22 @@ export async function mount(root, ctx) {
   await active?.(); active = null;
   const viewers = [];
   let dead = false, gen = 0;   // gen: kart listesi yenilenince bekleyen önizleme sözleri atılır
-  const sc = screen({ title: t('tracks.title'), sub: t('tracks.sub'), cls: 'scroll' });
+  const tp = parseTracksParam(ctx.param);
+  const sc = screen({ title: t('tracks.title'), sub: tp.tab === 'fpv' ? t('fpvsm.gallery_sub') : t('tracks.sub'), cls: 'scroll' });
+  const go = hh => { location.hash = hh; };
+  // §29 sekmeler: Parkurlarım | Hazır FPV parkurları
+  sc.append(h('div', { class: 'sm-fc-tabs' }, segment([{ value: 'mine', label: t('fpvsm.tab_mine') }, { value: 'fpv', label: t('fpvsm.tab_fpv') }], tp.tab, v => go(v === 'fpv' ? '#/tracks/fpv' : '#/tracks'))));
+  if (tp.tab === 'fpv') {
+    const holder = h('div', { class: 'sm-fc-tracks' });
+    sc.append(holder);
+    clear(root, sc);
+    ctx.setBack(tp.course ? t('fpvsm.to_courses') : t('common.menu'), tp.course ? '#/tracks/fpv' : undefined);
+    const M = await import('../fly/fpv.js');
+    M.ensureFpvCss();
+    await M.mountFpvTracks(holder, { go, course: tp.course });
+    active = () => { dead = true; };
+    return () => { const f = active; active = null; return f?.(); };
+  }
   const grid = h('div', { class: 'grid' });
   sc.append(grid);
   clear(root, sc);
@@ -187,7 +205,7 @@ export async function mount(root, ctx) {
   }
 
   await load();
-  if (ctx.param === 'new') openEditor(null);
+  if (tp.new) openEditor(null);
   active = () => { dead = true; gen++; viewers.splice(0).forEach(v => v.dispose()); edDispose?.(); edDispose = null; };
   return () => { const f = active; active = null; return f?.(); };
 }

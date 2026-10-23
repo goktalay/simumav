@@ -222,7 +222,7 @@
   "top10.title": "TOP 10 PİLOT",
   "top10.p_30d": "Son 30 gün",
   "top10.p_all": "Tüm zamanlar",
-  "top10.formula": "Puan = karşılaşma puanı (halka ×100, bitiriş +250, sıra bonusu; it dalaşı galibiyeti 1000) + galibiyet +300 + halka temposu (≤200) + uçuş disiplini (ort. puan ×1,5 × en çok 20 uçuş) + hedef önleme (en iyi 10 uçuş ×0,5). Yalnız yapay zekâya karşı oynanan karşılaşmalar yarım sayılır.",
+  "top10.formula": "Puan = karşılaşma puanı (halka ×100, bitiriş +250, sıra bonusu; it dalaşı galibiyeti 1000) + galibiyet +300 + halka temposu (≤200) + uçuş disiplini (ort. puan ×1,5 × en çok 20 uçuş) + hedef önleme (en iyi 10 uçuş ×0,5) + FPV parkur (her hazır parkurda 250 × hedef tur ÷ ortalama tur süren, en çok 375). Yalnız yapay zekâya karşı oynanan karşılaşmalar yarım sayılır; tek kişilik zaman denemesi karşılaşma puanına girmez.",
   "top10.privacy": "Adlar ve e-postalar maskelenir. Listede görünmek istemiyorsan Ayarlar → “Liderlik tablosunda görünme”.",
   "top10.empty": "Henüz puan alan pilot yok — ilk karşılaşmayı sen kazan!",
   "top10.error": "Liste alınamadı; biraz sonra tekrar dene.",

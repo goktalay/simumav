@@ -9,6 +9,9 @@
 // Olaylar: ring (yükselen "ding"), finish (son halka / bitiş fanfarı), overtake (öne geçme: whoosh + ding), overtaken (geride kalma: alçak ton),
 //   count / go (3‑2‑1‑BAŞLA; giriş sekansı kendi biplerini çalıyorsa çağrılmaz), lock (angajman halkası dolarken yükselen ton; ilerleme 0…1),
 //   win (KİLİT tamam / kazandınız jingle), lose (kaybettiniz: alçalan ton), coin (puan/bonus), tick (sonuç sayacı tıklaması), wrong (ters yön).
+// §47 FPV parkuru: lap (tur sonu; en iyi turda üçlü), sector_best (sektör rekoru: parlak arpej), pb (KİŞİSEL REKOR fanfarı), miss (kaçırılan kapı:
+//   kısa alçak vızıltı), hit (çarpma: kısa gürültü darbesi), ghost_ahead / ghost_behind (hayaletin önüne geçme / gerisine düşme: kısa iki nota).
+//   Kapı geçişi mevcut `ring`, bitiş `finish`.
 
 // Metinler: HEPGO Türkçe anahtar (tr), SIMUMAV `sfx.*` anahtarı (keyed)
 export const SFX_TEXTS = [['sfx.title', 'Oyun efektleri'], ['sfx.off', 'Efekt kapalı'], ['sfx.on', 'Efekt açık'], ['sfx.vol', 'Efekt düzeyi']];
@@ -20,8 +23,8 @@ export const makeSfxT = (tr, keyed = false) => (k) => {
   const r = tr(k);
   return r && r !== k ? r : tx;
 };
-export const SFX_EVENTS = ['ring', 'finish', 'overtake', 'overtaken', 'count', 'go', 'lock', 'win', 'lose', 'coin', 'tick', 'wrong'];
-export const SFX_MINOR = new Set(['lock', 'tick', 'overtake', 'overtaken', 'count']);   // uyarı çalarken hiç çalmayanlar
+export const SFX_EVENTS = ['ring', 'finish', 'overtake', 'overtaken', 'count', 'go', 'lock', 'win', 'lose', 'coin', 'tick', 'wrong', 'lap', 'sector_best', 'pb', 'miss', 'hit', 'ghost_ahead', 'ghost_behind'];
+export const SFX_MINOR = new Set(['lock', 'tick', 'overtake', 'overtaken', 'count', 'ghost_ahead', 'ghost_behind']);   // uyarı çalarken hiç çalmayanlar
 export const ALERT_DUCK = 0.3;                                                          // uyarı çalarken diğer efektlerin çarpanı
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const N = (n) => 440 * 2 ** ((n - 69) / 12);   // MIDI nota → Hz
@@ -65,6 +68,22 @@ export function sfxPlan(ev, p = {}) {
       return [{ t: 0, d: 0.025, f: 1900, type: 'square', g: 0.16 }];
     case 'wrong':
       return [{ t: 0, d: 0.28, f: 330, f2: 260, type: 'sawtooth', g: 0.3 }];
+    // §47 FPV parkuru
+    case 'lap':   // tur sonu: iki nota (en iyi turda üçüncü yüksek nota)
+      return [[79, 0, 0.12], [84, 0.12, 0.22], ...(p.best ? [[88, 0.3, 0.3]] : [])].map(([n, t, d]) => ({ t, d, f: N(n), type: 'triangle', g: 0.42 }));
+    case 'sector_best':   // sektör rekoru: hızlı parlak arpej (mor)
+      return [[84, 0, 0.07], [88, 0.06, 0.07], [91, 0.12, 0.07], [96, 0.18, 0.22]].map(([n, t, d]) => ({ t, d, f: N(n), type: 'sine', g: 0.38 }));
+    case 'pb':   // KİŞİSEL REKOR fanfarı: C5 G5 C6 · E6–G6 + bas desteği
+      return [[72, 0, 0.12], [79, 0.12, 0.12], [84, 0.24, 0.16], [88, 0.42, 0.14], [91, 0.56, 0.75]]
+        .flatMap(([n, t, d]) => [{ t, d, f: N(n), type: 'square', g: 0.26 }, { t, d, f: N(n - 12), type: 'triangle', g: 0.32 }, { t, d, f: N(n + 12), type: 'sine', g: 0.12 }]);
+    case 'miss':   // kaçırılan kapı: kısa alçak vızıltı
+      return [{ t: 0, d: 0.16, f: 196, f2: 174, type: 'square', g: 0.26 }, { t: 0.17, d: 0.16, f: 174, f2: 147, type: 'square', g: 0.24 }];
+    case 'hit':   // çarpma: kısa gürültü darbesi + alçak gümleme
+      return [{ t: 0, d: 0.18, f: 900, f2: 200, type: 'noise', g: 0.5, noise: true }, { t: 0, d: 0.22, f: 110, f2: 60, type: 'sine', g: 0.55 }];
+    case 'ghost_ahead':
+      return [{ t: 0, d: 0.08, f: N(86), type: 'sine', g: 0.3 }, { t: 0.08, d: 0.12, f: N(91), type: 'sine', g: 0.3 }];
+    case 'ghost_behind':
+      return [{ t: 0, d: 0.08, f: N(79), type: 'sine', g: 0.26 }, { t: 0.08, d: 0.12, f: N(74), type: 'sine', g: 0.26 }];
     default:
       return [];
   }

@@ -50,6 +50,20 @@ TIP_ESLEME = {
     'rover': ('ardurover', 'rover'),
 }
 ROVER_SKID_MODEL = 'rover-skid'
+# Çok rotorlu SITL fizik modeli → denetleyici çerçevesi (FRAME_CLASS, FRAME_TYPE). `--model +` motorları ARTI (+) dizilişindedir, `hexa` artı
+# hexa; ArduCopter FRAME_TYPE varsayılanı ise 1 (X). Eşleşmezse karıştırıcı 45° (hexa'da 30° + quad karıştırıcı) kaymış motorlara komut verir →
+# askıda ~16 Hz ±2° yatış/yunuslama salınımı, açısal hız ±2 rad/s (ölçüm: ALT_HOLD/LOITER, rüzgâr 0). ArduPilot sim_vehicle bunu
+# default_params/copter.parm (FRAME_TYPE 0) + copter-hexa.parm (FRAME_CLASS 2) ile verir; biz yalnız FRAME_CLASS 1 yazıyorduk.
+# Bu satırlar KAYITLI parametrelerden SONRA yazılır (gerçek dronun X çerçeve kaydı sanal + fiziğini bozmasın; drone_params.sitl_kayitlari de atlar).
+CERCEVE_PARM = {'+': (('FRAME_CLASS', 1), ('FRAME_TYPE', 0)), 'hexa': (('FRAME_CLASS', 2), ('FRAME_TYPE', 0))}
+CERCEVE_ADLARI = frozenset({'FRAME_CLASS', 'FRAME_TYPE'})
+
+
+def cerceve_parametreleri(tip, model=None):
+    """Çok rotorlu tipte SITL fizik modeline uyan (FRAME_CLASS, FRAME_TYPE) çiftleri; diğer tiplerde boş."""
+    if tip not in ('multirotor', 'hexarotor'):
+        return ()
+    return CERCEVE_PARM.get(model or TIP_ESLEME[tip][1], ())
 # ArduPilot Tools/autotest/default_params/rover.parm özü (SITL fiziğiyle ayarlı hız/direksiyon kazançları, RC/SERVO aralıkları; kalibrasyon ve
 # röle/pin satırları hariç) + rover-skid.parm (diferansiyel: SERVO1 73 ThrottleLeft, SERVO3 74 ThrottleRight). Kayıtlı parametrelerden ÖNCE yazılır.
 ROVER_PARM = (('CRUISE_SPEED', 5), ('CRUISE_THROTTLE', 30), ('ATC_SPEED_P', 0.1), ('ATC_STR_RAT_FF', 0.75), ('WP_RADIUS', 3), ('WP_SPEED', 5),
@@ -240,6 +254,9 @@ def parm_metni(sysid, log_bin=False, ekstra=None, tip=None, model=None):
     satirlar += tip_parm_satirlari(tip, model)
     if ekstra:
         satirlar += ['# HEPGO kayitli parametreler (drone_sitl_params)'] + [str(s).strip() for s in ekstra if str(s).strip()]
+    cerceve = cerceve_parametreleri(tip, model)
+    if cerceve:   # fizik modeline uyan çerçeve — son söz (kayıtlı FRAME_* sanal fiziği bozmasın; CERCEVE_PARM açıklaması)
+        satirlar += ['# HEPGO SITL cerceve (fizik modeli)'] + [f'{a} {v:g}' for a, v in cerceve]
     return '\n'.join(satirlar) + '\n'
 
 

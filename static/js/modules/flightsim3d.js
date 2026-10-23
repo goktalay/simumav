@@ -864,7 +864,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (opts.homeMark === false) return;   // SIMUMAV hangar/sihirbaz önizlemesi: küçük dron yakın kamerada turuncu ev diski baskın görünmesin
     const rover = (drone?.type || opts.type) === 'rover';   // §31 kara aracı gerçek boyutta: dolu disk yerine ince halka (aracı örtmesin)
     const home = new T.Mesh(rover ? new T.RingGeometry(2.6, 3, 40) : new T.CircleGeometry(3, 24), new T.MeshBasicMaterial({ color: 0xf59e0b }));
-    home.position.z = 0.12;
+    home.position.z = 0.12; home.name = 'fs-home-mark';   // §47 FPV parkur katmanı gizler (parkur merkezi = ev; turuncu disk kapı hattına düşmesin)
     gWorld.add(home);
   }
 
@@ -3102,6 +3102,8 @@ pipStats: () => ({ ...pipStats, interval: pipInterval(frameMs), frameMs, rt: pip
     setGimbalZoom, getGimbalZoom: () => camFx.zoom,
     cameraState: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z, az: controls.getAzimuthalAngle(), pol: controls.getPolarAngle(), dist: camera.position.distanceTo(controls.target) }),   // teşhis (§14 testleri: fare ile döndürme çalışıyor mu)
     setWorld, setOrigin, setType, snapshotModel, clearCollision, resize, dispose, netStats, motionStats, setKeyboardLock,
+    // §47 takip kamerasını aracın ARKASINA yerleştir (back m geride, up m yukarıda; yön gösterilen gövdeden) — FPV parkur görüntüleri / "arkadan bak"
+    setFollowView: (back = 6, up = 2) => { setCamera('follow'); const y = -new T.Euler().setFromQuaternion(viewQuat(cur.q), 'ZXY').z; camera.position.set(cur.pos.x - Math.sin(y) * back, cur.pos.y - Math.cos(y) * back, cur.pos.z + up); controls.target.copy(cur.pos); controls.update(); lastFollowOff = camera.position.clone().sub(controls.target); },
     crashFx: playCrashFx, crashFxInfo: () => (crashFx ? { active: crashFx.active, params: crashFx.params } : null),
     setLaunch, setLaunchPhase, get launchPhase() { return rig ? rig.phase : null; }, get groundLocked() { return gLock.on; },   // kalkış yöntemi + yerde kilit (§13)
     // §31 hava / rüzgâr / rampa: canlı rüzgâr (sunucu `wind` olayı; tele.wind_spd zaten akar), akış çizgileri aç/kapa, rüzgâr bilgisi (HUD), rampa yön/açı önizlemesi

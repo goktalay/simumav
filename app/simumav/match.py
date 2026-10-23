@@ -22,6 +22,10 @@ Burada SIMUMAV'a özgü olanlar:
   · HEPGO §44 YAPAY ZEKÂ PİLOT: kurucu salonda bot ekler/çıkarır (`bot_ekle`; negatif kimlik, hazır sayılır, oyuncu sınırı içinde; it dalaşında tek
     rakip) ya da "Yapay zekâya karşı" hızlı başlatır (`Yonetici.yapay_zekaya_karsi`: rastgele şifre, botlar, hemen BAŞLAT). BAŞLAT'ta botlar da SITL
     yuvası sayılır; bot oturumu `bridge.bot_ucusu_ac` (flights satırı yok), sürücü `flightsim_match_bot.BotSurucu`. DB v5: match_players.is_bot/level.
+  · HEPGO §47 HAZIR FPV PARKURLARI (`kind: 'fpv'`): parkur `flightsim_fpv` (kontrol noktaları halka yerine; başlangıç pedi ızgarası; çarpma kuralı
+    `reset` → oyuncu aracı Sıfırla); parkurun yeri seçilen parkurun (track) merkezi, yoksa TRTEST; dünya parkurdan (düz prosedürel zemin + ortam).
+    Bitişte insan oyuncuların süreleri + hayalet `fpv_records`'a (DB v7), sonuç satırlarına kişisel rekor. TEK KİŞİLİK: lobide yalnız kurucu varken
+    BAŞLAT (halka yarışı + FPV; it dalaşı tam 2) ve `Yonetici.tek_kisilik` hızlı başlat (Uç › Tek oyunculu › FPV parkuru) = zaman denemesi.
 """
 import asyncio
 import hashlib
@@ -31,6 +35,7 @@ import secrets
 import time
 
 from .. import flightsim
+from .. import flightsim_fpv as fpv
 from .. import flightsim_match_bot as mbot
 from .. import flightsim_match_core as core
 from . import avatar, bridge, config, db
@@ -110,12 +115,15 @@ def ayar_ozeti(settings):
     d, t = settings.get('drone') or {}, settings.get('track') or {}
     return {'drone': {'name': d.get('name'), 'type': d.get('type'), 'model_key': d.get('model_key'), 'color': d.get('color')},
             'track': {'name': t.get('name'), 'lat': t.get('lat'), 'lon': t.get('lon'), 'world_mode': t.get('world_mode'), 'radius_m': t.get('radius_m'),
-                      'weather': t.get('weather'), 'time_of_day': t.get('time_of_day')},
+                      'weather': t.get('weather'), 'time_of_day': t.get('time_of_day'), 'fpv_course': t.get('fpv_course')},
             'launch': settings.get('launch'), 'camera': settings.get('camera'), 'type': ctip(d.get('type'))}
 
 
-def baslangic_onizleme(n, drone_type, track, rings, dogfight=None):
-    """Önizleme: n oyuncunun başlangıç noktaları [{x, y, yaw_deg}] (yarışta aynı kural). §41 it dalaşında [kovalayan, kaçan] (+ role)."""
+def baslangic_onizleme(n, drone_type, track, rings, dogfight=None, fpv_cfg=None):
+    """Önizleme: n oyuncunun başlangıç noktaları [{x, y, yaw_deg}] (yarışta aynı kural). §41 it dalaşında [kovalayan, kaçan] (+ role);
+    §47 FPV parkurunda başlangıç pedi ızgarası."""
+    if fpv_cfg is not None:
+        return [{'x': x, 'y': y, 'yaw_deg': yaw} for x, y, yaw in fpv.parkur_baslangiclari(fpv.parkur(fpv_cfg['course_id']), max(1, n))]
     w = db.j(track.get('world')) if isinstance(track.get('world'), str) else (track.get('world') or {})
     if dogfight is not None:
         P = core.it_baslangiclari(dogfight, ctip(drone_type), float(w.get('runway_heading') or 0))
@@ -123,6 +131,17 @@ def baslangic_onizleme(n, drone_type, track, rings, dogfight=None):
     pts = core.baslangic_noktalari(max(1, n), ctip(drone_type), float(w.get('runway_heading') or 0),
                                    hedef=(rings[0]['x'], rings[0]['y']) if rings else None)
     return [{'x': round(x, 1), 'y': round(y, 1), 'yaw_deg': round(yaw, 1)} for x, y, yaw in pts]
+
+
+def fpv_track(cid, track=None):
+    """§47 FPV parkur karşılaşmasının "parkuru" (çekirdek oturum merkezi + dünya): seçilen parkurun (track) merkezi, yoksa TRTEST; dünya
+    `bridge._world` içinde `fpv_course` ile parkurdan kurulur. DB satırı değildir (id None → flights.track_id NULL)."""
+    c = fpv.parkur(cid)
+    base = track or {}
+    return {'id': base.get('id'), 'user_id': base.get('user_id'), 'name': c['name'], 'lat': float(base.get('lat') or db.TRTEST['lat']),
+            'lon': float(base.get('lon') or db.TRTEST['lon']), 'alt_mode': None, 'radius_m': 2000, 'wind': {'speed_ms': 0, 'dir_deg': 0, 'gust': 0},
+            'time_of_day': {'night': 'night', 'dusk': 'dusk'}.get((c.get('env') or {}).get('time'), 'day'), 'weather': 'clear', 'world_mode': 'procedural',
+            'world': {}, 'gates': '[]', 'fpv_course': cid}
 
 
 # ---------------------------------------------------------------- karşılaşma
@@ -190,7 +209,7 @@ class Mac:
         return {uid for uid, p in self.lobi.items() if p.get('bot') or now - p.get('seen_t', 0) <= GORULDU_S} | (ws_uid - {None})
 
     def baslatilabilir(self):
-        if self.durum != core.LOBI or self.k is not None or len(self.lobi) < 2:
+        if self.durum != core.LOBI or self.k is not None or len(self.lobi) < core.min_oyuncu(self.tur):   # §47 tek kişilik (it dalaşı 2)
             return False
         return all(p['ready'] for p in self.lobi.values() if not p['host'])
 
@@ -334,8 +353,8 @@ class Mac:
             raise H(403, 'forbidden', 'Yalnız kurucu başlatabilir')
         if self.k is not None or self.durum != core.LOBI:
             raise H(409, 'conflict', 'Karşılaşma zaten başladı ya da bitti')
-        if len(self.lobi) < 2:
-            raise H(409, 'not_enough', 'Başlatmak için en az 2 oyuncu gerekir')
+        if len(self.lobi) < core.min_oyuncu(self.tur):   # §47: halka yarışı / FPV tek kişilik başlar (zaman denemesi); it dalaşı 2
+            raise H(409, 'not_enough', f'Başlatmak için en az {core.min_oyuncu(self.tur)} oyuncu gerekir')
         bekleyen = [p['name'] for p in self.lobi.values() if not p['host'] and not p['ready']]
         if bekleyen:
             raise H(409, 'not_ready', f"Henüz hazır olmayan oyuncular: {', '.join(bekleyen)}")
@@ -371,6 +390,15 @@ class Mac:
         if not olaylar:
             return
         for e in olaylar:
+            if e['t'] == 'result' and self.tur == core.TUR_FPV:
+                try:
+                    fpv_kayit_yaz(self.k, e['result'])   # §47 süreler + hayalet; satırlara kişisel rekor
+                except Exception:   # noqa: BLE001
+                    pass
+            elif e['t'] == 'reset':   # §47 çarpma kuralı "sıfırla"
+                s = self.sessions.get(e['id'])
+                if s is not None:
+                    asyncio.get_running_loop().create_task(_sifirla(s))
             self._yay(e)
             if e['t'] == 'state':
                 self._durum_yan_etkisi(e['state'])
@@ -423,6 +451,8 @@ class Mac:
             w = db.j(track.get('world')) if isinstance(track.get('world'), str) else (track.get('world') or {})
             if k.tur == core.TUR_IT:   # HEPGO §41: rol başına (kaçan önde)
                 x, y, yaw = core.it_baslangiclari(self.cfg, tip, float(w.get('runway_heading') or 0))[o.rol or core.KOVALAYAN]
+            elif k.tur == core.TUR_FPV:   # HEPGO §47: başlangıç pedi ızgarası
+                x, y, yaw = fpv.parkur_baslangiclari(fpv.parkur(self.cfg['course_id']), n)[(o.sira_no or 0) % n]
             else:
                 noktalar = core.baslangic_noktalari(n, tip, float(w.get('runway_heading') or 0), hedef=(k.halkalar[0]['x'], k.halkalar[0]['y']) if k.halkalar else None)
                 x, y, yaw = noktalar[(o.sira_no or 0) % len(noktalar)]
@@ -480,6 +510,8 @@ class Mac:
                 k.merkez['alt'] = alt0
                 if k.tur == core.TUR_HALKA:
                     k.halkalar = core.halkalar_uret(self.cfg, self.merkez)
+                elif k.tur == core.TUR_FPV:   # §47 kontrol noktalarının alt_msl'i yeni zeminle
+                    k.halkalar = fpv.kontrol_noktalari(self.cfg, self.merkez)
                 self.halkalar = k.halkalar
         self.sessions[o.uid] = s
         if out.get('flight_id') is not None:
@@ -525,7 +557,8 @@ class Mac:
         except Exception:   # noqa: BLE001
             pass
         if k.durum == core.YARIS and tele.get('lat') is not None:
-            self.isle(k.konum(uid, tele['lat'], tele['lon'], float(alt or 0), time.time(), tele.get('groundspeed'), heading=tele.get('heading'), pitch=tele.get('pitch')))
+            self.isle(k.konum(uid, tele['lat'], tele['lon'], float(alt or 0), time.time(), tele.get('groundspeed'), heading=tele.get('heading'), pitch=tele.get('pitch'),
+                              roll=tele.get('roll'), yaw=tele.get('yaw')))
 
     def pos_cercevesi(self, now):
         p = []
@@ -534,8 +567,9 @@ class Mac:
                 continue
             iz = o.iz
             p.append({'id': o.uid, **{k: (round(v, 7) if k in ('lat', 'lon') else round(v, 3)) if isinstance(v, float) else v for k, v in o.poz.items()},
-                      'rings': len(iz.gecisler) if iz else 0, 'next': (iz.sira + 1) if iz and not iz.bitti else None,
-                      'dist': round(iz.mesafe, 1) if iz and iz.mesafe is not None else None})
+                      'rings': (iz.sira if hasattr(iz, 'ozet') else len(iz.gecisler)) if iz else 0, 'next': (iz.sira + 1) if iz and not iz.bitti else None,
+                      'dist': round(iz.mesafe, 1) if iz and iz.mesafe is not None else None,
+                      **({'lap': iz.tur, 'pen': round(iz.ceza, 2)} if iz is not None and hasattr(iz, 'ozet') else {})})
         out = {'t': 'pos', 'ts': round(now, 3), 'p': p}
         if self.k.tur == core.TUR_IT:   # HEPGO §41 HUD
             out['df'] = self.k.it_durum()
@@ -621,7 +655,7 @@ class Mac:
         if k is not None:
             sira = {p['id']: p for p in (k.sonuc()['standings'] if k.durum == core.BITTI else [])}
             oyuncular = [(o.uid, o.ad, int(o.kurucu), o.durum, self.flights.get(o.uid), (sira.get(o.uid) or {}).get('rank'),
-                          len(o.iz.gecisler) if o.iz else 0, (sira.get(o.uid) or {}).get('time_s'), int(bool(o.bot)), o.bot) for o in k.oyuncular.values()]
+                          (o.iz.sira if hasattr(o.iz, 'ozet') else len(o.iz.gecisler)) if o.iz else 0, (sira.get(o.uid) or {}).get('time_s'), int(bool(o.bot)), o.bot) for o in k.oyuncular.values()]
             d = {'state': k.durum, 'reason': k.neden, 'rings': json.dumps(k.halkalar or [], ensure_ascii=False),
                  'result': json.dumps(k.sonuc(), ensure_ascii=False) if k.durum == core.BITTI else None, 'winner_id': k.kazanan,
                  'started_at': _iso(k.baslangic_t) if k.durum in (core.YARIS, core.BITTI) else None, 'ended_at': _iso(k.bitis_t) if k.bitis_t else None}
@@ -706,13 +740,16 @@ class Yonetici:
         cfg = dict(cfg)
         if not cfg.get('seed'):
             cfg['seed'] = secrets.randbelow(2 ** 31 - 2) + 1
+        if tur == core.TUR_FPV:   # §47: parkurun yeri + dünyası
+            track = fpv_track(cfg['course_id'], track)
         merkez = {'lat': float(track['lat']), 'lon': float(track['lon']), 'alt': 0.0}   # alt: ilk oyuncu oturumunun ev irtifasıyla düzeltilir
         it = tur == core.TUR_IT
+        oyun_cfg = tur in (core.TUR_IT, core.TUR_FPV)   # ayar game_cfg sütununda
         if it:
             max_players = 2   # HEPGO §41: it dalaşı tam 2 oyuncu
-        halkalar = [] if it else core.halkalar_uret(cfg, merkez)
+        halkalar = [] if it else fpv.kontrol_noktalari(cfg, merkez) if tur == core.TUR_FPV else core.halkalar_uret(cfg, merkez)
         settings = {'drone': {k: drone.get(k) for k in ('id', 'user_id', 'name', 'type', 'model_key', 'params', 'color', 'airframe', 'power')},
-                    'track': {**{k: track.get(k) for k in ('id', 'user_id', 'name', 'lat', 'lon', 'alt_mode', 'radius_m', 'wind', 'time_of_day', 'weather', 'world_mode', 'world')},
+                    'track': {**{k: track.get(k) for k in ('id', 'user_id', 'name', 'lat', 'lon', 'alt_mode', 'radius_m', 'wind', 'time_of_day', 'weather', 'world_mode', 'world', 'fpv_course')},
                               'gates': '[]'},   # FPV halkaları karşılaşmada yok (yarış halkaları çekirdekten)
                     'launch': launch, 'camera': camera}
         loop = asyncio.get_running_loop()
@@ -723,9 +760,10 @@ class Yonetici:
         def ekle():
             with db.connect() as conn:
                 mid = conn.execute('INSERT INTO matches (code, host_id, pass_hash, state, max_players, settings, rings_cfg, rings, created_at, kind, game_cfg) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                                   (code, uid, ozet, core.LOBI, int(max_players), json.dumps(settings, ensure_ascii=False, default=str), '{}' if it else json.dumps(cfg),
-                                    json.dumps(halkalar), db.now(), tur, json.dumps(cfg) if it else None)).lastrowid
-                db.audit(conn, 'match_create', uid, request_ip, f"match {mid} {drone.get('type')} · {track.get('name')} · " + ('it dalaşı' if it else f"{cfg['count']} halka") + f" · ≤ {max_players} oyuncu")
+                                   (code, uid, ozet, core.LOBI, int(max_players), json.dumps(settings, ensure_ascii=False, default=str), '{}' if oyun_cfg else json.dumps(cfg),
+                                    json.dumps(halkalar), db.now(), tur, json.dumps(cfg) if oyun_cfg else None)).lastrowid
+                db.audit(conn, 'match_create', uid, request_ip, f"match {mid} {drone.get('type')} · {track.get('name')} · "
+                         + ('it dalaşı' if it else f"FPV {cfg['course_id']} × {cfg['laps']} tur" if tur == core.TUR_FPV else f"{cfg['count']} halka") + f" · ≤ {max_players} oyuncu")
                 conn.commit()
                 return mid
         mid = await loop.run_in_executor(None, ekle)
@@ -746,6 +784,19 @@ class Yonetici:
         try:
             for _ in range(n):
                 m.bot_ekle(user['id'], seviye)
+            m.baslat(user['id'], time.time())
+        except bridge.BridgeHata:
+            m.iptal('kurucu_iptal')
+            raise
+        return m
+
+    async def tek_kisilik(self, user, drone, track, launch, camera, cfg, request_ip=None, tur=core.TUR_FPV):
+        """§47 tek kişilik zaman denemesi (Uç › Tek oyunculu › FPV parkuru; halka yarışında da): rastgele şifre (paylaşılmaz), tek oyuncu,
+        hemen BAŞLAT. Yuva yetmezse karşılaşma iptal edilir, 429 iletilir."""
+        if tur == core.TUR_IT:
+            raise H(422, 'invalid', 'İt dalaşı tek kişilik oynanamaz (yapay zekâya karşı deneyin)')
+        m = await self.olustur(user, drone, track, launch, camera, cfg, secrets.token_urlsafe(12), 1, request_ip, tur=tur)
+        try:
             m.baslat(user['id'], time.time())
         except bridge.BridgeHata:
             m.iptal('kurucu_iptal')
@@ -784,6 +835,38 @@ def deneme_yaz(conn, mid, uid, ip, ok):
     conn.execute('INSERT INTO match_attempts (match_id, user_id, ip, ok, ts) VALUES (?,?,?,?,?)', (mid, uid, ip or '-', 1 if ok else 0, time.time()))
 
 
+async def _sifirla(s):
+    try:
+        await s.komut('reset', {})
+    except Exception:   # noqa: BLE001
+        pass
+
+
+def fpv_kayit_yaz(k, sonuc):
+    """§47 bitişte insan oyuncuların FPV kaydı (fpv_records) + sonuç satırlarına `pb_prev` / `new_pb` (yerinde)."""
+    cid = k.halka_ayar.get('course_id')
+    laps = int(k.halka_ayar.get('laps') or 0)
+    satirlar = {p['id']: p for p in sonuc.get('standings') or []}
+    with db.connect() as conn:
+        for o in k.oyuncular.values():
+            p = satirlar.get(o.uid)
+            if o.bot or o.uid <= 0 or p is None or o.iz is None or not hasattr(o.iz, 'ozet'):
+                continue
+            ozet = o.iz.ozet()
+            onceki = conn.execute('SELECT MIN(time_s) FROM fpv_records WHERE course_id = ? AND user_id = ? AND laps = ?', (cid, o.uid, laps)).fetchone()[0]
+            p['pb_prev'] = onceki
+            if ozet['total_s'] is None:
+                p['new_pb'] = False
+                continue
+            p['new_pb'] = onceki is None or ozet['total_s'] < float(onceki)
+            conn.execute('INSERT INTO fpv_records (course_id, user_id, match_id, drone_type, laps, time_s, best_lap_s, lap_times, sectors, splits, misses, hits, '
+                         'penalty_s, crash_rule, ghost, solo, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                         (cid, o.uid, k.id, (k.ayar or {}).get('type'), laps, ozet['total_s'], ozet['best_lap_s'], json.dumps(ozet['lap_times']),
+                          json.dumps(ozet['sectors']), json.dumps(ozet['splits']), ozet['misses'], ozet['hits'], ozet['pen_s'], k.halka_ayar.get('crash_rule'),
+                          fpv.hayalet_kodla(o.iz.ornekler), 1 if sonuc.get('solo') else 0, db.now()))
+        conn.commit()
+
+
 def satir_dict(r, uid=None):
     """DB satırı (bellekte olmayan karşılaşma) → GET biçimi."""
     j = lambda v, d=None: json.loads(v) if v else d   # noqa: E731
@@ -793,7 +876,7 @@ def satir_dict(r, uid=None):
     res = j(r.get('result'))
     kind = r.get('kind') or core.TUR_HALKA
     return {'id': r['id'], 'code': r['code'] if r['state'] not in core.SON_DURUMLAR else None, 'state': r['state'], 'reason': r['reason'], 'host_id': r['host_id'],
-            'max_players': r['max_players'], 'settings': ayar_ozeti(st), 'rings_cfg': j(r.get('game_cfg'), {}) if kind == core.TUR_IT else j(r['rings_cfg'], {}), 'rings': j(r['rings'], []), 'kind': kind,
+            'max_players': r['max_players'], 'settings': ayar_ozeti(st), 'rings_cfg': j(r.get('game_cfg'), {}) if kind in (core.TUR_IT, core.TUR_FPV) else j(r['rings_cfg'], {}), 'rings': j(r['rings'], []), 'kind': kind,
             'players': [{'id': p['user_id'], 'name': p['name'], 'host': bool(p['is_host']), 'status': p['status'], 'flight_id': p['flight_id'] if p['user_id'] == uid else None,
                          'rank': p['rank'], 'rings': p['rings'], 'time_s': p['time_s'], 'is_bot': bool(p.get('is_bot')), 'level': p.get('level'),
                          'avatar': None if p.get('is_bot') else pilot_avatari(p['user_id']),

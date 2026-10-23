@@ -51,6 +51,7 @@ import { createIntro, hepgoSound } from './flightsim_intro.js';   // §27.2 giri
 import { createPowerGauges, createPowerSection, createPowerSim, createSpeedPill, elecText, fuelText, rangeText } from './flightsim_power.js';   // §23: güç ve yakıt (sihirbaz bölümü, göstergeler, güç paneli kadranları §23.6, kayıtta istemci modeli, hız kapsülü)
 import { LAUNCH_OPTIONS, LAUNCH_PARAM_DEFS, createStepper, firstInvalid, launchOptionsFor, launchStepDesc, normLaunchMethod, paramField, simLogsOnly, simulateParam, stepDefFor, wizardStartStep, wizardSteps } from './flightsim_wizard.js';
 import { attachMatch, createInviteSection, createRingsSection, matchApi, matchesCard, renderLobby } from './flightsim_match_ui.js';
+import { FT as FPV_T, fpvTimeTrialCard, openFpvTimeTrial } from './flightsim_fpvcourse_ui.js';   // §47 hazır FPV parkurları (galeri + zaman denemesi)
 import { createSfx } from './flightsim_sfx.js';   // §44 oyun efektleri (halka, sıralama, angajman, puan; ses kapsülü menüsünde aç/kapa + düzey)   // §33 çok oyunculu karşılaşma: sihirbaz Halkalar / Davet et, bekleme salonu, oturum katmanı, sekme
 import { matchHref, ringsSummary } from './flightsim_match.js';   // §6 adım adım sihirbaz (saf: adım listesi, doğrulama geçişleri, veriden kalkış seçenekleri)
 import { numSlider } from './fs_inputs.js';   // §6.1 görsel giriş: kaydırıcı + düzenlenebilir değer kutusu + birim
@@ -851,7 +852,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   // ---------- 3a''''. §33 karşılaşma: halkalar (sayı, min/max yükseklik, çap, parkur, süre; sunucu önizlemesi) + davet (iki liste) ----------
   // eslint-disable-next-line prefer-const
   let ringsSec = null;
-  ringsSec = isMatch ? createRingsSection({ getType: activeType, getCenter: () => centerOf(), limits: mmeta?.limits, onKind: k => inviteSec?.setMax(k === 'dogfight' ? 1 : null) }) : null;   // §41 tür: it dalaşında tam 1 davetli
+  ringsSec = isMatch ? createRingsSection({ getType: activeType, getCenter: () => centerOf(), limits: mmeta?.limits, onKind: k => { inviteSec?.setMax(k === 'dogfight' ? 1 : null); inviteSec?.setKind(k); } }) : null;   // §41 tür: it dalaşında tam 1 davetli · §47 FPV / tek kişilik
   const inviteSec = isMatch ? createInviteSection({ users: mmeta?.users || [], limits: mmeta?.limits }) : null;
   // ---------- 3a'. kamera (§22.3): gündüz / termal / gece görüşü — önizlemeli kartlar (aynı formüllerle 2B tuvalde; ek WebGL bağlamı yok). Varsayılan:
   // dron kaydının son türü (sunucu) → bu dron için yerel son seçim → son tercih → gündüz. Seçim oturuma (`camera`), tercihe ve dron kaydına kalıcı.
@@ -908,7 +909,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
     const body = sitlBody();
     for (const k of ['drone_id', 'targets', 'site', 'defend', 'rec']) delete body[k];
     let mt;
-    try { mt = await matchApi.create({ settings: body, rings: ringsSec.values(), invite: inviteSec.values(), bots: inviteSec.bots(), kind: ringsSec.kind(), dogfight: ringsSec.kind() === 'dogfight' ? ringsSec.dogfight() : null }); } catch (err) {
+    try { mt = await matchApi.create({ settings: body, rings: ringsSec.values(), invite: inviteSec.values(), bots: inviteSec.bots(), kind: ringsSec.kind(), dogfight: ringsSec.kind() === 'dogfight' ? ringsSec.dogfight() : null, fpv: ringsSec.kind() === 'fpv' ? ringsSec.fpv() : null }); } catch (err) {   // §47 FPV parkuru
       toast(err?.status === 409 ? (err.message || tr('Simülatör kapasitesi dolu')) : err.message, 'err');
       return true;
     }
@@ -1054,7 +1055,8 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
       targets: [['Hedefler', tg?.items?.length ? tr('{n} hedef', { n: tg.items.length }) : tr('Hedef yok')], tg?.items?.length ? ['Modeller', tg.items.map(x => x.model_name || x.model).join(', ')] : null,
         tg?.items?.length ? ['Önleme yarıçapı', `${tg.radius_m} m`] : null],
       rings: isMatch ? ringsSec.summary() : [],   // §33 halkalar / §41 it dalaşı kuralları
-      invite: isMatch ? [['Davet edilenler', inviteSec.names().join(', ') || '—'], ['Oyuncu sayısı', tr('{n} (siz dahil)', { n: inviteSec.values().length + inviteSec.bots().length + 1 })]] : [],
+      invite: isMatch ? (inviteSec.solo() ? [['Oyuncu sayısı', FPV_T('fpv.solo')]]   // §47 tek kişilik zaman denemesi
+        : [['Davet edilenler', inviteSec.names().join(', ') || '—'], ['Oyuncu sayısı', tr('{n} (siz dahil)', { n: inviteSec.values().length + inviteSec.bots().length + 1 })]]) : [],
       site: [['Saha', sv.site ? [sv.site.radar ? `${tr('Radar')} ${sv.site.radar_km} km` : null, sv.site.station ? tr('İstasyon') : null, sv.site.eo ? `EO ${sv.site.eo_km} km` : null].filter(Boolean).join(' · ') : tr('Yok')],
         ['Görev', sv.defend ? tr('Yer kontrolünü koru · {w} dalga · {i} önleyici', { w: sv.defend.waves, i: sv.defend.interceptors }) : tr('Serbest uçuş')]],
     };
@@ -1064,7 +1066,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
         h('div', null, h('b', null, quick.name), h('small', null, [quick.description, quick.pilot_name ? tr('Pilot: {p}', { p: quick.pilot_name }) : null, quick.created_by_name ? tr('Tasarlayan: {p}', { p: quick.created_by_name }) : null].filter(Boolean).join(' · ')))) : null,
       S.mode === 'sitl' ? budgetBox({ tr, budget: flightBudget(pv, t) }) : null,
       S.mode === 'sitl' && pilotSel ? pilotSel.el : null,
-      isMatch ? h('div', { class: 'alert info fs-mt-note' }, tr('Başlat’a basınca bekleme salonu açılır ve davet edilenlere bildirim gider. Herkes salona gelince her oyuncuya aynı dünyada farklı bir başlangıç noktasında simülatör açılır; geri sayımdan sonra kalkış serbesttir. Tüm halkaları ilk geçen kazanır.')) : null);
+      isMatch ? h('div', { class: 'alert info fs-mt-note' }, inviteSec.solo() ? `${FPV_T('fpv.solo')} · ${FPV_T('fpv.solo_hint')}` : tr('Başlat’a basınca bekleme salonu açılır ve davet edilenlere bildirim gider. Herkes salona gelince her oyuncuya aynı dünyada farklı bir başlangıç noktasında simülatör açılır; geri sayımdan sonra kalkış serbesttir. Tüm halkaları ilk geçen kazanır.')) : null);
     const steps = W.steps.filter(k => k !== 'summary');
     clear(summaryBox, h('div', { class: 'fs-wz-sum-grid' }, steps.map(k => {
       const e = valid(k), d = stepDef(k);
@@ -1095,6 +1097,7 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   };
   const drawMode = () => {
     const rp = S.mode === 'replay';
+    if (fpvTT) fpvTT.hidden = rp;   // §47 zaman denemesi yalnız canlı kipte
     centerSec.hidden = rp; worldHint.hidden = !rp;
     camNote.textContent = tr(rp ? 'Gimbal ve FPV kameralarının görüntü türü. Kayıt bu simülatörde yapıldıysa kaydın kamera türü kullanılır; uçuş içinde T ile değiştirilebilir.' : 'Gimbal ve FPV kameralarının görüntü türü; PiP penceresi de bu türle gösterir. Uçuş içinde T ile değiştirilebilir (Shift+T: termal paleti).');
     clear(startNote, isMatch ? tr('Karşılaşma oyuncu simülatörleri ayrı sınırla açılır (eşzamanlı en çok {n}; şu an {u} kullanımda).', { n: mmeta?.capacity?.max ?? '—', u: mmeta?.capacity?.used ?? 0 }) : canWrite
@@ -1109,8 +1112,11 @@ async function wizardModal({ be, meta, mock, canWrite, preset = {}, onClosed, us
   // §8.5 "Simüle et": kip seçimi yok (kayıttan oynat sabit) — yerine bilgi bandı
   const pinNote = S.pinned ? h('div', { class: 'fs-mode-row fs-pin-note' }, h('span', { class: 'badge purple' }, tr('Simüle et')),
     h('span', { class: 'small muted' }, tr('Seçilen uçuş kaydı oynatılacak: atmosferi (dünya, saat, hava, rüzgâr), kalkışı/rampayı ve kamerayı seçin.'))) : null;
+  // §47 "Hazır FPV parkurları" kartı (yalnız yeni canlı simülasyon): galeri penceresi → tek kişilik zaman denemesi (FPV karşılaşması) → salon → oturum
+  const fpvTT = !isMatch && !quick && !edit && !S.pinned && !mock && canWrite ? fpvTimeTrialCard({ onOpen: () => openFpvTimeTrial({ modal, centers, type: S.type, centerId: S.center, me: user?.id ?? null,
+    camera: camCards.value, onStarted: r => { location.hash = matchHref(r.id); } }) }) : null;
   const body = h('div', { class: 'fs-wizard fs-wz' },
-    h('div', { class: 'fs-wz-top' }, pinNote || (isMatch ? h('div', { class: 'fs-mode-row fs-pin-note' }, h('span', { class: 'badge green' }, tr('Karşılaşma')),
+    h('div', { class: 'fs-wz-top' }, fpvTT, pinNote || (isMatch ? h('div', { class: 'fs-mode-row fs-pin-note' }, h('span', { class: 'badge green' }, tr('Karşılaşma')),
       h('span', { class: 'small muted' }, tr('Çok oyunculu halka yarışı: Yeni Simülasyon ile aynı ayarlar; radar, elektro-optik ve yer kontrol yok. Sonunda kullanıcıları davet edip başlatın.'))) : null) || h('div', { class: 'fs-mode-row' }, h('span', { class: 'small muted' }, 'Kip'), modeSeg), strip),
     main);
   // Alan değişiklikleri doğrulamayı etkileyebilir (merkez, log, hedef, saha, tip → adım listesi): şerit + altbilgi kare başına bir kez yenilenir
@@ -1672,7 +1678,8 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   // §33 karşılaşma oturumu: halkalar + diğer oyuncular (3B), durum şeridi, canlı sıralama, sonuç ekranı. Giriş sekansı burada değil SUNUCU saatine
   // göre geri sayımın son 3 sn'sinde oynar (herkes aynı anda "BAŞLA"); 3B hazır olunca sunucuya `ready`.
   const matchUi = matchId && !replay && !mock && String(session.match_id ?? '') === String(matchId)
-    ? attachMatch({ stage, getSim: () => sim, mid: matchId, me: ctx.user?.id ?? null, sid, startIntro: () => { introStarted = true; intro.start(); }, getTele: () => last, sfx }) : null;
+    ? attachMatch({ stage, getSim: () => sim, mid: matchId, me: ctx.user?.id ?? null, sid, startIntro: () => { introStarted = true; intro.start(); }, getTele: () => last, sfx,
+      getRc: () => rc?.channels?.() || null, fpvMenu }) : null;   // §47 FPV parkuru: çubuk göstergesi (sanal / fiziksel kumanda) + FPV menüsü satırı
   const maybeIntro = () => {
     if (introStarted || destroyed || !sim || !msg.hidden || !(session.state === 'HAZIR' || mock)) return;
     if (matchUi) { matchUi.onWorldReady(); return; }

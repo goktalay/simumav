@@ -17,8 +17,13 @@ export const STEPS = ['drone', 'track', 'launch', 'power', 'mission', 'site', 't
 export const STEPS_MATCH = ['drone', 'track', 'launch', 'rings', 'invite'];
 // HEPGO §44 "Yapay zekâya karşı": davet adımı yerine yapay zekâ adımı (seviye + bot sayısı); şifre/davet yok, oluşturunca hemen başlar
 export const STEPS_AI = ['drone', 'track', 'launch', 'rings', 'ai'];
+// §29 Uç › Tek oyunculu › FPV PARKURU (zaman denemesi): dron (yalnız FPV uygun tipler) → hazır parkur (galeri) → kurallar → BAŞLAT (POST /api/match/solo).
+// Çok oyunculu / yapay zekâya karşı kurucuda tür "FPV parkur yarışı" seçilince parkur (track) ve kalkış adımları atlanır (parkurun kendi sahnesi var).
+export const STEPS_FPV = ['drone', 'course', 'rules'];
+export const FPV_SM_TYPES = ['multirotor', 'fpv', 'heli'];   // match_core.FPV_TYPES ile aynı (sunucu limits.fpv.types)
+export const FPV_SM_DEFAULTS = { course_id: 'hangar', laps: 3, crash_rule: 'penalty', crash_penalty_s: 2, miss_penalty_s: 3, time_limit_min: 10 };
 export const STEP_TITLES = { drone: 'Dron seç', track: 'Parkur seç', launch: 'Kalkış yöntemi', power: 'power.step', mission: 'Görev (isteğe bağlı)', site: 'site.step', targets: 'targets.step', pilot: 'Pilot ve kayıt',
-  rings: 'match.step_rings', invite: 'match.step_invite', ai: 'ai.step' };
+  rings: 'match.step_rings', invite: 'match.step_invite', ai: 'ai.step', course: 'fpvsm.step_course', rules: 'fpvsm.step_rules' };
 
 // SIMUMAV türü → HEPGO simülatör tipi
 export const TYPE_MAP = { multirotor: 'multirotor', fpv: 'multirotor', heli: 'helikopter', plane: 'sabit_kanat', interceptor: 'interceptor', vtol: 'vtol', rover: 'rover' };
@@ -169,7 +174,7 @@ export const timeOfDay = v => { if (v == null) return 'day'; if (TIME_MAP[v]) re
 
 // ---------- adım makinesi ----------
 // createWizard({ drones, tracks, pilots, missions? }) → { state, steps(), index(), step(), canNext(), next(), prev(), goto(k), set(k, v), payload(), summary() }
-export function createWizard(data = {}, init = {}, { match = false, ai = false } = {}) {
+export function createWizard(data = {}, init = {}, { match = false, ai = false, fpv = false } = {}) {
   const S = {
     drone_id: init.drone_id ?? (data.drones || []).find(d => d.is_default)?.id ?? (data.drones || [])[0]?.id ?? null,
     track_id: init.track_id ?? (data.tracks || []).find(t => t.is_default)?.id ?? (data.tracks || [])[0]?.id ?? null,
@@ -188,11 +193,16 @@ export function createWizard(data = {}, init = {}, { match = false, ai = false }
     rings: init.rings ?? null, rings_err: null, max_players: init.max_players ?? 2, password: init.password ?? '', invite_err: null,
     kind: init.kind ?? 'rings', dogfight: init.dogfight ?? null,   // HEPGO §41 karşılaşma türü + it dalaşı ayarı
     ai_level: init.ai_level ?? 'normal', ai_bots: init.ai_bots ?? 1,   // HEPGO §44 yapay zekâya karşı
+    // §29 FPV parkuru: ayar (course_id, laps, crash_rule, ceza süreleri, süre sınırı) + hayalet tercihi ('pb' | 'off'); fpv_err adım doğrulaması
+    fpv: { ...FPV_SM_DEFAULTS, ...(init.fpv || {}), ...(init.course_id ? { course_id: init.course_id } : {}) }, fpv_err: null, ghost: init.ghost === 'off' ? 'off' : 'pb',
   };
+  if (fpv) S.kind = 'fpv';
+  const isFpvKind = () => fpv || S.kind === 'fpv';
   let i = 0;
   const drone = () => (data.drones || []).find(d => d.id === S.drone_id) || null;
   const type = () => drone()?.type || 'multirotor';
-  const steps = () => (match ? (ai ? STEPS_AI : STEPS_MATCH) : STEPS).filter(k => k !== 'launch' || hasLaunchStep(type()));
+  const steps = () => (fpv ? STEPS_FPV : (match ? (ai ? STEPS_AI : STEPS_MATCH) : STEPS))
+    .filter(k => (k !== 'launch' || (hasLaunchStep(type()) && !isFpvKind())) && (k !== 'track' || !(match && S.kind === 'fpv')));
   const step = () => steps()[Math.min(i, steps().length - 1)];
   const canNext = () => {
     const k = step();
@@ -201,6 +211,8 @@ export function createWizard(data = {}, init = {}, { match = false, ai = false }
     if (k === 'pilot') return S.pilot_id != null;
     if (k === 'rings') return !!S.rings && !S.rings_err;
     if (k === 'invite') return !S.invite_err && !!S.password;
+    if (k === 'course') return !!S.fpv?.course_id && FPV_SM_TYPES.includes(type());
+    if (k === 'rules') return !S.fpv_err;
     return true;   // launch (varsayılanlı), mission (isteğe bağlı)
   };
   const isLast = () => i >= steps().length - 1;
@@ -208,6 +220,10 @@ export function createWizard(data = {}, init = {}, { match = false, ai = false }
   const prev = () => { if (i <= 0) return false; i--; return true; };
   const goto = k => { const j = steps().indexOf(k); if (j < 0 || j > i) return false; i = j; return true; };   // yalnız geriye ya da bulunulan adıma
   const set = (k, v) => {
+    if (k === 'kind') {   // tür değişince parkur/kalkış adımı görünür/gizlenir: bulunulan adım korunur
+      const cur = step(); S.kind = ['rings', 'dogfight', 'fpv'].includes(v) ? v : 'rings'; const j = steps().indexOf(cur); i = j >= 0 ? j : Math.min(i, steps().length - 1); return;
+    }
+    if (k === 'fpv') { S.fpv = { ...S.fpv, ...(v || {}) }; return; }
     if (k === 'launch') S.launch = normLaunch({ ...S.launch, ...(v || {}) });
     else if (k === 'ilaunch') S.ilaunch = normIceptLaunch({ ...S.ilaunch, ...(v || {}), ...(v?.method && v.method !== S.ilaunch.method && v.loaded == null ? { loaded: ICEPT_CELLS[v.method] } : {}) });
     else if (k === 'record') S.record = { ...S.record, ...(v || {}) };
@@ -217,11 +233,19 @@ export function createWizard(data = {}, init = {}, { match = false, ai = false }
     else if (k === 'track_id') { if (v !== S.track_id) S.mission_id = null; S.track_id = v; }   // parkur değişti → görev sıfırlanır (§3 missions.track_id)
     else if (k in S) S[k] = v;
   };
-  const ready = () => (match ? S.drone_id != null && S.track_id != null && !!S.rings && !S.rings_err && (ai || (!S.invite_err && !!S.password))
-    : S.drone_id != null && S.track_id != null && S.pilot_id != null);
+  const fpvOk = () => S.drone_id != null && FPV_SM_TYPES.includes(type()) && !!S.fpv?.course_id && !S.fpv_err;
+  const ready = () => (fpv ? fpvOk()
+    : match ? (S.kind === 'fpv' ? fpvOk() && !S.rings_err : S.drone_id != null && S.track_id != null && !!S.rings && !S.rings_err) && (ai || (!S.invite_err && !!S.password))
+      : S.drone_id != null && S.track_id != null && S.pilot_id != null);
+  const fpvOf = () => { const c = S.fpv || {}; return { course_id: c.course_id, laps: Math.round(Number(c.laps)), crash_rule: c.crash_rule, crash_penalty_s: Number(c.crash_penalty_s), miss_penalty_s: Number(c.miss_penalty_s), time_limit_min: Math.round(Number(c.time_limit_min)) }; };
   const launchOf = () => (needsLaunch(type()) ? launchBody(S.launch) : type() === 'interceptor' ? iceptLaunchBody(S.ilaunch) : { method: 'wheels' });
   const payload = () => {
     if (!ready()) return null;
+    if (fpv) return { drone_id: S.drone_id, kind: 'fpv', fpv: fpvOf(), launch: { method: 'wheels' } };   // §29 POST /api/match/solo (track_id yok: parkurun kendi yeri)
+    if (match && S.kind === 'fpv') {   // §29 FPV parkur yarışı (çok oyunculu / yapay zekâya karşı); max_players 1 → tek kişilik
+      const base = { drone_id: S.drone_id, launch: { method: 'wheels' }, kind: 'fpv', fpv: fpvOf() };
+      return ai ? { ...base, level: ['easy', 'normal', 'hard'].includes(S.ai_level) ? S.ai_level : 'normal', bots: Math.max(1, Math.round(Number(S.ai_bots) || 1)) } : { ...base, password: S.password, max_players: S.max_players };
+    }
     if (match) {   // POST /api/match (HEPGO §41: kind + it dalaşı ayarı; it dalaşında 2 oyuncu)
       const df = S.kind === 'dogfight';
       if (ai) {   // HEPGO §44 POST /api/match/ai
@@ -246,7 +270,7 @@ export function createWizard(data = {}, init = {}, { match = false, ai = false }
   };
   const missionsFor = () => (data.missions || []).filter(m => S.track_id == null || m.track_id === S.track_id);
   return {
-    state: S, match, ai, steps, index: () => i, step, canNext, isLast, next, prev, goto, set, ready, payload, type, drone, missionsFor, drive: () => driveOf(drone(), S.drive),
+    state: S, match, ai, fpv, isFpvKind, steps, index: () => i, step, canNext, isLast, next, prev, goto, set, ready, payload, type, drone, missionsFor, drive: () => driveOf(drone(), S.drive),
     track: () => (data.tracks || []).find(t => t.id === S.track_id) || null,
     pilot: () => (data.pilots || []).find(p => p.id === S.pilot_id) || null,
     mission: () => (data.missions || []).find(m => m.id === S.mission_id) || null,

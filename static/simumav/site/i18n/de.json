@@ -222,7 +222,7 @@
   "top10.title": "TOP 10 PILOTEN",
   "top10.p_30d": "Letzte 30 Tage",
   "top10.p_all": "Gesamt",
-  "top10.formula": "Punkte = Matchpunkte (Ring ×100, Ziel +250, Platzbonus; Dogfight-Sieg 1000) + Sieg +300 + Ringtempo (≤200) + Flugdisziplin (Ø-Wert ×1,5 × bis 20 Flüge) + Zielabfang (beste 10 Flüge ×0,5). Matches nur gegen KI zählen halb.",
+  "top10.formula": "Punkte = Matchpunkte (Ring ×100, Ziel +250, Platzbonus; Luftkampfsieg 1000) + Sieg +300 + Ring-Tempo (≤200) + Flugdisziplin (Ø-Wert ×1,5 × bis 20 Flüge) + Abfangen (beste 10 Flüge ×0,5) + FPV-Parcours (je fertigem Parcours 250 × Richtrunde ÷ deine Ø-Runde, max. 375). Nur gegen KI gespielte Matches zählen halb; Solo-Zeitfahren bringt keine Matchpunkte.",
   "top10.privacy": "Namen und E-Mails werden maskiert. Austragen: Einstellungen → „In der Bestenliste ausblenden“.",
   "top10.empty": "Noch keine Piloten in der Wertung — gewinne das erste Match!",
   "top10.error": "Liste konnte nicht geladen werden; bitte später erneut versuchen.",

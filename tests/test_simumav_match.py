@@ -139,7 +139,7 @@ def calis(c):
     ali, veli, ayse, can, dora = (K(c, n) for n in ('ali', 'veli', 'ayse', 'can', 'dora'))
     # ---- meta
     m = ok(ali.get(f'{A}/meta'))
-    assert m['limits']['players'] == [2, 3] and 'rover' not in m['limits']['types'] and m['capacity'] == {'max': 3, 'used': 0} and m['current'] is None, m
+    assert m['limits']['players'] == [1, 3] and 'rover' not in m['limits']['types'] and m['capacity'] == {'max': 3, 'used': 0} and m['current'] is None, m
     # ---- parkur (prosedürel: ağsız) + dronlar
     tr = ok(ali.post('/api/tracks', json={'name': 'Yarış', 'lat': 40.1, 'lon': 33.4, 'world_mode': 'procedural', 'world': {'seed': 7}}), 201)
     drone = ok(ali.get('/api/hangar'))['drones'][0]
@@ -156,7 +156,7 @@ def calis(c):
     govde = {'drone_id': drone['id'], 'track_id': tr['id'], 'rings': halka, 'password': 'Gizli-42', 'max_players': 3}
     assert ali.post(A, json={**govde, 'drone_id': rover['id']}).status_code == 422
     assert ali.post(A, json={**govde, 'password': 'abc'}).status_code == 422
-    r = ali.post(A, json={**govde, 'max_players': 5}); assert r.status_code == 422 and '2–3' in r.json()['detail']['message'], r.text
+    r = ali.post(A, json={**govde, 'max_players': 5}); assert r.status_code == 422 and '1–3' in r.json()['detail']['message'], r.text
     assert veli.post(A, json=govde).status_code == 404
     mt = ok(ali.post(A, json=govde), 201)
     mid, code = mt['id'], mt['code']
@@ -448,6 +448,123 @@ def yapay_zeka(ali, veli, dora, drone, tr):
         assert res and res['result']['winner'] == ali.id and res['result']['standings'][1]['is_bot'], res
         assert bekle(lambda: all(flightsim.MANAGER.get(sx) is None for sx in sids.values()), sn=20)
     print('  yapay zekâ pilot geçti (karşılaşma', mid, ')')
+    fpv_parkur(ali, veli, drone, tr)
+
+
+def fpv_parkur(ali, veli, drone, tr):
+    """HEPGO §47 hazır FPV parkurları (SIMUMAV): katalog, önizleme, TEK KİŞİLİK zaman denemesi (Uç › Tek oyunculu › FPV parkuru: /solo) →
+    sahte kinematikle yarış hattından tam tur → tamamlandi + kişisel rekor + fpv_records (hayalet) + skor tablosu (maskeli) + hayalet API;
+    ikinci (yavaş) denemede rekor yok; FPV + yapay zekâ (Zor bot da parkuru bitirir; hızlı insan kazanır); salonda tek kişilik BAŞLAT (halka
+    yarışı); TOP 10 "FPV parkur" bileşeni."""
+    from app import flightsim_fpv as F
+    from app.simumav import auth as sauth
+    from app.simumav import avatar as av
+    from tests.match_bot import fpv_pilotu
+    sauth.oran_sifirla()
+    eski_son = core.SON_CAGRI_S
+    core.SON_CAGRI_S = 3.0
+    try:
+        lim = ok(ali.get(f'{A}/meta'))['limits']
+        assert lim['kinds'] == ['rings', 'dogfight', 'fpv'] and lim['min_players'] == {'rings': 1, 'dogfight': 2, 'fpv': 1} and len(lim['fpv']['courses']) == 8
+        cs = ok(ali.get('/api/fpv/courses'))
+        assert [c['id'] for c in cs['courses']] == list(F.PARKUR_IDLER) and all(c['record'] is None and c['my_best'] is None for c in cs['courses'])
+        assert ali.get('/api/fpv/courses/yok').status_code == 404 and ali.get('/api/fpv/courses/woodframe/ghost').status_code == 404
+        full = ok(ali.get('/api/fpv/courses/woodframe'))
+        assert full['course']['gates'] and full['course']['obstacles'] and full['leaderboard'] == [] and full['my_best'] is None
+        pv = ok(ali.post(f'{A}/rings-preview', json={'drone_id': drone['id'], 'kind': 'fpv', 'fpv': {'course_id': 'woodframe', 'laps': 1}, 'players': 3}))
+        m = F.parkur('woodframe')['gate_count']
+        assert pv['kind'] == 'fpv' and len(pv['rings']) == 1 + m and len(pv['starts']) == 3 and pv['course']['id'] == 'woodframe', pv.keys()
+        assert ali.post(f'{A}/rings-preview', json={'drone_id': drone['id'], 'kind': 'fpv', 'fpv': {'course_id': 'yok'}}).status_code == 422
+        assert ali.post(f'{A}/solo', json={'drone_id': drone['id'], 'kind': 'dogfight'}).status_code == 422
+        assert ali.post(f'{A}/solo', json={'drone_id': drone['id'], 'kind': 'fpv', 'fpv': {'course_id': 'woodframe', 'crash_rule': 'x'}}).status_code == 422
+
+        def kosu(hiz, tamam=True):
+            q = ok(ali.post(f'{A}/solo', json={'drone_id': drone['id'], 'kind': 'fpv', 'fpv': {'course_id': 'woodframe', 'laps': 1}}), 201)
+            mid = q['id']
+            assert q['state'] == 'HAZIRLIK' and len(q['players']) == 1 and q['kind'] == 'fpv' and q['rings_cfg']['course_id'] == 'woodframe', q
+            d = bekle(lambda: (lambda x: x if all(p['session_id'] for p in x['players']) else None)(ok(ali.get(f'{A}/{mid}'))))
+            sid = d['players'][0]['session_id']
+            s = flightsim.MANAGER.get(sid)
+            assert bekle(lambda: s.state == 'HAZIR') and s.world.get('fpv_course') == 'woodframe' and s.world['mode'] == 'procedural' and s.world['runway'] is False, s.world
+            bas = F.parkur_baslangiclari(F.parkur('woodframe'), 1)[0]
+            assert math.dist(core.enu(d['center']['lat'], d['center']['lon'], s.start['lat'], s.start['lon']), bas[:2]) < 0.3
+            with ali.ws(f'/ws/match/{mid}') as wa:
+                ws_bekle(wa, lambda x: x['t'] == 'hello')
+                wa.send_text(json.dumps({'t': 'ready'}))
+                ws_bekle(wa, lambda x: x['t'] == 'state' and x['state'] == 'YARIS', sn=8)
+                fpv_pilotu(s, d['rings'], d['center'], hiz=hiz)
+                gor = []
+                res = ws_bekle(wa, lambda x: x['t'] == 'result', sn=60, biriktir=gor)
+                assert res, [x['t'] for x in gor][-20:]
+                tip = [x['t'] for x in gor]
+                assert tip.count('ring') == 1 + m and 'lap' in tip and 'sector' in tip and 'hit' not in tip and 'miss' not in tip, [x for x in gor if x['t'] in ('hit', 'miss')]
+                assert any('lap' in p and 'pen' in p for x in gor if x['t'] == 'pos' for p in x['p'])
+                assert bekle(lambda: flightsim.MANAGER.get(sid) is None, sn=20)
+            return mid, res['result']
+        mid1, r1 = kosu(14.0)
+        st = r1['standings'][0]
+        assert r1['solo'] and r1['reason'] == 'tamamlandi' and r1['kind'] == 'fpv' and r1['winner'] == ali.id and st['new_pb'] is True and st['pb_prev'] is None, r1
+        assert st['fpv']['laps_done'] == 1 and st['time_s'] > 5, st
+        with db.connect() as conn:
+            rec = db.row(conn.execute('SELECT * FROM fpv_records WHERE match_id = ?', (mid1,)))
+        assert rec and rec['user_id'] == ali.id and rec['solo'] == 1 and rec['laps'] == 1 and abs(rec['time_s'] - st['time_s']) < 0.01, rec
+        g = F.hayalet_coz(rec['ghost'])
+        assert len(g) > 30 and g[-1][0] > 5 and len(json.loads(rec['splits'])) == 1 + m
+        mid2, r2 = kosu(9.0)
+        st2 = r2['standings'][0]
+        assert st2['new_pb'] is False and abs(st2['pb_prev'] - st['time_s']) < 0.01 and st2['time_s'] > st['time_s'], st2
+        lb = ok(ali.get('/api/fpv/courses/woodframe?laps=1'))
+        assert len(lb['leaderboard']) == 1 and lb['leaderboard'][0]['me'] and lb['leaderboard'][0]['name'] != 'ali' and '*' in lb['leaderboard'][0]['name'] \
+            and abs(lb['leaderboard'][0]['time_s'] - st['time_s']) < 0.01 and lb['my_best']['time_s'] == lb['leaderboard'][0]['time_s'], lb
+        gh = ok(ali.get('/api/fpv/courses/woodframe/ghost?laps=1'))
+        assert gh['ghost'].startswith('g1.') and abs(gh['time_s'] - st['time_s']) < 0.01 and len(gh['splits']) == 1 + m
+        assert veli.get('/api/fpv/courses/woodframe/ghost?laps=1').status_code == 404   # başkasının hayaleti yok
+        hl = ok(ali.get(A))
+        assert hl[0]['id'] == mid2 and hl[0]['kind'] == 'fpv' and hl[0]['n'] == 1, hl[0]   # geçmişte tek kişilik
+        g2 = ok(ali.get(f'{A}/{mid1}'))
+        assert g2['kind'] == 'fpv' and g2['rings_cfg']['course_id'] == 'woodframe' and g2['result']['solo'], g2.keys()
+        # TOP 10: tek kişilik karşılaşma "karşılaşma" puanı vermez; "FPV parkur" bileşeni yalnız varsayılan tur sayısında (1 tur ≠ 3) → 0
+        with db.connect() as conn:
+            L = {r['name']: r for r in av.siralama(conn, 'all')}
+            conn.execute('UPDATE fpv_records SET laps = 3, time_s = time_s * 3 WHERE match_id = ?', (mid1,))
+            conn.commit()
+            L2 = {r['name']: r for r in av.siralama(conn, 'all')}
+            conn.execute('UPDATE fpv_records SET laps = 1, time_s = time_s / 3 WHERE match_id = ?', (mid1,))
+            conn.commit()
+        ad = av.maske_ad('ali')
+        assert L.get(ad, {'parts': {'fpv': 0}})['parts']['fpv'] == 0
+        assert L2[ad]['parts']['fpv'] == F.fpv_puani('woodframe', st['time_s'] * 3, 3) > 0, L2[ad]
+        # FPV + yapay zekâ (Zor): insan hızlı uçar → kazanır; bot da parkuru izler (en az birkaç kapı)
+        q = ok(ali.post(f'{A}/ai', json={'drone_id': drone['id'], 'kind': 'fpv', 'fpv': {'course_id': 'woodframe', 'laps': 1}, 'level': 'hard'}), 201)
+        mid = q['id']
+        assert q['state'] == 'HAZIRLIK' and len(q['players']) == 2
+        d = bekle(lambda: (lambda x: x if all(p['session_id'] for p in x['players']) else None)(ok(ali.get(f'{A}/{mid}'))))
+        sids = {p['id']: p['session_id'] for p in d['players']}
+        bot = next(p for p in d['players'] if p['is_bot'])
+        assert all(bekle(lambda sx=sx: flightsim.MANAGER.get(sx) is not None and flightsim.MANAGER.get(sx).state == 'HAZIR') for sx in sids.values())
+        with ali.ws(f'/ws/match/{mid}') as wa:
+            ws_bekle(wa, lambda x: x['t'] == 'hello')
+            wa.send_text(json.dumps({'t': 'ready'}))
+            ws_bekle(wa, lambda x: x['t'] == 'state' and x['state'] == 'YARIS', sn=8)
+            fpv_pilotu(flightsim.MANAGER.get(sids[ali.id]), d['rings'], d['center'], hiz=25.0)
+            gor = []
+            res = ws_bekle(wa, lambda x: x['t'] == 'result', sn=90, biriktir=gor)
+            assert res, [x['t'] for x in gor][-10:]
+            rs = res['result']
+            assert rs['winner'] == ali.id and not rs['solo'] and rs['reason'] in ('son_cagri', 'hepsi_bitirdi'), rs
+            br = next(p for p in rs['standings'] if p['id'] == bot['id'])
+            assert br['rings'] >= 2 and 'new_pb' not in br, br   # bot kapıları izledi; bot kaydı yazılmaz
+            assert bekle(lambda: all(flightsim.MANAGER.get(sx) is None for sx in sids.values()), sn=20)
+        # salonda tek kişilik BAŞLAT (halka yarışı; max_players 1)
+        halka = {'count': 2, 'min_alt_m': 10, 'max_alt_m': 16, 'diameter_m': 14, 'radius_m': 80, 'seed': 5}
+        mt = ok(ali.post(A, json={'drone_id': drone['id'], 'track_id': tr['id'], 'rings': halka, 'password': 'Solo-1234', 'max_players': 1}), 201)
+        assert mt['can_start'] is True
+        assert ok(ali.post(f"{A}/{mt['id']}/start"))['state'] == 'HAZIRLIK'
+        assert ok(ali.post(f"{A}/{mt['id']}/cancel"))['state'] == 'IPTAL'
+        assert ali.post(A, json={'drone_id': drone['id'], 'track_id': tr['id'], 'kind': 'dogfight', 'password': 'Solo-1234', 'max_players': 1}).status_code == 422
+    finally:
+        core.SON_CAGRI_S = eski_son
+    print('  FPV parkurları + tek kişilik geçti')
 
 
 if __name__ == '__main__':

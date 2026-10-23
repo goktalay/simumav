@@ -161,6 +161,9 @@ PUAN = {
     'pace_k': 20, 'pace_max': 200,
     'disc_k': 1.5, 'disc_cap': 20, 'disc_min_s': 60,   # disiplin: ort. §42 puanı × 1,5 × min(uçuş, 20); yalnız ≥ 60 sn uçuşlar
     'icept_k': 0.5, 'icept_best': 10,                  # önleme: en iyi 10 uçuşun §24 puanı toplamı × 0,5
+    # HEPGO §47 FPV parkur bileşeni: her hazır parkurda (varsayılan tur sayısı) kişisel en iyi süreden flightsim_fpv.fpv_puani =
+    # 250 × par_tur / ortalama_tur (en çok 375); parkurlar toplanır. Tek kişilik karşılaşmalar (oyuncu 1) karşılaşma/tempo bileşenine GİRMEZ
+    # (zaman denemesi galibiyet sayılmaz — puan yalnız bu bileşenden).
 }
 PERIODS = {'30d': 30, 'all': None}
 
@@ -170,6 +173,8 @@ def mac_puani(kind, rings, finished, rank, won, role=None, max_hold_s=0):
     if kind == 'dogfight':
         return (1000 if won else 0) + (min(500, round(float(max_hold_s or 0) * 100)) if role == 'chaser' else 0)
     rk = int(rank or 99)
+    if kind == 'fpv':   # §47 çok oyunculu FPV yarışı: bitirene 250 + sıra bonusu (kontrol noktası sayısı puana girmez; hız FPV bileşeninde)
+        return (250 + max(0, 200 - 50 * rk)) if finished else 0
     return int(rings or 0) * 100 + ((250 + max(0, 200 - 50 * rk)) if finished else 0)
 
 
@@ -188,7 +193,7 @@ def _since(period, now=None):
 
 
 def siralama(conn, period='30d', limit=10, now=None):
-    """Dönüş: [{rank, name, email, avatar, score, wins, matches, flights, parts:{match, pace, discipline, intercept}}] — maskeli; kimlik yok."""
+    """Dönüş: [{rank, name, email, avatar, score, wins, matches, flights, parts:{match, pace, discipline, intercept, fpv}}] — maskeli; kimlik yok."""
     if period not in PERIODS:
         raise ValueError('period')
     since = _since(period, now)
@@ -201,10 +206,11 @@ def siralama(conn, period='30d', limit=10, now=None):
             st = {}
         if st.get('lb_hidden'):
             continue
-        users[u['id']] = {'u': u, 'match': 0.0, 'pace': 0.0, 'wins': 0, 'matches': 0, 'disc': [], 'icept': [], 'flights': 0}
+        users[u['id']] = {'u': u, 'match': 0.0, 'pace': 0.0, 'wins': 0, 'matches': 0, 'disc': [], 'icept': [], 'flights': 0, 'fpv': {}}
     # karşılaşmalar (yalnız BITTI; insan oyuncular — bot satırları ve negatif kimlikler hariç)
     q = ("SELECT mp.user_id, mp.rank, mp.rings, mp.time_s, m.id AS mid, m.kind, m.result, m.winner_id, m.rings AS rj, "
-         "(SELECT COUNT(*) FROM match_players x WHERE x.match_id = m.id AND x.is_bot = 0 AND x.user_id > 0) AS humans "
+         "(SELECT COUNT(*) FROM match_players x WHERE x.match_id = m.id AND x.is_bot = 0 AND x.user_id > 0) AS humans, "
+         "(SELECT COUNT(*) FROM match_players x WHERE x.match_id = m.id) AS n_all "
          "FROM match_players mp JOIN matches m ON m.id = mp.match_id WHERE m.state = 'BITTI' AND mp.is_bot = 0 AND mp.user_id > 0")
     args = ()
     if since:
@@ -219,12 +225,17 @@ def siralama(conn, period='30d', limit=10, now=None):
         except ValueError:
             res = {}
         kind = r['kind'] or res.get('kind') or 'rings'
+        if (r['n_all'] or 0) <= 1:   # §47 tek kişilik zaman denemesi: karşılaşma puanı yok
+            continue
         w = 1.0 if (r['humans'] or 0) >= 2 else P['bot_only_weight']
         won = r['winner_id'] is not None and int(r['winner_id']) == int(r['user_id'])
         if kind == 'dogfight':
             d = res.get('dogfight') or {}
             role = (d.get('roles') or {}).get(str(r['user_id']))
             pts = mac_puani('dogfight', 0, False, None, won, role, d.get('max_hold_s'))
+            pace = 0
+        elif kind == 'fpv':
+            pts = mac_puani('fpv', 0, r['time_s'] is not None, r['rank'], won)
             pace = 0
         else:
             try:
@@ -255,11 +266,26 @@ def siralama(conn, period='30d', limit=10, now=None):
             s['disc'].append(float(r['a']))
         if r['t'] is not None and float(r['t']) > 0:
             s['icept'].append(float(r['t']))
+    # §47 FPV parkur bileşeni: parkur başına kişisel en iyi (varsayılan tur sayısı) → fpv_puani
+    try:
+        from .. import flightsim_fpv as _fpv
+        q = 'SELECT user_id, course_id, laps, MIN(time_s) AS t FROM fpv_records'
+        args = ()
+        if since:
+            q += ' WHERE substr(created_at, 1, 19) >= ?'
+            args = (since,)
+        for r in conn.execute(q + ' GROUP BY user_id, course_id, laps', args):
+            s = users.get(r['user_id'])
+            if s is None or r['course_id'] not in _fpv.PARKUR_IDLER or int(r['laps']) != _fpv.parkur(r['course_id'])['laps']:
+                continue
+            s['fpv'][r['course_id']] = max(s['fpv'].get(r['course_id'], 0), _fpv.fpv_puani(r['course_id'], r['t'], r['laps']))
+    except Exception:   # noqa: BLE001 — eski taban (fpv_records yok)
+        pass
     out = []
     for uid, s in users.items():
         disc = round(sum(s['disc']) / len(s['disc']) * P['disc_k'] * min(len(s['disc']), P['disc_cap'])) if s['disc'] else 0
         icept = round(sum(sorted(s['icept'], reverse=True)[:P['icept_best']]) * P['icept_k'])
-        parts = {'match': round(s['match']), 'pace': round(s['pace']), 'discipline': int(disc), 'intercept': int(icept)}
+        parts = {'match': round(s['match']), 'pace': round(s['pace']), 'discipline': int(disc), 'intercept': int(icept), 'fpv': int(sum(s['fpv'].values()))}
         score = sum(parts.values())
         if score <= 0:
             continue

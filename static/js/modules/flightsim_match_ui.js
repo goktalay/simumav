@@ -10,6 +10,8 @@ import { DF_LIMITS, createDogfightHud, dfDefaults, dfError, dfResultRows, dfSumm
 import { ACTIVE, BOT_LEVELS, BOT_LEVEL_TEXT, BOT_NAMES, MATCH_LIMITS, REASON_TEXT, STATE_TEXT, STATUS_TEXT, STATUS_TONE, arrowFor, bearingDeg, botBadge, botName, colorFor, countdownPhase, createClock, fmtClock, fmtDist,
   inviteAdd, inviteRemove, isBot, liveStandings, lobbyCounts, matchHref, matchScore, myRank, opponentsError, partitionInvite, relAngle, ringDefaults, ringsError, ringsSummary, ringsViewBox, sessionHref } from './flightsim_match.js';
 import { countSteps, createSfx, rankChange } from './flightsim_sfx.js';   // §44 oyun efektleri
+import { courseSvg, fpvPoints, fpvRow, fpvRulesText, matchIsSolo, opponentsErrorSolo, soloAllowed } from './flightsim_fpvcourse.js';   // §47 FPV parkuru (saf)
+import { FLAG_SVG, FT, attachFpvMatch, courseDetail, createFpvSection, ensureFpvUiCss, fpvResultsBody, soloRingsHead } from './flightsim_fpvcourse_ui.js';   // §47 HEPGO DOM
 
 const API = '/api/drone/sim/matches';
 export const matchApi = {
@@ -28,6 +30,8 @@ export const matchApi = {
 };
 const DT = makeDfT(tr, false);   // §41 metinleri (HEPGO: Türkçe anahtar)
 const isDf = m => (m?.kind || 'rings') === 'dogfight';
+const isFpv = m => (m?.kind || 'rings') === 'fpv';   // §47
+const kindName = m => (isDf(m) ? DT('df.kind_dogfight') : isFpv(m) ? FT('fpv.kind') : DT('df.kind_rings'));
 const TYPE_NAME = { multirotor: 'Multikopter', hexarotor: 'Hexakopter', helikopter: 'Helikopter', sabit_kanat: 'Sabit Kanat', vtol: 'VTOL', interceptor: 'INTERCEPTOR' };
 
 // ---------------------------------------------------------------- CSS
@@ -35,6 +39,7 @@ let cssDone = false;
 export function ensureMatchCss() {
   if (cssDone || typeof document === 'undefined') return;
   cssDone = true;
+  ensureFpvUiCss();   // §47 galeri / sonuç / tek kişilik rozeti
   const st = document.createElement('style');
   st.dataset.fs = 'match';
   st.textContent = `
@@ -205,16 +210,21 @@ export function createRingsSection({ getType, getCenter, limits = MATCH_LIMITS, 
         dmk('area_radius_m', 'df.area', DL.area_radius_m, 50, 'm')),
       h('label', { class: 'fs-mt-seed' }, h('span', { class: 'small muted' }, DT('df.roles')), rolesSel)),
     dfMap);
-  const kindBtns = ['rings', 'dogfight'].map(k => h('button', { type: 'button', class: `fs-df-kind ${k === kind ? 'on' : ''}`, 'data-kind': k, onclick: () => setKind(k) },
-    h('b', null, k === 'rings' ? '◎ ' : '✈ ', DT(`df.kind_${k}`)), h('small', null, DT(`df.kind_${k}_d`))));
+  // §47 üçüncü kart: FPV parkur yarışı (hazır parkur galerisi + kurallar; yalnız çok rotorlu)
+  const fpvSec = createFpvSection({ limits: limits?.fpv || null, getType, onChange: () => onChange() });
+  fpvSec.el.hidden = true;
+  const kindBtns = ['rings', 'dogfight', 'fpv'].map(k => h('button', { type: 'button', class: `fs-df-kind ${k === kind ? 'on' : ''}`, 'data-kind': k, onclick: () => setKind(k) },
+    k === 'fpv' ? h('b', null, h('span', { html: FLAG_SVG, style: { verticalAlign: '-3px', marginRight: '4px', color: '#16a34a' } }), FT('fpv.kind')) : h('b', null, k === 'rings' ? '◎ ' : '✈ ', DT(`df.kind_${k}`)),
+    h('small', null, k === 'fpv' ? FT('fpv.kind_d') : DT(`df.kind_${k}_d`))));
   const kindRow = h('div', { class: 'fs-df-kinds', role: 'radiogroup', 'aria-label': DT('df.kind') }, kindBtns);
   let ringsBox = null;
   const setKind = k => {
-    kind = k === 'dogfight' ? 'dogfight' : 'rings';
+    kind = k === 'dogfight' || k === 'fpv' ? k : 'rings';
     kindBtns.forEach(b => b.classList.toggle('on', b.dataset.kind === kind));
     if (ringsBox) ringsBox.hidden = kind !== 'rings';
     dfBox.hidden = kind !== 'dogfight';
-    if (kind === 'dogfight') dchanged(); else changed();
+    fpvSec.el.hidden = kind !== 'fpv';
+    if (kind === 'dogfight') dchanged(); else if (kind === 'fpv') fpvSec.refresh(); else changed();
     onKind(kind);
   };
   let R = { ...ringDefaults(getType(), limits), ...(initial || {}) };
@@ -259,7 +269,7 @@ export function createRingsSection({ getType, getCenter, limits = MATCH_LIMITS, 
         h('button', { class: 'btn sm', type: 'button', onclick: () => { R.seed = Math.floor(Math.random() * 2147483000) + 1; seedInp.value = R.seed; changed(); } }, '🎲 Yeni parkur')),
       info),
     map);
-  const el = h('div', { class: 'fs-mt-kindwrap' }, kindRow, ringsBox, dfBox);
+  const el = h('div', { class: 'fs-mt-kindwrap' }, kindRow, ringsBox, dfBox, fpvSec.el);
   dchanged();
   return {
     el,
@@ -267,8 +277,10 @@ export function createRingsSection({ getType, getCenter, limits = MATCH_LIMITS, 
     rings: () => last,
     kind: () => kind, setKind,
     dogfight: () => ({ ...D }),
-    error: () => (kind === 'dogfight' ? dfError(D, DL) : ringsError(R, limits)),
+    fpv: () => fpvSec.body(), fpvSection: fpvSec,   // §47
+    error: () => (kind === 'dogfight' ? dfError(D, DL) : kind === 'fpv' ? (fpvSec.error() ? FT(fpvSec.error()) : null) : ringsError(R, limits)),
     summary: () => (kind === 'dogfight' ? [[DT('df.kind'), DT('df.kind_dogfight')], [DT('df.rules').split(':')[0], dfSummary(D, DT)]]
+      : kind === 'fpv' ? [[DT('df.kind'), FT('fpv.kind')], ...fpvSec.summary()]
       : [[DT('df.kind'), DT('df.kind_rings')], ['Halkalar', ringsSummary(R)], ['Süre sınırı', tr('{n} dk', { n: R.time_limit_min })], ['Parkur tohumu', String(R.seed)]]),
     refresh: () => {   // tip değişince (dikey ↔ uçak) varsayılanlar
       const t = getType();
@@ -276,7 +288,7 @@ export function createRingsSection({ getType, getCenter, limits = MATCH_LIMITS, 
         const d = ringDefaults(t, limits); for (const k of ['min_alt_m', 'max_alt_m', 'diameter_m', 'radius_m']) { R[k] = d[k]; sl[k].set(d[k]); }
         const dd = dfDefaults(t, DL); for (const k of Object.keys(dsl)) { D[k] = dd[k]; dsl[k].set(dd[k]); } dchanged();
       }
-      lastType = t; changed();
+      lastType = t; changed(); fpvSec.refresh();
     },
   };
 }
@@ -286,7 +298,7 @@ const typeClass2 = t => (t === 'sabit_kanat' ? 'ucak' : 'dikey');
 export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChange = () => {} }) {
   ensureMatchCss();
   let invited = new Set(), q = '';
-  let max = (limits.players_max || 8) - 1;
+  let max = (limits.players_max || 8) - 1, kind = 'rings';   // §47 kind: tek kişilik (davet + bot 0) halka yarışı ve FPV'de serbest
   // §44 yapay zekâ pilotlar (davetlilerle birlikte rakip sayısına girer; it dalaşında toplam tam 1)
   const BN = limits.bot?.names || BOT_NAMES;
   let bots = [], level = limits.bot?.default || 'normal';
@@ -313,6 +325,7 @@ export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChang
   const colL = h('div', { class: 'fs-mt-col', 'data-side': 'left' }, h('h5', null, h('span', null, 'Davet edilmeyenler'), cntL), listL);
   const colR = h('div', { class: 'fs-mt-col', 'data-side': 'right' }, h('h5', null, h('span', null, 'Davet edilenler'), cntR), listR);
   const note = h('div', { class: 'small muted' });
+  const soloNote = h('div', { class: 'alert info fs-mt-solo', hidden: true });
   const set = s => { invited = s; selL.clear(); selR.clear(); draw(); onChange(); };
   const add = ids => { const before = invited.size; const n = inviteAdd(invited, ids, Math.max(0, max - bots.length)); if (n.size - before < [].concat(ids).length) toast(tr('En çok {n} kişi davet edilebilir', { n: Math.max(0, max - bots.length) }), 'err'); set(n); };
   const rem = ids => set(inviteRemove(invited, ids));
@@ -332,6 +345,8 @@ export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChang
     clear(listR, right.length ? right.map(u => item(u, 'right')) : h('li', { class: 'empty' }, 'Henüz kimse davet edilmedi — soldan seçip › ile ekleyin, çift tıklayın ya da sürükleyin'));
     cntL.textContent = String(users.length - invited.size); cntR.textContent = `${invited.size + bots.length} / ${max}`;
     note.textContent = tr('Siz de oyuncusunuz: karşılaşma {n} kişi.', { n: invited.size + bots.length + 1 });
+    const solo = invited.size + bots.length === 0 && soloAllowed(kind);
+    soloNote.hidden = !solo; soloNote.textContent = solo ? `${FT('fpv.solo')} · ${FT('fpv.solo_hint')}` : '';
   };
   for (const [col, side] of [[colL, 'left'], [colR, 'right']]) {
     col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('on'); });
@@ -348,10 +363,12 @@ export function createInviteSection({ users = [], limits = MATCH_LIMITS, onChang
         btn('›', tr('Seçilenleri davet et'), () => add([...selL])), btn('»', tr('Tümünü davet et'), () => add(partitionInvite(users, invited, q).left.map(u => u.id))),
         btn('‹', tr('Seçilenleri davetten çıkar'), () => rem([...selR])), btn('«', tr('Tümünü çıkar'), () => rem([...invited]))),
       colR),
-    botBox, note);
+    botBox, note, soloNote);
   drawBots(); draw();
   return { el, values: () => [...invited], bots: () => bots.map(b => ({ level: b.level })),
-    error: () => opponentsError(invited.size, bots.length, max, limits),
+    error: () => opponentsErrorSolo(invited.size, bots.length, kind, max, limits),   // §47 tek kişilik (it dalaşı hariç)
+    setKind: k => { kind = k || 'rings'; draw(); },
+    solo: () => invited.size + bots.length === 0 && soloAllowed(kind),
     names: () => [...users.filter(u => invited.has(u.id)).map(u => u.full_name), ...bots.map((b, i) => botName(b.level, i, { names: BN, T: tr }))], set: ids => set(new Set(ids)),
     setBots: arr => { bots = (arr || []).map(b => ({ level: b.level || b })); drawBots(); draw(); onChange(); },
     // §41 it dalaşı: tam 1 rakip (davetli ya da yapay zekâ; fazlası düşer)
@@ -402,12 +419,14 @@ function dfResultsBody(match, me) {   // §41 it dalaşı sonucu: kazanan, sebep
 }
 export function resultsBody(match, me) {
   if (isDf(match)) return dfResultsBody(match, me);
+  if (isFpv(match)) return fpvResultsBody(match, me, { aiBadge, statusText: r => (r.status === 'hazir' ? 'Yarıştı' : STATUS_TEXT[r.status] || r.status) });   // §47
   const res = match.result || null;
+  const solo = matchIsSolo(match);   // §47 tek kişilik halka yarışı: "Kazanan" yerine "Tamamlandı · süre"
   const rows = res?.standings || liveStandings(match.players || []);
   const win = (match.players || []).find(p => p.id === (res?.winner ?? match.winner));
   const medal = r => h('span', { class: `rk rk${r}` }, String(r));
   return h('div', { class: 'fs-mt-res' },
-    h('div', { class: 'fs-mt-win' }, h('span', { class: 'cup' }, win ? '🏆' : '🏁'),
+    solo ? soloRingsHead(match, me, fmtClock) : h('div', { class: 'fs-mt-win' }, h('span', { class: 'cup' }, win ? '🏆' : '🏁'),
       h('div', null, h('b', null, win ? tr('Kazanan: {n}', { n: win.name }) : tr('Kazanan yok')),
         h('div', { class: 'small muted' }, [tr(REASON_TEXT[res?.reason || match.reason] || res?.reason || match.reason || ''), res?.duration_s != null ? tr('Yarış süresi {t}', { t: fmtClock(res.duration_s) }) : null].filter(Boolean).join(' · ')))),
     h('div', { class: 'tw' }, h('table', null,
@@ -492,7 +511,8 @@ export async function renderLobby(view, ctx, mid, { head }) {
   const drawSum = () => {
     const s = M.settings || {}, r = M.rings_cfg || {}, w = s.world || {};
     const host = (M.players || []).find(p => p.host);
-    const svg = h('div', { class: 'fs-mt-map', style: { marginTop: '10px' } }); svg.innerHTML = isDf(M) ? dfSvg(r, { T: DT }) : ringsSvg(M.rings || []);
+    const svg = h('div', { class: 'fs-mt-map', style: { marginTop: '10px' } }); svg.innerHTML = isDf(M) ? dfSvg(r, { T: DT }) : isFpv(M) ? '' : ringsSvg(M.rings || []);
+    if (isFpv(M) && r.course_id) courseDetail(r.course_id, r.laps).then(d => { svg.innerHTML = courseSvg(d.course, { title: FT(`fpv.c_${r.course_id}`) }); }).catch(() => {});   // §47 parkur kuş bakışı
     const myRole = roleOf(M, me);
     clear(sum, h('h3', null, 'Karşılaşma ayarları'),
       h('dl', null,
@@ -500,10 +520,11 @@ export async function renderLobby(view, ctx, mid, { head }) {
         h('dt', null, 'Araç'), h('dd', null, tr(TYPE_NAME[s.type] || s.type || '—')),
         h('dt', null, 'Merkez'), h('dd', null, M.center?.name || '—'),
         h('dt', null, 'Dünya'), h('dd', null, [tr({ real: 'Gerçek arazi', google3d: 'Google 3B (fotogerçekçi)', procedural: 'Prosedürel' }[w.mode] || w.mode || '—'), w.time ? tr({ day: 'Gündüz', dusk: 'Akşam', night: 'Gece' }[w.time] || w.time) : null].filter(Boolean).join(' · ')),
-        h('dt', null, DT('df.kind')), h('dd', null, DT(isDf(M) ? 'df.kind_dogfight' : 'df.kind_rings')),
+        h('dt', null, DT('df.kind')), h('dd', null, kindName(M), matchIsSolo(M) ? h('span', { class: 'fs-fc-solo' }, FT('fpv.solo_badge')) : null),
         ...(isDf(M) ? [h('dt', null, DT('df.rules').split(':')[0]), h('dd', null, dfSummary(r, DT)),
           h('dt', null, DT('df.role')), h('dd', null, myRole ? h('span', { class: `fs-df-badge ${myRole}` }, DT(`df.${myRole}`)) : DT('df.role_pending'))]
-          : [h('dt', null, 'Halkalar'), h('dd', null, ringsSummary(r))]),
+          : isFpv(M) ? [h('dt', null, FT('fpv.course')), h('dd', null, FT(`fpv.c_${r.course_id}`)), h('dt', null, FT('fpv.rules')), h('dd', null, fpvRulesText(r, FT))]   // §47
+            : [h('dt', null, 'Halkalar'), h('dd', null, ringsSummary(r))]),
         h('dt', null, 'Süre sınırı'), h('dd', null, tr('{n} dk', { n: r.time_limit_min ?? '—' })),
         h('dt', null, 'Oluşturuldu'), h('dd', null, typeof M.created_at === 'number' ? new Date(M.created_at * 1000).toLocaleString() : fmtDateTime(M.created_at))),
       svg, isDf(M) ? h('p', { class: 'small muted' }, DT('df.rules', { r: Math.round(r.range_m), c: Math.round(r.cone_deg), h: Number(r.hold_s).toFixed(1), t: r.time_limit_min, a: Math.round(r.area_radius_m), g: 60 })) : null,
@@ -545,13 +566,14 @@ export async function renderLobby(view, ctx, mid, { head }) {
 
 // ---------------------------------------------------------------- oturum ekranı katmanı
 // stage: .fs-stage · getSim(): flightsim3d nesnesi · startIntro(): §29 giriş sekansı (3‑2‑1 + bip) — geri sayımın son 3 sn'sinde çağrılır
-export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/sim?tab=matches', startIntro = () => {}, getTele = () => null, sfx = null }) {
+export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/sim?tab=matches', startIntro = () => {}, getTele = () => null, sfx = null, getRc = () => null, fpvMenu = null }) {
   ensureMatchCss();
   const clock = createClock();
   // §44 oyun efektleri: oturumun efekt yolu (motor sesi master'ı; ses kapsülü + uçuş uyarısı önceliği) ya da yedek bağlam
   const fx = sfx || createSfx({ fallbackVol: () => { const s = hepgoSound(); return s.on ? s.vol : 0; } });
   let prevRank = null, lastRankT = 0;
   let M = null, layer = null, worldReady = false, introDone = false, resultShown = false, disposed = false, dfHud = null;   // dfHud: §41 it dalaşı HUD'u
+  let fpv = null;   // §47 FPV parkuru: 3B parkur + HUD + hayalet (flightsim_fpvcourse_ui.attachFpvMatch)
   const pos = {};   // id → son pos girdisi
   const bar = h('div', { class: 'fs-mt-bar wait' }, 'Karşılaşmaya bağlanılıyor…');
   const board = h('div', { class: 'fs-mt-board' }, h('h6', null, 'Sıralama'), h('ol'));
@@ -567,11 +589,16 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     if (!sim || !M || layer) return;
     if (!sim.three || !sim.scene) return;
     layer = createMatchLayer(sim, { me });
-    layer.setRings(M.rings || []);
+    layer.setRings(isFpv(M) ? [] : (M.rings || []));   // §47 FPV: kontrol noktaları match3d halkası DEĞİL — neon kapılar parkur katmanında
     syncPlayers();
     if (typeof window !== 'undefined') window.__fsMatch = { layer, get match() { return M; }, clock, get sim() { return getSim(); } };   // teşhis (görsel betikler)
   };
-  const syncPlayers = () => layer?.setPlayers((M?.players || []).filter(p => ACTIVE.has(p.status)).map(p => ({ id: p.id, name: p.name, color: colorFor(M.players, p.id), plane: M.settings?.type === 'sabit_kanat' })));
+  const syncPlayers = () => layer?.setPlayers((M?.players || []).filter(p => ACTIVE.has(p.status)).map(p => ({ id: p.id, name: p.name, start: p.start, color: colorFor(M.players, p.id), plane: M.settings?.type === 'sabit_kanat' })));
+  const ensureFpv = () => {   // §47
+    if (!M || !isFpv(M) || fpv) return;
+    fpv = attachFpvMatch({ stage, getSim, me, sfx: fx, getRc, getTele, fpvMenu });
+    fpv.setMatch(M, clock.now());
+  };
   const ensureDf = () => {   // §41: it dalaşında sıralama tablosu yerine rakip işaretçisi / angajman halkası / uyarı HUD'u
     if (!M || !isDf(M) || dfHud) return;
     dfHud = createDogfightHud(stage, { getSim, tr, me, sfx: fx });
@@ -580,6 +607,7 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
   };
   const drawBoard = () => {
     if (!M || isDf(M)) return;
+    board.hidden = matchIsSolo(M);   // §47 tek kişilik: sıralama tablosu yok
     const rows = liveStandings(M.players, pos);
     const total = (M.rings || []).length;
     clear(board.querySelector('ol'), rows.map((p, i) => h('li', { class: `${p.id === me ? 'me' : ''} ${ACTIVE.has(p.status) ? '' : 'out'}`.trim() },
@@ -595,7 +623,7 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
       const c = lobbyCounts(M.players);
       const ph = st === 'GERI_SAYIM' ? countdownPhase(M.start_at, clock.now()) : null;
       clear(box, h('div', { class: 'ttl' }, st === 'GERI_SAYIM' ? tr('Herkes hazır — yarış başlıyor') : tr('Diğer oyuncular bekleniyor')),
-        h('div', { class: 'small', style: { opacity: '.8' } }, st === 'GERI_SAYIM' ? (isDf(M) ? DT('df.wait_go') : tr('Kalkış serbest olunca halkaları sırayla geçin.')) : tr('{r} / {t} oyuncu hazır', { r: c.ready, t: c.total })),
+        h('div', { class: 'small', style: { opacity: '.8' } }, st === 'GERI_SAYIM' ? (isDf(M) ? DT('df.wait_go') : isFpv(M) ? FT('fpv.wait_go') : tr('Kalkış serbest olunca halkaları sırayla geçin.')) : tr('{r} / {t} oyuncu hazır', { r: c.ready, t: c.total })),
         ph ? h('div', { class: 'big' }, String(Math.ceil(ph.remain))) : null,
         h('ul', null, (M.players || []).filter(p => ACTIVE.has(p.status) || p.status === 'dustu').map(p => h('li', null, h('span', { class: 'dot', style: { background: colorFor(M.players, p.id) } }),
           h('span', { style: { flex: '1' } }, p.name, p.id === me ? ` (${tr('siz')})` : ''), h('span', { class: `badge ${STATUS_TONE[p.status] || 'gray'}` }, tr(STATUS_TEXT[p.status] || p.status))))));
@@ -604,7 +632,7 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
   const drawBar = () => {
     if (!M) return;
     const st = M.state;
-    if (st === 'YARIS' && isDf(M)) { bar.hidden = true; return; }   // §41: şerit it dalaşı HUD'unda
+    if (st === 'YARIS' && (isDf(M) || isFpv(M))) { bar.hidden = true; return; }   // §41 / §47: şerit kendi HUD'unda
     bar.hidden = false;
     if (st === 'YARIS') {
       const my = pos[me] || {}, nxt = my.next ?? myP()?.next, total = (M.rings || []).length;
@@ -636,17 +664,19 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     resultShown = true;
     resEl.hidden = false;
     // §44 puan: zafer / yenilgi sesi, sonra puan sayacı tıklamalarla artar, sonunda "coin"
-    const res = M.result || {}, df = isDf(M);
+    const res = M.result || {}, df = isDf(M), fp = isFpv(M), solo = matchIsSolo(M);
     const row = df ? dfResultRows(M).find(r => r.id === me) : (res.standings || []).find(r => r.id === me);
-    const score = row ? matchScore(row, df ? 'dogfight' : 'rings', res.dogfight || {}) : null;
+    const score = row ? (fp ? fpvPoints(fpv?.course, fpvRow(row).total, Number(M.rings_cfg?.laps) || null) : matchScore(row, df ? 'dogfight' : 'rings', res.dogfight || {})) : null;   // §47 FPV: par tur süresine göre
     const scoreEl = h('b', { 'data-score': score ?? '' }, '0');
-    clear(resEl, h('div', { class: 'box', role: 'dialog', 'aria-modal': 'true' }, h('h2', { style: { marginTop: '0' } }, tr('Karşılaşma sonucu · #{id}', { id: M.id })),
+    clear(resEl, h('div', { class: 'box', role: 'dialog', 'aria-modal': 'true' }, h('h2', { style: { marginTop: '0' } }, solo && fp ? `${FT('fpv.result_tt')} · #${M.id}` : tr('Karşılaşma sonucu · #{id}', { id: M.id })),
       score != null ? h('div', { class: 'fs-mt-score' }, h('span', { class: 'muted' }, tr('Puanınız')), scoreEl) : null, resultsBody(M, me),
       h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: () => { resEl.hidden = true; } }, 'Kapat'),
         h('a', { class: 'btn primary', href: homeHref }, 'Karşılaşmalar'))));
     if (row) {
       const won = (res.winner ?? M.winner) === me;
-      fx.play(won ? 'win' : 'lose');
+      if (fp && row.new_pb) fx.play('pb');   // §47 kişisel rekor fanfarı
+      else if (solo) fx.play(row.finished ? 'finish' : 'lose');   // §47 tek kişilik: kazanma/kaybetme yok
+      else fx.play(won ? 'win' : 'lose');
       const steps = countSteps(score), t0 = won ? 1.1 : 1.3;
       steps.forEach((st, k) => setTimeout(() => { if (disposed) return; scoreEl.textContent = String(st.v); if (k === steps.length - 1) { if (st.v > 0) fx.play('coin'); } else fx.play('tick'); }, (t0 + st.t) * 1000));
     }
@@ -672,7 +702,8 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
       ensureLayer(); syncPlayers();
       if (layer && myP()) layer.setNext(myP().finished ? null : myP().next ?? 1);
       ensureDf(); dfHud?.update(M, clock.now());
-      if (prevState !== 'YARIS' && M.state === 'YARIS') flashMsg(isDf(M) ? (roleOf(M, me) === 'chaser' ? DT('df.go_chaser') : DT('df.go_evader')) : tr('BAŞLA! Halkaları sırayla geçin'));
+      ensureFpv(); fpv?.setMatch(M, clock.now());   // §47
+      if (prevState !== 'YARIS' && M.state === 'YARIS') flashMsg(isDf(M) ? (roleOf(M, me) === 'chaser' ? DT('df.go_chaser') : DT('df.go_evader')) : isFpv(M) ? FT('fpv.go') : tr('BAŞLA! Halkaları sırayla geçin'));
       if (M.state === 'BITTI' && M.result) showResult();
       drawBoard(); drawWait(); drawBar(); maybeIntro();
       return;
@@ -683,6 +714,15 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
       layer?.pushPos(m);
       if (dfHud) { dfHud.setPos(m); dfHud.update(M, clock.now()); }
       if (layer && pos[me]) layer.setNext(pos[me].next ?? null);
+      fpv?.event(m, clock.now());   // §47 sıradaki kapı + ceza
+      return;
+    }
+    if (fpv && ['ring', 'lap', 'sector', 'miss', 'hit', 'reset', 'wrong_way', 'finish'].includes(m.t)) {   // §47 FPV olayları: HUD + 3B efekt + ses (HUD'da)
+      if (m.t === 'ring') pos[m.id] = { ...(pos[m.id] || {}), rings: Math.max(Number(pos[m.id]?.rings) || 0, m.i), next: m.i + 1 > m.total ? null : m.i + 1 };
+      if (m.t === 'ring' && m.id === me) { const cp = (M?.rings || []).find(c => c.i === m.i); if (cp?.lap > 0 || cp?.gate !== 0) fx.play('ring', { i: Math.min(16, cp?.gate || m.i), n: 16 }); }
+      if (m.t === 'finish' && m.id !== me) flashMsg(tr('{n} bitirdi', { n: (M?.players || []).find(p => p.id === m.id)?.name || '' }), 'rgba(250,204,21,.95)');
+      fpv.event(m, clock.now());
+      if (m.t === 'ring') rankSound();
       return;
     }
     if (m.t === 'ring') {
@@ -695,7 +735,7 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     }
     if (m.t === 'wrong_way' && m.id === me) { flashMsg(tr('Ters yön! Halkayı ok yönünde geçin'), 'rgba(248,113,113,.95)'); fx.play('wrong'); return; }
     if (m.t === 'finish') { const nm = (M?.players || []).find(p => p.id === m.id)?.name || ''; flashMsg(m.id === me ? tr('BİTİRDİNİZ! {t}', { t: fmtClock(m.elapsed_s) }) : tr('{n} bitirdi', { n: nm }), 'rgba(250,204,21,.95)'); return; }
-    if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; dfHud?.update(M, clock.now()); showResult(); drawBar(); return; }
+    if (m.t === 'result' && M) { M = { ...M, result: m.result, state: 'BITTI' }; dfHud?.update(M, clock.now()); fpv?.setMatch(M, clock.now()); showResult(); drawBar(); return; }
     if (m.t === 'dogfight' && M) {   // §41 olaylar: koniye giriş (kaçana uyarı), angaje, alan dışı, çarpma
       if (m.kind === 'engaged') flashMsg(DT('df.engaged'), 'rgba(239,68,68,.95)');   // §44 zafer/yenilgi sesi sonuçta
       else if (m.kind === 'area') flashMsg(DT('df.r_alan_disi'), 'rgba(248,113,113,.95)');
@@ -705,13 +745,14 @@ export function attachMatch({ stage, getSim, mid, me, sid, homeHref = '#/drone/s
     }
   };
   const sock = matchSocket(mid, { message: onMsg, pong: (n, s, r) => clock.sample(n, s, r), fatal: () => { clear(bar, tr('Karşılaşmaya bağlanılamadı')); } });
-  const iv = setInterval(() => { ensureLayer(); drawBar(); drawBoard(); if (M?.state === 'GERI_SAYIM') drawWait(); maybeIntro(); }, 250);
+  const iv = setInterval(() => { ensureLayer(); drawBar(); drawBoard(); if (M?.state === 'GERI_SAYIM') drawWait(); maybeIntro(); fpv?.tick(clock.now()); }, 250);
   return {
     // 3B dünya kuruldu + oturum HAZIR → sunucuya `ready` (herkes hazır olunca geri sayım başlar)
     onWorldReady() { if (worldReady) return; worldReady = true; ensureLayer(); const send = () => sock.send({ t: 'ready' }); send(); setTimeout(send, 1500); setTimeout(send, 5000); maybeIntro(); },
     get state() { return M?.state || null; },
     get sfx() { return fx; },
-    dispose() { disposed = true; clearInterval(iv); sock.close(); layer?.dispose(); if (!sfx) fx.dispose(); dfHud?.dispose(); if (window.__fsDogfight === dfHud) delete window.__fsDogfight; bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__fsMatch?.layer === layer) delete window.__fsMatch; },
+    get fpv() { return fpv; },   // §47
+    dispose() { disposed = true; clearInterval(iv); sock.close(); layer?.dispose(); fpv?.dispose(); if (!sfx) fx.dispose(); dfHud?.dispose(); if (window.__fsDogfight === dfHud) delete window.__fsDogfight; bar.remove(); board.remove(); wait.remove(); resEl.remove(); flash.remove(); if (window.__fsMatch?.layer === layer) delete window.__fsMatch; },
   };
 }
 
@@ -731,7 +772,7 @@ export function matchesCard({ onCount = () => {} } = {}) {
         const act = ['LOBI', 'HAZIRLIK', 'GERI_SAYIM', 'YARIS'].includes(r.state) && r.live;
         return h('tr', null, h('td', null, `#${r.id}`),
           h('td', null, h('span', { class: `badge ${act ? 'green' : r.state === 'IPTAL' ? 'red' : 'gray'}` }, tr(STATE_TEXT[r.state] || r.state))),
-          h('td', null, DT(isDf(r) ? 'df.kind_dogfight' : 'df.kind_rings')),
+          h('td', null, isFpv(r) ? FT('fpv.kind_short') : DT(isDf(r) ? 'df.kind_dogfight' : 'df.kind_rings'), matchIsSolo(r) ? h('span', { class: 'fs-fc-solo' }, FT('fpv.solo_badge')) : null),
           h('td', null, r.host_name || '—'), h('td', null, tr(TYPE_NAME[r.type] || r.type || '—')),
           h('td', null, (r.players || []).map(p => p.name).join(', ')), h('td', null, win ? h('b', null, win.name) : '—'),
           h('td', null, typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toLocaleString() : fmtDateTime(r.created_at)),
