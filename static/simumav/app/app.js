@@ -11,6 +11,7 @@ import { toast, toastErr } from './ui/components.js';
 import * as sfx from './ui/sfx.js';
 import * as backdrop from './ui/backdrop.js';   // bölüm başına hareketli Canvas2D arka plan (#backdrop; içerik kodu değişmez)
 import * as music from './ui/music.js';         // prosedürel arka plan müziği (ilk etkileşimde; uçuş oturumunda susar)
+import { mountHolidayFx } from '/sim/holiday_fx.js';   // bayram temaları (HEPGO ile ortak; arka planın ÜSTÜNDE hafif katman, uçuş oturumunda kapalı)
 
 // Rota tablosu: modül `mount(root, ctx)` (oyun arayüzü modülleri) YA DA `render(view, params, ctx)` (fly/index.js) dışa aktarır; router ikisini de destekler.
 export const ROUTES = {
@@ -83,6 +84,29 @@ const UI_BTN = 'button, .btn, [role="button"], .sm-mode-card, .sm-card';
 const uiBtn = e => { const b = e.target?.closest?.(UI_BTN); return b && !b.disabled && view.contains(b) && !b.closest('.mcard, .sm-fly-session, [data-nosfx]') ? b : null; };
 view.addEventListener('pointerover', e => { const b = uiBtn(e); if (b && !b.contains(e.relatedTarget)) sfx.hover(); });
 view.addEventListener('click', e => { if (uiBtn(e)) sfx.tick(); });
+
+// ---------- Bayram temaları (docs/bayram-temalari.md): ayar holiday_fx (varsayılan açık) + holiday_country ('' = otomatik) ----------
+// Ülke: ayar → kendi parkurunun merkezi (sunucu /api/holiday-theme/me) → saat dilimi → tarayıcı dili. Katman arka plan sahnelerinin (#stage, #backdrop) ve
+// #view'in ÜSTÜNDE (z 2), kabuk düğmelerinin altında; tıklamaları geçirir. Uzun figürler (ağaç, menora …) ground=0,62 ile menü kartlarının üstünde durur;
+// uçuş oturumunda (#view.sm-fly-session) gizlenir. Önizleme: /app/?bayram=<tema>.
+let holiday = null, holidayMe = null;
+let holidayTok = 0;
+async function syncHoliday(preview = null) {
+  const my = ++holidayTok;   // üst üste çağrılırsa yalnız sonuncusu kalır
+  holiday?.destroy(); holiday = null;
+  if (!holidayMe) { try { holidayMe = await api.get('/api/holiday-theme/me'); } catch { holidayMe = {}; } }
+  if (my !== holidayTok) return;
+  try {
+    const hx = await mountHolidayFx({ enabled: state.settings.holiday_fx !== false, country: state.settings.holiday_country || '', located: holidayMe?.located,
+      lang: document.documentElement.lang || 'tr', zIndex: 2, ground: 0.62, bannerTop: 84,   // ground: ağaç/menora gibi uzun figürler menü kartlarının üstünde durur
+      bannerZ: 6, preview, reduced: () => !!state.settings.reduced_motion,
+      inFlight: () => view.classList.contains('sm-fly-session') });
+    if (my !== holidayTok) { hx?.destroy(); return; }
+    holiday = hx;
+  } catch (e) { console.warn('bayram teması', e); }
+}
+addEventListener('sm:holiday', e => syncHoliday(e.detail?.preview || null));   // Ayarlar: aç/kapa, ülke, önizleme
+window.__smHoliday = () => ({ me: holidayMe, detected: holiday?.detected || null, picked: holiday?.picked || null, info: holiday?.info || null });
 
 // ---------- Router ----------
 const ctx = {
@@ -169,6 +193,7 @@ async function boot() {
   chip.addEventListener('click', () => { sfx.select(); ctx.go('crew'); });
   back.addEventListener('pointerenter', () => sfx.hover()); gear.addEventListener('pointerenter', () => sfx.hover()); chip.addEventListener('pointerenter', () => sfx.hover());
   music.initMusic();
+  syncHoliday();
   window.__smBackdrop = backdrop.state; window.__smMusic = music.state;   // teşhis (kare süresi / müzik düzeyi)
   window.addEventListener('hashchange', () => route());
   window.addEventListener('sm:session', () => ctx.refreshSession());

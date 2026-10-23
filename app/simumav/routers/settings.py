@@ -1,4 +1,5 @@
-"""`/api/settings` — dil, tema, ses, FPV analog efekt (users.lang/theme/settings); §25 `leaderboard_hidden` (settings.lb_hidden: TOP 10 PİLOT'ta görünme)."""
+"""`/api/settings` — dil, tema, ses, FPV analog efekt (users.lang/theme/settings); §25 `leaderboard_hidden` (settings.lb_hidden: TOP 10 PİLOT'ta görünme);
+bayram temaları `holiday_fx` (varsayılan AÇIK) + `holiday_country` ('' = otomatik; docs/bayram-temalari.md)."""
 import json
 from typing import Optional
 
@@ -23,6 +24,8 @@ class SettingsIn(BaseModel):
     reduced_motion: Optional[bool] = None
     units: Optional[str] = Field(None, max_length=8)
     leaderboard_hidden: Optional[bool] = None
+    holiday_fx: Optional[bool] = None
+    holiday_country: Optional[str] = Field(None, max_length=2)
 
 
 def _out(u):
@@ -30,7 +33,8 @@ def _out(u):
     # lang: yalnız kullanıcı Ayarlar'da seçtiyse (settings.lang_chosen); seçmediyse None → kabuk tarayıcı dili kuralını uygular (users.lang DEFAULT 'tr' tarayıcıyı ezmesin)
     return {'lang': u['lang'] if s.get('lang_chosen') else None, 'theme': u['theme'], 'sound': bool(s.get('sound', True)), 'analog_fpv': bool(s.get('analog_fpv', True)),
             'music': bool(s.get('music', True)), 'volume': float(s.get('volume', 0.8)), 'reduced_motion': bool(s.get('reduced_motion', False)),
-            'units': s.get('units', 'metric'), 'leaderboard_hidden': bool(s.get('lb_hidden', False)), 'langs': list(config.LANGS), 'themes': list(THEMES)}
+            'units': s.get('units', 'metric'), 'leaderboard_hidden': bool(s.get('lb_hidden', False)),
+            'holiday_fx': s.get('holiday_fx', True) is not False, 'holiday_country': s.get('holiday_country') or '', 'langs': list(config.LANGS), 'themes': list(THEMES)}
 
 
 @router.get('')
@@ -54,6 +58,13 @@ def put_settings(body: SettingsIn, user=User):
     if body.leaderboard_hidden is not None:
         s['lb_hidden'] = bool(body.leaderboard_hidden)
         leaderboard.gecersiz()   # gizlilik: önbellekteki liste hemen düşer
+    if body.holiday_fx is not None:
+        s['holiday_fx'] = bool(body.holiday_fx)
+    if body.holiday_country is not None:
+        c = body.holiday_country.strip().upper()
+        if c and not (len(c) == 2 and c.isascii() and c.isalpha()):
+            raise auth.hata(422, 'invalid', 'holiday_country ISO 3166-1 alfa-2 ya da boş olmalı')
+        s['holiday_country'] = c
     if body.lang is not None:
         s['lang_chosen'] = True
     with db.connect() as conn:

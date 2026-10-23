@@ -7,6 +7,7 @@ import { screen, segment, switchEl, btn, range, toast, toastErr, confirmDlg } fr
 import { stagger } from '../ui/transition.js';
 import * as sfx from '../ui/sfx.js';
 import { readMix, writeMix } from '../ui/audiomix.js';
+import { THEMES, themeName, countryName, previewFromSearch } from '/sim/holiday_fx.js';
 
 export async function mount(root, ctx) {
   const sc = screen({ title: t('settings.title'), sub: t('settings.sub'), cls: 'scroll' });
@@ -48,6 +49,7 @@ export async function mount(root, ctx) {
     row(t('settings.flight_engine'), t('settings.flight_engine_sub'), mixRow('engine', t('settings.flight_engine'))),
     row(t('settings.engine'), t('settings.engine_sub'), switchEl(engineOn(), v => { localStorage.setItem('sm:engine', v ? '1' : '0'); sfx.configure({ engine: v }); }, t('settings.engine'))),
     row(t('settings.bgfx'), t('settings.bgfx_sub'), switchEl(bgOn(), v => { localStorage.setItem('sm:bgfx', v ? '1' : '0'); dispatchEvent(new CustomEvent('sm:bgfx')); }, t('settings.bgfx'))),
+    ...holidayRows(),
     row(t('settings.analog'), t('settings.analog_sub'), switchEl(S.analog_fpv !== false, v => save({ analog_fpv: v }), t('settings.analog'))),
     // §25 gizlilik: TOP 10 PİLOT listesinde görünme (varsayılan görünür; sunucu users.settings.lb_hidden)
     (() => { const r = row(t('settings.lb_hidden'), t('settings.lb_hidden_sub'), switchEl(!!S.leaderboard_hidden, async v => {
@@ -62,6 +64,32 @@ export async function mount(root, ctx) {
     row(t('settings.version'), `SIMUMAV ${ctx.state.meta?.version || ''}`, btn(t('settings.logout'), logout, 'danger')),
   );
   stagger([...panel.children], 60);
+
+  // Bayram temaları (docs/bayram-temalari.md): aç/kapa (varsayılan açık) + ülke (Otomatik / liste) + geliştirici önizlemesi (dev oturumu ya da ?bayram=)
+  function holidayRows() {
+    const L = lang();
+    const hs = globalThis.__smHoliday?.() || {};
+    const putH = async patch => { Object.assign(S, patch); try { await api.put('/api/settings', patch); toast(t('common.saved'), 'ok'); } catch (e) { toastErr(e); } dispatchEvent(new CustomEvent('sm:holiday')); };
+    const cur = hs.picked?.primary, nx = hs.info?.next;
+    const status = [cur && !cur.preview ? t('settings.holiday_today', { name: cur.name || themeName(cur.theme, L) }) : null,
+      nx ? t('settings.holiday_next', { name: nx.name || themeName(nx.theme, L), d: nx.in_days }) : null].filter(Boolean).join(' · ');
+    const auto = hs.detected?.source && hs.detected.source !== 'setting' ? hs.detected.country : (hs.me?.located || null);
+    const codes = (hs.me?.countries || []).map(c => [c, countryName(c, L)]).sort((a, b) => a[1].localeCompare(b[1], L));
+    const sel = h('select', { class: 'input', 'aria-label': t('settings.holiday_country'), dataset: { set: 'holiday_country' } },
+      h('option', { value: '' }, auto ? t('settings.holiday_auto', { c: countryName(auto, L) }) : t('settings.holiday_auto', { c: '—' })),
+      codes.map(([c, n]) => h('option', { value: c, selected: c === (S.holiday_country || '') }, n)));
+    sel.addEventListener('change', () => putH({ holiday_country: sel.value }));
+    const on = row(t('settings.holiday'), [t('settings.holiday_sub'), status].filter(Boolean).join(' — '), switchEl(S.holiday_fx !== false, v => putH({ holiday_fx: v }), t('settings.holiday')));
+    on.dataset.set = 'holiday_fx';
+    const rows = [on, row(t('settings.holiday_country'), t('settings.holiday_country_sub'), sel)];
+    if (ctx.state.meta?.dev_login || previewFromSearch()) {
+      const pv = h('select', { class: 'input', 'aria-label': t('settings.holiday_preview'), dataset: { set: 'holiday_preview' } },
+        h('option', { value: '' }, t('settings.holiday_preview_none')), THEMES.map(code => h('option', { value: code }, themeName(code, L))));
+      pv.addEventListener('change', () => dispatchEvent(new CustomEvent('sm:holiday', { detail: { preview: pv.value ? { themes: [pv.value], country: S.holiday_country || auto || null } : null } })));
+      rows.push(row(t('settings.holiday_preview'), t('settings.holiday_preview_sub'), pv));
+    }
+    return rows;
+  }
 
   async function logout() {
     if (!await confirmDlg(t('settings.logout_q'), { danger: true })) return;

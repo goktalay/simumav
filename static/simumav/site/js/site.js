@@ -5,6 +5,7 @@ import { initAuth } from './auth.js';
 import { LANGS, RTL, detectLang } from './lang.js';
 import { initAnalytics } from './analytics.js';
 import { THEME_KEY, resolveTheme, nextTheme, sectionFromHash, specLine, FLEET } from './fleet.js';
+import { mountHolidayFx } from '/sim/holiday_fx.js';   // bayram temaları (oyunla ortak modül; ülke: saat dilimi → tarayıcı dili; önizleme ?bayram=)
 
 const LANG_KEY = 'simumav.lang';
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -196,6 +197,17 @@ function initEo() {
   }));
 }
 
+// Bayram teması: sayfa geneli hafif katman (nav'ın altında) + ilk açılışta yerel dilde kutlama şeridi (günde bir kez). Oturum yok → ülke saat diliminden.
+let holiday = null, holidayTok = 0;
+async function initHoliday(first = true) {
+  holiday?.destroy(); holiday = null;
+  // büyük figürler (koyunlar, ağaç, fenerler, bayrak…) yalnız hero'da: aşağı kaydırınca söner; parçacıklar sayfa genelinde hafif sürer
+  const figAlpha = () => Math.max(0, 1 - scrollY / (innerHeight * 0.75));
+  const my = ++holidayTok;
+  try { const hx = await mountHolidayFx({ lang, zIndex: 40, bannerTop: 76, bannerZ: 60, banner: first, figAlpha }); if (my !== holidayTok) hx?.destroy(); else holiday = hx; } catch (e) { console.warn('bayram teması', e); }
+}
+document.addEventListener('simumav:lang', () => { if (holiday) initHoliday(false); });
+
 async function main() {
   // İlk açılış: ?lang > kayıtlı seçim > tarayıcı dilleri > en. Yalnız tarayıcıdan gelen dil KAYDEDİLMEZ (kullanıcı tarayıcı dilini değiştirirse site de değişir);
   // ?lang (reklam bağlantısı) ve seçiciden seçim kaydedilir.
@@ -209,6 +221,7 @@ async function main() {
   initReveal(); initScenes(); initParallax(); initSections(); initEo(); initHangarLazy(); initTop10Lazy();
   const auth = initAuth({ t, onEvent: (name, params) => analytics?.track(name, params) });
   initHero();
+  initHoliday();
   analytics = await initAnalytics({ t, i18nAttr: true, privacyHref: `${base}legal/gizlilik.html` });
   window.__smAnalytics = analytics;   // Playwright doğrulaması
   return auth;
