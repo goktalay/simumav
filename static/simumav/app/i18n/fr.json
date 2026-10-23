@@ -639,7 +639,7 @@
   "launcher.tube_note": "En mission, le râtelier de 10 sert de réserve ; chaque « intercepteur suivant » est rechargé dans le tube.",
   "launcher.hand_note": "En vol, la fenêtre « Viseur » montre la caméra dans l'axe et les cibles ; visez à la souris, I/J/K/L ou flèches ; « Lancer » envoie l'intercepteur dans l'axe.",
   "rcfeel.btn": "Sensibilité",
-  "rcfeel.btn_title": "Sensibilité des commandes : taux, expo et zone morte par axe (clavier et manches virtuels)",
+  "rcfeel.btn_title": "Mode de manches (Mode 1–4) et sensibilité : taux, expo et zone morte par axe (clavier et manches virtuels)",
   "rcfeel.title": "Sensibilité des commandes",
   "rcfeel.close": "Fermer",
   "rcfeel.p_soft": "Précis",
@@ -1067,7 +1067,7 @@
   "pad.buttons": "Boutons",
   "pad.reset": "Rétablir les valeurs par défaut",
   "pad.close": "Fermer",
-  "pad.hint": "Mode 2 : manche gauche gaz / lacet, manche droit tangage / roulis. Tant que les manches ne sont pas au neutre, la manette est prioritaire ; un manche virtuel touché l’emporte de son côté.",
+  "pad.hint": "Une manette standard suit le mode de manches choisi ; sur une radiocommande le mode est matériel (assignez les axes avec Détecter). Tant que les manches ne sont pas au neutre, la manette est prioritaire ; un manche virtuel touché l'emporte de son côté.",
   "mob.menu": "Menu",
   "mob.close": "Fermer le menu",
   "eng.lock": "VERROU",
@@ -1617,5 +1617,12 @@
   "top10.part_intercept": "Interception",
   "top10.part_fpv": "Parcours FPV",
   "common.error_generic": "Une erreur est survenue",
-  "common.reload": "Recharger"
+  "common.reload": "Recharger",
+  "stickmode.title": "Mode de manches",
+  "stickmode.hint": "Les manches virtuels, le clavier (WASD gauche, flèches droite) et la manette suivent ce mode. Sur une radiocommande le mode est matériel ; assignez les axes dans le panneau manette.",
+  "stickmode.m1": "Gauche : lacet / tangage · Droite : roulis / gaz",
+  "stickmode.m2": "Gauche : lacet / gaz · Droite : roulis / tangage",
+  "stickmode.m3": "Gauche : roulis / tangage · Droite : lacet / gaz",
+  "stickmode.m4": "Gauche : roulis / gaz · Droite : lacet / tangage",
+  "stickmode.changed": "Mode de manches : Mode {m}"
 }

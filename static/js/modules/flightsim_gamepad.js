@@ -20,6 +20,8 @@
 //   onAction(name), onChange() }) → { el, state(), connected, info, openPanel(), closePanel(), dispose() }
 //   (state(): {active, axes:{thr,yaw,pitch,roll} (eğrili), raw (yalnız ölü bölge + ters), thrAbs, profile} ya da null)
 
+import { STICK_MODES, createStickModePicker, loadStickMode, modePadAxes, onStickMode } from './flightsim_stickmode.js';   // §27.1.1 kumanda modu (Mode 1–4)
+
 export const PAD_AXES = ['thr', 'yaw', 'pitch', 'roll'];
 export const PAD_ACTIONS = ['arm', 'disarm', 'mode_next', 'mode_prev', 'ch5_up', 'ch5_down', 'lock'];   // lock: §40 hedef kilidi / angajman (Boşluk ile aynı)
 export const PAD_PREF = 'fs.pad.cfg';
@@ -120,6 +122,14 @@ export function padButtonEdges(prev, gp) {
 export const padActionsFor = (cfg, down) => PAD_ACTIONS.filter(k => cfg.buttons[k] >= 0 && down.includes(cfg.buttons[k]));
 /** Eksenlerin hepsi nötr mü (gaz uçakta / RC vericide tutmalı olabilir → aktiflik ayrıca son hareket zamanıyla). */
 export const padIsNeutral = axes => PAD_AXES.every(k => !axes[k]);
+const sameAxes = (a, b) => PAD_AXES.every(k => a?.[k]?.i === b?.[k]?.i && !!a?.[k]?.inv === !!b?.[k]?.inv);
+/** §27.1.1: standart profilin eksenleri herhangi bir modun varsayılanıysa (elle atanmamış) seçili modun varsayılanına çek; elle atama korunur. Dönüş: değişti mi. */
+export function applyStickModeToPad(all, mode) {
+  const cur = all?.standard?.axes, want = modePadAxes(mode);
+  if (!cur || sameAxes(cur, want) || !STICK_MODES.some(m => sameAxes(cur, modePadAxes(m)))) return false;
+  all.standard.axes = want;
+  return true;
+}
 
 export const PAD_TEXTS = [
   ['pad.btn', 'Kumanda'], ['pad.btn_t', 'Fiziksel kumanda (gamepad / USB RC verici): eksen ve düğme ataması, ölü bölge, ters çevirme'],
@@ -129,7 +139,7 @@ export const PAD_TEXTS = [
   ['pad.act_arm', 'ARM'], ['pad.act_disarm', 'DISARM'], ['pad.act_mode_next', 'Sonraki mod'], ['pad.act_mode_prev', 'Önceki mod'],
   ['pad.act_ch5_up', 'Mod kanalı (ch5) +'], ['pad.act_ch5_down', 'Mod kanalı (ch5) −'], ['pad.act_lock', 'Hedef kilidi (angajman)'], ['pad.none', '—'], ['pad.axis_n', 'Eksen {n}'], ['pad.button_n', 'Düğme {n}'],
   ['pad.axes', 'Eksenler'], ['pad.buttons', 'Düğmeler'], ['pad.reset', 'Varsayılana dön'], ['pad.close', 'Kapat'],
-  ['pad.hint', 'Mode 2: sol çubuk gaz / sapma, sağ çubuk yunuslama / yatış. Kollar nötr dışındayken kumanda önceliklidir; dokunulan sanal çubuk o tarafta kazanır.'],
+  ['pad.hint', 'Standart gamepad seçili kumanda modunu izler; RC vericide mod donanımdadır (eksenleri Algıla ile atayın). Kollar nötr dışındayken kumanda önceliklidir; dokunulan sanal çubuk o tarafta kazanır.'],
   // hassasiyet (yalnız fiziksel kumanda girdisi; ⚙ Hassasiyet = ortak çıkış eğrisi) + canlı gösterge / algılama
   ['pad.sens', 'Kumanda girdisi hassasiyeti'], ['pad.scale', 'Genel ölçek'], ['pad.scale_t', 'Tutum eksenleri (gaz hariç)'],
   ['pad.rate', 'Eksen ölçeği'], ['pad.expo', 'Expo'], ['pad.axis_steer', 'Direksiyon'],
@@ -244,7 +254,9 @@ export function createGamepadCtl({ tr = null, keyed = false, vehicle = 'copter',
   ensureCss();
   const T = makePadT(tr, keyed);
   const rover = vehicle === 'rover', plane = vehicle === 'plane';
-  let all = loadPadCfg(storage), idx = null, info = null, prevBtns = new Set(), lastAxes = null, lastMoveAt = 0, cur = null, timer = null, disposed = false;
+  let all = loadPadCfg(storage);
+  if (!rover && applyStickModeToPad(all, loadStickMode(storage))) savePadCfg(storage, all);   // §27.1.1 kayıtlı mod (Mode 2 dışı) standart eşlemeye
+  let idx = null, info = null, prevBtns = new Set(), lastAxes = null, lastMoveAt = 0, cur = null, timer = null, disposed = false;
   let raf = 0, learn = null, sensAx = 'thr';
   const muted = new Set();   // atama sırasında / hemen sonrasında basılı tutulan düğmeler: bırakılana dek eylem üretmez
   const rafFn = win?.requestAnimationFrame ? f => win.requestAnimationFrame(f) : f => setTimeout(f, 16);
@@ -313,6 +325,8 @@ export function createGamepadCtl({ tr = null, keyed = false, vehicle = 'copter',
     return { k, sel, row, chip, lb };
   });
   const strip = el('div', { class: 'fs-pad-strip', 'aria-live': 'off' });
+  const picker = rover ? null : createStickModePicker({ tr, keyed, storage });
+  const offMode = rover ? () => {} : onStickMode(m => { if (applyStickModeToPad(all, m)) { persist(); if (!pop.hidden) fillForm(); } });
   let stripChips = [];
   const pop = el('div', { class: 'fs-pad-pop', role: 'dialog', 'aria-label': T('pad.title'), hidden: true },
     el('h6', null, ico.cloneNode(true), el('span', null, T('pad.title')), el('button', { class: 'fs-pad-x', type: 'button', title: T('pad.close'), 'aria-label': T('pad.close'), onclick: e => { e.stopPropagation(); setOpen(false); } }, '×')),
@@ -326,10 +340,11 @@ export function createGamepadCtl({ tr = null, keyed = false, vehicle = 'copter',
       cv),
     thrNote,
     el('small', null, T('pad.sens_note')),
+    picker ? picker.el : null,   // §27.1.1 kumanda modu (sanal çubuk, klavye ve gamepad ortak)
     el('div', { class: 'fs-pad-sec' }, T('pad.axes')), axRows.map(r => r.row),
     el('div', { class: 'fs-pad-sec' }, T('pad.buttons')), strip, btRows.map(r => r.row),
     el('small', null, T('pad.hint')),
-    el('button', { class: 'fs-pad-reset', type: 'button', onclick: e => { e.stopPropagation(); endLearn(); all[prof()] = clone(DEFAULT_PAD[prof()]); persist(); fillForm(); } }, T('pad.reset')));
+    el('button', { class: 'fs-pad-reset', type: 'button', onclick: e => { e.stopPropagation(); endLearn(); all[prof()] = clone(DEFAULT_PAD[prof()]); if (prof() === 'standard' && !rover) all.standard.axes = modePadAxes(loadStickMode(storage)); persist(); fillForm(); } }, T('pad.reset')));
   const root = el('div', { class: 'fs-pad', hidden: true }, btn, pop);
   pop.addEventListener('click', e => e.stopPropagation());
   function persist() { savePadCfg(storage, all); onChange(); }
@@ -470,7 +485,7 @@ export function createGamepadCtl({ tr = null, keyed = false, vehicle = 'copter',
     openPanel: () => setOpen(true), closePanel: () => setOpen(false), poll,
     refreshCurve: () => { if (!pop.hidden) drawCurve(); },   // ⚙ Hassasiyet değişince kesikli birleşik eğri
     dispose() {
-      disposed = true; if (timer) clearInterval(timer); if (raf) { cafFn(raf); raf = 0; }
+      disposed = true; if (timer) clearInterval(timer); if (raf) { cafFn(raf); raf = 0; } offMode(); picker?.dispose();
       win?.removeEventListener?.('gamepadconnected', onConn); win?.removeEventListener?.('gamepaddisconnected', onDisc);
       if (typeof document !== 'undefined') document.removeEventListener('pointerdown', onDoc, true);
       win?.removeEventListener?.('keydown', onEsc, true); pop.remove(); root.remove();

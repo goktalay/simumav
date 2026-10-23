@@ -639,7 +639,7 @@
   "launcher.tube_note": "En la misión el bastidor de 10 es el almacén de reserva; cada «siguiente interceptor» se recarga en el tubo.",
   "launcher.hand_note": "En vuelo la ventana «Visor» muestra la cámara hacia donde apunta y los blancos; apunte con el ratón, I/J/K/L o las flechas; «Lanzar» envía el interceptor en esa dirección.",
   "rcfeel.btn": "Sensibilidad",
-  "rcfeel.btn_title": "Sensibilidad del mando: tasa, expo y zona muerta por eje (teclado y sticks virtuales)",
+  "rcfeel.btn_title": "Modo de sticks (Mode 1–4) y sensibilidad: tasa, expo y zona muerta por eje (teclado y sticks virtuales)",
   "rcfeel.title": "Sensibilidad del mando",
   "rcfeel.close": "Cerrar",
   "rcfeel.p_soft": "Preciso",
@@ -1067,7 +1067,7 @@
   "pad.buttons": "Botones",
   "pad.reset": "Restablecer valores predeterminados",
   "pad.close": "Cerrar",
-  "pad.hint": "Modo 2: palanca izquierda acelerador / guiñada, palanca derecha cabeceo / alabeo. Mientras las palancas no estén en neutro, el mando tiene prioridad; la palanca virtual tocada gana en su lado.",
+  "pad.hint": "Un gamepad estándar sigue el modo de sticks seleccionado; en una emisora RC el modo está en el hardware (asigna los ejes con Detectar). Mientras los sticks no estén en neutro, el mando tiene prioridad; un stick virtual tocado gana en su lado.",
   "mob.menu": "Menú",
   "mob.close": "Cerrar menú",
   "eng.lock": "BLOQUEO",
@@ -1617,5 +1617,12 @@
   "top10.part_intercept": "Intercepción",
   "top10.part_fpv": "Circuito FPV",
   "common.error_generic": "Se produjo un error",
-  "common.reload": "Recargar"
+  "common.reload": "Recargar",
+  "stickmode.title": "Modo de sticks",
+  "stickmode.hint": "Los sticks virtuales, el teclado (WASD izquierda, flechas derecha) y el gamepad siguen este modo. En una emisora RC el modo está en el hardware; asigna los ejes en el panel del mando.",
+  "stickmode.m1": "Izq.: guiñada / cabeceo · Der.: alabeo / gas",
+  "stickmode.m2": "Izq.: guiñada / gas · Der.: alabeo / cabeceo",
+  "stickmode.m3": "Izq.: alabeo / cabeceo · Der.: guiñada / gas",
+  "stickmode.m4": "Izq.: alabeo / gas · Der.: guiñada / cabeceo",
+  "stickmode.changed": "Modo de sticks: Mode {m}"
 }

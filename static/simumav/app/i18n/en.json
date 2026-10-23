@@ -639,7 +639,7 @@
   "launcher.tube_note": "In the mission the 10-slot rack is the spare store; each \"next interceptor\" is reloaded into the tube.",
   "launcher.hand_note": "In flight the \"Scope\" window shows a camera where the device points and the targets; aim with the mouse, I/J/K/L or the arrow buttons; \"Launch\" sends the interceptor along the aim.",
   "rcfeel.btn": "Sensitivity",
-  "rcfeel.btn_title": "Control sensitivity: per-axis rate, expo and deadband (keyboard and virtual sticks)",
+  "rcfeel.btn_title": "Stick mode (Mode 1–4) and sensitivity: per-axis rate, expo and deadband (keyboard and virtual sticks)",
   "rcfeel.title": "Control sensitivity",
   "rcfeel.close": "Close",
   "rcfeel.p_soft": "Precise",
@@ -1067,7 +1067,7 @@
   "pad.buttons": "Buttons",
   "pad.reset": "Reset to defaults",
   "pad.close": "Close",
-  "pad.hint": "Mode 2: left stick throttle / yaw, right stick pitch / roll. While the sticks are off-centre the controller has priority; a touched virtual stick wins on its side.",
+  "pad.hint": "A standard gamepad follows the selected stick mode; on an RC transmitter the mode is in hardware (assign axes with Detect). While sticks are off-neutral the controller has priority; a touched virtual stick wins on its side.",
   "mob.menu": "Menu",
   "mob.close": "Close menu",
   "eng.lock": "LOCK",
@@ -1617,5 +1617,12 @@
   "top10.part_intercept": "Intercept",
   "top10.part_fpv": "FPV course",
   "common.error_generic": "Something went wrong",
-  "common.reload": "Reload"
+  "common.reload": "Reload",
+  "stickmode.title": "Stick mode",
+  "stickmode.hint": "Virtual sticks, keyboard (WASD left, arrows right) and gamepad follow this mode. On an RC transmitter the mode is in hardware; assign axes in the controller panel.",
+  "stickmode.m1": "Left: yaw / pitch · Right: roll / throttle",
+  "stickmode.m2": "Left: yaw / throttle · Right: roll / pitch",
+  "stickmode.m3": "Left: roll / pitch · Right: yaw / throttle",
+  "stickmode.m4": "Left: roll / throttle · Right: yaw / pitch",
+  "stickmode.changed": "Stick mode: Mode {m}"
 }

@@ -45,6 +45,7 @@ import { createGfxCtl, createGfxPicker } from './flightsim_gfx_ui.js';   // §43
 import { createEngageCtl } from './flightsim_engage.js';   // §40 hedefli uçuşta Boşluk ile kilit + angajman (HUD kilidi, süre, sonuç; araca güdüm YOK)
 import { createGpwsCtl, gpwsWizardField } from './flightsim_gpws_ui.js';   // §42 uçuş uyarı sistemi (GPWS / stall / bank angle / master caution; sesli + görsel)
 import { createServoTrigger } from './flightsim_servotrig.js';   // §34 servo tetik: kanal + PWM eşiği + gecikme + Dinle (mantık sunucuda); çarpınca otomatik Bitir → özet   // §29.6 alt bant: uçuş modu seçici (F) + DISARM/motor kes (X), tüm kamera kiplerinde
+import { keyHint, loadStickMode, makeStickT, onStickMode, stickLabels } from './flightsim_stickmode.js';   // §27.1.1 kumanda modu (Mode 1–4)
 import { createRcFeelPanel } from './flightsim_rcfeel.js';   // §27.1 sanal kumanda hassasiyeti (oran / expo / ölü bölge)
 import { createGaugeThemePicker, gaugeThemeLabel } from './flightsim_gtheme.js';   // §27.3 gösterge tasarımı (sihirbaz kartları; uçuşta createPowerGauges)
 import { createIntro, hepgoSound } from './flightsim_intro.js';   // §27.2 giriş sekansı: 100 m bakış + 3-2-1 geri sayım + bip
@@ -1393,12 +1394,18 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
   const ended = h('div', { class: 'fs-ended', hidden: true });
   // Sanal kumanda katmanı: sol çubuk gaz/yaw, sağ çubuk pitch/roll (Mode 2); klavye ipucu; Mission Planner joystick uyarısı
   // §31 kara aracı: sol çubuk dikey gaz / fren (yaylı, merkez = dur), sağ çubuk yatay direksiyon (yaylı); etiketler flightsim_rover ROVER_RC_TEXT
-  const stickL = h('div', { class: 'fs-stick', 'data-side': 'l', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? ROVER_RC_TEXT.left : 'Gaz / Yaw'));
-  const stickR = h('div', { class: 'fs-stick', 'data-side': 'r', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? ROVER_RC_TEXT.right : 'Pitch / Roll'));
+  const stickL = h('div', { class: 'fs-stick', 'data-side': 'l', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? ROVER_RC_TEXT.left : stickLabels(loadStickMode()).left));
+  const stickR = h('div', { class: 'fs-stick', 'data-side': 'r', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? ROVER_RC_TEXT.right : stickLabels(loadStickMode()).right));
   const rcWarn = h('div', { class: 'fs-rc-warn', hidden: true }, 'Mission Planner joystick de açıksa son gelen RC komutu geçerli olur');
-  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', null, rover ? ROVER_RC_TEXT.hint : 'W/S gaz · A/D yaw · ↑↓ pitch · ←→ roll · Q/E mod kanalı · Boşluk gaz orta'),
+  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', { class: 'fs-rc-keys' }, rover ? ROVER_RC_TEXT.hint : `${keyHint(loadStickMode())} · Q/E mod kanalı · Boşluk gaz orta`),
     session.targets?.items?.length && !replay ? h('span', { class: 'fs-rc-eng' }, ` · ${tr('Boşluk: hedef kutusu ekrandayken kilit / angajman')}`) : null, rcWarn);   // §40
   const sticks = h('div', { class: 'fs-sticks', hidden: true }, stickL, stickR, rcHint);
+  // §27.1.1 kumanda modu değişince (⚙ / kumanda paneli) çubuk etiketleri + klavye ipucu güncellenir; virtualRC her tikte modu okur
+  const offStickMode = rover ? () => {} : onStickMode(m => {
+    const lb = stickLabels(m); stickL.querySelector('small').textContent = lb.left; stickR.querySelector('small').textContent = lb.right;
+    rcHint.querySelector('.fs-rc-keys').textContent = `${keyHint(m)} · Q/E mod kanalı · Boşluk gaz orta`;
+    addEvent(makeStickT(tr)('stickmode.changed', { m }));
+  });
   // Kaynak atfı: gerçek arazi sağ altta metin; Google 3B'de ToS gereği Google logosu + canlı veri sağlayıcı metni (sol alt, MP kutusu üstü)
   const g3dMode = world.mode === 'google3d';
   const attribTxt = h('span', null, g3dMode ? 'Google' : ATTRIBUTION);
@@ -2009,7 +2016,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     }
     rc = virtualRC({ plane: isPlane(type), rover, stickL, stickR, send: ch => socket?.send({ t: 'rc', ch }), onChange: () => drawRcBars(last?.rc),
       throttle0: last?.armed ? last.throttle : null, shape: (k, v) => rcShape(k, v),   // §27.1 hassasiyet (⚙ panel; değişiklik anında)
-      pad: () => padCtl?.state() || null, lazyThr: auto && !last?.armed });   // §37 fiziksel kumanda + varsayılan açılışta gaz serbest   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000)
+      pad: () => padCtl?.state() || null, lazyThr: auto && !last?.armed, stickMode: () => loadStickMode() });   // §37 fiziksel kumanda + varsayılan açılışta gaz serbest   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000)
     sticks.hidden = false; stage.classList.add('rc-on'); rcBtn.classList.add('primary');
     rcWarn.hidden = !last?.gcs_connected;
     sim?.setKeyboardLock(true);
@@ -2037,7 +2044,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
     socket?.close();
     milHud?.dispose(); osd?.dispose(); engage?.dispose(); gpws?.dispose(); camPip?.dispose(); camCtl.dispose(); siteUi?.dispose(); defHud?.dispose(); launcherUi?.dispose();   // §26 + §27
     if (rec) { rec.abandon(); rec.dispose(); }   // §17: Bitir'siz çıkış → kayıt durur, parçalar akıtılır, sunucuda yarım kayıt (24 sa)
-    padCtl?.dispose(); mobMenu.dispose(); barFit.dispose(); gfxCtl.dispose(); audio.dispose(); ops?.dispose(); gauges.dispose(); rcFeel.dispose(); intro.dispose(); fltBar?.dispose(); srvTrig?.dispose(); matchUi?.dispose(); sfx.dispose(); clearTimeout(autoEndTimer);
+    padCtl?.dispose(); offStickMode(); mobMenu.dispose(); barFit.dispose(); gfxCtl.dispose(); audio.dispose(); ops?.dispose(); gauges.dispose(); rcFeel.dispose(); intro.dispose(); fltBar?.dispose(); srvTrig?.dispose(); matchUi?.dispose(); sfx.dispose(); clearTimeout(autoEndTimer);
     sim?.dispose();
     if (window.__fsSim === sim) delete window.__fsSim;
     if (player && window.__fsPlayer === player) delete window.__fsPlayer;
@@ -2064,7 +2071,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
 const RC_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
 // §37 pad(): fiziksel kumanda durumu {active, axes:{thr,yaw,pitch,roll}} (flightsim_gamepad.js) — aktifken çubuk eksenlerini yazar (dokunulan sanal çubuk
 // o tarafta önceliklidir). lazyThr: varsayılan açık gelişte (§37) kopterde gaz kanalı (ch3) ilk gaz girdisine dek 0 = dokunma (ARM ön denetimi "gaz yüksek" olmasın).
-function virtualRC({ plane, rover = false, stickL, stickR, send, onChange, throttle0 = null, shape = null, pad = null, lazyThr = false }) {
+function virtualRC({ plane, rover = false, stickL, stickR, send, onChange, throttle0 = null, shape = null, pad = null, lazyThr = false, stickMode = () => 2 }) {   // §27.1.1 stickMode(): Mode 1–4 (flightsim_stickmode.js)
   if (rover) plane = false;   // shape(eksen, v): §27.1 hassasiyet eğrisi (flightsim_rcfeel.js) — çıkışa uygulanır
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   // thr: −1 = 1000 (uçak boşta), 0 = 1500 (kopter askı). Uçakta kumanda uçuş sırasında açılırsa (throttle0: telemetri gazı %) çubuk o gazda başlar:
@@ -2083,6 +2090,11 @@ function virtualRC({ plane, rover = false, stickL, stickR, send, onChange, throt
     : [pwm(S('roll', ax.roll)), pwm(-S('pitch', ax.pitch)), thrUsed ? pwm(S('thr', ax.thr)) : 0, pwm(S('yaw', ax.yaw)), ch5, 0, 0, 0]);   // 6–8: 0 = o kanala dokunma
 
   // --- klavye ---
+  // §27.1.1 kumanda modu: WASD = sol çubuk, oklar = sağ çubuk; hangi eksen hangi çubukta → stickMap
+  const MAPS = { 1: ['yaw', 'pitch', 'roll', 'thr'], 2: ['yaw', 'thr', 'roll', 'pitch'], 3: ['roll', 'pitch', 'yaw', 'thr'], 4: ['roll', 'thr', 'yaw', 'pitch'] };
+  const SM = () => { const [lx, ly, rx, ry] = MAPS[stickMode?.()] || MAPS[2]; return { lx, ly, rx, ry }; };
+  const sideOf = (M, k) => (k === M.lx || k === M.ly ? 'l' : 'r');
+  const thrKey = k => { const M = SM(); return (M.ly === 'thr' && (k === 'w' || k === 's')) || (M.ry === 'thr' && (k === 'arrowup' || k === 'arrowdown')); };
   const onKeyDown = e => {
     if (disposed || editable(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
     const k = e.key.toLowerCase();
@@ -2090,7 +2102,7 @@ function virtualRC({ plane, rover = false, stickL, stickR, send, onChange, throt
     e.preventDefault();
     if (e.repeat) return;
     if (k === ' ') { ax.thr = 0; thrUsed = true; if (rover) ax.roll = 0; return; }   // §31 kara aracı: Boşluk = dur (gaz + direksiyon orta)
-    if (k === 'w' || k === 's') thrUsed = true;
+    if (rover ? (k === 'w' || k === 's') : thrKey(k)) thrUsed = true;
     if (k === 'q' || k === 'e') { ch5 = clamp(ch5 + (k === 'e' ? 500 : -500), 1000, 2000); return; }
     keys.add(k);
   };
@@ -2112,7 +2124,9 @@ function virtualRC({ plane, rover = false, stickL, stickR, send, onChange, throt
       if (!d || e.pointerId !== d.id) return;
       const x = clamp((e.clientX - d.cx) / d.r, -1, 1), y = clamp(-(e.clientY - d.cy) / d.r, -1, 1);
       if (rover) { if (side === 'l') ax.thr = y; else ax.roll = x; return; }   // §31: sol dikey gaz, sağ yatay direksiyon
-      if (side === 'l') { ax.yaw = x; ax.thr = y; thrUsed = true; } else { ax.roll = x; ax.pitch = y; }
+      const M = SM();
+      if (side === 'l') { ax[M.lx] = x; ax[M.ly] = y; } else { ax[M.rx] = x; ax[M.ry] = y; }
+      if (sideOf(M, 'thr') === side) thrUsed = true;
     };
     const up = e => { if (drag[side] && e.pointerId === drag[side].id) { drag[side] = null; el.classList.remove('on'); } };
     el.addEventListener('pointerdown', down); el.addEventListener('pointermove', move);
@@ -2123,7 +2137,8 @@ function virtualRC({ plane, rover = false, stickL, stickR, send, onChange, throt
   const draw = () => {
     const place = (knob, x, y) => { knob.style.transform = `translate(${(x * 40).toFixed(1)}px, ${(-y * 40).toFixed(1)}px)`; };
     if (rover) { place(L.knob, 0, ax.thr); place(R.knob, ax.roll, 0); return; }
-    place(L.knob, ax.yaw, ax.thr); place(R.knob, ax.roll, ax.pitch);
+    const M = SM();
+    place(L.knob, ax[M.lx], ax[M.ly]); place(R.knob, ax[M.rx], ax[M.ry]);
   };
 
   // --- 20 Hz: klavye entegrasyonu + yay, çizim, gönderim ---
@@ -2132,27 +2147,29 @@ function virtualRC({ plane, rover = false, stickL, stickR, send, onChange, throt
     const kax = (neg, pos) => (keys.has(pos) ? 1 : 0) - (keys.has(neg) ? 1 : 0);
     const decay = Math.exp(-SPRING * dt);
     const spring = (key, dir) => { if (dir) ax[key] = clamp(ax[key] + dir * KEY_RATE * dt, -1, 1); else { ax[key] *= decay; if (Math.abs(ax[key]) < 0.004) ax[key] = 0; } };
+    const M = SM();
     if (rover) {   // §31: iki eksen de yaylı; harf ve ok tuşları aynı ekseni sürer
       if (!drag.r) spring('roll', Math.max(-1, Math.min(1, kax('a', 'd') + kax('arrowleft', 'arrowright'))));
       if (!drag.l) spring('thr', Math.max(-1, Math.min(1, kax('s', 'w') + kax('arrowdown', 'arrowup'))));
-    } else {
-    if (!drag.r) { spring('roll', kax('arrowleft', 'arrowright')); spring('pitch', kax('arrowdown', 'arrowup')); }
-    if (!drag.l) {
-      spring('yaw', kax('a', 'd'));
-      const t = kax('s', 'w');
-      if (plane) { if (t) ax.thr = clamp(ax.thr + t * THR_RATE * dt, -1, 1); }   // tutmalı gaz
-      else spring('thr', t);                                                     // askıya yaylı
-    }
+    } else {   // §27.1.1: WASD sol çubuğun, oklar sağ çubuğun eksenlerini sürer (mod hangi eksen olduğunu belirler)
+      const kv = { [M.lx]: kax('a', 'd'), [M.ly]: kax('s', 'w'), [M.rx]: kax('arrowleft', 'arrowright'), [M.ry]: kax('arrowdown', 'arrowup') };
+      for (const k of ['roll', 'pitch', 'yaw']) if (!drag[sideOf(M, k)]) spring(k, kv[k]);
+      if (!drag[sideOf(M, 'thr')]) {
+        const t = kv.thr;
+        if (plane) { if (t) ax.thr = clamp(ax.thr + t * THR_RATE * dt, -1, 1); }   // tutmalı gaz
+        else spring('thr', t);                                                     // askıya yaylı
+      }
     }
     const ps = pad?.();   // §37 fiziksel kumanda: aktifken eksenleri yazar (dokunulan sanal çubuk o tarafta öncelikli)
     if (ps?.active) {
       const a = ps.axes, set = (k, v) => { if (v != null) ax[k] = clamp(v, -1, 1); };
-      if (!drag.l) {
+      if (!drag[rover ? 'l' : sideOf(M, 'thr')]) {
         if (plane && ps.profile === 'standard') { if (a.thr) ax.thr = clamp(ax.thr + a.thr * THR_RATE * dt, -1, 1); }   // yaylı gamepad kolu: uçakta tutmalı gaz hızla
         else set('thr', plane && ps.thrAbs != null ? ps.thrAbs : a.thr);   // uçakta RC verici: mutlak tek yönlü eğri (rölanti hep −1)
-        if (!rover) set('yaw', a.yaw); if (a.thr) thrUsed = true;
+        if (a.thr) thrUsed = true;
       }
-      if (!drag.r) { set('roll', a.roll); if (!rover) set('pitch', a.pitch); }
+      if (rover) { if (!drag.r) set('roll', a.roll); }
+      else for (const k of ['yaw', 'roll', 'pitch']) if (!drag[sideOf(M, k)]) set(k, a[k]);
     }
     draw();
     const ch = channels();

@@ -8,6 +8,7 @@
 // DOM kısmı: createRcFeelPanel (kendi CSS'ini bir kez ekler). Metinler RCFEEL_TEXTS [anahtar, Türkçe] — HEPGO'da Türkçe metin sözlük anahtarı,
 // SIMUMAV'da `rcfeel.*` (keyed=true; i18n 7 dil; anahtar yoksa Türkçeye düşer).
 // §31 kara aracı (rover: true): yalnız iki eksen — Direksiyon (roll eğrisi; sağ çubuk yatay) ve Gaz (çift yönlü, merkez = dur → eğri uygulanır).
+import { createStickModePicker } from './flightsim_stickmode.js';   // §27.1.1 kumanda modu (Mode 1–4)
 export const ROVER_FEEL_AXES = [['roll', 'rcfeel.steer'], ['thr', 'rcfeel.thr']];
 
 export const RC_AXES = ['roll', 'pitch', 'yaw', 'thr'];
@@ -76,7 +77,7 @@ export function saveFeel(feel, storage = null) {
 
 // ---------------------------------------------------------------- metinler ----------------------------------------------------------------
 export const RCFEEL_TEXTS = [
-  ['rcfeel.btn', 'Hassasiyet'], ['rcfeel.btn_title', 'Kumanda hassasiyeti: eksen başına oran, expo ve ölü bölge (klavye ve sanal çubuk)'],
+  ['rcfeel.btn', 'Hassasiyet'], ['rcfeel.btn_title', 'Kumanda modu (Mode 1–4) ve hassasiyet: eksen başına oran, expo ve ölü bölge (klavye ve sanal çubuk)'],
   ['rcfeel.title', 'Kumanda hassasiyeti'], ['rcfeel.close', 'Kapat'],
   ['rcfeel.p_soft', 'Hassas'], ['rcfeel.p_normal', 'Normal'], ['rcfeel.p_sport', 'Çevik'], ['rcfeel.p_custom', 'Özel'],
   ['rcfeel.roll', 'Roll'], ['rcfeel.pitch', 'Pitch'], ['rcfeel.yaw', 'Yaw'], ['rcfeel.thr', 'Gaz'], ['rcfeel.steer', 'Direksiyon'],
@@ -179,8 +180,10 @@ export function createRcFeelPanel(stage, { tr = null, keyed = false, plane = fal
   const svgBox = el('div', { html: '' });
   const linkInp = el('input', { type: 'checkbox', checked: true, onchange: () => { link = linkInp.checked; if (link) { feel.pitch = { ...feel.roll }; commit(); } } });
   const planeNote = el('div', { class: 'fs-rcf-note', hidden: true }, T('rcfeel.plane_thr'));
+  const picker = rover ? null : createStickModePicker({ tr, keyed, storage });   // §27.1.1: sanal çubuk + klavye + gamepad ortak mod
   const pop = el('div', { class: 'fs-rcf-pop', hidden: true, role: 'dialog', 'aria-label': T('rcfeel.title') },
     el('div', { class: 'fs-rcf-h' }, el('b', null, T('rcfeel.title')), el('button', { class: 'fs-rcf-x', type: 'button', title: T('rcfeel.close'), onclick: () => open(false) }, '×')),
+    picker ? picker.el : null,
     el('div', { class: 'fs-rcf-seg' }, presetBtns, customTag),
     el('div', { class: 'fs-rcf-seg ax' }, axisBtns),
     el('div', { class: 'fs-rcf-body' }, el('div', { class: 'fs-rcf-sl' }, mkRow('rate'), mkRow('expo'), mkRow('dead')), svgBox),
@@ -220,6 +223,6 @@ export function createRcFeelPanel(stage, { tr = null, keyed = false, plane = fal
     el: btn, pop, open,
     get feel() { return normFeel(feel); },
     shaper: () => makeShaper(feel, { plane }),
-    dispose() { if (disposed) return; disposed = true; document.removeEventListener('pointerdown', onDoc, true); btn.remove(); pop.remove(); },
+    dispose() { if (disposed) return; disposed = true; picker?.dispose(); document.removeEventListener('pointerdown', onDoc, true); btn.remove(); pop.remove(); },
   };
 }

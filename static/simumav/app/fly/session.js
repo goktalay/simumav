@@ -72,8 +72,8 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js', 'flightsim_rover.js', 'flightsim_windui.js', 'flightsim_servotrig.js', 'flightsim_gamepad.js', 'flightsim_mobile.js', 'flightsim_engage.js', 'flightsim_gpws_ui.js', 'flightsim_gfx_ui.js', 'flightsim_sfx.js', 'flightsim_pilot.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx, MPilot]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx, MPilot })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js', 'flightsim_rover.js', 'flightsim_windui.js', 'flightsim_servotrig.js', 'flightsim_gamepad.js', 'flightsim_mobile.js', 'flightsim_engage.js', 'flightsim_gpws_ui.js', 'flightsim_gfx_ui.js', 'flightsim_sfx.js', 'flightsim_pilot.js', 'flightsim_stickmode.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx, MPilot, MStick]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx, MPilot, MStick })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
 // HEPGO §27: INTERCEPTOR + fırlatıcı (pod4 | pod8 | tube | handheld) → {method, loaded? | aim_*?}; fırlatıcısız INTERCEPTOR → null (pad, eski davranış)
@@ -202,7 +202,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx, MPilot } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx, MPilot, MStick } = await loadSim();
   MGpwsRef = MGpws;
   MSiteRef = MSite;
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
@@ -344,11 +344,16 @@ export async function openSession(view, start, picked, ctx = {}) {
     h('div', { class: 'pill-group fs-rc-grp' }, rcBtn, rcFeel.el, padCtl.el),   // HEPGO §27.1 ⚙ hassasiyet · §37 fiziksel kumanda
     h('div', { class: 'pill-group' }, h('button', { class: 'btn sm fs-reset-btn', type: 'button', title: 'SITL aynı ayarlarla yeniden başlar; çarpışma kaldırılır', onclick: () => reset() }, '↺ Sıfırla'), endBtn));
   // Sanal kumanda katmanı (HEPGO birebir): sol çubuk gaz/yaw, sağ çubuk pitch/roll (Mode 2); klavye ipucu; Mission Planner joystick uyarısı
-  const stickL = h('div', { class: 'fs-stick', 'data-side': 'l', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? LT('rover.rc_left', RVT.left) : 'Gaz / Yaw'));
-  const stickR = h('div', { class: 'fs-stick', 'data-side': 'r', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? LT('rover.rc_right', RVT.right) : 'Pitch / Roll'));
+  const stickL = h('div', { class: 'fs-stick', 'data-side': 'l', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? LT('rover.rc_left', RVT.left) : MStick.stickLabels(MStick.loadStickMode()).left));
+  const stickR = h('div', { class: 'fs-stick', 'data-side': 'r', 'data-rover': rover ? '1' : null }, h('i', { class: 'fs-stick-knob' }), h('small', null, rover ? LT('rover.rc_right', RVT.right) : MStick.stickLabels(MStick.loadStickMode()).right));
   const rcWarn = h('div', { class: 'fs-rc-warn', hidden: true }, 'Mission Planner joystick de açıksa son gelen RC komutu geçerli olur');
-  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', null, rover ? rvHint : 'W/S gaz · A/D yaw · ↑↓ pitch · ←→ roll · Q/E mod kanalı · Boşluk gaz orta'), engHint, rcWarn);
+  const rcHint = h('div', { class: 'fs-rc-hint' }, h('span', { class: 'fs-rc-keys' }, rover ? rvHint : `${MStick.keyHint(MStick.loadStickMode())} · Q/E mod kanalı · Boşluk gaz orta`), engHint, rcWarn);
   const sticks = h('div', { class: 'fs-sticks', hidden: true }, stickL, stickR, rcHint);
+  // HEPGO §27.1.1 kumanda modu değişince çubuk etiketleri + klavye ipucu (virtualRC her tikte modu okur)
+  const offStickMode = rover ? () => {} : MStick.onStickMode(m => {
+    const lb = MStick.stickLabels(m); stickL.querySelector('small').textContent = lb.left; stickR.querySelector('small').textContent = lb.right;
+    rcHint.querySelector('.fs-rc-keys').textContent = `${MStick.keyHint(m)} · Q/E mod kanalı · Boşluk gaz orta`;
+  });
   const netLbl = h('div', { class: 'fs-net mono', title: tr('Telemetri alım hızı, jitter (alım aralığı − kaynak aralığı) ve uyarlanır gecikme tamponu; DR = ölü hesap') }, '');
   const netsim = ctx.netsim !== undefined ? parseNetsim(ctx.netsim) : netsimFromLocation();   // §5 teşhis: ?netsim=jitter30,loss5,delay40
   let rc = null;   // sanal kumanda (virtualRC) ya da null
@@ -765,14 +770,14 @@ export async function openSession(view, start, picked, ctx = {}) {
     rc = virtualRC({ plane: type === 'sabit_kanat' || type === 'vtol', stickL, stickR, send: ch => { socket?.send({ t: 'rc', ch }); sim?.setPilotSticks?.(MPilot.sticksFromRc(ch, 0, true)); },   // §28 pilotun başparmakları
       rover: rover ? { channels: MRover?.roverRcChannels } : null,   // §15: sol dikey gaz (1500 = dur), sağ yatay direksiyon
       throttle0: last?.armed ? last.throttle : null, shape: (k, v) => rcShape(k, v),   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000); §27.1 eğri
-      pad: () => padCtl.state(), lazyThr: auto && !last?.armed });   // HEPGO §37 fiziksel kumanda + varsayılan açılışta gaz serbest
+      pad: () => padCtl.state(), lazyThr: auto && !last?.armed, stickMode: () => MStick.loadStickMode() });   // HEPGO §37 fiziksel kumanda + varsayılan açılışta gaz serbest
     sticks.hidden = false; stage.classList.add('rc-on'); rcBtn.classList.add('primary');
     rcWarn.hidden = !last?.gcs_connected;
     sim?.setKeyboardLock?.(true);
     addEvent(tr('Sanal kumanda açık (RC override)'));
   };
   if (pref('rcOn', true) !== false) rcToggle({ auto: true });   // HEPGO §37 varsayılan açık
-  // HEPGO §27.2 giriş sekansı (eski sihirbaz COUNTDOWN_S geri sayımı burada): sahne + SITL hazır ve perde kalkınca bir kez — 100 m'den sinematik
+  // HEPGO §27.1.1 giriş sekansı (eski sihirbaz COUNTDOWN_S geri sayımı burada): sahne + SITL hazır ve perde kalkınca bir kez — 100 m'den sinematik
   // iniş, büyük 3-2-1 + "dıt dıt dıt … diiit" (ayarlar › ses kapalıysa sessiz), sonra seçili kamera kipine yumuşak geçiş
   const intro = MIntro.createIntro(stage, { getSim: () => sim, tr, keyed: true, sound: () => { const c = sfx.config?.() || {}; return { on: c.sound !== false, vol: c.volume ?? 0.8 }; }, sub: trackName || null });
   let introStarted = false;
@@ -805,7 +810,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const dispose = () => {
     if (destroyed) return; destroyed = true;
     clearInterval(netTick); clearInterval(introTick); clearTimeout(alertTimer);
-    safe(() => gauges.dispose()); safe(() => rcFeel.dispose()); safe(() => fltBar.dispose()); safe(() => srvTrig.dispose()); safe(() => padCtl.dispose()); safe(() => mobMenu.dispose()); safe(() => barFit.dispose()); clearTimeout(autoEndTimer); safe(() => intro.dispose()); safe(() => matchUi?.dispose());
+    safe(() => gauges.dispose()); safe(() => rcFeel.dispose()); safe(() => fltBar.dispose()); safe(() => srvTrig.dispose()); safe(() => padCtl.dispose()); safe(() => offStickMode()); safe(() => mobMenu.dispose()); safe(() => barFit.dispose()); clearTimeout(autoEndTimer); safe(() => intro.dispose()); safe(() => matchUi?.dispose());
     safe(() => { if (rc) { rc.dispose(); rc = null; } });   // override serbest bırakılır (soket kapanmadan önce)
     safe(clearHandTimers); safe(() => socket?.close());
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: 'kapandı' }); } pending.clear();

@@ -639,7 +639,7 @@
   "launcher.tube_note": "Görevde 10'lu raf yedek deposudur; her \"sıradaki interceptor\" tüpe yeniden yüklenir.",
   "launcher.hand_note": "Uçuşta \"Nişangâh\" penceresi: aparatın baktığı yöne kamera ve hedefler; fare, I/J/K/L ya da ok düğmeleriyle nişan alın, \"Fırlat\" ile interceptor nişan yönünde çıkar.",
   "rcfeel.btn": "Hassasiyet",
-  "rcfeel.btn_title": "Kumanda hassasiyeti: eksen başına oran, expo ve ölü bölge (klavye ve sanal çubuk)",
+  "rcfeel.btn_title": "Kumanda modu (Mode 1–4) ve hassasiyet: eksen başına oran, expo ve ölü bölge (klavye ve sanal çubuk)",
   "rcfeel.title": "Kumanda hassasiyeti",
   "rcfeel.close": "Kapat",
   "rcfeel.p_soft": "Hassas",
@@ -1067,7 +1067,7 @@
   "pad.buttons": "Düğmeler",
   "pad.reset": "Varsayılana dön",
   "pad.close": "Kapat",
-  "pad.hint": "Mode 2: sol çubuk gaz / sapma, sağ çubuk yunuslama / yatış. Kollar nötr dışındayken kumanda önceliklidir; dokunulan sanal çubuk o tarafta kazanır.",
+  "pad.hint": "Standart gamepad seçili kumanda modunu izler; RC vericide mod donanımdadır (eksenleri Algıla ile atayın). Kollar nötr dışındayken kumanda önceliklidir; dokunulan sanal çubuk o tarafta kazanır.",
   "mob.menu": "Menü",
   "mob.close": "Menüyü kapat",
   "eng.lock": "KİLİT",
@@ -1617,5 +1617,12 @@
   "top10.part_intercept": "Önleme",
   "top10.part_fpv": "FPV parkur",
   "common.error_generic": "Bir hata oluştu",
-  "common.reload": "Yeniden yükle"
+  "common.reload": "Yeniden yükle",
+  "stickmode.title": "Kumanda modu",
+  "stickmode.hint": "Sanal çubuklar, klavye (WASD sol, oklar sağ) ve gamepad bu modu izler. RC vericide mod donanımdadır; eksenleri kumanda panelinden atayın.",
+  "stickmode.m1": "Sol: yaw / pitch · Sağ: roll / gaz",
+  "stickmode.m2": "Sol: yaw / gaz · Sağ: roll / pitch",
+  "stickmode.m3": "Sol: roll / pitch · Sağ: yaw / gaz",
+  "stickmode.m4": "Sol: roll / gaz · Sağ: yaw / pitch",
+  "stickmode.changed": "Kumanda modu: Mode {m}"
 }

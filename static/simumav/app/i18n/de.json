@@ -639,7 +639,7 @@
   "launcher.tube_note": "Im Einsatz ist das 10er-Regal das Ersatzlager; jeder „nächste Interceptor“ wird ins Rohr nachgeladen.",
   "launcher.hand_note": "Im Flug zeigt das Fenster „Visier“ eine Kamera in Zeigerichtung und die Ziele; zielen per Maus, I/J/K/L oder Pfeiltasten; „Abschuss“ schickt den Interceptor in Zielrichtung.",
   "rcfeel.btn": "Empfindlichkeit",
-  "rcfeel.btn_title": "Steuerempfindlichkeit: Rate, Expo und Totzone je Achse (Tastatur und virtuelle Sticks)",
+  "rcfeel.btn_title": "Stick-Modus (Mode 1–4) und Empfindlichkeit: Rate, Expo und Totzone pro Achse (Tastatur und virtuelle Sticks)",
   "rcfeel.title": "Steuerempfindlichkeit",
   "rcfeel.close": "Schließen",
   "rcfeel.p_soft": "Präzise",
@@ -1067,7 +1067,7 @@
   "pad.buttons": "Tasten",
   "pad.reset": "Auf Standard zurücksetzen",
   "pad.close": "Schließen",
-  "pad.hint": "Mode 2: linker Stick Gas / Gieren, rechter Stick Nicken / Rollen. Solange die Sticks nicht neutral sind, hat der Controller Vorrang; ein berührter virtueller Stick gewinnt auf seiner Seite.",
+  "pad.hint": "Ein Standard-Gamepad folgt dem gewählten Stick-Modus; beim RC-Sender ist der Modus in der Hardware (Achsen mit Erkennen zuweisen). Solange die Sticks nicht neutral sind, hat der Controller Vorrang; ein berührter virtueller Stick gewinnt auf seiner Seite.",
   "mob.menu": "Menü",
   "mob.close": "Menü schließen",
   "eng.lock": "LOCK",
@@ -1617,5 +1617,12 @@
   "top10.part_intercept": "Abfangen",
   "top10.part_fpv": "FPV-Parcours",
   "common.error_generic": "Ein Fehler ist aufgetreten",
-  "common.reload": "Neu laden"
+  "common.reload": "Neu laden",
+  "stickmode.title": "Stick-Modus",
+  "stickmode.hint": "Virtuelle Sticks, Tastatur (WASD links, Pfeile rechts) und Gamepad folgen diesem Modus. Beim RC-Sender ist der Modus in der Hardware; Achsen im Controller-Panel zuweisen.",
+  "stickmode.m1": "Links: Gieren / Nicken · Rechts: Rollen / Gas",
+  "stickmode.m2": "Links: Gieren / Gas · Rechts: Rollen / Nicken",
+  "stickmode.m3": "Links: Rollen / Nicken · Rechts: Gieren / Gas",
+  "stickmode.m4": "Links: Rollen / Gas · Rechts: Gieren / Nicken",
+  "stickmode.changed": "Stick-Modus: Mode {m}"
 }
