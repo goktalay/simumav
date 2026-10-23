@@ -7,6 +7,7 @@ Yollar: `/api/*` router'lar; `/ws/fly/{sim_id}` (+ HEPGO `/ws/drone/sim/{id}`, `
   `/sim/api.js`, `/api.js` → static/simumav/app/simapi.js          `/<ad>.js` (ui.js, i18n.js, icons.js, …) → static/js/<ad>.js (modüllerin ../ içe aktarımları)
 Güvenlik başlıkları her yanıtta; CSP inline script'siz; hata yanıtları iç ayrıntı sızdırmaz (500 → genel mesaj, ayrıntı günlüğe).
 """
+import hashlib
 import logging
 import re
 import traceback
@@ -16,6 +17,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
+from starlette.staticfiles import NotModifiedResponse
 
 from . import config  # noqa: F401 — ilk: çekirdek yollarını yönlendirir
 from . import bridge, db
@@ -145,9 +148,41 @@ def healthz():
     return {'ok': True, 'version': config.VERSION}
 
 
+class _IcerikEtagStatic(StaticFiles):
+    """Yayın paketindeki dosyaların değişiklik zamanı sabit (2020-01-01). Starlette yalnız If-None-Match yoksa If-Modified-Since'e bakar ve
+    Last-Modified hep aynı olduğu için Cloudflare'in yeniden doğrulamasına (çoğu kez yalnız IMS) her zaman 304 dönüyordu → kenar ve tarayıcı ESKİ
+    modülü (ör. fly/match_core.js) tutuyordu ("does not provide an export named …"). ETag artık İÇERİK özetinden; Last-Modified gönderilmez;
+    304 yalnız ETag eşleşince."""
+    _ozet = {}
+
+    def _etag(self, full_path, st):
+        anahtar = (str(full_path), st.st_size, getattr(st, 'st_ctime_ns', 0), getattr(st, 'st_ino', 0))
+        e = self._ozet.get(anahtar)
+        if e is None:
+            with open(full_path, 'rb') as f:
+                e = '"' + hashlib.sha1(f.read()).hexdigest()[:32] + '"'
+            if len(self._ozet) > 5000:
+                self._ozet.clear()
+            self._ozet[anahtar] = e
+        return e
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = FileResponse(full_path, status_code=status_code, stat_result=stat_result)
+        try:
+            response.headers['etag'] = self._etag(full_path, stat_result)
+        except OSError:
+            return response
+        if 'last-modified' in response.headers:
+            del response.headers['last-modified']
+        inm = Headers(scope=scope).get('if-none-match')
+        if inm and (inm.strip() == '*' or response.headers['etag'] in [t.strip().removeprefix('W/') for t in inm.split(',')]):
+            return NotModifiedResponse(response.headers)
+        return response
+
+
 def _mount(path, directory, html=False):
     directory.mkdir(parents=True, exist_ok=True)
-    app.mount(path, StaticFiles(directory=str(directory), html=html), name=path.strip('/') or 'site')
+    app.mount(path, _IcerikEtagStatic(directory=str(directory), html=html), name=path.strip('/') or 'site')
 
 
 _mount('/static/vendor', config.STATIC_DIR / 'vendor')
