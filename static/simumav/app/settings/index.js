@@ -81,7 +81,10 @@ export async function mount(root, ctx) {
     sel.addEventListener('change', () => putH({ holiday_country: sel.value }));
     const on = row(t('settings.holiday'), [t('settings.holiday_sub'), status].filter(Boolean).join(' — '), switchEl(S.holiday_fx !== false, v => putH({ holiday_fx: v }), t('settings.holiday')));
     on.dataset.set = 'holiday_fx';
-    const rows = [on, row(t('settings.holiday_country'), t('settings.holiday_country_sub'), sel)];
+    const on3 = row(t('settings.holiday_3d'), t('settings.holiday_3d_sub'), switchEl(S.holiday_3d !== false, v => putH({ holiday_3d: v }), t('settings.holiday_3d')));   // uçuş sahnesi 3B süsleri (genel tema kapalıysa etkisiz)
+    on3.dataset.set = 'holiday_3d';
+    if (S.holiday_fx === false) on3.style.opacity = '.55';   // genel tema kapalı → bu ayar etkisiz (soluk)
+    const rows = [on, on3, row(t('settings.holiday_country'), t('settings.holiday_country_sub'), sel)];
     if (ctx.state.meta?.dev_login || previewFromSearch()) {
       const pv = h('select', { class: 'input', 'aria-label': t('settings.holiday_preview'), dataset: { set: 'holiday_preview' } },
         h('option', { value: '' }, t('settings.holiday_preview_none')), THEMES.map(code => h('option', { value: code }, themeName(code, L))));

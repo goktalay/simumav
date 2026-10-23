@@ -306,8 +306,12 @@ export function showBanner(item, { lang = 'tr', top = null, zIndex = null, force
  *   inFlight, reduced, figAlpha (büyük figür saydamlığı; ör. sitede kaydırınca söner), ground (uzun yer figürlerinin zemini, H oranı), banner, bannerTop, bannerZ, preview, fetchFn })
  * → Promise<{ fx, info, detected, picked, destroy, setMode }> | null (tema yoksa / kapalıysa)
  */
-export async function mountHolidayFx(o = {}) {
-  const pv = o.preview || previewFromSearch();
+/**
+ * DOM'suz tema çözümü (pano katmanı + uçuş sahnesi 3B süsleri flightsim_holiday3d.js ortak): önizleme (?bayram= / o.preview) → ülke → sunucu → birleşik tema.
+ * → Promise<{ pv, detected, info, items, picked } | null> (kapalı ya da ülke bulunamadı → null)
+ */
+export async function resolveHoliday(o = {}) {
+  const pv = o.preview || previewFromSearch(o.search);
   if (o.enabled === false && !pv) return null;
   const detected = detectCountry({ setting: pv?.country || o.country, located: o.located });
   let items, info = null;
@@ -317,7 +321,12 @@ export async function mountHolidayFx(o = {}) {
     try { info = await fetchHoliday(detected.country, { lang: o.lang, fetchFn: o.fetchFn, base: o.base || '' }); } catch { info = null; }
     items = info?.active || [];
   }
-  const picked = pickThemes(items);
+  return { pv, detected, info, items, picked: pickThemes(items) };
+}
+export async function mountHolidayFx(o = {}) {
+  const r = await resolveHoliday(o);
+  if (!r) return null;
+  const { pv, detected, info, picked } = r;
   if (!picked.primary) return { fx: null, info, detected, picked, destroy() {}, setMode() {} };
   const fx = createHolidayFx({ zIndex: o.zIndex, themes: [picked.primary, picked.secondary].filter(Boolean), country: picked.primary.country || detected.country,
     mode: o.mode || 'full', inFlight: o.inFlight, parent: o.parent, before: o.before, top: o.top, bottom: o.bottom, reduced: o.reduced, figAlpha: o.figAlpha, ground: o.ground });

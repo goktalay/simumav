@@ -195,6 +195,8 @@
   "settings.analog_sub": "Kamera görüntüsünde analog parazit",
   "settings.holiday": "Bayram temaları",
   "settings.holiday_sub": "Bayram ve tatil günlerinde menülerde hafif kutlama efektleri (uçuşta kapalı)",
+  "settings.holiday_3d": "Uçuş sahnesinde bayram süsleri",
+  "settings.holiday_3d_sub": "Uçuşta ekran efekti yok; 3B dünyada uçuşu engellemeyen süsler (koyunlar, fenerler, bayraklar …)",
   "settings.holiday_country": "Bayram ülkesi",
   "settings.holiday_country_sub": "Otomatik: parkurunuzun konumu, yoksa saat diliminiz ve tarayıcı diliniz",
   "settings.holiday_auto": "Otomatik ({c})",

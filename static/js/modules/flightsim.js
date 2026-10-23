@@ -1569,6 +1569,19 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
       if (replay && D.result) defReplay = { i: 0, events: [...(D.result.kills || []).map(k => ({ kind: 'kill', ...k, name: D.plan?.[k.k]?.name })), ...(D.result.leaks || []).map(l => ({ kind: 'leak', ...l, name: D.plan?.[l.k]?.name }))].sort((a, b) => a.t - b.t) };
     }
   };
+  // Bayram süsleri: Kişisel Ayarlar › Bayram temaları açık + "Uçuş sahnesinde bayram süsleri" açık (varsayılan) ya da ?bayram=<tema> önizlemesi.
+  // Ülke: ayar → girilen konum (/api/holiday-theme/me) → saat dilimi → dil (pano katmanıyla aynı çözüm). Kayıttan oynatmada da o anki tema.
+  const attachHolidayDecor = s3 => {
+    const hs = { on: true, scene3d: true, country: '', ...(ctx.user?.prefs?.settings?.holiday || {}) };
+    import('./flightsim_holiday3d.js').then(async M => {
+      if (!M.holidayDecorEnabled({ enabled: hs.on, enabled3d: hs.scene3d, preview: !!new URLSearchParams(location.search).get('bayram') })) return null;
+      let me = null;
+      try { me = (await import('../holiday.js')).holidayState().me; } catch { /* */ }
+      if (!me && !mock) { try { me = await api.get('/api/holiday-theme/me'); } catch { me = null; } }
+      if (destroyed || sim !== s3) return null;
+      return M.applyHolidayDecor(s3, { enabled: hs.on !== false, enabled3d: hs.scene3d !== false, country: hs.country || '', located: me?.located || null });
+    }).catch(e => console.warn('bayram süsü', e));
+  };
   const buildSim = () => {
     if (sim || simBuilding || destroyed) return simBuilding || Promise.resolve(sim);
     const o = originOf();
@@ -1601,6 +1614,7 @@ async function renderSession(view, ctx, be, sid, { mock, canWrite, netsim = null
         if (destroyed) { s3.dispose(); return null; }
         sim = s3;
         gfxCtl.attach(sim);   // §43 cihaz algılama (GPU adı) + otomatik/uyarlamalı kademe
+        attachHolidayDecor(sim);   // bayram süsleri (3B dünyada; uçuşta 2B katman yok — docs/bayram-temalari.md › Uçuş sahnesi)
         if (rc) sim.setKeyboardLock?.(true);   // §37 varsayılan açık sanal kumanda sahneden önce açıldı
         if (netsim) window.__fsSim = sim;   // teşhis: Playwright/konsol sim.netStats() · sim.motionStats(true)
         if (sim.terrainInfo && !worldReady) progMsg({ stage: 'done', real: sim.real, ...sim.terrainInfo });

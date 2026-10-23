@@ -195,6 +195,8 @@
   "settings.analog_sub": "Ruido analógico en la imagen de cámara",
   "settings.holiday": "Temas festivos",
   "settings.holiday_sub": "Efectos festivos ligeros en los menús en días festivos (desactivados en vuelo)",
+  "settings.holiday_3d": "Decoración festiva en vuelo",
+  "settings.holiday_3d_sub": "Sin efectos en pantalla durante el vuelo; decoración en el mundo 3D que nunca estorba (ovejas, farolillos, banderas …)",
   "settings.holiday_country": "País de las fiestas",
   "settings.holiday_country_sub": "Automático: ubicación de su circuito o, si no, su zona horaria e idioma del navegador",
   "settings.holiday_auto": "Automático ({c})",

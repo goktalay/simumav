@@ -195,6 +195,8 @@
   "settings.analog_sub": "Analoges Rauschen im Kamerabild",
   "settings.holiday": "Feiertagsthemen",
   "settings.holiday_sub": "Leichte Festeffekte in Menüs an Feiertagen (im Flug aus)",
+  "settings.holiday_3d": "Feiertagsdeko im Flug",
+  "settings.holiday_3d_sub": "Keine Bildschirmeffekte im Flug; Deko in der 3D-Welt, die den Flug nie behindert (Schafe, Laternen, Flaggen …)",
   "settings.holiday_country": "Feiertagsland",
   "settings.holiday_country_sub": "Automatisch: Standort Ihrer Strecke, sonst Zeitzone und Browsersprache",
   "settings.holiday_auto": "Automatisch ({c})",

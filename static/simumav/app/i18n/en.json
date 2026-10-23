@@ -195,6 +195,8 @@
   "settings.analog_sub": "Analog noise on the camera feed",
   "settings.holiday": "Holiday themes",
   "settings.holiday_sub": "Light festive effects in menus on holidays (off during flight)",
+  "settings.holiday_3d": "Holiday decorations in flight",
+  "settings.holiday_3d_sub": "No screen effects while flying; decorations in the 3D world that never obstruct flight (sheep, lanterns, flags …)",
   "settings.holiday_country": "Holiday country",
   "settings.holiday_country_sub": "Automatic: your track location, otherwise your time zone and browser language",
   "settings.holiday_auto": "Automatic ({c})",

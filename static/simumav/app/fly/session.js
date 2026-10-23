@@ -526,6 +526,11 @@ export async function openSession(view, start, picked, ctx = {}) {
     });
     if (destroyed) { s3.dispose(); return { dispose() {} }; }
     sim = s3; window.__smSim = sim;
+    // Bayram süsleri (docs/bayram-temalari.md › Uçuş sahnesi): uçuşta 2B katman YOK; tema etkinse 3B dünyaya çarpışmasız süs (koyun, fener, bayrak …).
+    // Ayar: Ayarlar › Bayram temaları (holiday_fx) + Uçuş sahnesinde bayram süsleri (holiday_3d; varsayılan açık); önizleme ?bayram=. FPV halkaları engel bölgesi.
+    if (gates.length) sim.setDecorKeepouts?.('gates', gates.map(g => { const p = sim.toLocal(Number(g.lat), Number(g.lon)); return { x: p.x, y: p.y, r: Math.max(3, Number(g.radius_m) || 3) * 2 + 12 }; }));
+    import(`${SIM}flightsim_holiday3d.js`).then(MH => MH.applyHolidayDecor(sim, { enabled: settings?.holiday_fx !== false, enabled3d: settings?.holiday_3d !== false,
+      country: settings?.holiday_country || '', located: globalThis.__smHoliday?.()?.me?.located || null })).then(i => { if (i) window.__smHolidayDecor = () => sim?.holidayInfo?.(); }).catch(e => console.warn('bayram süsü', e));
     // §28 sahnede pilot: seçili pilotun avatarı (karşılaşmada salon anlık görüntüsü; yoksa varsayılan pilot) — dron evinin 6–10 m gerisinde, RC kumandalı
     if (withPilot) {
       const putPilot = av => { if (!destroyed) sim?.setPilot?.(normAvatar(av), buildPilotRig); };

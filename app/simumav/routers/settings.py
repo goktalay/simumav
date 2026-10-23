@@ -1,5 +1,5 @@
 """`/api/settings` — dil, tema, ses, FPV analog efekt (users.lang/theme/settings); §25 `leaderboard_hidden` (settings.lb_hidden: TOP 10 PİLOT'ta görünme);
-bayram temaları `holiday_fx` (varsayılan AÇIK) + `holiday_country` ('' = otomatik; docs/bayram-temalari.md)."""
+bayram temaları `holiday_fx` (varsayılan AÇIK) + `holiday_country` ('' = otomatik) + `holiday_3d` (uçuş sahnesinde 3B süs; varsayılan AÇIK; docs/bayram-temalari.md)."""
 import json
 from typing import Optional
 
@@ -25,6 +25,7 @@ class SettingsIn(BaseModel):
     units: Optional[str] = Field(None, max_length=8)
     leaderboard_hidden: Optional[bool] = None
     holiday_fx: Optional[bool] = None
+    holiday_3d: Optional[bool] = None
     holiday_country: Optional[str] = Field(None, max_length=2)
 
 
@@ -34,7 +35,8 @@ def _out(u):
     return {'lang': u['lang'] if s.get('lang_chosen') else None, 'theme': u['theme'], 'sound': bool(s.get('sound', True)), 'analog_fpv': bool(s.get('analog_fpv', True)),
             'music': bool(s.get('music', True)), 'volume': float(s.get('volume', 0.8)), 'reduced_motion': bool(s.get('reduced_motion', False)),
             'units': s.get('units', 'metric'), 'leaderboard_hidden': bool(s.get('lb_hidden', False)),
-            'holiday_fx': s.get('holiday_fx', True) is not False, 'holiday_country': s.get('holiday_country') or '', 'langs': list(config.LANGS), 'themes': list(THEMES)}
+            'holiday_fx': s.get('holiday_fx', True) is not False, 'holiday_country': s.get('holiday_country') or '',
+            'holiday_3d': s.get('holiday_3d', True) is not False, 'langs': list(config.LANGS), 'themes': list(THEMES)}
 
 
 @router.get('')
@@ -60,6 +62,8 @@ def put_settings(body: SettingsIn, user=User):
         leaderboard.gecersiz()   # gizlilik: önbellekteki liste hemen düşer
     if body.holiday_fx is not None:
         s['holiday_fx'] = bool(body.holiday_fx)
+    if body.holiday_3d is not None:
+        s['holiday_3d'] = bool(body.holiday_3d)
     if body.holiday_country is not None:
         c = body.holiday_country.strip().upper()
         if c and not (len(c) == 2 and c.isascii() and c.isalpha()):
