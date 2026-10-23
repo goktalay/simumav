@@ -233,5 +233,7 @@
   "top10.loading": "Chargement…",
   "top10.pts": "pts",
   "top10.wins": "{n} victoires",
-  "top10.flights": "{n} vols"
+  "top10.flights": "{n} vols",
+  "top10.demo": "exemple",
+  "top10.demo_tip": "Entrée d’exemple — remplacée par de vrais pilotes"
 }

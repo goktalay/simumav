@@ -233,5 +233,7 @@
   "top10.loading": "Loading…",
   "top10.pts": "pts",
   "top10.wins": "{n} wins",
-  "top10.flights": "{n} flights"
+  "top10.flights": "{n} flights",
+  "top10.demo": "sample",
+  "top10.demo_tip": "Sample entry — replaced by real pilots as scores come in"
 }

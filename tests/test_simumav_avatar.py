@@ -16,7 +16,7 @@ import tempfile
 from datetime import datetime, timedelta
 
 D = tempfile.mkdtemp(prefix='simumav-avatar-')
-os.environ.update(SIMUMAV_DATA_DIR=D, SIMUMAV_DEV_LOGIN='1', HEPGO_SITL='0', SIMUMAV_UDP_BASE='24950', SIMUMAV_MAX_FLIGHTS='2', SIMUMAV_MP_PORT_BASE='25800',
+os.environ.update(SIMUMAV_LB_DEMO='0', SIMUMAV_DATA_DIR=D, SIMUMAV_DEV_LOGIN='1', HEPGO_SITL='0', SIMUMAV_UDP_BASE='24950', SIMUMAV_MAX_FLIGHTS='2', SIMUMAV_MP_PORT_BASE='25800',
                   SIMUMAV_MP_PORT_COUNT='20', SIMUMAV_SECURE_COOKIE='0', SIMUMAV_ENV_FILE=os.path.join(D, 'yok.env'),
                   SIMUMAV_MT_INTERNAL='http://127.0.0.1:1', GOOGLE_MAPS_API_KEY='')
 for k in [k for k in sys.modules if k == 'app' or k.startswith('app.')]:
@@ -138,7 +138,30 @@ def ucus_ekle(conn, uid, alert=None, target=None, sure=120, gun_once=0):
                  (uid, ts(gun_once), ts(gun_once), sure, 'ok', json.dumps(oz), ts(gun_once), ts(gun_once)))
 
 
+def demo_testi():
+    """Örnek pilotlar: gerçek satır yokken 10 örnek; her gerçek satır en düşük örneği düşürür; 10 gerçekte örnek kalmaz; kapatılabilir."""
+    import os as _os
+    from app.simumav.routers import leaderboard as L
+    _os.environ['SIMUMAV_LB_DEMO'] = '1'
+    try:
+        r0 = L.doldur([], '30d')
+        assert len(r0) == 10 and all(x['demo'] for x in r0) and [x['rank'] for x in r0] == list(range(1, 11)), r0
+        assert all('*' in x['name'] and '***@' in x['email'] for x in r0)
+        gercek = [{'name': 'A***** B*****', 'email': 'ab***@gm***.com', 'avatar': {}, 'score': 5000 - i, 'wins': 1, 'matches': 1, 'flights': 1, 'parts': {}} for i in range(3)]
+        r3 = L.doldur([dict(x) for x in gercek], '30d')
+        assert len(r3) == 10 and sum(1 for x in r3 if x.get('demo')) == 7 and not r3[0].get('demo'), r3
+        assert 'D***** G*****' not in [x['name'] for x in r3]   # en düşük örnek düştü
+        r10 = L.doldur([dict(gercek[0], score=100 + i) for i in range(10)], 'all')
+        assert not any(x.get('demo') for x in r10)
+        _os.environ['SIMUMAV_LB_DEMO'] = '0'
+        assert L.doldur([], '30d') == []
+    finally:
+        _os.environ['SIMUMAV_LB_DEMO'] = '0'
+    print('  örnek pilotlar geçti')
+
+
 def main():
+    demo_testi()
     maske_testleri()
     avatar_birim()
     config.RATE['write'] = (100000, 60)

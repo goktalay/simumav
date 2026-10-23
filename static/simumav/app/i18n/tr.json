@@ -1345,5 +1345,7 @@
   "top10.formula": "Puan = karşılaşma puanı (halka ×100, bitiriş +250, sıra bonusu; it dalaşı galibiyeti 1000) + galibiyet +300 + halka temposu (≤200) + uçuş disiplini (ort. puan ×1,5 × en çok 20 uçuş) + hedef önleme (en iyi 10 uçuş ×0,5). Yalnız yapay zekâya karşı oynanan karşılaşmalar yarım sayılır.",
   "top10.privacy": "Adlar ve e-postalar maskelenir. Listede görünmek istemiyorsan Ayarlar → “Liderlik tablosunda görünme”.",
   "settings.lb_hidden": "Liderlik tablosunda görünme",
-  "settings.lb_hidden_sub": "TOP 10 PİLOT listesinde (simumav.com ana sayfa ve menü) adın, e-postan ve avatarın maskeli olsa da gösterilmez."
+  "settings.lb_hidden_sub": "TOP 10 PİLOT listesinde (simumav.com ana sayfa ve menü) adın, e-postan ve avatarın maskeli olsa da gösterilmez.",
+  "top10.demo": "örnek",
+  "top10.demo_tip": "Örnek kayıt — gerçek puanlar geldikçe yerini gerçek pilotlara bırakır"
 }

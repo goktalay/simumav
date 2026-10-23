@@ -233,5 +233,7 @@
   "top10.loading": "Yükleniyor…",
   "top10.pts": "puan",
   "top10.wins": "{n} galibiyet",
-  "top10.flights": "{n} uçuş"
+  "top10.flights": "{n} uçuş",
+  "top10.demo": "örnek",
+  "top10.demo_tip": "Örnek kayıt — gerçek puanlar geldikçe yerini gerçek pilotlara bırakır"
 }

@@ -1345,5 +1345,7 @@
   "top10.formula": "Puntos = puntos de partida (aro ×100, llegada +250, bonus de puesto; victoria en dogfight 1000) + victoria +300 + ritmo (≤200) + disciplina de vuelo (media ×1,5 × hasta 20 vuelos) + interceptaciones (10 mejores vuelos ×0,5). Las partidas solo contra IA cuentan la mitad.",
   "top10.privacy": "Nombres y correos se enmascaran. Para salir: Ajustes → «Ocultarme de la clasificación».",
   "settings.lb_hidden": "Ocultarme de la clasificación",
-  "settings.lb_hidden_sub": "Tu nombre, correo y avatar enmascarados no aparecerán en el TOP 10 PILOTOS (inicio y menú)."
+  "settings.lb_hidden_sub": "Tu nombre, correo y avatar enmascarados no aparecerán en el TOP 10 PILOTOS (inicio y menú).",
+  "top10.demo": "ejemplo",
+  "top10.demo_tip": "Entrada de ejemplo — se reemplaza por pilotos reales"
 }

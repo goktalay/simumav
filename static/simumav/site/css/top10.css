@@ -46,3 +46,5 @@
   .t10-row { grid-template-columns: 1.6rem 44px 1fr auto; gap: .6rem; padding: .45rem .6rem; }
   .t10-row .t10-av { width: 44px; height: 44px; }
 }
+
+.t10-demo { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-style: normal; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; opacity: .55; border: 1px solid currentColor; vertical-align: middle; }

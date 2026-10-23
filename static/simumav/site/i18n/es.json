@@ -233,5 +233,7 @@
   "top10.loading": "Cargando…",
   "top10.pts": "pts",
   "top10.wins": "{n} victorias",
-  "top10.flights": "{n} vuelos"
+  "top10.flights": "{n} vuelos",
+  "top10.demo": "ejemplo",
+  "top10.demo_tip": "Entrada de ejemplo — se reemplaza por pilotos reales"
 }

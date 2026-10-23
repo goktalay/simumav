@@ -1345,5 +1345,7 @@
   "top10.formula": "Punkte = Matchpunkte (Ring ×100, Ziel +250, Platzbonus; Dogfight-Sieg 1000) + Sieg +300 + Ringtempo (≤200) + Flugdisziplin (Ø-Wert ×1,5 × bis 20 Flüge) + Zielabfang (beste 10 Flüge ×0,5). Matches nur gegen KI zählen halb.",
   "top10.privacy": "Namen und E-Mails werden maskiert. Austragen: Einstellungen → „In der Bestenliste ausblenden“.",
   "settings.lb_hidden": "In der Bestenliste ausblenden",
-  "settings.lb_hidden_sub": "Dein maskierter Name, E-Mail und Avatar erscheinen nicht in den TOP 10 PILOTEN (Startseite und Menü)."
+  "settings.lb_hidden_sub": "Dein maskierter Name, E-Mail und Avatar erscheinen nicht in den TOP 10 PILOTEN (Startseite und Menü).",
+  "top10.demo": "Beispiel",
+  "top10.demo_tip": "Beispieleintrag — wird durch echte Piloten ersetzt"
 }

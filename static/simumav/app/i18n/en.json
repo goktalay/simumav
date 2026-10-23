@@ -1345,5 +1345,7 @@
   "top10.formula": "Score = match points (ring ×100, finish +250, place bonus; dogfight win 1000) + win +300 + ring pace (≤200) + flight discipline (avg score ×1.5 × up to 20 flights) + target intercepts (best 10 flights ×0.5). Matches played only against AI count half.",
   "top10.privacy": "Names and e-mails are masked. To leave the list: Settings → “Hide me from the leaderboard”.",
   "settings.lb_hidden": "Hide me from the leaderboard",
-  "settings.lb_hidden_sub": "Your masked name, e-mail and avatar will not appear in TOP 10 PILOTS (simumav.com home page and menu)."
+  "settings.lb_hidden_sub": "Your masked name, e-mail and avatar will not appear in TOP 10 PILOTS (simumav.com home page and menu).",
+  "top10.demo": "sample",
+  "top10.demo_tip": "Sample entry — replaced by real pilots as scores come in"
 }

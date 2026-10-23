@@ -53,12 +53,12 @@ export function initTop10(root, { t = k => k, lang = () => 'tr', reduced = false
     const top = rows.slice(0, 3), rest = rows.slice(3);
     const order = top.length === 3 ? [top[1], top[0], top[2]] : top;
     const card = (p, sz) => `<li class="t10-pd p${p.rank}" data-rank="${p.rank}"><canvas class="t10-av" width="${sz}" height="${sz}" aria-hidden="true"></canvas>
-      <span class="t10-rk">${p.rank}</span><b class="t10-nm">${esc(p.name)}</b><small class="t10-em">${esc(p.email)}</small>
+      <span class="t10-rk">${p.rank}</span><b class="t10-nm">${esc(p.name)}${p.demo ? `<em class="t10-demo" title="${esc(t('top10.demo_tip'))}">${esc(t('top10.demo'))}</em>` : ''}</b><small class="t10-em">${esc(p.email)}</small>
       <span class="t10-pts">${fmtPts(p.score, lang())} <small>${esc(t('top10.pts'))}</small></span>
       <small class="t10-sub">${esc(t('top10.wins').replace('{n}', p.wins ?? 0))} · ${esc(t('top10.flights').replace('{n}', p.flights ?? 0))}</small></li>`;
     podium.innerHTML = order.map(p => card(p, p.rank === 1 ? 220 : 160)).join('');
     list.innerHTML = rest.map(p => `<li class="t10-row" data-rank="${p.rank}"><span class="t10-rk">${p.rank}</span><canvas class="t10-av" width="64" height="64" aria-hidden="true"></canvas>
-      <span class="t10-who"><b class="t10-nm">${esc(p.name)}</b><small class="t10-em">${esc(p.email)}</small></span>
+      <span class="t10-who"><b class="t10-nm">${esc(p.name)}${p.demo ? `<em class="t10-demo" title="${esc(t('top10.demo_tip'))}">${esc(t('top10.demo'))}</em>` : ''}</b><small class="t10-em">${esc(p.email)}</small></span>
       <span class="t10-pts">${fmtPts(p.score, lang())} <small>${esc(t('top10.pts'))}</small></span></li>`).join('');
     const jobs = [...podium.querySelectorAll('li'), ...list.querySelectorAll('li')].map(li => [li, rows.find(r => String(r.rank) === li.dataset.rank)]);
     for (const [li, p] of jobs) {

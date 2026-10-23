@@ -13,7 +13,7 @@ export function top10Rows(list, el) {
   clear(el, list.map(p => h('li', { class: `r${p.rank}`, dataset: { rank: String(p.rank) } },
     h('span', { class: 'rk' }, String(p.rank)),
     avatarImg(p.avatar, { size: 128, alt: '' }),
-    h('span', { class: 'who' }, h('b', null, p.name), h('small', null, p.email)),
+    h('span', { class: 'who' }, h('b', null, p.name, p.demo ? h('em', { class: 't10-demo', title: t('top10.demo_tip') }, t('top10.demo')) : null), h('small', null, p.email)),
     h('span', { class: 'pts' }, fmtPts(p.score), h('small', null, t('top10.wins_n', { n: p.wins ?? 0 }))))));
 }
 
