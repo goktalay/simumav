@@ -24,9 +24,11 @@ const mesh = await import(pathToFileURL(join(APP, 'crew/avatar_mesh.js')).href);
 const THREE = await import(pathToFileURL(join(ROOT, 'static/vendor/three/three.module.min.js')).href);
 
 await test('avatar_core: eski 2B karakter eşlemesi, deriler, yama/aksesuar listeleri sunucu (avatar.py) ile birebir', () => {
-  const py = execFileSync('python3', ['-c', `import importlib.util,json;s=importlib.util.spec_from_file_location('a','app/simumav/avatar.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps({'L':m.LEGACY,'S':m.SKINS,'P':list(m.PATCHES),'A':list(m.ACCESSORIES),'D':m.DEFAULT}))`], { cwd: ROOT }).toString();
+  const py = execFileSync('python3', ['-c', `import importlib.util,json;s=importlib.util.spec_from_file_location('a','app/simumav/avatar.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps({'L':m.LEGACY,'S':m.SKINS,'P':list(m.PATCHES),'A':list(m.ACCESSORIES),'D':m.DEFAULT,'E':{k:list(v) for k,v in m.ENUMS.items()},'C':list(m.COLORS),'B':list(m.BOOLS)}))`], { cwd: ROOT }).toString();
   const S = JSON.parse(py);
   assert.deepEqual(core.LEGACY, S.L); assert.deepEqual(core.SKINS, S.S); assert.deepEqual(core.PATCHES, S.P); assert.deepEqual(core.ACCESSORIES, S.A); assert.deepEqual(core.DEFAULT, S.D);
+  assert.deepEqual(core.ENUMS, S.E, '§28 karakter seçenekleri'); assert.deepEqual(core.COLOR_KEYS, S.C); assert.deepEqual(core.BOOL_KEYS, S.B);
+  assert.deepEqual([...core.AVATAR_FIELDS].sort(), Object.keys(S.D).filter(k => k !== 'v').sort(), 'gövde alanları = şema');
   assert.equal(Object.keys(core.SKINS).length, 8);
 });
 
@@ -35,8 +37,9 @@ await test('normAvatar: geçersiz alan → karakter varsayılanı, JSON dizesi, 
   assert.equal(core.normAvatar('{"helmet":"#ABCDEF"}').helmet, '#abcdef');
   const a = core.normAvatar({ helmet: 'red', skin: 's9', patch: 'skull', accessory: 'x', mirror: 'evet', evil: '<script>' }, 'p09');
   assert.deepEqual(a, core.legacy('p09'));
-  assert.equal(core.normAvatar('bozuk{').v, 1);
-  assert.deepEqual(Object.keys(core.avatarBody({ helmet: '#000000', bot: true })).sort(), ['accessory', 'helmet', 'mirror', 'patch', 'patch_color', 'skin', 'suit', 'visor']);
+  assert.equal(core.normAvatar('bozuk{').v, 2);
+  assert.deepEqual(Object.keys(core.avatarBody({ helmet: '#000000', bot: true })), core.AVATAR_FIELDS);
+  assert.deepEqual(core.normAvatar({ hair: 'dreadlock', headgear: 'tac', body: 'x', freckles: 'evet', hair_color: 'mavi' }), core.legacy('p01'), '§28 geçersiz alanlar');
 });
 
 await test('bot avatarı (HEPGO §44): AI kask, seviye rengi; oyuncu → avatar eşlemesi (negatif kimlik = bot)', () => {
@@ -57,6 +60,54 @@ await test('avatarKey kararlı (alan sırası), boyut anahtarda; rastgele avatar
   assert.equal(core.shade('#808080', -0.5), '#404040'); assert.equal(core.shade('#000000', 1), '#ffffff');
 });
 
+await test('§28 geriye uyum: v1 kayıt (yalnız kask/tulum alanları) → v2, karakter alanları varsayılan (erkek, kısa saç, kasklı, vizör kapalı)', () => {
+  const v1 = { v: 1, helmet: '#b91c1c', visor: '#1a1a1a', mirror: true, suit: '#b91c1c', skin: 's6', patch: 'star', patch_color: '#f5c542', accessory: 'crest' };
+  const a = core.normAvatar(JSON.stringify(v1), 'p04');
+  assert.equal(a.v, 2); assert.equal(a.helmet, '#b91c1c'); assert.equal(a.accessory, 'crest');
+  for (const k of ['body', 'hair', 'headgear', 'visor_open', 'beard', 'glasses', 'outfit', 'face']) assert.equal(a[k], core.DEFAULT[k], k);
+  assert.equal(a.headgear, 'helmet'); assert.equal(a.visor_open, false);
+  assert.notEqual(core.avatarKey(v1), core.avatarKey({ ...v1, hair: 'long' }), 'anahtar §28 alanlarını içerir');
+  assert.ok(core.avatarKey(v1).startsWith('v2|'));
+});
+
+await test('§28 rastgele karakter: tutarlı (kadında sakal yok), "Cinsiyeti koru", bedene göre saç olasılığı, belirlenimci, switchBody', () => {
+  let s = 99; const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+  const cnt = { m: 0, f: 0 }, hairIn = { m: 0, f: 0 };
+  for (let i = 0; i < 2000; i++) {
+    const a = core.randomAvatar(rnd);
+    assert.deepEqual(core.normAvatar(a), a, 'geçerli');
+    cnt[a.body]++;
+    if (core.HAIR_BY_BODY[a.body].includes(a.hair)) hairIn[a.body]++;
+    if (a.body === 'f') assert.equal(a.beard, 'none');
+    if (a.headgear !== 'helmet') assert.equal(a.visor_open, false);
+  }
+  assert.ok(cnt.m > 800 && cnt.f > 800, JSON.stringify(cnt));
+  assert.ok(hairIn.m / cnt.m > 0.8 && hairIn.f / cnt.f > 0.8, 'saç bedene uygun ağırlıklı');
+  for (let i = 0; i < 200; i++) assert.equal(core.randomAvatar(rnd, { body: 'f' }).body, 'f');
+  s = 5; const r1 = core.randomAvatar(rnd); s = 5; assert.deepEqual(core.randomAvatar(rnd), r1);
+  const m = core.normAvatar({ body: 'm', beard: 'full', hair: 'mohawk' });
+  const f = core.switchBody(m, 'f'); assert.equal(f.body, 'f'); assert.equal(f.beard, 'none'); assert.ok(core.HAIR_BY_BODY.f.includes(f.hair));
+  assert.equal(core.switchBody(core.normAvatar({ body: 'f', hair: 'bun' }), 'm').hair, 'short');
+  assert.equal(core.switchBody(core.normAvatar({ body: 'f', hair: 'curly' }), 'm').hair, 'curly', 'iki listede de olan saç korunur');
+});
+
+await test('§28 tam boy karakter (avatar_body): her saç × başlık × beden, yüz seçenekleri; ayak → baş yüksekliği; kemikler; RC tutuşu; dispose', () => {
+  const body = mesh;
+  for (const b of core.BODIES) for (const hair of core.HAIRS) for (const headgear of core.HEADGEAR) {
+    const g = body.buildAvatar(THREE, { body: b, hair, headgear, beard: 'goatee', glasses: 'sun', freckles: true, mole: true }, { pose: 'full', name: 'X' });
+    const bb = new THREE.Box3().setFromObject(g);
+    assert.ok(bb.min.y < -2.8 && bb.min.y > -3.05 && bb.max.y > 0.85 && bb.max.y < 1.5, `${b}/${hair}/${headgear} ${bb.min.y} ${bb.max.y}`);
+    assert.ok(g.userData.bones.torso && g.userData.bones.head && g.userData.head);
+    g.userData.dispose();
+  }
+  for (const [k, list] of Object.entries(core.ENUMS)) for (const v of list) { const g = body.buildAvatar(THREE, { [k]: v, headgear: 'none' }, { pose: 'full' }); g.userData.dispose(); }
+  const rc = body.buildAvatar(THREE, core.legacy('p02'), { pose: 'full', rc: true });
+  assert.ok(rc.userData.bones.rc && rc.userData.bones.stickL && rc.userData.bones.stickR, 'kumanda + çubuk kemikleri');
+  rc.userData.dispose();
+  const cam = new THREE.PerspectiveCamera(); assert.equal(mesh.framePortrait(cam, { view: 'face' }), mesh.FRAMES.face); assert.equal(mesh.framePortrait(cam, { view: 'body' }), mesh.FRAMES.body);
+  mesh.framePortrait(cam); assert.ok(cam.position.z > 2 && cam.fov === 28, 'büst kadrajı değişmedi (önbellek portreleri)');
+});
+
 await test('avatar_mesh: tüm yama × aksesuar × vizör birleşimleri + bot gerçek three.js ile kurulur (WebGL yok), dispose', () => {
   let maxMesh = 0;
   for (const patch of core.PATCHES) for (const accessory of core.ACCESSORIES) for (const mirror of [true, false]) {
@@ -67,7 +118,7 @@ await test('avatar_mesh: tüm yama × aksesuar × vizör birleşimleri + bot ger
     assert.ok(box.max.y > 0.9 && box.max.y < 1.4 && box.min.y > -0.9, `boyut ${box.min.y} ${box.max.y}`);
     g.userData.dispose();
   }
-  assert.ok(maxMesh <= 40, `düşük poli: ${maxMesh} parça`);
+  assert.ok(maxMesh <= 80, `düşük poli büst: ${maxMesh} parça`);
   const bot = mesh.buildAvatar(THREE, core.botAvatar('hard'));
   let tex = 0; bot.traverse(o => { if (o.material?.map) tex++; });
   assert.ok(tex >= 3, 'AI kask yazıları (alın + iki yan)');
@@ -80,6 +131,7 @@ await test('2B yedek portre + yama çizimi her türde hata vermez', () => {
   for (const p of core.PATCHES) mesh.drawPatch(ctx2d, p, '#fff', 20, 20, 18);
   mesh.drawAvatar2D(ctx2d, core.botAvatar(), 128);
   for (const c of Object.keys(core.LEGACY)) mesh.drawAvatar2D(ctx2d, core.legacy(c), 64);
+  for (const hair of core.HAIRS) for (const headgear of core.HEADGEAR) for (const body of core.BODIES) mesh.drawAvatar2D(ctx2d, { hair, headgear, body, beard: 'full', glasses: 'aviator', freckles: true, visor_open: true }, 64);   // §28
   assert.ok(calls.includes('fill') && calls.includes('ellipse') && calls.includes('fillText'));
 });
 
@@ -108,6 +160,10 @@ await test('i18n: avatar.* / top10.* / settings.lb_hidden 7 dilde (oyun), top10.
     for (const m of src.matchAll(/t\(`avatar\.(patch|acc)_\$\{k\}`\)/g)) for (const k of (m[1] === 'patch' ? core.PATCHES : core.ACCESSORIES)) used.add(`avatar.${m[1]}_${k}`);
   }
   for (const k of ['helmet', 'visor', 'suit', 'patch_color']) used.add(`avatar.${k}`);
+  for (const [k, list] of Object.entries(core.ENUMS)) { used.add(`avatar.${k}`); for (const v of list) used.add(`avatar.${k}_${v}`); }   // §28 opts(key, list) → avatar.<key>_<v>
+  for (const k of ['body', 'face', 'hair', 'outfit', 'acc']) used.add(`avatar.tab_${k}`);
+  for (const v of ['body', 'face']) used.add(`avatar.view_${v}`);
+  used.add('camera.view_pilot_eye');
   used.add('top10.p_30d'); used.add('top10.p_all');
   assert.ok(used.size > 30, `${used.size}`);
   const ph = s => [...String(s).matchAll(/\{(\w+)\}/g)].map(m => m[1]).sort().join(',');

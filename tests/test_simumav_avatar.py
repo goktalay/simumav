@@ -58,7 +58,7 @@ def maske_testleri():
 
 def avatar_birim():
     a = avatar.normalize(None, 'p04')
-    assert a['helmet'] == '#b91c1c' and a['skin'] == 's6' and a['v'] == 1
+    assert a['helmet'] == '#b91c1c' and a['skin'] == 's6' and a['v'] == 2
     assert avatar.normalize('bozuk json', 'p09')['helmet'] == '#ea580c'
     assert avatar.normalize({'helmet': '#ABCDEF', 'x': 1}, 'p01') == {**avatar.legacy('p01'), 'helmet': '#abcdef'}
     assert avatar.normalize({'helmet': 'red'}, 'p01')['helmet'] == '#1e3a5f'   # okumada geçersiz alan → varsayılan
@@ -69,6 +69,27 @@ def avatar_birim():
         except avatar.AvatarHata:
             pass
     assert set(avatar.LEGACY) == {f'p{i:02d}' for i in range(1, 11)}
+    # §28 karakter yaratma: v1 kayıt geriye uyumlu (eksik alanlar DEFAULT; eski görünüm = kasklı, vizör kapalı, erkek, kısa saç)
+    v1 = {'v': 1, 'helmet': '#b91c1c', 'visor': '#1a1a1a', 'mirror': True, 'suit': '#b91c1c', 'skin': 's6', 'patch': 'star', 'patch_color': '#f5c542', 'accessory': 'crest'}
+    n = avatar.normalize(json.dumps(v1), 'p04', strict=True)
+    assert n['v'] == 2 and n['helmet'] == '#b91c1c' and n['headgear'] == 'helmet' and n['visor_open'] is False and n['body'] == 'm' and n['hair'] == 'short', n
+    assert set(n) == set(avatar.DEFAULT)
+    tam = {'body': 'f', 'build': 'slim', 'face': 'heart', 'eyes': 'wide', 'eye_color': '#3F7D4E', 'brows': 'arched', 'brow_w': 'thin', 'nose': 'small', 'mouth': 'grin',
+           'beard': 'none', 'freckles': True, 'mole': False, 'glasses': 'aviator', 'hair': 'ponytail', 'hair_color': '#d6b370', 'headgear': 'none', 'visor_open': True, 'outfit': 'jacket'}
+    n = avatar.normalize(tam, 'p01', strict=True)
+    assert n['eye_color'] == '#3f7d4e' and n['hair'] == 'ponytail' and n['freckles'] is True and n['outfit'] == 'jacket'
+    for k, lst in avatar.ENUMS.items():   # her seçenek geçerli
+        for v in lst:
+            assert avatar.normalize({k: v}, 'p01', strict=True)[k] == v
+    for bad in ({'body': 'x'}, {'hair': 'dread'}, {'headgear': 'crown'}, {'freckles': 1}, {'visor_open': 'true'}, {'hair_color': 'red'}, {'eye_color': '#12345'},
+                {'outfit': None}, {'face': ['oval']}, {'beard': 5}):
+        try:
+            avatar.normalize(bad, 'p01', strict=True)
+            raise AssertionError(bad)
+        except avatar.AvatarHata:
+            pass
+    assert avatar.normalize({'hair': 'dread', 'mole': 'x'}, 'p01') == avatar.legacy('p01')     # okumada geçersiz → varsayılan
+    assert len(json.dumps(avatar.normalize(tam, 'p01'))) < avatar.MAX_JSON
     for k in avatar.LEGACY:
         assert avatar.normalize(avatar.legacy(k), k, strict=True) == avatar.legacy(k)
     # puan yardımcıları (flightsim_match.js matchScore ile aynı)
@@ -182,6 +203,16 @@ def main():
         assert r['avatar']['visor'] == '#00ffaa' and r['avatar']['helmet'] == '#b91c1c'      # kısmi PUT mevcut ayarla birleşir
         assert c.put(f'/api/crew/{pid}', json={'name': 'Ayşe K'}, headers=H).json()['avatar']['visor'] == '#00ffaa'   # avatar verilmezse korunur
         assert c.put(f'/api/crew/{pid}', json={'avatar': {'accessory': 'bomb'}}, headers=H).status_code == 422
+        # §28: karakter alanları API'de (kısmi PUT birleşir, geçersiz 422, büyük gövde 422, seçenek listeleri)
+        r = c.put(f'/api/crew/{pid}', json={'avatar': {'body': 'f', 'hair': 'bun', 'hair_color': '#E11D48', 'headgear': 'none', 'glasses': 'sun', 'freckles': True}}, headers=H)
+        assert r.status_code == 200, r.text
+        av = r.json()['avatar']
+        assert av['body'] == 'f' and av['hair'] == 'bun' and av['hair_color'] == '#e11d48' and av['visor'] == '#00ffaa' and av['v'] == 2, av
+        assert c.get('/api/crew').json()['pilots'][[p['id'] for p in c.get('/api/crew').json()['pilots']].index(pid)]['avatar']['headgear'] == 'none'
+        assert c.put(f'/api/crew/{pid}', json={'avatar': {'hair': '<img>'}}, headers=H).status_code == 422
+        assert c.put(f'/api/crew/{pid}', json={'avatar': {'hair': 'bun', 'x': 'y' * 1600}}, headers=H).status_code == 422   # MAX_JSON
+        assert c.put(f'/api/crew/{pid}', json={'avatar': {**avatar.DEFAULT, 'hair': 'long', 'evil': '<script>'}}, headers=H).json()['avatar'].get('evil') is None
+        assert opt['enums']['hair'] == list(avatar.HAIRS) and opt['enums']['headgear'] == ['helmet', 'none', 'cap', 'headset'] and opt['default']['v'] == 2
         c.put(f'/api/crew/{pid}', json={'is_default': True, 'avatar': {'helmet': '#ff00ff'}}, headers=H)
 
         # ---- ayar: liderlik gizliliği (varsayılan görünür)
@@ -258,7 +289,7 @@ def main():
         with db.connect() as conn:
             r = db.row(conn.execute('SELECT * FROM matches WHERE id = 2'))
         ps = {p['id']: p for p in smatch.satir_dict(r, zeyn)['players']}
-        assert ps[zeyn]['avatar']['v'] == 1 and ps[-1]['avatar'] is None
+        assert ps[zeyn]['avatar']['v'] == 2 and ps[-1]['avatar'] is None
         assert smatch.pilot_avatari(ali)['helmet'] == '#ff00ff' and smatch.pilot_avatari(-3) is None
     goc_testi()
     print('test_simumav_avatar: TAMAM')

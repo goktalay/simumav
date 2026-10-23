@@ -4,7 +4,7 @@
 //   ile oyuncu avatarlarını 128 px PNG'ye render eder → yarış ekranı skor tablosu / sonuç penceresi yalnız <img> kullanır.
 import { loadThree, makeStage, snapshot } from '../core/three.js';
 import { avatarKey, normAvatar, playerAvatar } from './avatar_core.js';
-import { addAvatarLights, buildAvatar, drawAvatar2D, framePortrait } from './avatar_mesh.js';
+import { FRAMES, addAvatarLights, buildAvatar, drawAvatar2D, framePortrait } from './avatar_mesh.js';
 
 const mem = new Map();               // anahtar → dataURL
 const SS = 'sm.av.';
@@ -99,18 +99,31 @@ export const playerImg = (p, o = {}) => avatarImg(playerAvatar(p), { cls: 'sm-av
 /** Sonuç/sıralama satırı → oyuncu listesindeki kaydıyla (avatar, bot seviyesi) birleşik <img>. */
 export const rowImg = (players, r, o = {}) => { const p = (players || []).find(x => x.id === r.id) || {}; return playerImg({ ...p, ...r, avatar: p.avatar ?? r.avatar, level: r.level ?? p.level, is_bot: !!(r.is_bot || p.is_bot) }, o); };
 
-/** Canlı dönen 3B önizleme (mürettebat düzenleyici / kart). host: kapsayıcı. Dönüş: {set(cfg, name), dispose()} */
-export async function mountAvatarStage(host, cfg, { name = '', spin = 0.5, full = true, drag = true } = {}) {
+/** Canlı dönen 3B önizleme (mürettebat düzenleyici / kart). host: kapsayıcı. opts.pose: 'bust' | 'full' (§28 tam boy), opts.view: 'body' | 'face'
+ *  (tam boyda kadraj; setView ile yumuşak geçiş). Dönüş: {set(cfg, name), setView(v), dispose()} */
+export async function mountAvatarStage(host, cfg, { name = '', spin = 0.5, full = true, drag = true, pose = 'bust', view = 'body' } = {}) {
   const lib = await loadThree(), { THREE } = lib;
-  let model = null, yaw = 0, dragging = false, lastX = 0, vel = spin;
+  let model = null, yaw = 0, dragging = false, lastX = 0, vel = spin, curView = view;
+  const cam = { from: null, to: null, t: 1 };
+  const lerpArr = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
   const stage = makeStage(lib, host, { fov: 30, env: true, pixelRatioMax: 2, onFrame: dt => {
     if (!model) return;
-    if (!dragging) { vel += (spin - vel) * Math.min(1, dt * 1.5); yaw += vel * dt; }
+    if (!dragging && pose === 'full' && curView === 'face') {   // yüz kadrajı: dönmez, öne bakar + hafif salınım
+      const tgt = 0.32 * Math.sin(performance.now() / 1700), d = Math.atan2(Math.sin(tgt - yaw), Math.cos(tgt - yaw));
+      yaw += d * Math.min(1, dt * 2.5); vel = 0;
+    } else if (!dragging) { vel += (spin - vel) * Math.min(1, dt * 1.5); yaw += vel * dt; }
     model.rotation.y = yaw;
     if (model.userData.head) model.userData.head.rotation.z = Math.sin(performance.now() / 900) * 0.03;
+    if (cam.t < 1 && cam.to) {
+      cam.t = Math.min(1, cam.t + dt * 2.2); const k = cam.t * cam.t * (3 - 2 * cam.t);
+      stage.camera.fov = cam.from.fov + (cam.to.fov - cam.from.fov) * k; stage.camera.position.set(...lerpArr(cam.from.pos, cam.to.pos, k));
+      stage.camera.lookAt(...lerpArr(cam.from.look, cam.to.look, k)); stage.camera.updateProjectionMatrix();
+    }
   } });
-  addAvatarLights(THREE, stage.scene); framePortrait(stage.camera, { full });
-  const set = (c, nm = name) => { if (model) { stage.scene.remove(model); model.userData.dispose(); } model = buildAvatar(THREE, normAvatar(c), { name: nm }); stage.scene.add(model); };
+  addAvatarLights(THREE, stage.scene);
+  let cur = framePortrait(stage.camera, pose === 'full' ? { view } : { full });
+  const setView = v => { if (pose !== 'full' || !FRAMES[v]) return; cam.from = { fov: stage.camera.fov, pos: stage.camera.position.toArray(), look: cur.look }; cam.to = FRAMES[v]; cam.t = 0; cur = FRAMES[v]; curView = v; };
+  const set = (c, nm = name) => { if (model) { stage.scene.remove(model); model.userData.dispose(); } model = buildAvatar(THREE, normAvatar(c), { name: nm, pose }); stage.scene.add(model); };
   set(cfg, name);
   const cv = stage.canvas;
   const down = e => { if (!drag) return; dragging = true; lastX = e.clientX; cv.setPointerCapture?.(e.pointerId); };
@@ -120,7 +133,7 @@ export async function mountAvatarStage(host, cfg, { name = '', spin = 0.5, full 
   cv.style.touchAction = 'pan-y'; cv.style.cursor = drag ? 'grab' : '';
   stage.start();
   return {
-    set, stage,
+    set, setView, stage, get model() { return model; },
     dispose() { try { model?.userData.dispose(); } catch { /* */ } stage.dispose(); },
   };
 }

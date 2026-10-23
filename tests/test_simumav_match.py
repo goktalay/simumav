@@ -184,7 +184,7 @@ def calis(c):
     assert r.status_code == 429 and r.json()['detail']['error'] == 'too_many_attempts' and r.json()['detail']['retry_after'] > 0, r.text
     j = ok(veli.post(f'{A}/join', json={'code': code, 'password': 'Gizli-42'}))
     assert {p['id'] for p in j['players']} == {ali.id, veli.id} and j['me'] == veli.id and not j['can_start']
-    assert all(p['avatar'] and p['avatar']['v'] == 1 and p['avatar']['helmet'].startswith('#') for p in j['players'])   # §25 salon avatarı (varsayılan pilot)
+    assert all(p['avatar'] and p['avatar']['v'] == 2 and p['avatar']['helmet'].startswith('#') for p in j['players'])   # §25 salon avatarı (varsayılan pilot)
     assert ok(veli.get(f'{A}/invite/{code}'))['joined'] is True
     ok(veli.post(f'{A}/join', json={'code': code, 'password': 'Gizli-42'}))   # yeniden: değişiklik yok
     # 3. oyuncu can katılır, dora dolu

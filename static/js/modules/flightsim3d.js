@@ -49,6 +49,7 @@ import { fogRange, gustSpeed, normRampAim, normWeather, precipParams, rampHeadin
 import { createWorldFx } from './flightsim_worldfx.js';   // §31 gerçekçi dünya: gökyüzü, bulut, zemin/su malzemesi, ağaç/bina, yağış, tulum, akış çizgileri
 import { GFX_LEGACY, frameGate, pixelRatioFor, recordFloor, resolveGfx } from './flightsim_gfx.js';   // §43 grafik kalitesi (saf: ön ayar → parametre, piksel oranı, kare sınırı)
 import { createGfxPipeline } from './flightsim_gfx3d.js';   // §43 son işlem hattı (MSAA hedefi, SSAO, bloom, ACES, FXAA) — aynı renderer
+import { PILOT_PLACE, createPilotLayer, placePilot, shoulderCam, sticksFromRc } from './flightsim_pilot.js';   // §46 sahnede yer pilotu (RC kumandalı; varsayılan kapalı — opts.pilot)
 import { CAM_FRAG, CAM_VERT, GIMBAL_ZOOM, PIP_RES_SCALE, camFxApplies, camTypeIndex, camUniforms, clampZoom, gimbalZoomFov, nightGain, thermalGain, normCamType, normPalette, paletteIndex, pipInterval, pipSourceFor, pipSwapTarget, isNoCam } from './flightsim_camera.js';   // §22.3–22.5 kamera türü + PiP
 
 const LIB = '/static/vendor/three/';
@@ -1487,6 +1488,9 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const onCamChange = opts.onCameraChange || null;
   function setCamera(mode) {
     if (typeof mode === 'number') mode = CAMERA_MODES[mode - 1]?.[0];
+    // §46 "Pilot gözü": Yer kipinin alt görünümü (kamera pilotun omzunun üstünde); pilot yoksa düz Yer
+    if (mode === 'pilot_eye') { mode = 'ground'; pil.groundView = pil.layer?.has('me') ? 'pilot' : 'side'; }
+    else if (mode === 'ground') pil.groundView = 'side';
     if (!CAMERA_MODES.some(([k]) => k === mode)) return;
     if (mode === 'fpv' && camFx.none) return;   // §35 kamera yok: gimbal kamerası yok
     const prev = camMode;
@@ -1511,7 +1515,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       if (rig) { const p = rig.sidePoint(9, -5, 0).add(rig.group.position); camera.position.set(p.x, p.y, terrainHeight(p.x, p.y) + 2.2); }   // rampa / araç yanı (§13)
       else camera.position.set(RUNWAY_W / 2 + 25, -70, terrainHeight(RUNWAY_W / 2 + 25, -70) + 3);
     }
-    onCamChange?.(mode);
+    onCamChange?.(mode, { groundView: mode === 'ground' ? pil.groundView : null });
   }
   function resetCamera() {
     camSpring.pos.copy(cur.pos); camSpring.vel.set(0, 0, 0);
@@ -1543,6 +1547,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   const editable = el => el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
   const onKeyDown = e => {
     if (preview || editable(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (pil.layer?.has('me') && (e.key === '6' || (e.key === '5' && camMode === 'ground' && pil.groundView === 'side'))) { setCamera('pilot_eye'); e.preventDefault(); return; }   // §46 Pilot gözü (6 / Yer'de tekrar 5)
     if (e.key >= '1' && e.key <= String(CAMERA_MODES.length)) { setCamera(Number(e.key)); e.preventDefault(); return; }
     if ((e.key === 'c' || e.key === 'C') && !e.shiftKey) { let m = nextCameraMode(camMode); if (m === 'fpv' && camFx.none) m = nextCameraMode(m); setCamera(m); e.preventDefault(); return; }
     if (e.key === 'Tab' && tg.items.length) { if (tg.eng == null) cycleTarget(e.shiftKey ? -1 : 1); e.preventDefault(); return; }   // §24.5 hedef kilidi (§40 angajmanda sabit)
@@ -2093,6 +2098,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     if (prev.objCast !== gfx.objCast || prev.terrainCast !== gfx.terrainCast) applyCast();
     if (prev.aniso !== gfx.aniso) applyAniso();
     wfx.U.waterQ.value = gfx.water;
+    pil.layer?.setQuality({ lod: pilotLod(), shadow: gfx.shadow > 0 });   // §46 Düşük: basit pilot, gölgesiz
     if ((prev.fog !== gfx.fog || prev.precip !== gfx.precip) && skyArgs) skyAndLights(...skyArgs);
     if (g3d && (prev.g3dError !== gfx.g3dError || prev.g3dCache !== gfx.g3dCache)) g3d.setQuality?.({ errorTarget: gfx.g3dError, cacheMB: gfx.g3dCache });
     if (worldKeyOf(gfx) !== gfxSt.worldKey) { if (g3d) gfxSt.worldKey = worldKeyOf(gfx); else scheduleRebuild(); }
@@ -2277,6 +2283,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     // Google 3B karoları: kamera çözünürlüğü + LOD + yer ofseti (kalkışa dek); kamera kipi değişse de aynı camera nesnesi
     // İkincil kameralar (radar / EO / PiP / nişangâh) de karo yükleyicisine kayıtlı: kendi bakış bölgeleri için karo + LOD (yoksa "yarım" görüntü)
     if (g3d) { try { g3d.setAuxCameras?.(preview ? [] : auxCameras()); g3d.update(camera, tele.has && tele.armed && tele.speed > 1, now); } catch { /* karo hatası kareyi durdurmasın */ } }
+    if (pil.layer) pilotFrame(now, Math.min(0.5, rawDt));   // §46 yer pilotu (bakış, nefes, çubuklar)
     // Kamera kipleri
     if (preview && previewFocus === 'rig' && rig) {   // §27 / §13 sihirbaz Kalkış adımı: düzeneğin çevresinde yavaş tur
       previewAngle += dt * 0.22;
@@ -2311,9 +2318,11 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
       camera.position.z = Math.max(camera.position.z, terrainHeight(camera.position.x, camera.position.y) + 1.5);
     } else if (camMode === 'ground') {
       const fp = roverFocus();
+      const sp = pil.groundView === 'pilot' ? pil.layer?.pose('me') : null;   // §46 Pilot gözü: omuz üstü
+      if (sp) { const c = shoulderCam(sp, sp.eye, fp); camera.position.set(c.x, c.y, c.z); }
       camera.lookAt(fp);
       const dist = camera.position.distanceTo(fp);
-      camera.fov = clamp(60 * 35 / Math.max(dist, 1), 5, 60);   // uzaklaştıkça yakınlaştır (teleobjektif)
+      camera.fov = sp ? clamp(55 * 30 / Math.max(dist, 1), 6, 55) : clamp(60 * 35 / Math.max(dist, 1), 5, 60);   // uzaklaştıkça yakınlaştır (teleobjektif)
       camera.updateProjectionMatrix();
     }
     frameMs += (Math.min(200, rawDt * 1000) - frameMs) * 0.1;   // ortalama kare süresi (PiP yarı hız kararı)
@@ -2891,6 +2900,54 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     scopeRenders: sc.renders, scopeRect: sc.rect, zoom: sc.zoom, screen: rig.screenPose?.() || null, x: rig.group.position.x, y: rig.group.position.y, z: rig.group.position.z } : null);
   const siteInfo = () => (site.cfg ? { cfg: { ...site.cfg }, layout: site.L, rack: site.rackShow, rackN: site.rackModels.length, eo: { ...site.eo },
     station: site.station ? site.station.group.position.toArray() : null, tower: site.tower ? site.tower.group.position.toArray() : null } : null);
+  // ---------- §46 sahnede yer pilotu (opts.pilot = {look, build?}; varsayılan kapalı — SIMUMAV açar) ----------
+  // Kendi pilotu ('me'): ev noktası = ilk telemetrideki araç konumu (karşılaşmada oyuncunun kendi kalkış noktası), yön = aracın yönü (telemetri yoksa pist);
+  // evden PILOT_PLACE kadar geride/solda, eve dönük. Disarm + yerde + > 25 m sıçrama (sıfırla / set_home) yeniden demirler. Diğerleri: setPilots (karşılaşma).
+  const pil = { layer: null, look: null, build: null, home: null, groundView: 'side', sticks: null, sticksAt: -Infinity, others: new Set() };
+  const pilotLod = () => (gfx.level === 'low' ? 'low' : 'mid');
+  const ensurePilotLayer = () => {
+    if (pil.layer || preview) return pil.layer;
+    pil.layer = createPilotLayer(T, scene, { build: pil.build || undefined, terrainHeight: (x, y) => terrainHeight(x, y), lod: pilotLod(), shadow: gfx.shadow > 0, defaultYaw: num(W.runway_heading, 0) * DEG });
+    heatRoots.push(pil.layer.root);   // termal: insan ılık
+    return pil.layer;
+  };
+  const droneYaw = () => { if (!tele.has) return num(W.runway_heading, 0) * DEG; tmpE.setFromQuaternion(viewQuat(cur.q), 'ZXY'); return -tmpE.z; };
+  function pilotFrame(now, dt) {
+    const L = pil.layer;
+    if (pil.look) {
+      const p = tele.has ? cur.pos : drone.group.position;
+      const far = pil.home && Math.hypot(p.x - pil.home.x, p.y - pil.home.y) > 25;
+      if (!pil.home || (tele.has && !pil.home.tele) || (far && tele.has && !tele.armed && cur.pos.z < 1.5)) {
+        pil.home = { x: p.x, y: p.y, yaw: droneYaw(), tele: tele.has };
+        const pp = placePilot(pil.home, pil.home.yaw, PILOT_PLACE);
+        L.set('me', { look: pil.look, x: pp.x, y: pp.y, yaw: pp.yaw });
+      }
+    }
+    const sticks = now - pil.sticksAt < 400 && pil.sticks ? pil.sticks : sticksFromRc(tele.rc, tele.throttle, tele.armed);
+    L.update(dt, now, { target: drone.group.position, sticks });
+  }
+  /** Kendi pilotu: look (kurucuya giden görünüm; SIMUMAV avatar ayarı) | null (kaldır). build: kurucu (yoksa basit figür). */
+  function setPilot(look, build = undefined) {
+    if (build !== undefined) pil.build = build;
+    if (!look) { pil.look = null; pil.home = null; pil.layer?.remove('me'); if (camMode === 'ground' && pil.groundView === 'pilot') setCamera('ground'); return; }
+    pil.look = look; pil.home = null;
+    ensurePilotLayer();
+  }
+  /** Diğer pilotlar (karşılaşma): [{id, look, x, y, yaw (rad | null → pist yönü), home? {x, y} (verilirse pilot evin gerisine yerleşir), target? fn → {x, y, z}}] */
+  function setPilots(list, build = undefined) {
+    if (build !== undefined && !pil.layer) pil.build = build;
+    if (!ensurePilotLayer()) return;
+    const want = new Set();
+    for (const o of list || []) {
+      if (o.id == null || o.id === 'me') continue;
+      const id = `p${o.id}`; want.add(id);
+      const yaw = o.yaw ?? num(W.runway_heading, 0) * DEG;
+      const pp = o.home ? placePilot(o.home, yaw, PILOT_PLACE) : { x: o.x, y: o.y, yaw };
+      pil.layer.set(id, { look: o.look, x: pp.x, y: pp.y, yaw: pp.yaw, target: o.target || null });
+    }
+    for (const id of pil.others) if (!want.has(id)) pil.layer.remove(id);
+    pil.others = want;
+  }
   const frameHooks = new Set();   // §17 ekran kaydı: her karede render edilen tuvali okuyan kancalar (drawImage → birleşik kayıt tuvali)
 
   // ---------- kurulum ----------
@@ -2906,6 +2963,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
   await setType(opts.type, opts.model ?? opts.airframe);
   buildRig();
   resize();
+  if (opts.pilot && !preview) setPilot(opts.pilot.look || {}, opts.pilot.build);   // §46
   if (!preview) { setCamera(CAMERA_MODES.some(([k]) => k === opts.camera) && !(opts.camera === 'fpv' && camFx.none) ? opts.camera : 'follow'); } else { controls.enabled = false; }   // opts.camera: oturumlar arası kalıcı seçim (fs.cam)
   raf = requestAnimationFrame(frame);
 
@@ -2944,6 +3002,7 @@ export async function createFlightSim3D(mountEl, world, opts = {}) {
     realCache = null;
     g3d?.dispose(); g3d = null;
     rig?.dispose(); rig = null;
+    pil.layer?.dispose(); pil.layer = null;   // §46
     cancelAnimationFrame(raf);
     clearTimeout(gfxSt.rebuildT); window.removeEventListener('blur', onBlur); window.removeEventListener('focus', onFocus); gpipe.dispose();   // §43
     ro.disconnect();
@@ -3055,6 +3114,11 @@ pipStats: () => ({ ...pipStats, interval: pipInterval(frameMs), frameMs, rt: pip
     addFrameHook: fn => { frameHooks.add(fn); return () => frameHooks.delete(fn); },   // §17: render sonrası kanca (kayıt birleşimi)
     // §43 grafik kalitesi: setGraphics(resolveGfx çıktısı) canlı uygular · getGraphics() uygulanan + tampon/hat bilgisi · gfxStats() son 1 sn FPS, karenin
     // çizim çağrısı/üçgeni, piksel oranı · setRecordFloor(bool) ekran kaydında piksel oranı tabanı (kayıt çözünürlüğü düşmesin; arka plan kısması yok)
+    // §46 sahnede yer pilotu: setPilot(look | null, build?) · setPilots([...]) karşılaşmada diğerleri · setPilotSticks({thr, yaw, pitch, roll}) sanal kumanda
+    // (400 ms taze; yoksa telemetri RC kanalları) · Yer kipinin alt görünümü 'side' | 'pilot' (Pilot gözü; setCamera('pilot_eye') / tuş 6) · pilotInfo() teşhis
+    setPilot, setPilots, setPilotSticks: s => { pil.sticks = s ? { thr: num(s.thr, 0), yaw: num(s.yaw, 0), pitch: num(s.pitch, 0), roll: num(s.roll, 0) } : null; pil.sticksAt = s ? performance.now() : -Infinity; },
+    getGroundView: () => (camMode === 'ground' ? pil.groundView : null), hasPilot: () => !!pil.layer?.has('me'),
+    pilotInfo: () => (pil.layer ? { home: pil.home, groundView: pil.groundView, pilots: pil.layer.info() } : null),
     setGraphics, getGraphics, gfxStats, setRecordFloor: v => { gfxSt.floor = !!v; resize(); }, resolveGfx,
     get gfxCaps() { return { maxSamples: gpipe.maxSamples, maxAniso: renderer.capabilities.getMaxAnisotropy?.() || 1, maxTex: renderer.capabilities.maxTextureSize, halfFloat: gpipe.halfFloat, nativeAA, gpu: gpuName() }; },
   };

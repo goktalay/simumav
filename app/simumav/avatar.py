@@ -1,7 +1,10 @@
 """SIMUMAV 3B pilot avatarı + TOP 10 PİLOT (docs/simumav.md §25).
 
 • Avatar ayarı `pilots.avatar` (JSON, v6 göçü). Biçim (sunucu doğrular; bilinmeyen alanlar atılır):
-    {v:1, helmet:'#rrggbb', visor:'#rrggbb', mirror:bool, suit:'#rrggbb', skin:'s1'…'s8', patch:<PATCHES>, patch_color:'#rrggbb', accessory:<ACCESSORIES>}
+    {v:2, helmet:'#rrggbb', visor:'#rrggbb', mirror:bool, suit:'#rrggbb', skin:'s1'…'s8', patch:<PATCHES>, patch_color:'#rrggbb', accessory:<ACCESSORIES>,
+     §28 KARAKTER YARATMA: body:m|f, build, face, eyes, eye_color, brows, brow_w, nose, mouth, beard, freckles:bool, mole:bool, glasses, hair, hair_color,
+     headgear:helmet|none|cap|headset, visor_open:bool, outfit}
+  v1 kayıtlar (yalnız kask/tulum alanları) geriye uyumlu: eksik §28 alanları `DEFAULT`tan (erkek, kısa saç, kasklı, vizör kapalı → eski görünüm).
   Eski 2B karakterler (p01…p10) `LEGACY` ile varsayılan 3B karşılığa eşlenir (göç NULL satırları doldurur; okumada da yedek).
   İstemci eşi: static/simumav/app/crew/avatar_core.js (aynı sabitler; node testi tests/test_simumav_avatar.mjs).
 • Liderlik tablosu: `siralama(conn, period)` — formül §25.3 (aşağıda `PUAN`). Gizlilik: ad/e-posta maskesi YALNIZ burada (ham veri istemciye gitmez);
@@ -16,7 +19,29 @@ HEX = re.compile(r'^#[0-9a-fA-F]{6}$')
 SKINS = {'s1': '#ffdbac', 's2': '#f7e0c3', 's3': '#f1c9a5', 's4': '#e8b58a', 's5': '#e0ac69', 's6': '#c68642', 's7': '#8d5524', 's8': '#6b4226'}
 PATCHES = ('none', 'star', 'wing', 'bolt', 'chevron', 'target', 'shield', 'cross')
 ACCESSORIES = ('none', 'mic', 'crest', 'antenna', 'stripe')
-DEFAULT = {'v': 1, 'helmet': '#1e3a5f', 'visor': '#f5c542', 'mirror': True, 'suit': '#1e3a5f', 'skin': 's4', 'patch': 'wing', 'patch_color': '#f5c542', 'accessory': 'mic'}
+# §28 KARAKTER YARATMA (beden · yüz · saç · kıyafet · başlık); istemci eşi avatar_core.js (aynı listeler — node testi birebir karşılaştırır)
+BODIES = ('m', 'f')
+BUILDS = ('slim', 'avg', 'broad')
+FACES = ('oval', 'round', 'square', 'long', 'heart')
+EYES = ('almond', 'round', 'narrow', 'wide')
+BROWS = ('straight', 'arched', 'angled', 'soft')
+BROW_W = ('thin', 'medium', 'thick')
+NOSES = ('small', 'straight', 'wide', 'pointed')
+MOUTHS = ('neutral', 'smile', 'grin', 'serious')
+BEARDS = ('none', 'stubble', 'mustache', 'goatee', 'full')
+GLASSES = ('none', 'aviator', 'sun')
+HAIRS = ('short', 'buzz', 'spiky', 'sidepart', 'curly', 'mohawk', 'bald', 'long', 'ponytail', 'bun', 'bob')
+HEADGEAR = ('helmet', 'none', 'cap', 'headset')
+OUTFITS = ('suit', 'jacket', 'casual')
+ENUMS = {'body': BODIES, 'build': BUILDS, 'face': FACES, 'eyes': EYES, 'brows': BROWS, 'brow_w': BROW_W, 'nose': NOSES, 'mouth': MOUTHS, 'beard': BEARDS,
+         'glasses': GLASSES, 'hair': HAIRS, 'headgear': HEADGEAR, 'outfit': OUTFITS}
+COLORS = ('helmet', 'visor', 'suit', 'patch_color', 'eye_color', 'hair_color')
+BOOLS = ('mirror', 'freckles', 'mole', 'visor_open')
+DEFAULT = {'v': 2, 'helmet': '#1e3a5f', 'visor': '#f5c542', 'mirror': True, 'suit': '#1e3a5f', 'skin': 's4', 'patch': 'wing', 'patch_color': '#f5c542', 'accessory': 'mic',
+           'body': 'm', 'build': 'avg', 'face': 'oval', 'eyes': 'almond', 'eye_color': '#5b3a1e', 'brows': 'straight', 'brow_w': 'medium', 'nose': 'straight',
+           'mouth': 'smile', 'beard': 'none', 'freckles': False, 'mole': False, 'glasses': 'none', 'hair': 'short', 'hair_color': '#3b2a1e',
+           'headgear': 'helmet', 'visor_open': False, 'outfit': 'suit'}
+MAX_JSON = 1500   # API girişi üst sınırı (bayt; §28 ile 600 → 1500)
 # 2B karakter SVG'lerinin (static/simumav/app/img/pilots/pNN.svg) renkleri → 3B karşılık
 LEGACY = {
     'p01': {'helmet': '#1e3a5f', 'suit': '#1e3a5f', 'skin': 's4', 'visor': '#f5c542', 'mirror': True, 'patch': 'wing', 'patch_color': '#f5c542', 'accessory': 'mic'},
@@ -59,25 +84,26 @@ def normalize(a, character='p01', strict=False):
             raise AvatarHata(f'avatar.{k} geçersiz')
 
     out = dict(base)
-    for k in ('helmet', 'visor', 'suit', 'patch_color'):
+    for k in COLORS:
         if k in a:
             v = a[k]
             if isinstance(v, str) and HEX.match(v):
                 out[k] = v.lower()
             else:
                 bad(k)
-    if 'mirror' in a:
-        if isinstance(a['mirror'], bool):
-            out['mirror'] = a['mirror']
-        else:
-            bad('mirror')
-    for k, izin in (('skin', SKINS), ('patch', PATCHES), ('accessory', ACCESSORIES)):
+    for k in BOOLS:
         if k in a:
-            if a[k] in izin:
+            if isinstance(a[k], bool):
                 out[k] = a[k]
             else:
                 bad(k)
-    out['v'] = 1
+    for k, izin in (('skin', SKINS), ('patch', PATCHES), ('accessory', ACCESSORIES), *ENUMS.items()):
+        if k in a:
+            if isinstance(a[k], str) and a[k] in izin:
+                out[k] = a[k]
+            else:
+                bad(k)
+    out['v'] = 2
     return out
 
 

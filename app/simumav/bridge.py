@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 from . import config, db  # noqa: F401 — config önce: çekirdek yollarını yönlendirir
+from . import avatar as _avatar  # noqa: E402 — §28 uçuş anlık görüntüsünde pilot avatarı
 from .. import config as core_config  # noqa: E402
 from .. import db as core_db  # noqa: E402
 from .. import drone_sitl, flightsim, flightsim_gcs, flightsim_launcher, flightsim_models, flightsim_power, flightsim_replay, flightsim_targets  # noqa: E402
@@ -742,7 +743,8 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         t = db.now()
         snap = {'drone': {'id': drone['id'], 'name': drone['name'], 'type': drone['type'], 'model_key': drone['model_key'], 'color': drone.get('color'), 'airframe': drone_airframe(drone),
                           'drive': getattr(s, 'drive', None) or drive},   # §15 kara aracı sürüş biçimi (çekirdek oturumun etkin değeri)
-                'pilot': {'id': pilot['id'], 'name': pilot['name'], 'character': pilot['character']},
+                'pilot': {'id': pilot['id'], 'name': pilot['name'], 'character': pilot['character'],
+                          'avatar': _avatar.normalize(pilot.get('avatar'), pilot['character'])},   # §28 sahnede pilot + kayıttan oynatma (uçuş anındaki karakter)
                 'track': {'id': track['id'], 'name': track['name'], 'lat': track['lat'], 'lon': track['lon'], 'radius_m': track.get('radius_m'), 'world_mode': track.get('world_mode'),
                           'world': db.j(track.get('world')) if isinstance(track.get('world'), str) else (track.get('world') or {}),
                           'gates': db.j(track.get('gates'), []) if isinstance(track.get('gates'), str) else list(track.get('gates') or []),

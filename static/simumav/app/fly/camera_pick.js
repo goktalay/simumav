@@ -26,7 +26,7 @@ export const CAM_TEXT_KEYS = {
   'Kamera PiP: sürükleyin, çift tıklayınca gimbal kamerası ana görünüme geçer': 'camera.pip_aria',
   'Sürükle: taşı · çift tık: gimbal kamerası ana görünüme · tekerlek: yakınlaştırma': 'camera.pip_title',
   // alt bant görünüm açılır listesi (görünüm + kamera türü TEK kapsül)
-  Takip: 'camera.view_follow', FPV: 'camera.view_pilot', 'Gimbal kamerası': 'camera.view_gimbal', Serbest: 'camera.view_free', Yer: 'camera.view_ground',
+  Takip: 'camera.view_follow', FPV: 'camera.view_pilot', 'Gimbal kamerası': 'camera.view_gimbal', Serbest: 'camera.view_free', Yer: 'camera.view_ground', 'Pilot gözü': 'camera.view_pilot_eye',
   'Görünüm': 'camera.view', 'Görünüm (1–5 · C)': 'camera.view_title', '1–5: görünüm · C: sıradaki görünüm': 'camera.view_keys', '{label} (tuş {n})': 'camera.view_key',
 };
 // tr sarmalayıcısı: eşlenen metin anahtardan çevrilir; sözlükte yoksa (anahtarın kendisi döner) Türkçe metin

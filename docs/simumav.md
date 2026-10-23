@@ -985,3 +985,47 @@ Dönem: **son 30 gün** (`period=30d`, karşılaşma bitişi / uçuş başlangı
   zamanlar, botlar hariç, gizlilik ayarı, maskeli/kimliksiz yanıt, önbellek, 429), `tests.test_simumav_match` (salon/yarış avatarı),
   `node tests/test_simumav_avatar.mjs` (sabitler sunucuyla birebir, tüm parça birleşimleri gerçek three.js ile, WebGL kuralı, i18n).
 - Görseller: `./.venv/bin/python -m tests.simumav_avatar_shots` → `/tmp/smavatar-shots/*.png`.
+
+## 28. KARAKTER YARATMA + sahnede pilot (tam boy 3B pilot, RC kumanda; §27'nin genişlemesi — HEPGO ortak katman docs/ucus-simulatoru.md §46)
+### 28.1 Şema (geriye uyumlu; `pilots.avatar` JSON — DB göçü YOK, sütun §25/v6'dan beri var)
+- `avatar.py` + istemci eşi `crew/avatar_core.js` (listeler node testinde birebir karşılaştırılır). §25 alanlarına ek: `body m|f`, `build slim|avg|broad`,
+  `face oval|round|square|long|heart`, `eyes almond|round|narrow|wide`, `eye_color #rrggbb`, `brows straight|arched|angled|soft`, `brow_w thin|medium|thick`,
+  `nose small|straight|wide|pointed`, `mouth neutral|smile|grin|serious`, `beard none|stubble|mustache|goatee|full` (yalnız erkek bedende çizilir),
+  `freckles`, `mole` (bool), `glasses none|aviator|sun`, `hair short|buzz|spiky|sidepart|curly|mohawk|bald|long|ponytail|bun|bob` (her iki beden her stili
+  seçebilir; `HAIR_BY_BODY` yalnız sıralama + rastgele olasılığı), `hair_color #rrggbb` (doğal 9 + renkli 6 + serbest), `headgear helmet|none|cap|headset`,
+  `visor_open` (bool; kaskta vizör kalkar, yüz görünür), `outfit suit|jacket|casual`. Kask/şapka/kulaklık rengi `helmet` alanı.
+- `v: 2`. v1 kayıt (yalnız kask/tulum alanları) okunurken eksik alanlar `DEFAULT`tan → **eski görünüm korunur** (erkek, kısa saç, kasklı, vizör kapalı).
+  Geçersiz alan → 422 (`strict`), okumada varsayılan; bilinmeyen alan atılır; API girişi üst sınırı `MAX_JSON` 1500 bayt (600 → 1500).
+  `GET /api/crew/avatar-options` → `enums`. Uçuş anlık görüntüsü (`flights.snapshot.pilot`) artık `avatar` da taşır (kayıttan oynatma, devam eden uçuş).
+- Rastgele (`randomAvatar(rnd, {body})`): cinsiyete uygun ağırlıklar (`RANDOM_W`: kadında sakal yok, saç/yüz şekli/kaş kalınlığı bedene göre; renkli saç %10,
+  gözlük %30, başlık kask %40 / yok %30 / şapka / kulaklık); "Cinsiyeti koru" → `body` sabit. `switchBody`: kadına geçişte sakal kalkar, saç o bedenin
+  listesinde değilse varsayılana döner.
+### 28.2 Karakter modeli (`crew/avatar_body.js`; prosedürel, harici varlık YOK → lisans: proje kodu, CC0 eşdeğeri)
+- `buildCharacter(THREE, cfg, {pose 'full'|'bust', lod 'high'|'mid'|'low', merged, rc, name})`: TAM BOY düşük poli figür — pelvis + üst gövde (lathe;
+  beden/yapıya göre omuz/bel/kalça), kollar (iki kemikli IK: serbest duruş ya da kumanda tutuşu), eller (eldiven: tulumda), bacaklar, botlar; baş (yüz şekli
+  deformasyonu), gözler (sklera + iris + bebek; kadında kirpik), kaş, burun, ağız, kulak, çil/ben, sakal (deforme kabuk + bıyık), gözlük, 11 saç modeli,
+  başlık (kask + vizör açık/kapalı + aksesuar | şapka | kulaklık + mikrofon), RC kumanda (gövde, gimbal, iki çubuk + başparmak, anten, ekran).
+  Kemikler: root → torso → head · torso → rc → stickL/stickR. Büst kipi (§25 lathe gövdesi + yeni baş) önbellek portreleri için korunur (kadraj değişmedi).
+- `merged: true` (uçuş): kemik başına TEK mesh (köşe renkleri, tek malzeme) → 6 çizim çağrısı; `mid` ≤ 5000 üçgen, `low` ≤ 3600 (300 rastgele + tüm
+  saç × başlık birleşimiyle test edilir). `buildPilotRig` → HEPGO `opts.pilot.build` sözleşmesi (Z yukarı, metre, ayak z = 0, yüz −Y; boy ♂ 1,78 / ♀ 1,66 m).
+- `avatar_mesh.js` geri uyumlu: `buildAvatar(…, {pose})`, `FRAMES` (bust / bustWide / body / face), `drawAvatar2D` (§28: saç, yüz, gözlük, sakal, başlık).
+### 28.3 Düzenleyici (`crew/index.js`)
+- Sekmeler **Beden · Yüz · Saç · Kıyafet · Aksesuar**; solda canlı dönen TAM BOY önizleme + "Tam boy / Yüz" yakınlaştırma (yumuşak kamera geçişi; yüz
+  kadrajında öne bakar, hafif salınır); "Rastgele" + "Cinsiyeti koru". Bağlama göre alanlar: sakal yalnız erkek, vizör/aksesuar yalnız kaskta, renk
+  etiketi başlığa göre ("Başlık rengi"). Teşhis: `window.__smAvatarEditor` (`set`, `tab`, `zoom`, `live`).
+- Metinler `avatar.tab_*`, `avatar.<alan>`, `avatar.<alan>_<değer>`, `avatar.keep_body`, `avatar.view_*`, `camera.view_pilot_eye` (7 dil).
+### 28.4 Sahnede pilot (uçuş, karşılaşma, kayıt)
+- Oturum (`fly/session.js`) HEPGO ortak katmanını açar: `sim.setPilot(avatar, buildPilotRig)` — seçili pilotun avatarı (`picked.pilot.avatar`; yoksa
+  varsayılan pilot). Elden atışta açılmaz (pilot figürü zaten `hand_launch` kaplamasında). Dronun ev noktasının 8 m gerisinde + 3 m solunda, eve dönük;
+  baş/gövde dronu yavaşça izler, nefes + ağırlık aktarma, sanal/fiziksel kumanda girdisi başparmak + çubuklara (`setPilotSticks`, Mod 2), kumanda kapalıyken
+  telemetri RC kanalları. Gölge alır/düşürür; §43 Düşük → `lod: low` + gölgesiz; termalde ılık; FPV/gimbal/PiP'te görünür.
+- Görünüm menüsünde 6: **Pilot gözü** (Yer kipinin alt görünümü; kamera pilotun sağ omzunun üstünden dronu izler; Yer'de tekrar 5 de geçer).
+- Karşılaşma (`fly/match_hud.js`): her oyuncunun pilotu kendi kalkış noktasında (`players[].start` → `sim.setPilots`, avatar = `players[].avatar`; botlar
+  `botAvatar` — AI kask), bakış hayalet araca (`flightsim_match3d.ghostPos`). Aynı sahne/çizici: yeni WebGL bağlamı YOK (`__smGl() ≤ 1`).
+- Kayıttan oynatma (`ops/replay.js`, Cesium): aynı karakter (uçuş LOD'u) → GLB (GLTFExporter; WebGL gerektirmez) → `Cesium.Model`, ev noktasının
+  gerisinde, dronu izler (sapma); `minimumPixelSize` 56.
+### 28.5 Testler ve görseller
+- `node tests/test_simumav_avatar.mjs` (§28 listeleri sunucuyla birebir, v1 geriye uyum, rastgele tutarlılık/olasılık/"Cinsiyeti koru", switchBody, her
+  saç × başlık × beden tam boy, 2B yedek, i18n), `node tests/test_flightsim_pilot.mjs` (ortak katman: RC → çubuk, yerleşim, bakış, katman, ≤ 5k üçgen),
+  `./.venv/bin/python -m tests.test_simumav_avatar` (sunucu doğrulaması, v1 → v2, API kısmi PUT, 422, `MAX_JSON`, `enums`).
+- Görseller: `./.venv/bin/python -m tests.simumav_pilot3d_shots` → `/tmp/pilot3d-shots/*.png` (`PILOT_ONLY=editor|fly|match|replay`).

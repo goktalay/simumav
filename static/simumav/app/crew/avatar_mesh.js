@@ -1,8 +1,9 @@
 // SIMUMAV §25 — prosedürel düşük poli 3B pilot avatarı (three.js ile üretilir; harici varlık/lisans YOK) + aynı ayardan 2B yedek portre.
 // THREE dışarıdan verilir (import yok) → oyun kabuğu (/app/core/three.js) ve tanıtım sitesi (/site/js/stage.js) aynı modülü kullanır.
-// Parçalar: tulum (lathe gövde, yaka, fermuar), göğüste yama (CanvasTexture) + isim bandı, boyun, yüz (ten tonu, gözler), kask (kapak + vizör açıklı
-// bant + kenar + kulaklık), vizör (aynalı: metal; değilse yarı saydam), aksesuar (mikrofon | tepe sırtı | anten | şerit); bot: "AI" yazılı kask.
+// Geometri §28'den beri avatar_body.js'de (büst + TAM BOY karakter: beden, yüz, saç, başlık, kıyafet, RC kumanda); bu modül yama çizimi, ışıklar,
+// kadraj ve 2B yedek portreyi sağlar (geri uyumlu dışa aktarımlar: buildAvatar, drawPatch, addAvatarLights, framePortrait, drawAvatar2D).
 import { SKINS, normAvatar, shade } from './avatar_core.js';
+import { FEET_Y, HEAD_Y, buildCharacter, mix, setPatchDrawer } from './avatar_body.js';
 
 // ---------------------------------------------------------------- 2B yama çizimi (doku + yedek portre ortak)
 export function drawPatch(ctx, kind, color, cx, cy, r, { bg = '#0b1220' } = {}) {
@@ -39,103 +40,12 @@ export function drawPatch(ctx, kind, color, cx, cy, r, { bg = '#0b1220' } = {}) 
   ctx.restore();
 }
 
-const mkCanvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+setPatchDrawer(drawPatch);
 
-function patchTexture(THREE, a) {
-  const c = mkCanvas(128, 128), ctx = c.getContext('2d');
-  drawPatch(ctx, a.patch, a.patch_color, 64, 64, 58);
-  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
-  return tex;
-}
-function textTexture(THREE, text, { w = 256, h = 64, fg = '#ffffff', bg = null, font = 'bold 40px system-ui, sans-serif' } = {}) {
-  const c = mkCanvas(w, h), ctx = c.getContext('2d');
-  if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h); }
-  ctx.fillStyle = fg; ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(String(text).slice(0, 14), w / 2, h / 2 + 2, w - 12);
-  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-/** Avatar grubu. opts.name: göğüs isim bandı (yoksa çizilmez). Dönüş: THREE.Group (userData.dispose() dokular + geometriler). */
-export function buildAvatar(THREE, cfg, { name = '' } = {}) {
-  const a = normAvatar(cfg);
-  const g = new THREE.Group(); g.name = 'sm-avatar';
-  const disp = [];
-  const M = (o) => { const m = new THREE.MeshStandardMaterial(o); disp.push(m); return m; };
-  const add = (geo, mat, pos = [0, 0, 0], rot = null, scl = null, parent = g) => {
-    disp.push(geo);
-    const m = new THREE.Mesh(geo, mat); m.position.set(...pos); if (rot) m.rotation.set(...rot); if (scl) m.scale.set(...scl); parent.add(m); return m;
-  };
-  const skin = SKINS[a.skin] || SKINS.s4;
-  const suitM = M({ color: a.suit, roughness: 0.78, metalness: 0.02 });
-  const suitDark = M({ color: shade(a.suit, -0.35), roughness: 0.7 });
-  const skinM = M({ color: skin, roughness: 0.62 });
-  const helmM = M({ color: a.helmet, roughness: 0.3, metalness: 0.15 });
-  const helmDark = M({ color: shade(a.helmet, -0.55), roughness: 0.5 });
-  const accM = M({ color: a.patch_color, roughness: 0.4, metalness: 0.2 });
-  const dark = M({ color: '#15171c', roughness: 0.5 });
-  // ---- gövde (tulum)
-  const prof = [[0, -0.78], [0.72, -0.78], [0.75, -0.5], [0.71, -0.2], [0.6, 0.0], [0.42, 0.12], [0.2, 0.18], [0, 0.19]].map(([x, y]) => new THREE.Vector2(x, y));
-  add(new THREE.LatheGeometry(prof, 28), suitM, [0, 0, 0], null, [1, 1, 0.7]);
-  add(new THREE.TorusGeometry(0.2, 0.05, 8, 24), suitDark, [0, 0.17, 0], [Math.PI / 2, 0, 0]);
-  add(new THREE.BoxGeometry(0.03, 0.62, 0.02), suitDark, [0, -0.32, 0.5]);
-  // yama + isim bandı (göğüs yüzeyine teğet)
-  const radAt = y => { for (let i = 1; i < prof.length; i++) { const p0 = prof[i - 1], p1 = prof[i]; if (y >= p0.y && y <= p1.y) return p0.x + (p1.x - p0.x) * ((y - p0.y) / (p1.y - p0.y || 1)); } return 0.7; };
-  const chest = (x, y) => { const A = radAt(y), B = A * 0.7, z = B * Math.sqrt(Math.max(0, 1 - (x / A) ** 2)); return { z: z + 0.012, ry: Math.atan2(x / (A * A), z / (B * B)) }; };
-  if (a.patch && a.patch !== 'none') {
-    const tex = patchTexture(THREE, a); disp.push(tex);
-    const c = chest(0.3, -0.2);
-    add(new THREE.PlaneGeometry(0.24, 0.24), M({ map: tex, transparent: true, roughness: 0.8, alphaTest: 0.05 }), [0.3, -0.2, c.z], [0, c.ry, 0]);
-  }
-  if (name) {
-    const tex = textTexture(THREE, name, { bg: '#0b1220', fg: '#e5e7eb', font: 'bold 34px system-ui, sans-serif' }); disp.push(tex);
-    const c = chest(-0.3, -0.16);
-    add(new THREE.PlaneGeometry(0.32, 0.08), M({ map: tex, roughness: 0.85 }), [-0.3, -0.16, c.z], [0, c.ry, 0]);
-  }
-  // ---- boyun + baş
-  add(new THREE.CylinderGeometry(0.13, 0.15, 0.26, 16), skinM, [0, 0.28, 0]);
-  const head = new THREE.Group(); head.position.set(0, 0.6, 0); g.add(head);
-  add(new THREE.SphereGeometry(0.29, 28, 20), skinM, [0, -0.02, 0.0], null, [0.95, 1.08, 1], head);
-  for (const sx of [-1, 1]) add(new THREE.SphereGeometry(0.034, 10, 8), dark, [sx * 0.1, 0.01, 0.262], null, null, head);
-  add(new THREE.BoxGeometry(0.1, 0.018, 0.02), M({ color: shade(skin, -0.35), roughness: 0.7 }), [0, -0.15, 0.262], null, null, head);   // ağız
-  // ---- kask: kapak + vizör açıklı bant + vizör + kenar + kulaklık
-  const R = 0.37;
-  const helm = new THREE.Group(); helm.position.set(0, 0.03, -0.01); head.add(helm);
-  add(new THREE.SphereGeometry(R, 36, 12, 0, Math.PI * 2, 0, Math.PI * 0.34), helmM, [0, 0, 0], null, null, helm);
-  add(new THREE.SphereGeometry(R, 36, 10, Math.PI / 2 + 0.78, Math.PI * 2 - 1.56, Math.PI * 0.34, Math.PI * 0.27), helmM, [0, 0, 0], null, null, helm);
-  const visM = a.mirror ? M({ color: a.visor, metalness: 1, roughness: 0.06, envMapIntensity: 1.4 })
-    : M({ color: a.visor, metalness: 0.1, roughness: 0.05, transparent: true, opacity: 0.42, depthWrite: false });
-  add(new THREE.SphereGeometry(R * 1.018, 28, 10, Math.PI / 2 - 0.84, 1.68, Math.PI * 0.32, Math.PI * 0.27), visM, [0, 0, 0], null, null, helm);
-  add(new THREE.TorusGeometry(R * 0.955, 0.028, 8, 40), helmDark, [0, -R * Math.cos(Math.PI * 0.39), 0], [Math.PI / 2, 0, 0], null, helm);
-  for (const sx of [-1, 1]) add(new THREE.CylinderGeometry(0.09, 0.09, 0.06, 18), helmDark, [sx * (R - 0.005), -0.07, -0.02], [0, 0, Math.PI / 2], null, helm);
-  const arc = (rad, r0, from, to, n = 24) => {
-    const pts = []; for (let i = 0; i <= n; i++) { const t = from + (to - from) * (i / n); pts.push(new THREE.Vector3(0, Math.cos(t) * r0, Math.sin(t) * r0)); }
-    return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), n * 2, rad, 8, false);
-  };
-  if (a.accessory === 'mic' && !a.bot) {
-    const pts = [[R * 0.98, -0.08, 0.02], [R * 0.9, -0.2, 0.2], [0.18, -0.25, 0.33], [0.06, -0.24, 0.36]].map(p => new THREE.Vector3(...p));
-    add(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.013, 6, false), dark, [0, 0, 0], null, null, helm);
-    add(new THREE.SphereGeometry(0.035, 12, 10), dark, [0.06, -0.24, 0.36], null, [1.3, 1, 1], helm);
-  } else if (a.accessory === 'crest') {
-    add(arc(0.04, R + 0.025, -0.25 * Math.PI, 0.62 * Math.PI), accM, [0, 0, 0], null, [0.6, 1, 1], helm);
-  } else if (a.accessory === 'stripe' || a.bot) {
-    add(arc(0.03, R + 0.004, -0.33 * Math.PI, 0.3 * Math.PI), accM, [0, 0, 0], null, [1.6, 1, 1], helm);
-  } else if (a.accessory === 'antenna') {
-    add(new THREE.CylinderGeometry(0.01, 0.012, 0.3, 8), dark, [0.17, R + 0.06, -0.08], [0, 0, -0.35], null, helm);
-    add(new THREE.SphereGeometry(0.032, 12, 10), accM, [0.22, R + 0.2, -0.08], null, null, helm);
-  }
-  if (a.bot) {   // HEPGO §44 yapay zekâ pilot: "AI" kask yazıları (alın + iki yan) + anten
-    const tex = textTexture(THREE, 'AI', { w: 128, h: 64, fg: '#ffffff', font: '900 50px system-ui, sans-serif' }); disp.push(tex);
-    const mat = M({ map: tex, transparent: true, roughness: 0.4, alphaTest: 0.1 });
-    const t = Math.PI * 0.2;
-    add(new THREE.PlaneGeometry(0.2, 0.1), mat, [0, Math.cos(t) * (R + 0.006), Math.sin(t) * (R + 0.006)], [-(Math.PI / 2 - t), 0, 0], null, helm);
-    for (const sx of [-1, 1]) add(new THREE.PlaneGeometry(0.2, 0.1), mat, [sx * (R + 0.012), 0.08, -0.08], [0, sx * Math.PI / 2, 0], null, helm);
-    add(new THREE.CylinderGeometry(0.01, 0.012, 0.26, 8), dark, [-0.17, R + 0.05, -0.08], [0, 0, 0.35], null, helm);
-    add(new THREE.SphereGeometry(0.03, 12, 10), accM, [-0.21, R + 0.17, -0.08], null, null, helm);
-  }
-  g.userData.head = head;
-  g.userData.dispose = () => { for (const d of disp) { try { d.dispose(); } catch { /* */ } } };
-  return g;
+/** Avatar grubu (§25 büst; §28 pose:'full' tam boy). opts.name: göğüs isim bandı. Dönüş: THREE.Group (userData.dispose() dokular + geometriler,
+ *  userData.head baş kemiği). Ayrıntı: avatar_body.js buildCharacter. */
+export function buildAvatar(THREE, cfg, { name = '', pose = 'bust', lod = 'high', rc = false } = {}) {
+  return buildCharacter(THREE, cfg, { pose, lod, name, rc, merged: false });
 }
 
 /** Stüdyo ışıkları (sahneye bir kez). */
@@ -147,41 +57,101 @@ export function addAvatarLights(THREE, scene) {
   return [hemi, key, rim];
 }
 
-/** Portre kamerası (göğüs üstü). */
-export function framePortrait(camera, { full = false } = {}) {
-  if (full) { camera.fov = 30; camera.position.set(0.6, 0.5, 3.7); camera.lookAt(0, 0.2, 0); }
-  else { camera.fov = 28; camera.position.set(0.3, 0.6, 2.55); camera.lookAt(0, 0.38, 0); }
+/** Kamera kadrajı. Büst: {full:false} göğüs üstü (önbellek portresi) · {full:true} geniş büst. §28 tam boy: view 'body' (baştan ayağa) | 'face' (yüz). */
+export const FRAMES = {
+  bust: { fov: 28, pos: [0.3, 0.6, 2.55], look: [0, 0.38, 0] },
+  bustWide: { fov: 30, pos: [0.6, 0.5, 3.7], look: [0, 0.2, 0] },
+  body: { fov: 30, pos: [1.1, -0.2, 8.6], look: [0, (1.0 + FEET_Y) / 2, 0] },
+  face: { fov: 26, pos: [0.3, HEAD_Y + 0.06, 2.45], look: [0, HEAD_Y - 0.05, 0] },
+};
+export function framePortrait(camera, { full = false, view = null } = {}) {
+  const f = FRAMES[view] || (full ? FRAMES.bustWide : FRAMES.bust);
+  camera.fov = f.fov; camera.position.set(...f.pos); camera.lookAt(...f.look);
   camera.updateProjectionMatrix();
+  return f;
 }
 
-/** 2B yedek portre (WebGL yokken / uçuş sırasında önbellekte yoksa) — aynı ayardan düz çizim. */
+/** 2B yedek portre (WebGL yokken / uçuş sırasında önbellekte yoksa) — aynı ayardan düz çizim (§28: saç, yüz, gözlük, sakal, başlık). */
 export function drawAvatar2D(ctx, cfg, size = 128) {
-  const a = normAvatar(cfg), S = size, skin = SKINS[a.skin] || SKINS.s4;
+  const a = normAvatar(cfg), S = size, skin = SKINS[a.skin] || SKINS.s4, f = a.body === 'f';
+  const hg = a.bot ? 'helmet' : a.headgear, helmet = hg === 'helmet', open = helmet && a.visor_open && !a.bot, hair = a.hair_color;
   ctx.clearRect(0, 0, S, S);
   ctx.save(); ctx.scale(S / 128, S / 128);
+  const ell = (x, y, rx, ry, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); };
+  // ense saçı (uzun / küt / at kuyruğu) — başın arkasında
+  if (a.hair === 'long') { ctx.fillStyle = hair; ctx.fillRect(f ? 38 : 40, 56, f ? 52 : 48, 46); }
+  else if (a.hair === 'bob' && !helmet) { ctx.fillStyle = hair; ctx.fillRect(37, 52, 54, 28); }
+  else if (a.hair === 'ponytail') { ctx.fillStyle = hair; ctx.beginPath(); ctx.ellipse(86, 82, 7, 18, -0.3, 0, Math.PI * 2); ctx.fill(); }
   // gövde
   const gb = ctx.createLinearGradient(0, 92, 0, 128); gb.addColorStop(0, shade(a.suit, 0.12)); gb.addColorStop(1, shade(a.suit, -0.3));
-  ctx.fillStyle = gb; ctx.beginPath(); ctx.moveTo(14, 128); ctx.bezierCurveTo(18, 104, 36, 96, 64, 96); ctx.bezierCurveTo(92, 96, 110, 104, 114, 128); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = shade(a.suit, -0.35); ctx.fillRect(62.5, 100, 3, 28);
+  const sw = f ? 4 : 0;
+  ctx.fillStyle = gb; ctx.beginPath(); ctx.moveTo(14 + sw, 128); ctx.bezierCurveTo(18 + sw, 104, 36, 96, 64, 96); ctx.bezierCurveTo(92, 96, 110 - sw, 104, 114 - sw, 128); ctx.closePath(); ctx.fill();
+  if (a.outfit === 'jacket') { ctx.fillStyle = '#d6c7a1'; ctx.beginPath(); ctx.ellipse(64, 98, 16, 6, 0, 0, Math.PI * 2); ctx.fill(); }
+  if (a.outfit !== 'casual') { ctx.fillStyle = shade(a.suit, -0.35); ctx.fillRect(62.5, 100, 3, 28); }
   drawPatch(ctx, a.patch, a.patch_color, 86, 112, 8);
   // boyun + yüz
   ctx.fillStyle = skin; ctx.fillRect(55, 80, 18, 18);
-  ctx.beginPath(); ctx.ellipse(64, 64, 25, 29, 0, 0, Math.PI * 2); ctx.fill();
-  // kask
-  const gh = ctx.createLinearGradient(30, 20, 98, 90); gh.addColorStop(0, shade(a.helmet, 0.25)); gh.addColorStop(1, shade(a.helmet, -0.25));
-  ctx.fillStyle = gh; ctx.beginPath(); ctx.arc(64, 60, 33, Math.PI * 0.93, Math.PI * 2.07); ctx.lineTo(97, 74); ctx.lineTo(88, 74); ctx.lineTo(88, 58); ctx.lineTo(40, 58); ctx.lineTo(40, 74); ctx.lineTo(31, 74); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = shade(a.helmet, -0.5); ctx.fillRect(28, 66, 6, 12); ctx.fillRect(94, 66, 6, 12);
-  // vizör
-  ctx.save(); ctx.beginPath(); ctx.ellipse(64, 66, 26, 12, 0, 0, Math.PI * 2); ctx.clip();
-  if (a.mirror) { const gv = ctx.createLinearGradient(40, 54, 88, 78); gv.addColorStop(0, shade(a.visor, 0.55)); gv.addColorStop(0.45, a.visor); gv.addColorStop(1, shade(a.visor, -0.45)); ctx.fillStyle = gv; ctx.fillRect(36, 52, 56, 28); }
-  else { ctx.fillStyle = '#1a1a1a'; ctx.beginPath(); ctx.ellipse(55, 67, 3, 4, 0, 0, Math.PI * 2); ctx.ellipse(73, 67, 3, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 0.45; ctx.fillStyle = a.visor; ctx.fillRect(36, 52, 56, 28); }
-  ctx.restore();
-  // aksesuar
-  ctx.fillStyle = a.patch_color; ctx.strokeStyle = a.patch_color;
-  if (a.accessory === 'crest') ctx.fillRect(61, 24, 6, 26);
-  else if (a.accessory === 'stripe' || a.bot) ctx.fillRect(58, 27, 12, 30);
-  else if (a.accessory === 'antenna') { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(80, 32); ctx.lineTo(90, 12); ctx.stroke(); ctx.beginPath(); ctx.arc(90, 12, 3.5, 0, Math.PI * 2); ctx.fill(); }
-  else if (a.accessory === 'mic') { ctx.strokeStyle = '#15171c'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(95, 74); ctx.quadraticCurveTo(92, 86, 72, 86); ctx.stroke(); }
-  if (a.bot) { ctx.fillStyle = '#fff'; ctx.font = '900 13px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.fillText('AI', 64, 46); }
+  const fw = { oval: 24, round: 26, square: 26, long: 22, heart: 25 }[a.face] || 24, fh = { long: 31, round: 27 }[a.face] || 29;
+  ell(64, 64, f ? fw - 1.5 : fw, fh, skin);
+  const showFace = !helmet || open || !a.mirror;
+  if (showFace) {
+    const ey = 63, er = { narrow: [3.4, 1.8], wide: [3.4, 3.4], round: [2.8, 2.8] }[a.eyes] || [3.2, 2.4];
+    for (const x of [55, 73]) { ell(x, ey, er[0] + 1, er[1] + 0.8, '#f4f4f5'); ell(x, ey, er[1] * 0.9, er[1] * 0.9, a.eye_color); }
+    if (!helmet || open) {
+      ctx.fillStyle = shade(hair, -0.3); const bw = { thin: 1.2, medium: 2, thick: 3 }[a.brow_w] || 2;
+      ctx.fillRect(49, ey - 8 - bw / 2, 12, bw); ctx.fillRect(67, ey - 8 - bw / 2, 12, bw);
+      ctx.strokeStyle = f ? '#b24a5e' : shade(skin, -0.35); ctx.lineWidth = 2; ctx.beginPath();
+      if (a.mouth === 'smile' || a.mouth === 'grin') ctx.arc(64, 74, 6, 0.2 * Math.PI, 0.8 * Math.PI); else { ctx.moveTo(58, 79); ctx.lineTo(70, 79); }
+      ctx.stroke();
+      if (!f && a.beard !== 'none') {
+        ctx.fillStyle = a.beard === 'stubble' ? `${shade(hair, 0.1)}55` : hair;
+        if (a.beard === 'stubble' || a.beard === 'full') { ctx.beginPath(); ctx.ellipse(64, 80, 22, 13, 0, 0, Math.PI); ctx.fill(); }
+        if (a.beard !== 'stubble') { ctx.fillRect(56, 73, 16, 3); }
+        if (a.beard === 'goatee') { ctx.beginPath(); ctx.ellipse(64, 89, 5, 6, 0, 0, Math.PI * 2); ctx.fill(); }
+      }
+      if (a.freckles) { ctx.fillStyle = shade(skin, -0.3); for (const [x, y] of [[50, 70], [54, 72], [74, 72], [78, 70]]) ctx.fillRect(x, y, 1.5, 1.5); }
+    }
+    if (a.glasses !== 'none') {
+      ctx.fillStyle = a.glasses === 'sun' ? '#0b0b0d' : 'rgba(63,74,42,.75)'; ctx.strokeStyle = a.glasses === 'sun' ? '#18181b' : '#c9a227'; ctx.lineWidth = 1.4;
+      for (const x of [55, 73]) { ctx.beginPath(); if (a.glasses === 'sun') ctx.rect(x - 7, ey - 4, 14, 9); else ctx.ellipse(x, ey + 1, 7, 6, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+    }
+  }
+  // saç (kasksız)
+  if (!helmet && a.hair !== 'bald') {
+    ctx.fillStyle = a.hair === 'buzz' ? shade(hair, 0.15) : hair;
+    ctx.beginPath(); ctx.arc(64, 60, 27, Math.PI * 1.02, Math.PI * 1.98); ctx.lineTo(90, 50); ctx.quadraticCurveTo(64, 40, 38, 50); ctx.closePath(); ctx.fill();
+    if (a.hair === 'bun' && hg !== 'cap') ell(64, 30, 9, 8, hair);
+    if (a.hair === 'mohawk' && hg !== 'cap') { ctx.fillRect(60, 22, 8, 16); }
+    if (a.hair === 'spiky' && hg !== 'cap') for (let i = 0; i < 5; i++) { ctx.beginPath(); ctx.moveTo(44 + i * 10, 38); ctx.lineTo(49 + i * 10, 26); ctx.lineTo(54 + i * 10, 38); ctx.fill(); }
+    if (a.hair === 'curly') for (let i = 0; i < 7; i++) ell(40 + i * 8, 38 + Math.abs(3 - i) * 2.5, 6, 6, hair);
+    if (a.hair === 'long' || a.hair === 'bob') { ctx.fillRect(36, 50, 6, a.hair === 'long' ? 40 : 26); ctx.fillRect(86, 50, 6, a.hair === 'long' ? 40 : 26); }
+  }
+  if (hg === 'cap') {
+    ctx.fillStyle = a.helmet; ctx.beginPath(); ctx.arc(64, 52, 28, Math.PI, Math.PI * 2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = shade(a.helmet, -0.2); ctx.beginPath(); ctx.ellipse(64, 52, 30, 5, 0, 0, Math.PI); ctx.fill();
+  } else if (hg === 'headset') {
+    ctx.strokeStyle = '#15171c'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(64, 62, 31, Math.PI * 1.05, Math.PI * 1.95); ctx.stroke();
+    ctx.fillStyle = a.helmet; ctx.fillRect(30, 58, 8, 16); ctx.fillRect(90, 58, 8, 16);
+  } else if (helmet) {
+    const gh = ctx.createLinearGradient(30, 20, 98, 90); gh.addColorStop(0, shade(a.helmet, 0.25)); gh.addColorStop(1, shade(a.helmet, -0.25));
+    ctx.fillStyle = gh; ctx.beginPath(); ctx.arc(64, 60, 33, Math.PI * 0.93, Math.PI * 2.07); ctx.lineTo(97, 74); ctx.lineTo(88, 74); ctx.lineTo(88, 58); ctx.lineTo(40, 58); ctx.lineTo(40, 74); ctx.lineTo(31, 74); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = shade(a.helmet, -0.5); ctx.fillRect(28, 66, 6, 12); ctx.fillRect(94, 66, 6, 12);
+    // vizör (açıkken kaskın üstünde ince bant)
+    if (open) { ctx.fillStyle = mix(a.visor, '#000000', 0.2); ctx.beginPath(); ctx.ellipse(64, 34, 24, 6, 0, 0, Math.PI * 2); ctx.fill(); }
+    else {
+      ctx.save(); ctx.beginPath(); ctx.ellipse(64, 66, 26, 12, 0, 0, Math.PI * 2); ctx.clip();
+      if (a.mirror) { const gv = ctx.createLinearGradient(40, 54, 88, 78); gv.addColorStop(0, shade(a.visor, 0.55)); gv.addColorStop(0.45, a.visor); gv.addColorStop(1, shade(a.visor, -0.45)); ctx.fillStyle = gv; ctx.fillRect(36, 52, 56, 28); }
+      else { ctx.fillStyle = '#1a1a1a'; ctx.beginPath(); ctx.ellipse(55, 67, 3, 4, 0, 0, Math.PI * 2); ctx.ellipse(73, 67, 3, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 0.45; ctx.fillStyle = a.visor; ctx.fillRect(36, 52, 56, 28); }
+      ctx.restore();
+    }
+    // aksesuar
+    ctx.fillStyle = a.patch_color; ctx.strokeStyle = a.patch_color;
+    if (a.accessory === 'crest') ctx.fillRect(61, 24, 6, 26);
+    else if (a.accessory === 'stripe' || a.bot) ctx.fillRect(58, 27, 12, 30);
+    else if (a.accessory === 'antenna') { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(80, 32); ctx.lineTo(90, 12); ctx.stroke(); ctx.beginPath(); ctx.arc(90, 12, 3.5, 0, Math.PI * 2); ctx.fill(); }
+    else if (a.accessory === 'mic') { ctx.strokeStyle = '#15171c'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(95, 74); ctx.quadraticCurveTo(92, 86, 72, 86); ctx.stroke(); }
+    if (a.bot) { ctx.fillStyle = '#fff'; ctx.font = '900 13px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.fillText('AI', 64, 46); }
+  }
+  if (hg === 'headset') { ctx.strokeStyle = '#15171c'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(94, 72); ctx.quadraticCurveTo(92, 84, 72, 84); ctx.stroke(); }
   ctx.restore();
 }

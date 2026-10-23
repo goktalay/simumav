@@ -1,5 +1,6 @@
 // Replay adaptörü (ops/): /api/ops/{id}/replay (flightsim_replay çıktısı: {fields, frames, hz, duration_s, home, events})
 // → HEPGO replay3d.js'in Cesium yükleyici/görüntüleyicisi ile 3B oynatma; Cesium açılamazsa 2B canvas oynatma.
+// §28: kalkış noktasının gerisinde pilot (oyuncunun karakteri; avatar_body → GLB → Cesium modeli, dronu izler).
 // §10 güç ve yakıt: uçuşun ayarları (summary.power.settings ya da snapshot.power) varsa HEPGO kadranları (/sim/flightsim_power.js createPowerGauges)
 // oynatma çubuğunun üstünde; değerler HEPGO kayıttan oynatmasındaki gibi karelerden createPowerSim ile oynatıcı zamanında (atlama/başa dönüşte rebuild).
 import * as api from '../core/api.js';
@@ -129,7 +130,7 @@ export async function openReplay(root, ctx, id) {
     raf = requestAnimationFrame(loop);
   };
   raf = requestAnimationFrame(loop);
-  window.__smReplay = { get t() { return tcur; }, seek: v => { tcur = v; }, get power() { return psim?.summary() || null; }, gauges, get gpws() { return gpws?.state() || null; } };   // teşhis (Playwright)
+  window.__smReplay = { get t() { return tcur; }, seek: v => { tcur = v; }, get power() { return psim?.summary() || null; }, gauges, get gpws() { return gpws?.state() || null; }, get pilot() { return view?.pilot ?? null; } };   // teşhis (Playwright)
   return () => { cancelAnimationFrame(raf); view.dispose(); gauges?.dispose(); gpws?.dispose(); delete window.__smReplay; };
 }
 
@@ -139,6 +140,7 @@ async function cesiumView(stage, data, frames, ix, flight) {
   clear(stage);
   const holder = h('div', { class: 'cesium-viewer' }); stage.append(holder);
   const viewer = mod.createViewer(Cesium, holder, { fullscreen: false });
+  window.__smCesium = { viewer, Cesium };   // teşhis (Playwright: kamera yakın plan)
   const home = data.home || { lat: frames[0][ix.lat], lon: frames[0][ix.lon], alt: 0 };
   const pos = (fr) => Cesium.Cartesian3.fromDegrees(fr[ix.lon], fr[ix.lat], (fr[ix.alt_rel] || 0) + (home.alt || 0));
   const pts = frames.filter(f => Number.isFinite(f[ix.lat])).map(pos);
@@ -146,11 +148,52 @@ async function cesiumView(stage, data, frames, ix, flight) {
   viewer.entities.add({ position: Cesium.Cartesian3.fromDegrees(home.lon, home.lat, home.alt || 0), point: { pixelSize: 10, color: Cesium.Color.fromCssColorString('#34d399') } });
   const isPlane = ['plane', 'vtol', 'interceptor'].includes(flight.drone?.type);
   const ent = viewer.entities.add({ position: pts[0], ...(isPlane ? { model: mod.PLANE_MODEL } : { point: { pixelSize: 14, color: Cesium.Color.fromCssColorString('#fbbf24'), outlineColor: Cesium.Color.BLACK, outlineWidth: 2 } }) });
+  // §28 pilot (uçuş anındaki karakter; RC kumandalı) kalkış noktasının gerisinde — her karede dronu izler (sapma)
+  let pilot = null;
+  replayPilot(Cesium, viewer, flight, home, frames, ix).then(p => { pilot = p; }).catch(e => console.warn('kayıtta pilot yok:', e.message));
   const bs = Cesium.BoundingSphere.fromPoints(pts);
   viewer.camera.flyToBoundingSphere(bs, { duration: 1.2, offset: new Cesium.HeadingPitchRange(0, -Math.PI / 4, Math.max(bs.radius * 3, 600)) });
   return {
-    update: fr => { if (!Number.isFinite(fr[ix.lat])) return; const p = pos(fr); ent.position = p; if (isPlane) ent.orientation = mod.planeOrientation(Cesium, p, fr[ix.yaw], fr[ix.pitch], fr[ix.roll]); },
-    dispose: () => { try { viewer.destroy(); } catch { /* yok */ } },
+    update: fr => { if (!Number.isFinite(fr[ix.lat])) return; const p = pos(fr); ent.position = p; if (isPlane) ent.orientation = mod.planeOrientation(Cesium, p, fr[ix.yaw], fr[ix.pitch], fr[ix.roll]); pilot?.look(fr); },
+    dispose: () => { pilot?.dispose(); delete window.__smCesium; try { viewer.destroy(); } catch { /* yok */ } },
+    get pilot() { return pilot?.info() || null; },
+  };
+}
+
+/** §28: kayıtta pilot — avatar_body (aynı prosedürel karakter, uçuş LOD'u, köşe renkleri) → GLB (GLTFExporter; WebGL gerekmez) → Cesium modeli.
+ *  Yer: HEPGO §46 placePilot (evden 8 m geride + 3 m solda, ilk karedeki yönle); yön her karede drona (yalnız sapma). Avatar: uçuş anlık görüntüsü → pilot kaydı. */
+export async function replayPilot(Cesium, viewer, flight, home, frames, ix) {
+  let av = flight?.snapshot?.pilot?.avatar || flight?.pilot?.avatar || null;
+  if (!av) { const pid = flight?.snapshot?.pilot?.id ?? flight?.pilot_id; try { const ps = (await api.get('/api/crew')).pilots || []; av = (ps.find(p => p.id === pid) || ps.find(p => p.is_default) || ps[0])?.avatar || null; } catch { av = null; } }
+  const [T, { GLTFExporter }, { buildPilotRig }, P] = await Promise.all([import('/static/vendor/three/three.module.min.js'), import('/static/vendor/three/GLTFExporter.js'),
+    import('../crew/avatar_body.js'), import('/sim/flightsim_pilot.js')]);
+  const rig = buildPilotRig(T, av, { lod: 'mid' });
+  const ch = rig.bones.body;   // karakter uzayı (y yukarı, yüz +z) — Cesium glTF ile aynı eksenler
+  ch.rotation.x = 0; ch.position.set(0, ch.position.z, 0);
+  const root = new T.Group(); root.add(ch);
+  const glb = await new GLTFExporter().parseAsync(root, { binary: true });
+  rig.dispose();
+  const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
+  const f0 = frames.find(f => Number.isFinite(f[ix.lat])) || frames[0];
+  const mLat = 110574, mLon = 111320 * Math.cos(home.lat * Math.PI / 180);
+  const yaw0 = ((f0?.[ix.yaw] ?? f0?.[ix.hdg] ?? 0) * Math.PI) / 180;
+  const hx = f0 ? (f0[ix.lon] - home.lon) * mLon : 0, hy = f0 ? (f0[ix.lat] - home.lat) * mLat : 0;   // ev = ilk kare (yerde)
+  const pp = P.placePilot({ x: hx, y: hy }, yaw0);
+  const plat = home.lat + pp.y / mLat, plon = home.lon + pp.x / mLon;
+  const position = Cesium.Cartesian3.fromDegrees(plon, plat, home.alt || 0);
+  let heading = pp.yaw;
+  // ev noktasıyla aynı yükseklik (iz çizgisi/ev noktası da arazıye kenetlenmez → tutarlı); glTF y-yukarı/+z ileri → Cesium yönü −90°
+  const mm = () => Cesium.Transforms.headingPitchRollToFixedFrame(position, new Cesium.HeadingPitchRoll(heading - Math.PI / 2, 0, 0));
+  const model = await Cesium.Model.fromGltfAsync({ url, modelMatrix: mm(), minimumPixelSize: 56, maximumScale: 40 });
+  viewer.scene.primitives.add(model);
+  return {
+    look(fr) {
+      if (!Number.isFinite(fr[ix.lat])) return;
+      const dx = (fr[ix.lon] - plon) * mLon, dy = (fr[ix.lat] - plat) * mLat;
+      if (Math.hypot(dx, dy) > 0.5) { const tgt = Math.atan2(dx, dy); heading += P.wrapPi(tgt - heading) * 0.15; model.modelMatrix = mm(); }
+    },
+    info: () => ({ lat: plat, lon: plon, alt: home.alt || 0, heading, avatar: !!av, ready: !!model.ready }),
+    dispose() { try { viewer.scene.primitives.remove(model); } catch { /* */ } URL.revokeObjectURL(url); },
   };
 }
 

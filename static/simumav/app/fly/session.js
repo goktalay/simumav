@@ -43,7 +43,9 @@ import { releaseShared } from '../core/three.js';
 import * as sfx from '../ui/sfx.js';
 import { withAlertGain } from '../ui/audiomix.js';   // Ayarlar › Uyarı sesleri düzeyi (sm.alertvol) §42 uyarı yoluna
 import { localizeUnits, powerReportCard, trPower, warnInfo } from './power.js';
-import { camTr } from './camera_pick.js';   // kamera türü/PiP metinleri → camera.* i18n anahtarları
+import { camTr } from './camera_pick.js';
+import { buildPilotRig } from '../crew/avatar_body.js';   // §28 sahnede pilot: oyuncunun karakteri (tam boy + RC kumanda; HEPGO §46 ortak katman)
+import { normAvatar } from '../crew/avatar_core.js';   // kamera türü/PiP metinleri → camera.* i18n anahtarları
 
 const SIM = '/sim/';
 const THREE_URL = '/static/vendor/three/three.module.min.js';   // HEPGO modülleriyle aynı yol → aynı modül örneği
@@ -70,8 +72,8 @@ const f0 = v => (v == null ? '—' : String(Math.round(Number(v))));
 const f1 = v => (v == null ? '—' : Number(v).toFixed(1));
 const copyText = async (txt, what = 'Kopyalandı') => { try { await navigator.clipboard.writeText(txt); toast(what); } catch { toast('Kopyalanamadı; metni elle seçin', 'err'); } };
 let libsP = null;
-const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js', 'flightsim_rover.js', 'flightsim_windui.js', 'flightsim_servotrig.js', 'flightsim_gamepad.js', 'flightsim_mobile.js', 'flightsim_engage.js', 'flightsim_gpws_ui.js', 'flightsim_gfx_ui.js', 'flightsim_sfx.js'].map(f => import(SIM + f)))
-  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx })).catch(e => { libsP = null; throw e; }));
+const loadSim = () => (libsP ??= Promise.all(['flightsim3d.js', 'flightsim_panel.js', 'flightsim_hud.js', 'flightsim_fpv_osd.js', 'flightsim_audio.js', 'flightsim_record.js', 'flightsim_report.js', 'flightsim_power.js', 'flightsim_camera.js', 'flightsim_gcs_ui.js', 'flightsim_scope_ui.js', 'flightsim_launcher.js', 'flightsim_rcfeel.js', 'flightsim_gtheme.js', 'flightsim_intro.js', 'flightsim_fltbar.js', 'flightsim_rover.js', 'flightsim_windui.js', 'flightsim_servotrig.js', 'flightsim_gamepad.js', 'flightsim_mobile.js', 'flightsim_engage.js', 'flightsim_gpws_ui.js', 'flightsim_gfx_ui.js', 'flightsim_sfx.js', 'flightsim_pilot.js'].map(f => import(SIM + f)))
+  .then(([M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx, MPilot]) => ({ M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx, MPilot })).catch(e => { libsP = null; throw e; }));
 
 // HEPGO çekirdeğinin anladığı kalkış nesnesi: sabit kanat ailesi dışı → null; hand → {method:'hand', …} (3B: düzenek/iniş takımı yok)
 // HEPGO §27: INTERCEPTOR + fırlatıcı (pod4 | pod8 | tube | handheld) → {method, loaded? | aim_*?}; fırlatıcısız INTERCEPTOR → null (pad, eski davranış)
@@ -200,7 +202,7 @@ export async function openSession(view, start, picked, ctx = {}) {
   const gaTrack = typeof ctx.track === 'function' ? ctx.track : () => {};   // GA4 olayları (kabuk app.js; kişisel veri yok)
   const tOpen = Date.now();
   releaseShared();   // Uç sahnesi (createFlightSim3D kendi WebGLRenderer'ını açar) öncesi kabuğun paylaşılan WebGL bağlamı bırakılır
-  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx } = await loadSim();
+  const { M3D, MPanel, MHud, MOsd, MAudio, MRec, MReport, MPower, MCam, MSite, MScope, MLaunch, MFeel, MGt, MIntro, MFlt, MRover, MWind, MSrv, MPad, MMob, MEng, MGpws, MGfx, MSfx, MPilot } = await loadSim();
   MGpwsRef = MGpws;
   MSiteRef = MSite;
   const [meta, settings] = await Promise.all([ctx.meta ? Promise.resolve(ctx.meta) : fetchMeta(), ctx.settings ? Promise.resolve(ctx.settings) : fetchSettings()]);
@@ -280,8 +282,10 @@ export async function openSession(view, start, picked, ctx = {}) {
   const fpvBtn = h('button', { class: 'btn sm fs-fpv-btn', type: 'button', title: tr('FPV ayarları: OSD, analog efekt, burun'), onclick: () => { fpvMenu.hidden = !fpvMenu.hidden; } }, 'FPV ', fovTxt, ' ▾');
   const fpvCtl = h('span', { class: 'fs-audio pill-group fs-fpv-ctl', hidden: true }, fpvBtn, fpvMenu);
   const trc = camTr(tr);
+  const withPilot = !isHand;   // §28: elden atışta pilot figürü zaten hand_launch kaplamasında
   const camCtl = MCam.createCameraCtl({ getSim: () => sim, tr: trc, prefs: camPrefs, getPip: () => camPip,
-    views: M3D.CAMERA_MODES, onView: k => sim?.setCamera(k),   // HEPGO: görünüm açılır listesi + kamera türü TEK kapsül (1–5 kısayolları 3B modülünde)
+    views: M3D.CAMERA_MODES.concat(withPilot ? [['pilot_eye', 'Pilot gözü']] : []), onView: k => sim?.setCamera(k),   // §28: 6 = Pilot gözü (Yer kipinde omuz üstü)
+   // HEPGO: görünüm açılır listesi + kamera türü TEK kapsül (1–5 kısayolları 3B modülünde)
     onType: t => {   // sunucuya sessiz `camera` komutu (çekirdek oturum → kayıt satırı); yanıtı beklenmez
       addEvent(trc('Kamera türü: {t}', { t: MCam.camTypeLabel(t, trc) }));
       if (drone.id != null) camPrefs.rememberDrone(drone.id, t);
@@ -493,8 +497,8 @@ export async function openSession(view, start, picked, ctx = {}) {
     msg.hidden = false;
     msg.textContent = p.stage === 'elev' ? tr('Yükseklik karoları {d}/{n}', { d: p.done, n: p.total }) : p.stage === 'img' ? tr('Uydu karoları {d}/{n}', { d: p.done, n: p.total }) : p.stage === 'osm' ? tr('Harita verileri (OSM) alınıyor…') : tr('Arazi planı alınıyor…');
   };
-  const onCamChange = mode => {
-    camCtl.setView(mode); gimbalLbl.hidden = mode !== 'fpv'; mhudBtn.hidden = mode !== 'fpv'; fpvCtl.hidden = mode !== 'pilot';
+  const onCamChange = (mode, info) => {
+    camCtl.setView(mode); if (info?.groundView === 'pilot') camCtl.setView('pilot_eye'); gimbalLbl.hidden = mode !== 'fpv'; mhudBtn.hidden = mode !== 'fpv'; fpvCtl.hidden = mode !== 'pilot';
     milHud?.setCamMode(mode); osd?.setCamMode(mode); ops?.setFpv(mode === 'fpv' || mode === 'pilot'); MFlt.setGimbalLabel(gimbalLbl, tr('Gimbal {d}° (↑↓ / tekerlek)', { d: sim?.getGimbal() ?? 0 })); fpvPrefs.setCam(mode); drawFpv();
   };
   try {
@@ -522,6 +526,12 @@ export async function openSession(view, start, picked, ctx = {}) {
     });
     if (destroyed) { s3.dispose(); return { dispose() {} }; }
     sim = s3; window.__smSim = sim;
+    // §28 sahnede pilot: seçili pilotun avatarı (karşılaşmada salon anlık görüntüsü; yoksa varsayılan pilot) — dron evinin 6–10 m gerisinde, RC kumandalı
+    if (withPilot) {
+      const putPilot = av => { if (!destroyed) sim?.setPilot?.(normAvatar(av), buildPilotRig); };
+      if (pilot?.avatar) putPilot(pilot.avatar);
+      else net.get('/api/crew').then(r => { const ps = r?.pilots || []; putPilot((ps.find(x => x.is_default) || ps[0])?.avatar); }).catch(() => putPilot(null));
+    }
     gfxCtl.attach(sim);   // HEPGO §43 cihaz algılama + otomatik/uyarlamalı kademe
     if (rc) sim.setKeyboardLock?.(true);   // §37 varsayılan açık sanal kumanda sahneden önce açıldı
     launcherUi?.sync();   // §27 hücre envanteri + nişangâh dikdörtgeni
@@ -743,7 +753,7 @@ export async function openSession(view, start, picked, ctx = {}) {
       addEvent(tr('Sanal kumanda kapatıldı (RC override serbest)'));
       return;
     }
-    rc = virtualRC({ plane: type === 'sabit_kanat' || type === 'vtol', stickL, stickR, send: ch => socket?.send({ t: 'rc', ch }),
+    rc = virtualRC({ plane: type === 'sabit_kanat' || type === 'vtol', stickL, stickR, send: ch => { socket?.send({ t: 'rc', ch }); sim?.setPilotSticks?.(MPilot.sticksFromRc(ch, 0, true)); },   // §28 pilotun başparmakları
       rover: rover ? { channels: MRover?.roverRcChannels } : null,   // §15: sol dikey gaz (1500 = dur), sağ yatay direksiyon
       throttle0: last?.armed ? last.throttle : null, shape: (k, v) => rcShape(k, v),   // uçuştayken açılırsa gaz çubuğu mevcut gazdan başlar (yerde/disarm: 1000); §27.1 eğri
       pad: () => padCtl.state(), lazyThr: auto && !last?.armed });   // HEPGO §37 fiziksel kumanda + varsayılan açılışta gaz serbest

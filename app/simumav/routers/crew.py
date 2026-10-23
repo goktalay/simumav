@@ -35,7 +35,7 @@ class PilotPatch(BaseModel):
 
 
 def _avatar_json(a, character):
-    if a is not None and len(json.dumps(a)) > 600:
+    if a is not None and len(json.dumps(a)) > avatar.MAX_JSON:
         raise auth.hata(422, 'invalid', 'avatar çok büyük')
     try:
         return avatar.dump(avatar.normalize(a, character, strict=True))
@@ -46,6 +46,7 @@ def _avatar_json(a, character):
 @router.get('/avatar-options')
 def avatar_options(user=User):
     return {'skins': avatar.SKINS, 'patches': list(avatar.PATCHES), 'accessories': list(avatar.ACCESSORIES), 'default': avatar.DEFAULT,
+            'enums': {k: list(v) for k, v in avatar.ENUMS.items()},   # §28 karakter yaratma seçenekleri
             'legacy': {k: avatar.legacy(k) for k in avatar.LEGACY}}
 
 

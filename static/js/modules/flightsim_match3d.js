@@ -139,7 +139,9 @@ export function createMatchLayer(sim, { me = null } = {}) {
     sim.scene.remove(g);
     disposables.forEach(d => d.dispose?.());
   }
-  return { setRings, setNext, setPlayers, pushPos, tick, dispose, get ringCount() { return ringObjs.length; }, get ghostCount() { return ghosts.size; },
+  /** Hayalet aracın sahne konumu (yer pilotunun bakışı, §46) — görünmüyorsa null. */
+  const ghostPos = id => { const gh = ghosts.get(id); return gh && gh.grp.visible ? gh.grp.position : null; };
+  return { setRings, setNext, setPlayers, pushPos, tick, dispose, ghostPos, get ringCount() { return ringObjs.length; }, get ghostCount() { return ghosts.size; },
     ringInfo: () => ringObjs.map(o => ({ i: o.r.i, state: o.state, x: +o.grp.position.x.toFixed(1), y: +o.grp.position.y.toFixed(1), z: +o.grp.position.z.toFixed(1), inScene: !!o.grp.parent?.parent, opacity: o.mat.opacity })),
     ghostInfo: () => [...ghosts.entries()].map(([id, gh]) => ({ id, visible: gh.grp.visible, x: gh.grp.position.x, y: gh.grp.position.y, z: gh.grp.position.z })) };
 }

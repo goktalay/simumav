@@ -31,10 +31,27 @@
 .av-preset { padding: 0; border-radius: 50%; border: 2px solid transparent; background: none; cursor: pointer; aspect-ratio: 1; }
 .av-preset img { width: 100%; height: 100%; border-radius: 50%; }
 .av-preset.on { border-color: var(--accent, #38bdf8); }
+/* §28 karakter yaratma: sekmeler, yakınlaştırma, rastgele satırı */
+.av-stage.full { aspect-ratio: 3 / 4; }
+.modal.av-modal { box-sizing: border-box; }
+.av-editor > * { min-width: 0; }
+.av-zoom { position: absolute; z-index: 3; top: 10px; left: 50%; transform: translateX(-50%); display: inline-flex; gap: 4px; padding: 3px; border-radius: 999px; background: rgba(6, 10, 18, .55); backdrop-filter: blur(6px); }
+.av-zoom-btn { border: 0; background: transparent; color: rgba(255, 255, 255, .7); font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 999px; cursor: pointer; }
+.av-zoom-btn.on { background: var(--accent, #38bdf8); color: #031018; }
+.av-dice-row { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; }
+.av-tabs { display: flex; gap: 4px; position: sticky; top: 0; z-index: 2; background: var(--bg-1, #0b1220); padding-bottom: 6px; border-bottom: 1px solid var(--card-border, #1f2a44); overflow-x: auto; scrollbar-width: none; }
+.av-tab { flex: 1 0 auto; border: 1px solid transparent; background: transparent; color: var(--fg-dim, #94a3b8); font-weight: 800; font-size: 13px; letter-spacing: .04em; padding: 8px 12px; border-radius: 10px; cursor: pointer; white-space: nowrap; }
+.av-tab.on { color: var(--fg, #e5e7eb); border-color: var(--accent, #38bdf8); background: color-mix(in srgb, var(--accent, #38bdf8) 14%, transparent); }
+.av-pane { display: flex; flex-direction: column; gap: 12px; }
+.av-pane[hidden], .av-field[hidden] { display: none; }
+.av-opts.txt .av-opt.alt { opacity: .72; }
+.av-sep { color: var(--fg-dim, #94a3b8); font-size: 12px; padding: 0 2px; }
 @media (max-width: 760px) {
   .av-editor { grid-template-columns: 1fr; }
   .av-left { position: static; }
   .av-stage { aspect-ratio: 1 / 1; max-height: 42vh; }
+  .av-stage.full { aspect-ratio: 4 / 5; max-height: 46vh; margin: 0 auto; }
+  .av-tab { padding: 7px 9px; font-size: 12px; }
   .av-form { max-height: none; overflow: visible; }
   .av-presets { grid-template-columns: repeat(5, 1fr); }
 }

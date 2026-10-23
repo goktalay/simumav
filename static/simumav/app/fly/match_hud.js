@@ -13,6 +13,8 @@ import { createMatchLayer } from '/sim/flightsim_match3d.js';
 import { createDogfightHud, dfResultRows, makeDfT, roleOf } from '/sim/flightsim_dogfight.js';   // HEPGO §41 it dalaşı HUD'u (ortak)
 import { fmtClock, fmtDist, lobbyHref, REASON_KEY, resultRows, STATUS_KEY } from './match_core.js';
 import { ensureAvatarCss, playerImg, rowImg } from '../crew/avatar3d.js';   // §25: uçuşta YALNIZ önbellekli PNG / 2B yedek (ikinci WebGL bağlamı yok)
+import { playerAvatar } from '../crew/avatar_core.js';
+import { buildPilotRig } from '../crew/avatar_body.js';   // §28: diğer oyuncuların pilotları kendi kalkış noktalarında (aynı sahne/çizici; geometri yalnız)
 
 // HEPGO §44 yapay zekâ pilot rozeti 'AI · Zor' (seviye 7 dilde ai.level_*)
 export const aiTag = p => (isBot(p) ? h('span', { class: 'sm-ai-badge', title: tr('ai.pilot') }, `AI${p.level ? ` · ${tr(`ai.level_${p.level}`)}` : ''}`) : null);
@@ -38,7 +40,19 @@ export function createMatchHud({ stage, getSim, startIntro = () => {}, getTele =
   const flashMsg = (txt, tone = '') => { flash.textContent = txt; flash.className = `sm-mt-flash on ${tone}`; clearTimeout(flashT); flashT = setTimeout(() => { flash.className = 'sm-mt-flash'; }, 1800); };
   const myP = () => (M?.players || []).find(p => p.id === me);
   const plane = () => M?.settings?.type === 'sabit_kanat';
-  const syncPlayers = () => layer?.setPlayers((M?.players || []).filter(p => ACTIVE.has(p.status)).map(p => ({ id: p.id, name: p.name, color: colorFor(M.players, p.id), plane: plane() })));
+  let pilotSig = '';
+  // §28: diğer oyuncuların (botlar AI kasklı) pilotları kendi kalkış noktalarının gerisinde; bakış hayalet araçlarına (layer.ghostPos)
+  const syncPilots = () => {
+    const sim = getSim();
+    if (!sim?.setPilots || !M) return;
+    const others = (M.players || []).filter(p => p.id !== me && ACTIVE.has(p.status) && p.start && p.start.lat != null);
+    const sig = others.map(p => `${p.id}:${p.start.lat},${p.start.lon},${p.start.yaw_deg}:${JSON.stringify(p.avatar || p.level || '')}`).join('|');
+    if (sig === pilotSig) return;
+    pilotSig = sig;
+    sim.setPilots(others.map(p => ({ id: p.id, look: playerAvatar(p), home: sim.toLocal(p.start.lat, p.start.lon), yaw: p.start.yaw_deg != null ? Number(p.start.yaw_deg) * Math.PI / 180 : null,
+      target: () => layer?.ghostPos?.(p.id) || null })), buildPilotRig);
+  };
+  const syncPlayers = () => { layer?.setPlayers((M?.players || []).filter(p => ACTIVE.has(p.status)).map(p => ({ id: p.id, name: p.name, color: colorFor(M.players, p.id), plane: plane() }))); if (layer) syncPilots(); };
   // Yükseklik ölçeği: sunucu halkaları/konumları ortak ev irtifası (SITL) + eve göre yükseklikle verir; 3B sahnenin ev irtifası (homeAlt) prosedürel
   // dünyada null olabilir → sahneye eve göre yükseklik (agl / alt_rel) + sahnenin kendi homeAlt'ı ile verilir (halka ve araç aynı zeminde)
   const H0 = () => Number(getSim()?.homeAlt ?? 0) || 0;

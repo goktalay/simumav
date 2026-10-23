@@ -189,8 +189,10 @@ try:
         kontrol('düzenleyici: tek paylaşılan WebGL bağlamı', pa.evaluate('window.__smGl()') <= 1)
         shot(pa, '02-avatar-duzenleyici-tr')
         pa.click('.av-dice'); pa.wait_for_timeout(400)
-        pa.click('.av-field[data-f="accessory"] .av-opt[data-v="antenna"]'); pa.click('.av-field[data-f="patch"] .av-opt[data-v="star"]')
-        pa.click('.av-field[data-f="skin"] .av-dot[data-v="s6"]'); pa.wait_for_timeout(1500)
+        # §28 sekmeli düzenleyici: alanlar kendi sekmesinde (aksesuar yalnız kaskta görünür)
+        pa.click('.av-tab[data-tab="acc"]'); pa.click('.av-field[data-f="headgear"] .av-opt[data-v="helmet"]')
+        pa.click('.av-field[data-f="accessory"] .av-opt[data-v="antenna"]'); pa.click('.av-tab[data-tab="outfit"]'); pa.click('.av-field[data-f="patch"] .av-opt[data-v="star"]')
+        pa.click('.av-tab[data-tab="body"]'); pa.click('.av-field[data-f="skin"] .av-dot[data-v="s6"]'); pa.wait_for_timeout(1500)
         pa.locator('.modal .btn-row .btn.primary').click(); pa.wait_for_timeout(1500)
         kayit = ali.get(f'{BASE}/api/crew').json()['pilots'][0]['avatar']
         kontrol(f"düzenleyici kaydı: {kayit['accessory']}/{kayit['patch']}/{kayit['skin']}", (kayit['accessory'], kayit['patch'], kayit['skin']) == ('antenna', 'star', 's6'))
