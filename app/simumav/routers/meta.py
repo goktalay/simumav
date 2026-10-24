@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .. import auth, bridge, config, db, power
+from .. import auth, bridge, config, db, mailer, modes, power
 
 router = APIRouter(prefix='/api/meta')
 
@@ -22,5 +22,6 @@ def meta(request: Request):
            'mp': {'proto': 'tcp', 'port_range': [config.MP_PORT_BASE, config.MP_PORT_BASE + config.MP_PORT_COUNT - 1], 'host': bridge.host_adi(request)},
            'active_flights': bridge.aktif_sayisi(), 'authenticated': u is not None,
            'power': power.api_bilgisi(config.MAX_SPEEDUP),   # §10 güç/yakıt sınırları + simülasyon hızı seçenekleri (sunucu üst sınırıyla)
+           'modes': list(modes.MODE_IDS), 'mail_enabled': mailer.enabled(),   # yol haritası: oyun türleri + davet e-postası açık mı (kapalıysa bağlantı yanıtta)
            'maps_key': config.GOOGLE_KEY if u is not None else None}
     return JSONResponse(out, headers={'Cache-Control': 'no-store'})

@@ -28,6 +28,7 @@ from .. import config as core_config  # noqa: E402
 from .. import db as core_db  # noqa: E402
 from .. import drone_sitl, flightsim, flightsim_gcs, flightsim_launcher, flightsim_models, flightsim_power, flightsim_replay, flightsim_targets  # noqa: E402
 from . import power as guc  # noqa: E402
+from . import equipment as _eq  # noqa: E402 — yol haritası: kamera / eklenti / görünüm
 
 # INTERCEPTOR (HEPGO §25): 4 pervaneli tailsitter — çekirdek `interceptor` (ArduPlane quadplane-copter_tailsitter; dikey kalkış, yatay uçuş, ~400 km/h).
 # Eski "interceptor" sabit kanat jetleri (glb:jet, glb:zephyr, proc:interceptor) 'plane' altına taşındı (db göçü v2; docs/simumav.md §11).
@@ -115,7 +116,8 @@ WEATHER_CEKIRDEK = {'clear': 'clear', 'cloudy': 'cloudy', 'rain': 'rain', 'fog':
 PARAM_AD = re.compile(r'^[A-Z][A-Z0-9_]{1,15}$')
 PARAM_ONEK_IZIN = ('ARSPD_', 'AIRSPEED_', 'THR_', 'TKOFF_', 'PTCH_', 'RLL_', 'YAW_', 'WP_', 'LIM_', 'NAVL1_', 'TECS_', 'TRIM_', 'KFF_', 'RTL_',
                    'LAND_', 'FLAP_', 'ATC_', 'PSC_', 'ACRO_', 'PILOT_', 'MOT_', 'LOIT_', 'WPNAV_', 'Q_', 'STAB_', 'GLIDE_', 'MIXING_', 'ANGLE_',
-                   'SIM_BATT_', 'FLTMODE', 'CRUISE_', 'MIN_', 'SCALING_', 'STALL_', 'TKOFF_')
+                   'SIM_BATT_', 'FLTMODE', 'CRUISE_', 'MIN_', 'SCALING_', 'STALL_', 'TKOFF_',
+                   'SPRAY_', 'GRIP_', 'CHUTE_')   # yol haritası eklentileri (ilaçlama / paket bırakma / paraşüt) ince ayarı; SERVOn_FUNCTION sunucu yazar (equipment)
 PARAM_AD_IZIN = frozenset({'ANGLE_MAX', 'SCALING_SPEED', 'STAB_PITCH_DOWN', 'FBWB_ELEV_REV', 'FBWB_CLIMB_RATE', 'ALT_HOLD_RTL', 'GROUND_STEER_ALT',
                            'TRIM_THROTTLE', 'CRUISE_ALT_FLOOR', 'MIN_GROUNDSPEED', 'STALL_PREVENTION'})
 PARAM_YASAK_ONEK = ('SERIAL', 'LOG_', 'SYSID', 'BRD_', 'SCR_', 'NET_', 'SR0_', 'SR1_', 'SR2_', 'SR3_', 'MAV', 'FENCE_', 'GPS', 'INS_', 'COMPASS_',
@@ -653,7 +655,7 @@ def _cekirdek_hazirla(drone, params, uid):
         # kullanılırsa önceki sahibin ölçümü kalmasın
         conn.execute('DELETE FROM drone_sitl_options WHERE drone_id = ?', (int(drone['id']),))
         conn.executemany('INSERT INTO drone_sitl_params (drone_id, name, value, ptype, updated_at, updated_by, source) VALUES (?,?,?,?,?,?,?)',
-                         [(int(drone['id']), ad, float(deger), 9, core_db.now(), uid, 'hepgo') for ad, deger in params.items()])
+                         [(int(drone['id']), ad, float(deger), 9, core_db.now(), uid, 'sm_base') for ad, deger in params.items()])   # sm_base: açılış değeri (params_hasat yalnız mp/hepgo değişikliklerini alır)
         conn.commit()
     return mdl
 
@@ -689,7 +691,7 @@ async def bot_ucusu_ac(drone, track, launch, camera, start, match_id, owner, hos
 
 
 async def ucus_baslat(user, pilot, drone, track, mission, launch, record, request=None, power=None, speedup=None, camera=None, targets=None, site=None, defend=None,
-                      drive=None, start=None, match_id=None):
+                      drive=None, start=None, match_id=None, mode=None):
     """Kotalar → çekirdek oturum → flights satırı → MP köprüsü. Dönüş: {flight_id, sim_id, mp, ws, power, speedup}. Hatalar BridgeHata.
     `power` (§10): sihirbaz gövdesi — hangar ayarının üstüne power.dogrula ile (sınırlar, yakıt yalnız uçakta); çekirdeğe TAM power sözlüğü gider.
     `speedup`: başlangıç simülasyon hızı (≤ MAX_SPEEDUP); SITL hazır olunca `speed` komutuyla yazılır.
@@ -703,6 +705,9 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
     launch = launch_dogrula(launch)
     drive = drive_dogrula(drone.get('type'), drive, drone.get('model_key'))
     hedefler = hedefler_dogrula(targets)   # HEPGO §24 hedefler (isteğe bağlı)
+    donanim = _eq.oku(drone.get('equipment'))   # yol haritası: kamera türü + eklentiler
+    if camera is None:
+        camera = _eq.CAMERA_CORE.get(donanim['camera'], 'day')
     site, defend = saha_dogrula(site, defend, drone['type'], mission)   # HEPGO §26 yer kontrol sahası + görev (isteğe bağlı)
     try:
         camera = flightsim.kamera_dogrula(camera)
@@ -710,7 +715,9 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
         raise BridgeHata(422, 'invalid', str(e))
     if drone['type'] not in TIP_ESLEME:
         raise BridgeHata(422, 'invalid', 'Dron tipi geçersiz')
-    params = params_dogrula(db.j(drone.get('params')))
+    # yol haritası eklentileri: sunucunun SITL parametreleri + kullanıcı ince ayarı (son söz kullanıcının; SERVOn_FUNCTION yalnız sunucu)
+    ek = _eq.sitl_params(drone['type'], donanim)
+    params = {**ek, **params_dogrula(db.j(drone.get('params'))), **{k: v for k, v in ek.items() if k.startswith('SERVO')}}
     try:
         core_power, power_ayar = guc.ucus_power(drone, power)
     except guc.GucHata as e:
@@ -754,16 +761,17 @@ async def ucus_baslat(user, pilot, drone, track, mission, launch, record, reques
                           'wind': db.j(track.get('wind')) if isinstance(track.get('wind'), str) else (track.get('wind') or {}), 'time_of_day': track.get('time_of_day'), 'weather': track.get('weather')},
                 'mission': {'id': mission['id'], 'name': mission['name'], 'kind': mission['kind'], 'plan': db.j(mission.get('plan'))} if mission else None,
                 'launch': launch, 'record': {'bin': bool((record or {}).get('bin', True)), 'video': bool((record or {}).get('video'))},
-                'power': power_ayar, 'speedup': speedup, 'camera': camera, 'targets': hedefler,
+                'power': power_ayar, 'speedup': speedup, 'camera': camera, 'targets': hedefler, 'mode': mode,
+                'equipment': {'camera': donanim['camera'], 'addons': donanim['addons'], 'livery': donanim['livery']},
                 'site': s.gcs, 'defend': dict(s.savunma.cfg) if getattr(s, 'savunma', None) is not None else None}   # §12 (HEPGO §26)
         if match_id is not None:
             snap['match'] = {'id': match_id, 'start': dict(start) if start else None}   # §18
         kendi = lambda r: r is not None and r.get('user_id') in (None, user['id'])   # noqa: E731 — karşılaşmada kurucunun dronu/parkuru başkasına yazılmaz
         with db.connect() as conn:
-            fid = conn.execute('INSERT INTO flights (user_id, pilot_id, drone_id, track_id, mission_id, launch, started_at, mp_port, snapshot, created_at, updated_at, match_id) '
-                               'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', (user['id'], pilot['id'], drone['id'] if kendi(drone) else None, track['id'] if kendi(track) else None,
+            fid = conn.execute('INSERT INTO flights (user_id, pilot_id, drone_id, track_id, mission_id, launch, started_at, mp_port, snapshot, created_at, updated_at, match_id, mode) '
+                               'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', (user['id'], pilot['id'], drone['id'] if kendi(drone) else None, track['id'] if kendi(track) else None,
                                                                     mission['id'] if mission else None, launch['method'], s.created_at, port, json.dumps(snap, ensure_ascii=False), t, t,
-                                                                    match_id)).lastrowid
+                                                                    match_id, mode)).lastrowid
             conn.execute('INSERT INTO sim_runs_link (flight_id, sim_id) VALUES (?,?)', (fid, s.id))
             db.audit(conn, 'fly_start', user['id'], request and _ip(request), f'flight {fid} sim {s.id} {drone["type"]} {track["name"]} {launch["method"]} mp {port}')
             conn.commit()
@@ -1054,7 +1062,52 @@ def _ucus_kapanis(fid, s):
         db.audit(conn, 'fly_stop', f['user_id'], None, f'flight {fid} {sure}s {s.end_reason}')
         kota_uygula(conn, f['user_id'])
         conn.commit()
+    if f.get('drone_id') and not f.get('match_id'):
+        try:
+            params_hasat(f['drone_id'], f['user_id'])
+        except Exception:   # noqa: BLE001 — hasat kapanışı düşürmesin
+            pass
+    try:   # yol haritası: pilot XP (yalnız sunucu verisi; idempotent)
+        from . import xp as _xp
+        with db.connect() as conn:
+            _xp.esitle(conn, f['user_id'])
+            conn.commit()
+    except Exception:   # noqa: BLE001
+        pass
     profil_ozeti(f['user_id'])
+
+
+def params_hasat(drone_id, user_id):
+    """Uçuşta Mission Planner / panelden değiştirilen parametreler (çekirdek drone_sitl_params; drone_params.Izleyici yazar, kaynak mp | hepgo)
+    → dronun kalıcı kaydı (drones.params). Yalnız beyaz liste (params_dogrula, tek tek), eklentilerin sunucu parametreleri hariç, toplam ≤ PARAM_MAX.
+    Dönüş: eklenen/değişen ad listesi."""
+    with core_db.connect() as cc:
+        rows = cc.execute("SELECT name, value FROM drone_sitl_params WHERE drone_id = ? AND source IN ('mp', 'hepgo')", (int(drone_id),)).fetchall()
+    with db.connect() as conn:
+        d = db.row(conn.execute('SELECT params FROM drones WHERE id = ? AND user_id = ?', (int(drone_id), int(user_id))))
+        if not d:
+            return []
+        mevcut = db.j(d['params'])
+        degisen = []
+        for ad, deger in rows:
+            ad = str(ad).upper()
+            if ad in _eq.SABIT_PARAMLAR:
+                continue
+            try:
+                v = params_dogrula({ad: deger})[ad]
+            except BridgeHata:
+                continue
+            if mevcut.get(ad) == v:
+                continue
+            if ad not in mevcut and len(mevcut) >= PARAM_MAX:
+                continue
+            mevcut[ad] = v
+            degisen.append(ad)
+        if degisen:
+            conn.execute('UPDATE drones SET params = ?, updated_at = ? WHERE id = ?', (json.dumps(mevcut), db.now(), int(drone_id)))
+            db.audit(conn, 'params_kept', int(user_id), None, f'drone {drone_id}: ' + ', '.join(degisen[:20]))
+            conn.commit()
+        return degisen
 
 
 def profil_ozeti(user_id):

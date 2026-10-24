@@ -1,5 +1,7 @@
 """`/api/ops` — operasyon (geçmiş uçuşlar): liste, ayrıntı, replay (.bin → flightsim_replay önbelleği), .bin indirme, silme.
 Dosya yolları yalnız DB'den; `bridge.dosya_yolu` çekirdek veri kökü dışına çıkışı reddeder; sahiplik 404."""
+from typing import Optional
+
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 
@@ -10,11 +12,13 @@ router = APIRouter(prefix='/api/ops')
 
 
 @router.get('')
-def list_ops(limit: int = 50, offset: int = 0, user=User):
+def list_ops(limit: int = 50, offset: int = 0, pilot_id: Optional[int] = None, user=User):
+    """`pilot_id` (yol haritası "Önceki uçuşlarım"): yalnız o pilotun uçuşları; ayrıntılı geçmiş + XP: GET /api/crew/{id}/flights."""
     limit, offset = max(1, min(100, limit)), max(0, offset)
+    w, a = ('user_id = ? AND pilot_id = ?', (user['id'], int(pilot_id))) if pilot_id is not None else ('user_id = ?', (user['id'],))
     with db.connect() as conn:
-        rows = db.rows(conn.execute('SELECT * FROM flights WHERE user_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?', (user['id'], limit, offset)))
-        total = conn.execute('SELECT COUNT(*) FROM flights WHERE user_id = ?', (user['id'],)).fetchone()[0]
+        rows = db.rows(conn.execute(f'SELECT * FROM flights WHERE {w} ORDER BY started_at DESC LIMIT ? OFFSET ?', (*a, limit, offset)))
+        total = conn.execute(f'SELECT COUNT(*) FROM flights WHERE {w}', a).fetchone()[0]
         stats = conn.execute('SELECT COUNT(*), COALESCE(SUM(duration_s), 0), SUM(CASE WHEN result = "crash" THEN 1 ELSE 0 END) FROM flights WHERE user_id = ? AND ended_at IS NOT NULL',
                              (user['id'],)).fetchone()
     return {'flights': [flight_api(f, kisa=True) for f in rows], 'total': total,

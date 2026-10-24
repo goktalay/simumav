@@ -1,7 +1,7 @@
 """Router ortak yardımcıları: sahiplik, kota, hata çevirimi, yanıt biçimleri."""
 from fastapi import Depends, HTTPException
 
-from .. import auth, avatar, bridge, config, db, power
+from .. import auth, avatar, bridge, config, db, equipment, power, xp
 
 User = Depends(auth.require_user)
 
@@ -38,7 +38,8 @@ def drone_api(d):
             'preview': d.get('preview') or g['preview'], 'orient': g['orient'], 'has_prop': g['has_prop'], 'model_label': g['label'],
             'airframe': bridge.drone_airframe(d),   # kontrol düzeni (HEPGO §13.1): sütun → katalog modeli → classic; kopter/heli/VTOL None
             'drive': bridge.model_drive(d.get('type'), d.get('model_key')),   # kara aracı (§15): modelin sürüş biçimi ackermann | skid; diğer tiplerde None
-            'power': power.kayit_oku(d)}            # güç ve yakıt (§10): etkin ayar + defaults + son uçuş ölçümü (measured)
+            'power': power.kayit_oku(d),            # güç ve yakıt (§10): etkin ayar + defaults + son uçuş ölçümü (measured)
+            'equipment': equipment.oku(d.get('equipment'))}   # yol haritası: kamera / eklentiler / görünüm (decals: GET /api/hangar/{id}/decals)
 
 
 def _glb(model_key):
@@ -51,8 +52,13 @@ PILOT_SVG = '/app/img/pilots/{key}.svg'
 
 def pilot_api(p):
     # §25: avatar — 3B avatar ayarı (normalize: NULL/bozuk → 2B karakterin 3B karşılığı); svg eski 2B görsel (geri uyum)
-    return {**p, 'is_default': bool(p.get('is_default')), 'svg': PILOT_SVG.format(key=p.get('character') or 'p01'),
-            'avatar': avatar.normalize(p.get('avatar'), p.get('character'))}
+    out = {**p, 'is_default': bool(p.get('is_default')), 'svg': PILOT_SVG.format(key=p.get('character') or 'p01'),
+           'avatar': avatar.normalize(p.get('avatar'), p.get('character'))}
+    b = xp.bilgi(p.get('xp'), p.get('xp_unverified'))   # yol haritası: seviye 1…100 + madalyalar (önbellek sütunlarından)
+    out.update({'level': b['level'], 'level_verified': b['level_verified'], 'xp': b['xp'], 'xp_verified': b['xp_verified'], 'xp_unverified': b['xp_unverified'],
+                'level_xp': b['level_xp'], 'next_level_xp': b['next_level_xp'], 'progress': b['progress'],
+                'medals': [m['id'] for m in b['medals'] if m['earned']]})
+    return out
 
 
 def track_api(t):

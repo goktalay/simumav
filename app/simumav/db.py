@@ -207,6 +207,74 @@ CREATE TABLE IF NOT EXISTS fpv_records (
 );
 CREATE INDEX IF NOT EXISTS ix_fpv_records_course ON fpv_records(course_id, laps, time_s);
 CREATE INDEX IF NOT EXISTS ix_fpv_records_user ON fpv_records(user_id, course_id);
+-- v8 (yol haritası 2026-10-24): deneyim puanı defteri, e-posta davetleri, arkadaşlar, dron script'leri ve çıkartmaları.
+-- pilots.xp / xp_unverified / level, flights.mode, matches.mode, drones.equipment sütunları init() içinde PRAGMA denetimiyle ALTER (yalnız yoksa).
+CREATE TABLE IF NOT EXISTS xp_events (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    pilot_id INTEGER REFERENCES pilots(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,                       -- flight | match | import
+    ref_id INTEGER NOT NULL,                    -- flights.id | matches.id | içe aktarım sırası
+    xp INTEGER NOT NULL,
+    verified INTEGER NOT NULL DEFAULT 1,        -- 0 = istemcinin yerel (misafir) XP'si; ayrı gösterilir
+    detail TEXT,                                -- JSON: bileşenler
+    created_at TEXT NOT NULL,
+    UNIQUE (source, ref_id, pilot_id)
+);
+CREATE INDEX IF NOT EXISTS ix_xp_events_pilot ON xp_events(pilot_id, created_at);
+CREATE TABLE IF NOT EXISTS match_invites (
+    id INTEGER PRIMARY KEY,
+    match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    inviter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,                        -- küçük harf, kırpılmış (yalnız sunucuda; yanıtlarda maskeli)
+    invitee_id INTEGER,                         -- users.id (davet anında hesabı varsa ya da kabul eden)
+    token_hash TEXT NOT NULL UNIQUE,            -- sha256(davet belirteci); düz değer yalnız e-posta bağlantısında
+    state TEXT NOT NULL DEFAULT 'pending',      -- pending | accepted | declined | expired | revoked
+    mail TEXT NOT NULL DEFAULT 'queued',        -- queued | sent | failed | disabled
+    created_at TEXT NOT NULL,
+    expires_ts REAL NOT NULL,
+    responded_at TEXT,
+    ip TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_match_invites_match ON match_invites(match_id);
+CREATE INDEX IF NOT EXISTS ix_match_invites_email ON match_invites(email, created_at);
+CREATE INDEX IF NOT EXISTS ix_match_invites_inviter ON match_invites(inviter_id, created_at);
+CREATE TABLE IF NOT EXISTS user_contacts (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    other_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,                         -- friend (elle eklendi) | hidden (otomatik listeden gizle)
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, other_id)
+);
+CREATE TABLE IF NOT EXISTS invite_blocks (      -- "bu kişiden davet alma"
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    blocked_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, blocked_id)
+);
+CREATE TABLE IF NOT EXISTS drone_scripts (
+    id INTEGER PRIMARY KEY,
+    drone_id INTEGER NOT NULL REFERENCES drones(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,                         -- <ad>.lua
+    content TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE (drone_id, name)
+);
+CREATE TABLE IF NOT EXISTS drone_decals (
+    id INTEGER PRIMARY KEY,
+    drone_id INTEGER NOT NULL REFERENCES drones(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token TEXT NOT NULL UNIQUE,                 -- 32 bayt urlsafe; /api/hangar/decals/<token>.png
+    kind TEXT NOT NULL DEFAULT 'sticker',       -- logo | sticker
+    width INTEGER NOT NULL, height INTEGER NOT NULL, size INTEGER NOT NULL,
+    path TEXT NOT NULL,                         -- DATA_DIR göreli: files/decals/<uid>/<token>.png (yeniden kodlanmış PNG)
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_drone_decals_drone ON drone_decals(drone_id);
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 """
 # [(sürüm, [sql, …])] — idempotent. v2 (HEPGO §25): "interceptor" artık 4 pervaneli tailsitter; eski sabit kanat jet/delta interceptor dronları
@@ -231,8 +299,13 @@ _MIGRATIONS = [
     # v7 (HEPGO §47 hazır FPV parkurları): fpv_records tablosu SCHEMA'da (CREATE IF NOT EXISTS); matches.kind 'fpv' (game_cfg = parkur ayarı).
     # Veri dönüşümü yok.
     (7, []),
+    # v8 (yol haritası): xp_events / match_invites / user_contacts / invite_blocks / drone_scripts / drone_decals tabloları SCHEMA'da;
+    # pilots.xp, xp_unverified, level · flights.mode · matches.mode · drones.equipment init() içinde ALTER (yalnız yoksa). Eski satırlar: XP 0,
+    # seviye 1, mode NULL (= türün varsayılanı), equipment NULL (= gündüz kamerası, eklenti yok). Veri dönüşümü yok; geçmiş uçuşların XP'si
+    # ilk erişimde (xp.esitle) sunucu verisinden hesaplanır.
+    (8, []),
 ]
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # TR TEST Kalecik (Ankara) UAV test sahası — tesisin resmî koordinatı kamuya açık kaynaklarda yok; Kalecik ilçe merkezi (40.0972N 33.4083E,
 # 725 m) yakınındaki sözleşme değeri kullanılır. Kullanıcı parkuru düzenleyip kaydırabilir.
@@ -286,6 +359,12 @@ def init():
             conn.execute('ALTER TABLE pilots ADD COLUMN avatar TEXT')
         for pid, ch in conn.execute('SELECT id, character FROM pilots WHERE avatar IS NULL').fetchall():
             conn.execute('UPDATE pilots SET avatar = ? WHERE id = ? AND avatar IS NULL', (_av.dump(_av.legacy(ch)), pid))
+        for tablo, col, ddl in (('pilots', 'xp', 'INTEGER NOT NULL DEFAULT 0'), ('pilots', 'xp_unverified', 'INTEGER NOT NULL DEFAULT 0'),
+                                ('pilots', 'level', 'INTEGER NOT NULL DEFAULT 1'), ('flights', 'mode', 'TEXT'), ('matches', 'mode', 'TEXT'),
+                                ('drones', 'equipment', 'TEXT')):   # v8
+            if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({tablo})')}:
+                conn.execute(f'ALTER TABLE {tablo} ADD COLUMN {col} {ddl}')
+        conn.execute('CREATE INDEX IF NOT EXISTS ix_flights_pilot ON flights(pilot_id, started_at)')
         cur = conn.execute('SELECT version FROM schema_version').fetchone()
         ver = cur[0] if cur else 0
         for v, sqls in _MIGRATIONS:

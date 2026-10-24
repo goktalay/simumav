@@ -23,7 +23,7 @@ from starlette.staticfiles import NotModifiedResponse
 from . import config  # noqa: F401 — ilk: çekirdek yollarını yönlendirir
 from . import bridge, db
 from . import match as karsilasma
-from .routers import crew, fly, hangar, holiday, leaderboard, match, meta, missions, ops, session, settings, support, tracks
+from .routers import crew, fly, hangar, hangar_extra, holiday, leaderboard, match, meta, missions, ops, session, settings, social, support, tracks
 
 log = logging.getLogger('simumav')
 # CSP (§7): inline script yok; 'unsafe-eval' ZORUNLU: Cesium 1.145 CDN paketi (replay3d.js / görev harita katmanı) içindeki Knockout `(0,eval)("this")`
@@ -91,8 +91,8 @@ async def _genel(request, e):
     return JSONResponse({'detail': {'error': 'server_error', 'message': 'Sunucu hatası; lütfen tekrar deneyin'}}, status_code=500, headers=HEADERS)
 
 
-for r in (session.router, settings.router, hangar.router, crew.router, tracks.router, missions.router, fly.router, fly.compat, ops.router, support.router, meta.router,
-          match.router, match.fpv_router, leaderboard.router, holiday.router, fly.ws_router, match.ws_router):   # match.fpv_router: §47 hazır FPV parkurları
+for r in (session.router, settings.router, hangar_extra.router, hangar.router, crew.router, tracks.router, missions.router, fly.router, fly.compat, ops.router, support.router, meta.router,
+          match.router, match.fpv_router, leaderboard.router, holiday.router, social.router, fly.ws_router, match.ws_router):   # match.fpv_router: §47 hazır FPV parkurları
     app.include_router(r)
 
 

@@ -106,6 +106,10 @@ def _iso(ts):
     return datetime.fromtimestamp(ts).astimezone().isoformat(timespec='seconds')
 
 
+def _mod_varsayilan(kind):
+    return {'rings': 'rings', 'dogfight': 'dogfight', 'fpv': 'fpv'}.get(kind or 'rings', 'rings')
+
+
 def ctip(drone_type):
     return bridge.TIP_ESLEME.get(drone_type)
 
@@ -175,6 +179,14 @@ class Mac:
         self.bitti_t = None
         self.alt_ok = False
         self.bot_gorevleri = {}           # §44 uid → asyncio.Task (BotSurucu)
+        self.mode = None                  # yol haritası oyun türü (modes.MODES; None = türün varsayılanı)
+
+    def insan_sayisi(self):
+        return sum(1 for p in self.lobi.values() if not p.get('bot'))
+
+    def toplam_siniri(self):
+        """Salondaki araç tavanı (insan + yapay zekâ): it dalaşı 2; diğerlerinde sunucu sınırı (oyuncu_siniri; her araç bir SITL)."""
+        return 2 if self.tur == core.TUR_IT else max(self.max_players, oyuncu_siniri())
 
     # ---------------------------------------------------------------- sorgular
     @property
@@ -233,7 +245,8 @@ class Mac:
         return {'id': self.id, 'code': self.code, 'state': self.durum, 'reason': self.k.neden if self.k is not None else self.neden, 'host_id': self.host_id,
                 'max_players': self.max_players, 'created_at': self.olusturma_t, 'settings': ayar_ozeti(self.settings), 'rings_cfg': dict(self.cfg),
                 'rings': list(self.k.halkalar if self.k is not None else self.halkalar), 'center': dict(self.merkez), 'players': players,
-                'can_start': self.baslatilabilir(), 'now': now, 'live': True, 'kind': self.tur, **out}
+                'can_start': self.baslatilabilir(), 'now': now, 'live': True, 'kind': self.tur,
+                'mode': self.mode or _mod_varsayilan(self.tur), 'max_vehicles': self.toplam_siniri(), **out}
 
     # ---------------------------------------------------------------- yayın
     def _yay(self, obj):
@@ -269,7 +282,7 @@ class Mac:
             return False
         if self.durum != core.LOBI or self.k is not None:
             raise H(409, 'started', 'Karşılaşma başladı ya da bitti; artık katılınamaz')
-        if len(self.lobi) >= self.max_players:
+        if self.insan_sayisi() >= self.max_players or len(self.lobi) >= self.toplam_siniri():
             raise H(409, 'full', f'Karşılaşma dolu ({self.max_players} oyuncu)')
         self.lobi[uid] = {'id': uid, 'name': user['display_name'], 'host': False, 'ready': False, 'joined_t': now, 'seen_t': now, 'avatar': pilot_avatari(uid)}
         self.degisti()
@@ -293,8 +306,8 @@ class Mac:
             raise H(422, 'invalid', f"Yapay zekâ seviyesi {' | '.join(core.BOT_SEVIYELER)} olmalı")
         if self.k is not None or self.durum != core.LOBI:
             raise H(409, 'conflict', 'Yapay zekâ pilot yalnız bekleme salonunda eklenebilir')
-        if len(self.lobi) >= self.max_players:
-            raise H(409, 'full', f'Karşılaşma dolu ({self.max_players} oyuncu; yapay zekâ pilotlar da sayılır)')
+        if len(self.lobi) >= self.toplam_siniri():   # yol haritası: yapay zekâ insan sınırına (max_players) sayılmaz; tavan = sunucu SITL/çekirdek sınırı
+            raise H(409, 'full', f'Karşılaşma dolu (yapay zekâ pilotlar dahil en çok {self.toplam_siniri()} araç; her biri bir simülatör yuvası)')
         uid = min([0] + list(self.lobi)) - 1
         n = sum(1 for p in self.lobi.values() if p.get('bot'))
         self.lobi[uid] = {'id': uid, 'name': core.bot_adi(seviye, n, etiket=False), 'host': False, 'ready': True, 'bot': seviye,
@@ -729,7 +742,7 @@ class Yonetici:
     def acik_sayisi(self):
         return sum(1 for m in self.matches.values() if not m.bitti())
 
-    async def olustur(self, user, drone, track, launch, camera, cfg, sifre, max_players, request_ip=None, tur=core.TUR_HALKA):
+    async def olustur(self, user, drone, track, launch, camera, cfg, sifre, max_players, request_ip=None, tur=core.TUR_HALKA, mode=None):
         self.kurtar()
         uid = int(user['id'])
         m0 = self.kullanici_maci(uid)
@@ -759,28 +772,29 @@ class Yonetici:
 
         def ekle():
             with db.connect() as conn:
-                mid = conn.execute('INSERT INTO matches (code, host_id, pass_hash, state, max_players, settings, rings_cfg, rings, created_at, kind, game_cfg) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                mid = conn.execute('INSERT INTO matches (code, host_id, pass_hash, state, max_players, settings, rings_cfg, rings, created_at, kind, game_cfg, mode) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                                    (code, uid, ozet, core.LOBI, int(max_players), json.dumps(settings, ensure_ascii=False, default=str), '{}' if oyun_cfg else json.dumps(cfg),
-                                    json.dumps(halkalar), db.now(), tur, json.dumps(cfg) if oyun_cfg else None)).lastrowid
+                                    json.dumps(halkalar), db.now(), tur, json.dumps(cfg) if oyun_cfg else None, mode)).lastrowid
                 db.audit(conn, 'match_create', uid, request_ip, f"match {mid} {drone.get('type')} · {track.get('name')} · "
                          + ('it dalaşı' if it else f"FPV {cfg['course_id']} × {cfg['laps']} tur" if tur == core.TUR_FPV else f"{cfg['count']} halka") + f" · ≤ {max_players} oyuncu")
                 conn.commit()
                 return mid
         mid = await loop.run_in_executor(None, ekle)
         m = Mac(self, mid, code, user, ozet, max_players, settings, cfg, merkez, halkalar, now, tur=tur)
+        m.mode = mode
         self.matches[mid] = m
         self.kodlar[code] = mid
         m.kaydet()
         m.task = loop.create_task(m.run())
         return m
 
-    async def yapay_zekaya_karsi(self, user, drone, track, launch, camera, cfg, seviye, bot_sayisi, request_ip=None, tur=core.TUR_HALKA):
+    async def yapay_zekaya_karsi(self, user, drone, track, launch, camera, cfg, seviye, bot_sayisi, request_ip=None, tur=core.TUR_HALKA, mode=None):
         """HEPGO §44 "Yapay zekâya karşı" hızlı başlat: davet bağlantısı/şifre gerekmez (rastgele şifre; paylaşılmaz) → botlar → hemen BAŞLAT
         (yuva denetimi BAŞLAT'ta; yetmezse karşılaşma iptal edilir ve 429 iletilir)."""
         if seviye not in core.BOT_SEVIYELER:
             raise H(422, 'invalid', f"Yapay zekâ seviyesi {' | '.join(core.BOT_SEVIYELER)} olmalı")
         n = 1 if tur == core.TUR_IT else max(1, min(int(bot_sayisi or 1), oyuncu_siniri() - 1))
-        m = await self.olustur(user, drone, track, launch, camera, cfg, secrets.token_urlsafe(12), n + 1, request_ip, tur=tur)
+        m = await self.olustur(user, drone, track, launch, camera, cfg, secrets.token_urlsafe(12), n + 1, request_ip, tur=tur, mode=mode)
         try:
             for _ in range(n):
                 m.bot_ekle(user['id'], seviye)
@@ -790,12 +804,12 @@ class Yonetici:
             raise
         return m
 
-    async def tek_kisilik(self, user, drone, track, launch, camera, cfg, request_ip=None, tur=core.TUR_FPV):
+    async def tek_kisilik(self, user, drone, track, launch, camera, cfg, request_ip=None, tur=core.TUR_FPV, mode=None):
         """§47 tek kişilik zaman denemesi (Uç › Tek oyunculu › FPV parkuru; halka yarışında da): rastgele şifre (paylaşılmaz), tek oyuncu,
         hemen BAŞLAT. Yuva yetmezse karşılaşma iptal edilir, 429 iletilir."""
         if tur == core.TUR_IT:
             raise H(422, 'invalid', 'İt dalaşı tek kişilik oynanamaz (yapay zekâya karşı deneyin)')
-        m = await self.olustur(user, drone, track, launch, camera, cfg, secrets.token_urlsafe(12), 1, request_ip, tur=tur)
+        m = await self.olustur(user, drone, track, launch, camera, cfg, secrets.token_urlsafe(12), 1, request_ip, tur=tur, mode=mode)
         try:
             m.baslat(user['id'], time.time())
         except bridge.BridgeHata:
@@ -881,7 +895,7 @@ def satir_dict(r, uid=None):
                          'rank': p['rank'], 'rings': p['rings'], 'time_s': p['time_s'], 'is_bot': bool(p.get('is_bot')), 'level': p.get('level'),
                          'avatar': None if p.get('is_bot') else pilot_avatari(p['user_id']),
                          'role': ((res or {}).get('dogfight') or {}).get('roles', {}).get(str(p['user_id']))} for p in ps],
-            'result': res, 'winner': r['winner_id'], 'created_at': r['created_at'], 'started_at': r['started_at'], 'ended_at': r['ended_at'], 'live': False,
+            'result': res, 'winner': r['winner_id'], 'mode': r.get('mode') or _mod_varsayilan(kind), 'created_at': r['created_at'], 'started_at': r['started_at'], 'ended_at': r['ended_at'], 'live': False,
             'can_start': False, 'now': time.time()}
 
 

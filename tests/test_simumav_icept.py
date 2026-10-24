@@ -58,7 +58,7 @@ def main():
             assert tipler == {'glb:jet': 'plane', 'proc:interceptor': 'plane', 'glb:zephyr': 'plane', 'glb:icept_x4': 'interceptor'}, tipler
             assert json.loads(cc.execute('SELECT params FROM drones WHERE id = 1').fetchone()[0]) == {'AIRSPEED_MAX': 170}
             assert json.loads(cc.execute('SELECT snapshot FROM flights WHERE id = 1').fetchone()[0])['drone']['type'] == 'plane'
-            assert cc.execute('SELECT version FROM schema_version').fetchone()[0] == sdb.SCHEMA_VERSION == 2
+            assert cc.execute('SELECT version FROM schema_version').fetchone()[0] == sdb.SCHEMA_VERSION   # göç zinciri en son sürüme (v2 icept göçü dahil)
         sdb.init()   # idempotent
         # ---- katalog / eşleme
         r = c.post('/api/session', json={'dev_user': 'icept'}, headers=H); assert r.status_code == 200, r.text

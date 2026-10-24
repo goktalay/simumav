@@ -19,7 +19,7 @@ from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from .. import auth, bridge, config, db
+from .. import auth, bridge, config, db, modes
 from ... import drone_hub, flightsim, flightsim_hub, flightsim_models, flightsim_rec, sim_terrain
 from .common import User, flight_api, hata_cevir, sahip
 
@@ -85,6 +85,7 @@ class StartIn(BaseModel):
     site: Optional[SiteIn] = None                   # HEPGO §26 yer kontrol sahası (istasyon + EO/radar kulesi)
     defend: Optional[DefendIn] = None               # HEPGO §26 "Yer kontrolünü koru" (sihirbazdan; görev kaydı kind='defend' ise plandan)
     drive: Optional[str] = Field(None, max_length=10)   # §15 kara aracı sürüş biçimi: ackermann | skid (yoksa modelin; diğer tiplerde yok sayılır)
+    mode: Optional[str] = Field(None, max_length=20)    # yol haritası oyun türü (motoru 'fly' olanlar: free | cargo_drop | spraying | facility_defense | ship_defense)
 
 
 class RecStartIn(BaseModel):
@@ -119,11 +120,22 @@ async def start(body: StartIn, request: Request, user=User):
             raise auth.hata(422, 'invalid', 'Görev bu parkura ait değil')
     launch = body.launch.model_dump(exclude_none=True) if isinstance(body.launch, LaunchIn) else {'method': body.launch or 'wheels'}
     try:
+        mode = modes.dogrula(body.mode, 'fly', drone['type'])
+    except modes.ModHata as e:
+        raise auth.hata(422, 'invalid', str(e))
+    defend = body.defend.model_dump(exclude_none=True) if body.defend else None
+    site = body.site.model_dump(exclude_none=True) if body.site else None
+    if mode and modes.MODES[mode].get('defend'):   # savunma türleri: §26 savunma çekirdeği (gelen hedef dronlar sunucuda) + istasyon
+        if defend is None and not (mission and mission.get('kind') == 'defend'):
+            defend = {}
+        site = {'station': True, **(site or {})}
+    if mode == 'spraying' and mission is not None and mission.get('kind') != 'spray':
+        raise auth.hata(422, 'invalid', "Tarla ilaçlama türünde görev kind 'spray' olmalı")
+    try:
         out = await bridge.ucus_baslat(user, pilot, drone, track, mission, launch, body.record.model_dump() if body.record else None, request,
                                        power=body.power, speedup=body.speedup, camera=body.camera,
                                        targets=body.targets.model_dump(exclude_none=True) if body.targets else None,
-                                       site=body.site.model_dump(exclude_none=True) if body.site else None,
-                                       defend=body.defend.model_dump(exclude_none=True) if body.defend else None, drive=body.drive)
+                                       site=site, defend=defend, drive=body.drive, mode=mode)
     except bridge.BridgeHata as e:
         if e.error == 'invalid' and str(e.message).startswith(('power', 'Yakıt')):
             db.audit_bagimsiz('power_reject', user['id'], auth.client_ip(request), e.message[:200])

@@ -22,15 +22,15 @@
 import asyncio
 import json
 import time
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from ... import flightsim
 from ... import flightsim_fpv as fpv
 from ... import flightsim_match_core as core
-from .. import auth, avatar, bridge, config, db
+from .. import auth, avatar, bridge, config, db, mailer, modes, social
 from .. import match as M
 from .common import User, hata_cevir, sahip
 from .fly import _Oran, _sender, _ws_ac
@@ -92,6 +92,7 @@ class CreateIn(BaseModel):
     kind: Optional[str] = Field(None, max_length=16)       # HEPGO §41 'rings' | 'dogfight' | §47 'fpv'
     dogfight: Optional[DogfightIn] = None
     fpv: Optional[FpvIn] = None
+    mode: Optional[str] = Field(None, max_length=20)       # yol haritası oyun türü (modes.MODES; motoru 'match' olanlar)
 
 
 class BotIn(BaseModel):
@@ -108,7 +109,8 @@ class AiIn(BaseModel):
     dogfight: Optional[DogfightIn] = None
     fpv: Optional[FpvIn] = None
     level: str = Field('normal', max_length=16)
-    bots: int = Field(1, ge=1, le=7)
+    bots: Optional[int] = Field(None, ge=1, le=7)          # yoksa türün önerisi (modes.ai_onerisi; en az 1)
+    mode: Optional[str] = Field(None, max_length=20)
 
 
 class SoloIn(BaseModel):
@@ -116,9 +118,10 @@ class SoloIn(BaseModel):
     track_id: Optional[int] = None
     launch: Optional[dict] = None
     camera: Optional[str] = Field(None, max_length=8)
-    kind: str = Field('fpv', max_length=16)
+    kind: Optional[str] = Field(None, max_length=16)       # yoksa mode'dan, o da yoksa 'fpv' (geri uyum)
     rings: Optional[RingsIn] = None
     fpv: Optional[FpvIn] = None
+    mode: Optional[str] = Field(None, max_length=20)
 
 
 class JoinIn(BaseModel):
@@ -140,6 +143,20 @@ class PasswordIn(BaseModel):
 
 def _h(e):
     hata_cevir(e)
+
+
+def _mod(mode, kind, drone_type):
+    """Oyun türü (mode) ↔ karşılaşma türü (kind) bağdaşıklığı. Dönüş (mode, kind). FPV parkuru 'rings' (halka toplama) türünün bir çeşididir."""
+    try:
+        mode = modes.dogrula(mode, 'match', drone_type)
+    except modes.ModHata as e:
+        raise auth.hata(422, 'invalid', str(e))
+    if mode is None:
+        return None, kind
+    mk = modes.MODES[mode]['match_kind']
+    if kind and kind != mk and not (mode == 'rings' and kind == core.TUR_FPV):
+        raise auth.hata(422, 'invalid', f"mode '{mode}' ile kind '{kind}' uyuşmuyor")
+    return mode, kind or mk
 
 
 def _cfg(drone_type, rings, kind=None, dogfight=None, fpv_body=None):
@@ -229,9 +246,11 @@ async def create(body: CreateIn, request: Request, user=User):
     auth.oran('match_create', 10, 3600, user_id=user['id'])
     with db.connect() as conn:
         drone = sahip(conn, 'drones', body.drone_id, user)
-        track = _track(conn, body.track_id, user, body.kind)
-    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight, body.fpv)
-    kind = body.kind or core.TUR_HALKA
+    mode, kind0 = _mod(body.mode, body.kind, drone['type'])
+    with db.connect() as conn:
+        track = _track(conn, body.track_id, user, kind0)
+    cfg = _cfg(drone['type'], body.rings, kind0, body.dogfight, body.fpv)
+    kind = kind0 or core.TUR_HALKA
     try:
         sifre = M.sifre_dogrula(body.password)
         ust = M.oyuncu_siniri()
@@ -244,7 +263,7 @@ async def create(body: CreateIn, request: Request, user=User):
             camera = flightsim.kamera_dogrula(body.camera)
         except flightsim.SimHata as e:
             raise M.H(422, 'invalid', str(e))
-        m = await M.MANAGER.olustur(user, drone, track, launch, camera, cfg, sifre, body.max_players, auth.client_ip(request), tur=kind)
+        m = await M.MANAGER.olustur(user, drone, track, launch, camera, cfg, sifre, body.max_players, auth.client_ip(request), tur=kind, mode=mode)
     except bridge.BridgeHata as e:
         _h(e)
     return {**m.anlik(), 'me': user['id']}
@@ -256,8 +275,11 @@ async def vs_ai(body: AiIn, request: Request, user=User):
     auth.oran('match_create', 10, 3600, user_id=user['id'])
     with db.connect() as conn:
         drone = sahip(conn, 'drones', body.drone_id, user)
-        track = _track(conn, body.track_id, user, body.kind)
-    cfg = _cfg(drone['type'], body.rings, body.kind, body.dogfight, body.fpv)
+    mode, kind = _mod(body.mode, body.kind, drone['type'])
+    with db.connect() as conn:
+        track = _track(conn, body.track_id, user, kind)
+    cfg = _cfg(drone['type'], body.rings, kind, body.dogfight, body.fpv)
+    bots = body.bots or max(1, modes.ai_onerisi(mode or modes.KIND_TO_MODE.get(kind or core.TUR_HALKA, 'rings'))['count'] or 1)
     try:
         launch = bridge.launch_dogrula(body.launch or {'method': 'wheels'})
         try:
@@ -267,10 +289,10 @@ async def vs_ai(body: AiIn, request: Request, user=User):
         diger = M.MANAGER.kullanici_maci(user['id'])
         if diger is not None:
             raise M.H(409, 'match_open', 'Zaten bitmemiş bir karşılaşmanız var; önce ondan ayrılın', match_id=diger.id)
-        m = await M.MANAGER.yapay_zekaya_karsi(user, drone, track, launch, camera, cfg, body.level, body.bots, auth.client_ip(request), tur=body.kind or core.TUR_HALKA)
+        m = await M.MANAGER.yapay_zekaya_karsi(user, drone, track, launch, camera, cfg, body.level, bots, auth.client_ip(request), tur=kind or core.TUR_HALKA, mode=mode)
     except bridge.BridgeHata as e:
         _h(e)
-    db.audit_bagimsiz('match_ai', user['id'], auth.client_ip(request), f'match {m.id} · {body.kind or core.TUR_HALKA} · {body.level} × {len(m.k.botlar()) if m.k else 0}')
+    db.audit_bagimsiz('match_ai', user['id'], auth.client_ip(request), f'match {m.id} · {kind or core.TUR_HALKA} · {body.level} × {len(m.k.botlar()) if m.k else 0}')
     return {**m.anlik(), 'me': user['id']}
 
 
@@ -278,12 +300,15 @@ async def vs_ai(body: AiIn, request: Request, user=User):
 async def solo(body: SoloIn, request: Request, user=User):
     """§47 TEK KİŞİLİK zaman denemesi (Uç › Tek oyunculu › FPV parkuru; halka yarışında da): davet/şifre yok, hemen HAZIRLIK."""
     auth.oran('match_create', 10, 3600, user_id=user['id'])
-    if body.kind not in (core.TUR_HALKA, core.TUR_FPV):
-        raise auth.hata(422, 'invalid', "Tek kişilik karşılaşma kind 'rings' | 'fpv' olabilir")
     with db.connect() as conn:
         drone = sahip(conn, 'drones', body.drone_id, user)
-        track = _track(conn, body.track_id, user, body.kind)
-    cfg = _cfg(drone['type'], body.rings, body.kind, None, body.fpv)
+    mode, kind = _mod(body.mode, body.kind, drone['type'])
+    kind = kind or core.TUR_FPV
+    if kind not in (core.TUR_HALKA, core.TUR_FPV):
+        raise auth.hata(422, 'invalid', "Tek kişilik karşılaşma kind 'rings' | 'fpv' olabilir (it dalaşı: /api/match/ai — yapay zekâ rakip otomatik)")
+    with db.connect() as conn:
+        track = _track(conn, body.track_id, user, kind)
+    cfg = _cfg(drone['type'], body.rings, kind, None, body.fpv)
     try:
         launch = bridge.launch_dogrula(body.launch or {'method': 'wheels'})
         try:
@@ -293,10 +318,10 @@ async def solo(body: SoloIn, request: Request, user=User):
         diger = M.MANAGER.kullanici_maci(user['id'])
         if diger is not None:
             raise M.H(409, 'match_open', 'Zaten bitmemiş bir karşılaşmanız var; önce ondan ayrılın', match_id=diger.id)
-        m = await M.MANAGER.tek_kisilik(user, drone, track, launch, camera, cfg, auth.client_ip(request), tur=body.kind)
+        m = await M.MANAGER.tek_kisilik(user, drone, track, launch, camera, cfg, auth.client_ip(request), tur=kind, mode=mode)
     except bridge.BridgeHata as e:
         _h(e)
-    db.audit_bagimsiz('match_solo', user['id'], auth.client_ip(request), f'match {m.id} · {body.kind}' + (f" · {cfg['course_id']}" if body.kind == core.TUR_FPV else ''))
+    db.audit_bagimsiz('match_solo', user['id'], auth.client_ip(request), f'match {m.id} · {kind}' + (f" · {cfg['course_id']}" if kind == core.TUR_FPV else ''))
     return {**m.anlik(), 'me': user['id']}
 
 
@@ -304,7 +329,7 @@ async def solo(body: SoloIn, request: Request, user=User):
 async def mine(user=User):
     """Son 20 karşılaşmam (oyuncusu olduklarım)."""
     with db.connect() as conn:
-        rs = db.rows(conn.execute('SELECT m.id, m.state, m.reason, m.host_id, m.settings, m.winner_id, m.created_at, m.ended_at, m.kind, mp.rank, mp.status, mp.flight_id, '
+        rs = db.rows(conn.execute('SELECT m.id, m.state, m.reason, m.host_id, m.settings, m.winner_id, m.created_at, m.ended_at, m.kind, m.mode, mp.rank, mp.status, mp.flight_id, '
                                   "CASE WHEN m.kind = 'fpv' AND json_valid(m.game_cfg) THEN json_extract(m.game_cfg, '$.course_id') END AS course_id, "
                                   '(SELECT COUNT(*) FROM match_players x WHERE x.match_id = m.id) AS n, '
                                   '(SELECT name FROM match_players x WHERE x.match_id = m.id AND x.user_id = m.winner_id) AS winner_name '
@@ -462,6 +487,108 @@ async def password(mid: int, body: PasswordIn, user=User):
         conn.execute('UPDATE matches SET pass_hash = ? WHERE id = ?', (m.pass_hash, m.id))
         conn.commit()
     return {'ok': True}
+
+
+# ---------------------------------------------------------------- e-posta daveti (yol haritası; social.py)
+class InviteIn(BaseModel):
+    emails: List[str] = Field(default_factory=list, max_length=social.INVITE_PER_REQUEST)
+    friend_ids: List[int] = Field(default_factory=list, max_length=social.INVITE_PER_REQUEST)
+
+
+def _sosyal(e):
+    raise HTTPException(e.status, {'error': e.error, 'message': e.message, **e.extra},
+                        headers={'Retry-After': str(e.extra['retry_after'])} if 'retry_after' in e.extra else None)
+
+
+def mac_canli(mid):
+    """Davet geçerliliği: karşılaşma bellekte ve hâlâ bekleme salonunda."""
+    m = M.MANAGER.get(mid)
+    return m is not None and m.k is None and m.durum == core.LOBI
+
+
+@router.post('/{mid}/invites', status_code=201)
+async def invites_create(mid: int, body: InviteIn, request: Request, user=User):
+    """Kurucu: e-posta / arkadaş daveti. Yanıt: {invites:[{id, email(maskeli), state, mail, link}], skipped:[{email, reason}], mail_enabled}."""
+    m = _canli(mid, user)
+    if m.host_id != user['id']:
+        raise auth.hata(403, 'forbidden', 'Yalnız kurucu davet gönderebilir')
+    if m.k is not None or m.durum != core.LOBI:
+        raise auth.hata(409, 'started', 'Davet yalnız bekleme salonunda gönderilebilir')
+    if m.max_players <= 1 or (m.tur == core.TUR_IT and m.insan_sayisi() >= 2):
+        raise auth.hata(409, 'full', 'Bu karşılaşmaya insan oyuncu eklenemez')
+    auth.oran('match_invite', 10, 600, user_id=user['id'])
+    ip = auth.client_ip(request)
+    try:
+        with db.connect() as conn:
+            yeni, atla, isler = social.davet_olustur(conn, user, m, body.emails, body.friend_ids, ip)
+            conn.commit()
+    except social.SosyalHata as e:
+        _sosyal(e)
+    if isler:
+        mailer.arka_planda([(iid, to, konu, metin, html) for iid, to, konu, metin, html in isler], social.posta_sonucu)
+    with db.connect() as conn:
+        out = [social.davet_api(db.row(conn.execute('SELECT * FROM match_invites WHERE id = ?', (r['id'],))), social.baglanti(tok)) for r, tok in yeni]
+    return {'invites': out, 'skipped': atla, 'mail_enabled': mailer.enabled(),
+            'limits': {'per_request': social.INVITE_PER_REQUEST, 'per_match': social.INVITE_MAX_PER_MATCH, 'daily': social.INVITE_DAILY,
+                       'ttl_h': social.INVITE_TTL_H}}
+
+
+@router.get('/{mid}/invites')
+async def invites_list(mid: int, user=User):
+    with db.connect() as conn:
+        r = db.row(conn.execute('SELECT host_id FROM matches WHERE id = ?', (int(mid),)))
+        if not r or r['host_id'] != user['id']:
+            raise auth.hata(404, 'not_found', 'Karşılaşma bulunamadı')
+        rs = [social._durum_tazele(conn, x, mac_canli) for x in db.rows(conn.execute('SELECT * FROM match_invites WHERE match_id = ? ORDER BY id', (int(mid),)))]
+        conn.commit()
+    return {'invites': [social.davet_api(x) for x in rs], 'mail_enabled': mailer.enabled()}
+
+
+@router.delete('/{mid}/invites/{iid}')
+async def invites_revoke(mid: int, iid: int, user=User):
+    with db.connect() as conn:
+        r = db.row(conn.execute('SELECT i.* FROM match_invites i JOIN matches m ON m.id = i.match_id WHERE i.id = ? AND i.match_id = ? AND m.host_id = ?',
+                                (int(iid), int(mid), user['id'])))
+        if not r:
+            raise auth.hata(404, 'not_found', 'Davet bulunamadı')
+        conn.execute("UPDATE match_invites SET state = 'revoked', responded_at = ? WHERE id = ? AND state = 'pending'", (db.now(), r['id']))
+        conn.commit()
+    return {'ok': True, 'revoked': r['id']}
+
+
+def davet_kabul(r, user, ip):
+    """Ortak kabul: alıcı denetimi → şifresiz katılım → accepted. Dönüş karşılaşma anlık görüntüsü."""
+    if not social.alici_mi(r, user):
+        raise auth.hata(403, 'wrong_account', 'Bu davet başka bir e-posta adresine gönderildi; o hesapla giriş yapın')
+    with db.connect() as conn:
+        social._durum_tazele(conn, r, mac_canli)
+        conn.commit()
+    if r['state'] != 'pending':
+        raise auth.hata(409, r['state'], {'accepted': 'Davet zaten kabul edildi', 'declined': 'Davet reddedildi', 'expired': 'Davetin süresi doldu ya da karşılaşma başladı',
+                                          'revoked': 'Kurucu daveti geri aldı'}.get(r['state'], 'Davet geçersiz'))
+    m = M.MANAGER.get(r['match_id'])
+    try:
+        diger = M.MANAGER.kullanici_maci(user['id'])
+        if diger is not None and diger is not m:
+            raise M.H(409, 'match_open', 'Başka bir bitmemiş karşılaşmadasınız; önce ondan ayrılın', match_id=diger.id)
+        m.katil(user, time.time())
+    except bridge.BridgeHata as e:
+        _h(e)
+    with db.connect() as conn:
+        conn.execute("UPDATE match_invites SET state = 'accepted', invitee_id = ?, responded_at = ? WHERE id = ?", (user['id'], db.now(), r['id']))
+        db.audit(conn, 'invite_accept', user['id'], ip, f"match {r['match_id']} · invite {r['id']}")
+        conn.commit()
+    return {**m.anlik(), 'me': user['id']}
+
+
+def davet_ret(r, user, block, ip):
+    with db.connect() as conn:
+        conn.execute("UPDATE match_invites SET state = 'declined', responded_at = ? WHERE id = ? AND state = 'pending'", (db.now(), r['id']))
+        if block and user is not None and r['inviter_id'] != user['id']:
+            conn.execute('INSERT OR IGNORE INTO invite_blocks (user_id, blocked_id, created_at) VALUES (?,?,?)', (user['id'], r['inviter_id'], db.now()))
+        db.audit(conn, 'invite_decline', user['id'] if user else None, ip, f"invite {r['id']}" + (' · block' if block else ''))
+        conn.commit()
+    return {'ok': True, 'state': 'declined', 'blocked': bool(block and user is not None)}
 
 
 # ---------------------------------------------------------------- WebSocket

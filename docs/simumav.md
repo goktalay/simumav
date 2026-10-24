@@ -1075,3 +1075,84 @@ beton bina; kapı geçişi, çarpışma, tur/sektör/ceza, hayalet, doğrulama) 
   sütunları; geçmişte tür + "tek kişilik" rozeti (liste satırında `course_id`). TOP 10'da puan bileşeni çipleri ("FPV parkur" dahil), `top10.formula`.
 - Metinler 7 dil (ortak 127 `fpv.*` + `fpvsm.*` / `top10.part_*`). Testler `node tests/test_simumav_match.mjs` (+7 §29). Görseller
   `./.venv/bin/python -m tests.simumav_fpvcourse_shots` (`SHOT_PHASES=race,venues,ui,top10,mobile`) → `/tmp/fpvcourse-shots/sm-*.png`.
+
+## 30. YOL HARİTASI SUNUCU API'LERİ (2026-10-24; UE5 Simumav + web ortak) — davet, arkadaşlar, seviye/XP, uçuş geçmişi, oyun türleri, hangar kalıcılığı
+Kaynak: `~/mt-work/caysim/docs/yol-haritasi.md`. Modüller: `app/simumav/{mailer,social,xp,modes,equipment}.py`, `routers/{social,hangar_extra}.py`,
+eklemeler `routers/{match,crew,ops,fly,hangar,meta,common}.py`, `bridge.py` (eklenti parametreleri, `params_hasat`, XP tetik), `match.py` (`mode`, AI sınırı).
+UE istemcisine verilecek ayrıntılı ek: `docs/caysim-api-ek-yol-haritasi.md`. Test: `./.venv/bin/python -m tests.test_simumav_roadmap`.
+
+### 30.1 Oyun türleri (`modes.py`)
+`mode` ∈ `free | rings | cargo_drop | spraying | dogfight | facility_defense | ship_defense`. Motor: `rings`/`dogfight` → karşılaşma (`POST /api/match`,
+`/api/match/ai`, `/api/match/solo` gövdesinde `mode`; `kind` verilmezse türden; çelişki 422; FPV parkuru `kind:'fpv'` = `rings` türünün çeşidi);
+diğerleri → `POST /api/fly/start {…, mode}` (yanlış motor / araç tipi 422). Savunma türleri yalnız INTERCEPTOR: `defend` verilmezse `{}` (varsayılan
+dalgalar) + `site.station = true`; gelen hedef dronlar = "yapay zekâ oyuncu" (sunucu dalga planı). `spraying` görev seçilmişse `kind:'spray'` olmalı.
+**Angajman kuralı (§20 / HEPGO §40, bağlayıcı)**: puan yalnız HUD kilidi + temas/yakın geçiş sayımı; otonom güdüm / otomatik nişan YOK
+(`engagement_rule: 'hud_lock_only'`). `GET /api/modes?lang=` → `{modes:[{id, label, labels, engine, match_kind, mission_kind, defend, multiplayer,
+players:[min,max], types, requires{addon|site|world}, ai{single, recommended, max, kind: pilot|target_drone}, scoring[{key, points}], engagement}],
+engagement_rule, mail_enabled}` · `GET /api/modes/{id}/ai?players=&waves=` → `{mode, kind, count, auto}` (tek oyunculuda gerekli AI; savunmada dalga
+planındaki tehdit sayısı). `/api/match/ai` `bots` verilmezse önerilen sayı (≥ 1). `matches.mode`, `flights.mode` (v8) + `snapshot.mode`; anlık görüntüde
+`mode`, `max_vehicles`. `GET /api/meta` → `modes`, `mail_enabled`.
+
+### 30.2 Yapay zekâ sınırı
+Yapay zekâ pilotlar insan sınırına (`max_players`) SAYILMAZ; salondaki araç tavanı `max_vehicles = max(max_players, oyuncu_siniri())` (it dalaşı 2) —
+her araç bir SITL yuvası olduğundan "sınırsız" = sunucu tavanı (`SIMUMAV_MATCH_MAX_PLAYERS` ≤ 8, `SIMUMAV_MAX_FLIGHTS`). BAŞLAT'ta yuva denetimi aynı.
+
+### 30.3 E-posta daveti (`social.py`, `mailer.py`)
+- Kurucu (salonda): `POST /api/match/{id}/invites {emails:[≤25], friend_ids:[≤25]}` → 201 `{invites:[{id, match_id, email (maskeli), state, mail, created_at,
+  expires_at, link}], skipped:[{email, reason: self|duplicate|recipient_limit}], mail_enabled, limits{per_request, per_match, daily, ttl_h}}` ·
+  `GET /api/match/{id}/invites` (kurucu; `link` yok) · `DELETE /api/match/{id}/invites/{iid}` (geri al → `revoked`).
+- Alıcı: `GET /api/invites` → `{invites:[{id, match_id, inviter{name, email maskeli}, mode, kind, track, drone{name,type}, max_players, expires_at}], count}`
+  (oyun içi bildirim; e-postası eşleşen davetler dahil) · `POST /api/invites/{iid}/accept` → karşılaşma anlık görüntüsü (ŞİFRESİZ lobi) ·
+  `POST /api/invites/{iid}/decline {block?}` · e-posta bağlantısı `PUBLIC_URL/app/#/match/invite/<belirteç>`: `GET /api/invites/t/{tok}` (OTURUMSUZ ön izleme:
+  state, inviter maskeli, mode, track, expires_at, email_hint, login/register/download URL) · `POST /api/invites/t/{tok}/accept` (oturum) ·
+  `POST /api/invites/t/{tok}/decline {block?}` (oturumsuz da; engelleme oturumla) · `GET /api/invites/blocks`, `DELETE /api/invites/blocks/{uid}`.
+- Kurallar: davet alıcının e-postasına bağlı (başka hesap 403 `wrong_account`); belirteç 32 karakter, DB'de sha256; durumlar `pending | accepted |
+  declined | expired | revoked`; süre `SIMUMAV_INVITE_TTL_H` (24 sa) ya da karşılaşma salondan çıkınca `expired`; karşılaşma başına 50
+  (`SIMUMAV_INVITE_MAX_PER_MATCH`, 409 `invite_limit`), kurucu başına 24 saatte 100 (`SIMUMAV_INVITE_DAILY`, 429 `invite_daily`), alıcı başına 24 saatte 5,
+  10 istek / 10 dk; hesabın varlığı kurucuya söylenmez; engelleyen alıcıya ileti/bildirim gitmez (kurucu `sent` görür); e-postaya kullanıcı metni girmez.
+- E-posta: `SIMUMAV_SMTP_HOST/PORT/USER/PASS`, `SIMUMAV_MAIL_FROM`, `SIMUMAV_MAIL_FROM_NAME` (yalnız SIMUMAV_* — yalıtım §7); USER+PASS yoksa `mail:'disabled'`
+  ve `link` kurucuya döner (elle paylaşılır). Gönderim arka planda; `mail: queued → sent | failed`. Test kipi `SIMUMAV_MAIL_TEST=1` (OUTBOX).
+  Hesabı olmayana giden iletide kayıt (`SIMUMAV_MT_URL`) ve indirme (`PUBLIC_URL/#download`) bağlantıları.
+
+### 30.4 Arkadaşlarım
+`GET /api/friends` → `{friends:[{user_id, name, email (maskeli), avatar, played_count, last_played_at, auto, friend, added_at}]}` — aynı karşılaşmada
+(başlamış ya da bitmiş) bulunan insan oyuncular otomatik + elle eklenenler · `POST /api/friends {user_id}` (yalnız birlikte uçulmuş) | `{email}`
+(günde 20; yoksa 404) · `DELETE /api/friends/{uid}` (elle → silinir; otomatik → gizlenir). Davette `friend_ids` yalnız bu listeden.
+
+### 30.5 Pilot seviyesi (`xp.py`)
+Seviye 1…100; eğri `gereken(L) = round(100·(L−1)^1.8)` (L100 ≈ 390 bin XP); madalyalar 5 Bronz · 10 Gümüş · 25 Altın · 50 Platin · 75 Elmas · 100 Efsane.
+XP YALNIZ sunucu verisinden (TOP 10 doğrulama mantığı): uçuş özeti (`air_time` 1/10 sn ≤ 270, `distance` 1/100 m ≤ 200, `discipline` §42 × 0,5 (≥ 60 sn),
+`soft_landing` 25 (+15 dairede; kaza yok, motor kapalı, |alt_rel| ≤ 2 m), `mission` oran × 50 (+50), `defense` savunma puanı × 0,2 ≤ 400 (+80 başarı),
+`targets` × 0,1 ≤ 300; tür ekleri: yük bırakma servo tetik +40 + isabet 120/70/30, ilaçlama oran × 100 (+60)) + karşılaşma (`match_players`: halka × 5 ≤ 250,
+sıra 100/60/40/20, galibiyet +50; it dalaşı 150/30; rakiplerin hepsi AI ise × 0,5; tek kişilik bitiriş 20). Hava süresi < 10 sn → 0. İstemci sayımları
+(`stop.gates`) XP'ye girmez. Günlük üst sınır 3000 doğrulanmış XP / pilot. Defter `xp_events` (UNIQUE kaynak+ref+pilot); uçuş kapanışında ve seviye
+uçlarında `esitle` (geçmiş uçuşlar da ilk erişimde hesaplanır). Misafir XP: `POST /api/crew/{pid}/xp/import {entries:[{xp ≤ 1000, at?, mode?, duration_s?}] ≤ 200}`
+(5/sa) → `verified = 0`, toplam ≤ seviye 10 eşiği (`import_cap`); `level_verified` ve madalya `verified` ayrı; TOP 10 kullanmaz.
+Uçlar: `GET /api/crew/levels` (eğri, madalyalar, kaynaklar, sınırlar) · `GET /api/crew/{pid}/level` → `{level, level_verified, xp, xp_verified, xp_unverified,
+level_xp, next_level_xp, progress, max_level, medals[{id, level, label, earned, verified}], events[≤20 {source, ref_id, xp, verified, parts, mode, capped, created_at}]}`
+· pilot kayıtlarında (`GET /api/crew`) `level, level_verified, xp, xp_verified, xp_unverified, level_xp, next_level_xp, progress, medals[id]`.
+
+### 30.6 Önceki uçuşlarım
+`GET /api/crew/{pid}/flights?limit&offset&mode` → `{pilot_id, flights:[Operasyon kartı + mode + xp], total, stats}` · `GET /api/ops?pilot_id=` filtresi.
+
+### 30.7 Hangar kalıcılığı (`equipment.py`, `routers/hangar_extra.py`)
+- `drones.equipment` (v8) `{camera: day|night|thermal|multispectral, addons:{sprayer{tank_l 1–40, width_m 1–12, pump_rate 0–100}, gripper{payload_kg 0.1–20},
+  parachute{alt_min_m 0–100}}, livery:{pattern solid|stripe|split|camo|checker, color2 #rrggbb, callsign A–Z0–9- ≤8, decals[≤6 {id, slot top|bottom|left|right|front|rear|tail,
+  scale 0.2–2, rot 0–360}]}, max_alt_m 10–5000}`; POST/PUT `/api/hangar` gövdesinde `equipment` (tipe uymayan eklenti / bilinmeyen alan 422). Kamera fly/start'ta
+  `camera` verilmezse dronunkinden (multispectral çekirdekte `day`, istemci işler). Eklenti SITL karşılığı uçuş açılışında sunucu yazar: sprayer
+  `SPRAY_ENABLE 1, SERVO9_FUNCTION 22, SERVO10_FUNCTION 23, SPRAY_PUMP_RATE` (yalnız kopter/heli) · gripper `GRIP_ENABLE 1, GRIP_TYPE 1, SERVO11_FUNCTION 28` ·
+  parachute `CHUTE_ENABLED 1, CHUTE_TYPE 10, SERVO12_FUNCTION 27, CHUTE_ALT_MIN`. Beyaz listeye `SPRAY_`, `GRIP_`, `CHUTE_` önekleri eklendi (SERVOn_FUNCTION değil).
+  `GET /api/hangar/equipment` → seçenekler + SITL karşılıkları + script/görsel sınırları.
+- **Mission Planner kalıcılığı**: uçuşta MP / panelden yazılan parametreler (çekirdek `drone_sitl_params`, kaynak mp|hepgo) uçuş sonunda `bridge.params_hasat`
+  ile dronun `params` kaydına alınır (beyaz liste, eklenti sabitleri hariç, ≤ 60; denetim `params_kept`); açılış değerleri artık `sm_base` kaynağıyla yazılır.
+  Karşılaşma uçuşlarında hasat yok (MP köprüsü yok).
+- **Lua script'leri**: `GET/POST /api/hangar/{did}/scripts` (≤ 8, ≤ 64 KB, `[a-z0-9_-]{1,40}.lua`), `GET/PUT/DELETE …/scripts/{sid}`, `GET …/{sid}/download`.
+  Sunucu SITL'inde ÇALIŞTIRILMAZ (`SIMUMAV_LUA_RUN=0` varsayılan; `run_on_server` alanı) — güvenlik incelemesi/kum havuzu sonrası açılabilir.
+- **Logo / çıkartma**: `POST /api/hangar/{did}/decals {image: data:image/png|jpeg|webp;base64 ≤ 1 MB, kind logo|sticker}` (20/sa) → Pillow ile yeniden kodlanmış PNG
+  (≤ 1024 px), `GET /api/hangar/{did}/decals`, `DELETE …/{iid}` (görünümden de düşer), `GET /api/hangar/decals/<belirteç>.png` (oturumsuz, nosniff, sandbox CSP).
+  Dron silinince dosyalar silinir.
+
+### 30.8 DB göçü v8 (idempotent, geriye uyumlu)
+Yeni tablolar `xp_events`, `match_invites`, `user_contacts`, `invite_blocks`, `drone_scripts`, `drone_decals` (SCHEMA `CREATE … IF NOT EXISTS`); ALTER (yalnız
+yoksa): `pilots.xp/xp_unverified/level`, `flights.mode`, `matches.mode`, `drones.equipment`; indeks `ix_flights_pilot`. Eski satırlar: XP 0, seviye 1, mode NULL,
+equipment NULL (gündüz kamerası). Veri dönüşümü yok.
